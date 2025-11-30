@@ -189,7 +189,7 @@ fn run_search_only_suite() {
     println!("Initial Board Setup: Standard Chess");
     println!("----------------------------------------------------------------");
 
-    let max_depth = 6;
+    let max_depth = 7;
     let mut last_duration = None;
 
     let mut total_search_nodes: u128 = 0;

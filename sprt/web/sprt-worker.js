@@ -85,6 +85,38 @@ function applyMove(position, move) {
         throw new Error('Illegal move: black to move but piece at ' + move.from + ' is not black');
     }
 
+    // Handle castling in the worker's local board representation. The engine
+    // implements castling by moving the king more than 1 square horizontally
+    // and then relocating the rook on the same rank beyond the king's
+    // destination. We mimic that here so our local board stays in sync.
+    const isKing = movingPiece.piece_type === 'k';
+    const fromXi = parseInt(fromX, 10);
+    const toXi = parseInt(toX, 10);
+    const fromYi = parseInt(fromY, 10);
+    const toYi = parseInt(toY, 10);
+    const dx = toXi - fromXi;
+    const dy = toYi - fromYi;
+
+    if (isKing && dy === 0 && Math.abs(dx) > 1) {
+        const rookDir = dx > 0 ? 1 : -1;
+        let rookXi = toXi + rookDir; // search beyond king's destination
+        // We stop if we run into any non-rook piece or wander too far.
+        while (Math.abs(rookXi - toXi) <= 16) {
+            const rookXStr = String(rookXi);
+            const pieceAt = pieces.find(p => p.x === rookXStr && p.y === fromY);
+            if (pieceAt) {
+                if (pieceAt.player === movingPiece.player && pieceAt.piece_type === 'r') {
+                    // Move rook to the square the king jumped over
+                    const rookToXi = toXi - rookDir;
+                    pieceAt.x = String(rookToXi);
+                    pieceAt.y = fromY;
+                }
+                break;
+            }
+            rookXi += rookDir;
+        }
+    }
+
     movingPiece.x = toX;
     movingPiece.y = toY;
 
@@ -112,22 +144,17 @@ function clonePosition(position) {
     return JSON.parse(JSON.stringify(position));
 }
 
-// Simple material-only evaluation (centipawns from White's perspective),
-// used for smart adjudication when the position is clearly decided.
-function evaluateMaterial(position) {
-    const pieces = position.board.pieces;
-    let score = 0;
-    for (const p of pieces) {
-        const t = p.piece_type.toLowerCase();
-        let v = 0;
-        if (t === 'p') v = 100;
-        else if (t === 'n') v = 250;
-        else if (t === 'b') v = 450;
-        else if (t === 'r') v = 650;
-        else if (t === 'q') v = 1350;
-        if (p.player === 'w') score += v; else score -= v;
+function makePositionKey(position) {
+    const parts = position.board.pieces.map((p) => p.player + p.piece_type + p.x + ',' + p.y);
+    parts.sort();
+    return position.turn + '|' + parts.join(';');
+}
+
+function nowMs() {
+    if (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') {
+        return performance.now();
     }
-    return score;
+    return Date.now();
 }
 
 async function ensureInit() {
@@ -138,12 +165,38 @@ async function ensureInit() {
     }
 }
 
-async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove, materialThreshold) {
+async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove, materialThreshold, baseTimeMs, incrementMs, timeControl) {
     const startPosition = getStandardPosition();
     let position = clonePosition(startPosition);
     const newColor = newPlaysWhite ? 'w' : 'b';
     const moveLines = [];
     const moveHistory = [];
+
+    const initialBase = typeof baseTimeMs === 'number' && baseTimeMs > 0 ? baseTimeMs : 0;
+    const increment = typeof incrementMs === 'number' && incrementMs > 0 ? incrementMs : 0;
+    let whiteClock = initialBase;
+    let blackClock = initialBase;
+    const haveClocks = initialBase > 0;
+    const repetitionCounts = new Map();
+    let halfmoveClock = 0;
+
+    // Track last known search evaluation (in cp from White's perspective)
+    // for each engine, based on the eval returned alongside its normal
+    // timed search for a move. If either engine does not expose eval, we
+    // simply never adjudicate.
+    let lastEvalNew = null;
+    let lastEvalOld = null;
+
+    function recordRepetition() {
+        const key = makePositionKey(position);
+        const prev = repetitionCounts.get(key) || 0;
+        const next = prev + 1;
+        repetitionCounts.set(key, next);
+        return next;
+    }
+
+    // Initial position before any moves
+    recordRepetition();
 
     // Apply opening move if provided (always white's first move)
     if (openingMove) {
@@ -154,30 +207,69 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
             to: openingMove.to,
             promotion: openingMove.promotion || null
         });
+        halfmoveClock = 0;
+        recordRepetition();
     }
 
     for (let i = 0; i < maxMoves; i++) {
         const sideToMove = position.turn;
         const isWhiteTurn = sideToMove === 'w';
 
-        // Build full-game object for engines: immutable start position + move history.
+        if (haveClocks) {
+            const currentClock = isWhiteTurn ? whiteClock : blackClock;
+            if (currentClock <= 0) {
+                const loserEngine = isWhiteTurn
+                    ? (newPlaysWhite ? 'new' : 'old')
+                    : (newPlaysWhite ? 'old' : 'new');
+                moveLines.push('# Time forfeit before move: ' + (isWhiteTurn ? 'White' : 'Black') + ' has no time remaining.');
+                const result = loserEngine === 'new' ? 'loss' : 'win';
+                return { result, log: moveLines.join('\n'), reason: 'time_forfeit' };
+            }
+        }
+
+        // Smart adjudication: if both engines' most recent SEARCH evaluations
+        // (taken from their normal timed move searches) clearly agree on a
+        // winner, stop early and award the game. Only start checking after at
+        // least 20 plies, and only if both engines have provided evals.
+        if (moveHistory.length >= 20 && lastEvalNew !== null && lastEvalOld !== null) {
+            const uiThresh = typeof materialThreshold === 'number' ? materialThreshold : 0;
+            const threshold = Math.max(1500, uiThresh);
+            if (threshold > 0) {
+                function winnerFromWhiteEval(score) {
+                    if (score >= threshold) return 'w';
+                    if (score <= -threshold) return 'b';
+                    return null;
+                }
+
+                const newWinner = winnerFromWhiteEval(lastEvalNew);
+                const oldWinner = winnerFromWhiteEval(lastEvalOld);
+
+                let winningColor = null;
+                if (newWinner && oldWinner && newWinner === oldWinner) {
+                    winningColor = newWinner;
+                }
+
+                if (winningColor) {
+                    const evalCp = winningColor === 'w'
+                        ? Math.min(lastEvalNew, lastEvalOld)
+                        : Math.max(lastEvalNew, lastEvalOld);
+                    const result = winningColor === newColor ? 'win' : 'loss';
+                    const winnerStr = winningColor === 'w' ? 'White' : 'Black';
+                    moveLines.push('# Game adjudicated by material: ~' + (evalCp > 0 ? '+' : '') + evalCp + ' cp for ' + winnerStr + ' (threshold ' + threshold + ' cp, both engines agree; search eval from main search)');
+                    moveLines.push('# Engines: new=' + (newColor === 'w' ? 'White' : 'Black') + ', old=' + (newColor === 'w' ? 'Black' : 'White'));
+                    return { result, log: moveLines.join('\n'), reason: 'material_adjudication', materialThreshold: threshold };
+                }
+            }
+        }
+
+        // Otherwise, let the appropriate engine choose a move from the full
+        // game history starting from the standard position. We rebuild
+        // gameInput each ply so the WASM side can reconstruct all dynamic
+        // state (clocks, en passant, special rights) by replaying moves.
         const gameInput = clonePosition(startPosition);
         gameInput.move_history = moveHistory.slice();
 
-        // Smart adjudication: if the position is completely decided by simple
-        // material count, stop early and award the game.
-        const evalCp = evaluateMaterial(position);
-        const threshold = typeof materialThreshold === 'number' ? materialThreshold : 0;
-        if (threshold > 0 && Math.abs(evalCp) >= threshold) {
-            const winningColor = evalCp > 0 ? 'w' : 'b';
-            const result = winningColor === newColor ? 'win' : 'loss';
-            const winnerStr = winningColor === 'w' ? 'White' : 'Black';
-            moveLines.push('# Game adjudicated by material: ~' + (evalCp > 0 ? '+' : '') + evalCp + ' cp for ' + winnerStr + ' (threshold ' + threshold + ' cp)');
-            moveLines.push('# Engines: new=' + (newColor === 'w' ? 'White' : 'Black') + ', old=' + (newColor === 'w' ? 'Black' : 'White'));
-            return { result, log: moveLines.join('\n'), reason: 'material_adjudication', materialThreshold: threshold };
-        }
-
-        // Otherwise, let the appropriate engine choose a move on this gameInput
+        // Let the appropriate engine choose a move on this gameInput
         const EngineClass = isWhiteTurn
             ? (newPlaysWhite ? EngineNew : EngineOld)
             : (newPlaysWhite ? EngineOld : EngineNew);
@@ -185,9 +277,44 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
             ? (newPlaysWhite ? 'new' : 'old')
             : (newPlaysWhite ? 'old' : 'new');
 
+        let searchTimeMs = timePerMove;
+        if (haveClocks) {
+            const currentClock = isWhiteTurn ? whiteClock : blackClock;
+            const baseSec = Math.max(0, currentClock / 1000);
+            const incSec = increment / 1000;
+            // Dynamic per-move limit: (currentBase/20 + inc/2) seconds
+            searchTimeMs = Math.max(10, Math.round(((baseSec / 20) + (incSec / 2)) * 1000));
+        }
+
         const engine = new EngineClass(gameInput);
-        const move = engine.get_best_move_with_time(timePerMove);
+        const startMs = haveClocks ? nowMs() : 0;
+        const move = engine.get_best_move_with_time(searchTimeMs);
         engine.free();
+        let flaggedOnTime = false;
+        if (haveClocks) {
+            const elapsed = Math.max(0, Math.round(nowMs() - startMs));
+            if (isWhiteTurn) {
+                let next = whiteClock - elapsed;
+                if (next < 0) {
+                    flaggedOnTime = true;
+                    next = 0;
+                }
+                whiteClock = next + increment;
+            } else {
+                let next = blackClock - elapsed;
+                if (next < 0) {
+                    flaggedOnTime = true;
+                    next = 0;
+                }
+                blackClock = next + increment;
+            }
+        }
+
+        if (haveClocks && flaggedOnTime) {
+            moveLines.push('# Time forfeit: ' + (isWhiteTurn ? 'White' : 'Black') + ' flagged on time.');
+            const result = engineName === 'new' ? 'loss' : 'win';
+            return { result, log: moveLines.join('\n'), reason: 'time_forfeit' };
+        }
 
         if (!move || !move.from || !move.to) {
             // Engine failed to produce a move: treat as that engine losing.
@@ -195,6 +322,32 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
                 ' failed to return a move.');
             const result = engineName === 'new' ? 'loss' : 'win';
             return { result, log: moveLines.join('\n') };
+        }
+
+        // Record this engine's last search evaluation (from White's POV) if
+        // the engine returned an eval field. The Rust side reports eval from
+        // the side-to-move's perspective.
+        if (typeof move.eval === 'number') {
+            const evalSide = move.eval;
+            const evalWhite = sideToMove === 'w' ? evalSide : -evalSide;
+            if (engineName === 'new') {
+                lastEvalNew = evalWhite;
+            } else {
+                lastEvalOld = evalWhite;
+            }
+        }
+
+        let isPawnMove = false;
+        let isCapture = false;
+        {
+            const [fromX, fromY] = move.from.split(',');
+            const [toX, toY] = move.to.split(',');
+            const piecesBefore = position.board.pieces;
+            const movingPiece = piecesBefore.find(p => p.x === fromX && p.y === fromY);
+            if (movingPiece && typeof movingPiece.piece_type === 'string') {
+                isPawnMove = movingPiece.piece_type.toLowerCase() === 'p';
+            }
+            isCapture = piecesBefore.some(p => p.x === toX && p.y === toY);
         }
 
         // First try to apply the move to our local position. If this fails,
@@ -210,7 +363,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
                 ': ' + (move && move.from && move.to ? (move.from + '>' + move.to) : 'null') +
                 ' (' + (e && e.message ? e.message : String(e)) + ')');
             const result = engineName === 'new' ? 'loss' : 'win';
-            return { result, log: moveLines.join('\n') };
+            return { result, log: moveLines.join('\n'), reason: 'illegal_move' };
         }
 
         // Only after a successful apply do we log and record the move.
@@ -226,13 +379,28 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
             promotion: move.promotion || null
         });
 
+        if (isPawnMove || isCapture) {
+            halfmoveClock = 0;
+        } else {
+            halfmoveClock += 1;
+        }
+
+        const repCount = recordRepetition();
+        if (repCount >= 3) {
+            return { result: 'draw', log: moveLines.join('\n'), reason: 'threefold' };
+        }
+
+        if (halfmoveClock >= 100) {
+            return { result: 'draw', log: moveLines.join('\n'), reason: 'fifty_move' };
+        }
+
         const gameState = isGameOver(position);
         if (gameState.over) {
             if (gameState.reason === 'draw') {
-                return { result: 'draw', log: moveLines.join('\n') };
+                return { result: 'draw', log: moveLines.join('\n'), reason: 'insufficient_material' };
             }
             const result = sideToMove === newColor ? 'win' : 'loss';
-            return { result, log: moveLines.join('\n') };
+            return { result, log: moveLines.join('\n'), reason: gameState.reason || 'checkmate' };
         }
     }
 
@@ -250,6 +418,9 @@ self.onmessage = async (e) => {
                 msg.newPlaysWhite,
                 msg.openingMove,
                 msg.materialThreshold,
+                msg.baseTimeMs,
+                msg.incrementMs,
+                msg.timeControl,
             );
             self.postMessage({
                 type: 'result',
@@ -259,6 +430,7 @@ self.onmessage = async (e) => {
                 newPlaysWhite: msg.newPlaysWhite,
                 reason: reason || null,
                 materialThreshold: materialThreshold ?? msg.materialThreshold ?? null,
+                timeControl: msg.timeControl || null,
             });
         } catch (err) {
             self.postMessage({

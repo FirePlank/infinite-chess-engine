@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::game::GameState;
 use crate::moves::Move;
 
@@ -25,61 +23,105 @@ pub struct TTEntry {
 }
 
 /// Transposition Table adapted for infinite chess (coordinate-based hashing)
+///
+/// For better performance on WASM (and generally), this implementation uses a
+/// fixed-size array-backed table indexed directly by masked hash values
+/// instead of a HashMap. This avoids dynamic allocations and hashing in hot
+/// search code while preserving the public API.
 pub struct TranspositionTable {
-    pub table: HashMap<u64, TTEntry>,
-    pub size: usize,
+    table: Vec<Option<TTEntry>>,
+    /// Bitmask for indexing into `table` (capacity is always a power of two).
+    mask: usize,
     pub age: u8,
+    /// Number of occupied slots, used for an approximate fill ratio.
+    used: usize,
 }
 
 impl TranspositionTable {
+    /// Create a new TT with approximately `size_mb` megabytes of storage.
     pub fn new(size_mb: usize) -> Self {
-        // Rough estimate: each entry ~100 bytes
-        let size = (size_mb * 1024 * 1024) / 100;
+        // Convert megabytes to bytes and estimate how many TTEntry values fit.
+        let bytes = size_mb.max(1) as usize * 1024 * 1024;
+        let entry_size = std::mem::size_of::<TTEntry>().max(1);
+        let capacity = (bytes / entry_size).max(1);
+
+        // Round DOWN to the nearest power of two to simplify masking.
+        let mut cap_pow2 = 1usize;
+        while cap_pow2.saturating_mul(2) <= capacity {
+            cap_pow2 = cap_pow2.saturating_mul(2);
+        }
+
+        let table = vec![None; cap_pow2];
+
         TranspositionTable {
-            table: HashMap::with_capacity(size),
-            size,
+            table,
+            mask: cap_pow2 - 1,
             age: 0,
+            used: 0,
         }
     }
-    
+
     /// Get the hash for the current position (uses incrementally maintained hash)
     #[inline]
     pub fn generate_hash(game: &GameState) -> u64 {
         game.hash
     }
-    
+
+    /// Capacity (number of slots) in the underlying table.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.table.len()
+    }
+
+    /// Approximate transposition table fill in permille (0-1000).
+    #[inline]
+    pub fn fill_permille(&self) -> u32 {
+        if self.table.is_empty() {
+            return 0;
+        }
+        ((self.used as u64 * 1000) / self.table.len() as u64) as u32
+    }
+
+    #[inline]
+    fn index(&self, hash: u64) -> usize {
+        (hash as usize) & self.mask
+    }
+
     /// Probe the TT for a position
     pub fn probe(&self, hash: u64, alpha: i32, beta: i32, depth: usize, ply: usize) -> Option<(i32, Option<Move>)> {
-        if let Some(entry) = self.table.get(&hash) {
+        let idx = self.index(hash);
+        if let Some(entry) = &self.table[idx] {
             if entry.hash == hash {
                 // Always return the best move for move ordering
                 let best_move = entry.best_move.clone();
-                
+
                 // Only use score if depth is sufficient
                 if entry.depth as usize >= depth {
                     let mut score = entry.score;
-                    
+
                     // Adjust mate scores for current ply
                     if score > MATE_SCORE {
                         score -= ply as i32;
                     } else if score < -MATE_SCORE {
                         score += ply as i32;
                     }
-                    
-                    match entry.flag {
-                        TTFlag::Exact => return Some((score, best_move)),
-                        TTFlag::LowerBound if score >= beta => return Some((beta, best_move)),
-                        TTFlag::UpperBound if score <= alpha => return Some((alpha, best_move)),
-                        _ => return Some((INFINITY + 1, best_move)), // Signal: use move but not score
-                    }
+
+                    let out = match entry.flag {
+                        TTFlag::Exact => (score, best_move),
+                        TTFlag::LowerBound if score >= beta => (beta, best_move),
+                        TTFlag::UpperBound if score <= alpha => (alpha, best_move),
+                        _ => (INFINITY + 1, best_move), // Signal: use move but not score
+                    };
+                    return Some(out);
                 }
-                
-                return Some((INFINITY + 1, best_move)); // Return move for ordering
+
+                // Depth too shallow: still return move for ordering.
+                return Some((INFINITY + 1, best_move));
             }
         }
         None
     }
-    
+
     /// Store an entry in the TT
     pub fn store(&mut self, hash: u64, depth: usize, flag: TTFlag, score: i32, best_move: Option<Move>, ply: usize) {
         // Adjust mate scores for storage
@@ -89,19 +131,27 @@ impl TranspositionTable {
         } else if score < -MATE_SCORE {
             adjusted_score -= ply as i32;
         }
-        
-        // Replacement strategy: replace if deeper, same position, or older
-        let should_replace = if let Some(existing) = self.table.get(&hash) {
-            existing.hash != hash || // Different position (collision)
-            depth >= existing.depth as usize || // Deeper search
-            self.age != existing.age || // Older entry
-            flag == TTFlag::Exact // Exact scores are valuable
-        } else {
-            true
+
+        let idx = self.index(hash);
+
+        // Replacement strategy: replace if slot is empty, different position, deeper,
+        // or older / exact flag is present.
+        let replace = match &self.table[idx] {
+            None => true,
+            Some(existing) => {
+                existing.hash != hash // Different position (collision)
+                    || depth >= existing.depth as usize // Deeper search
+                    || self.age != existing.age // Older entry
+                    || flag == TTFlag::Exact // Exact scores are valuable
+            }
         };
-        
-        if should_replace {
-            self.table.insert(hash, TTEntry {
+
+        if replace {
+            if self.table[idx].is_none() {
+                self.used += 1;
+            }
+
+            self.table[idx] = Some(TTEntry {
                 hash,
                 depth: depth as u8,
                 flag,
@@ -110,26 +160,17 @@ impl TranspositionTable {
                 age: self.age,
             });
         }
-        
-        // Cleanup if table is too large
-        if self.table.len() > self.size {
-            self.cleanup_old_entries();
-        }
     }
-    
+
     pub fn increment_age(&mut self) {
         self.age = self.age.wrapping_add(1);
     }
-    
-    fn cleanup_old_entries(&mut self) {
-        let current_age = self.age;
-        self.table.retain(|_, entry| {
-            current_age.wrapping_sub(entry.age) < 3
-        });
-    }
 
     pub fn clear(&mut self) {
-        self.table.clear();
+        for slot in &mut self.table {
+            *slot = None;
+        }
         self.age = 0;
+        self.used = 0;
     }
 }

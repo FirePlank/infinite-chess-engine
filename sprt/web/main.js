@@ -8,7 +8,7 @@ const sprtBoundsPreset = document.getElementById('sprtBoundsPreset');
 const sprtBoundsMode = document.getElementById('sprtBoundsMode');
 const sprtAlphaEl = document.getElementById('sprtAlpha');
 const sprtBetaEl = document.getElementById('sprtBeta');
-const sprtTimePerMove = document.getElementById('sprtTimePerMove');
+const sprtTimeControlEl = document.getElementById('sprtTimeControl');
 const sprtConcurrencyEl = document.getElementById('sprtConcurrency');
 const sprtMinGames = document.getElementById('sprtMinGames');
 const sprtMaxGames = document.getElementById('sprtMaxGames');
@@ -52,7 +52,7 @@ const CONFIG = {
     beta: 0.05,
     boundsPreset: 'all',
     boundsMode: 'gainer',
-    timePerMove: 500,
+    timeControl: '10+0.1',
     maxGames: 1000,
     minGames: 500,
     maxMoves: 200,
@@ -167,17 +167,26 @@ function getStandardPosition() {
 // newPlaysWhite indicates which engine (new vs old) had White.
 // endReason may be 'material_adjudication' or null.
 // materialThreshold is the cp threshold used for adjudication, if any.
-function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, endReason, materialThreshold) {
+function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, endReason, materialThreshold, timeControl) {
     const utc = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const utcDate = `${utc.getUTCFullYear()}.${pad(utc.getUTCMonth() + 1)}.${pad(utc.getUTCDate())}`;
     const utcTime = `${pad(utc.getUTCHours())}:${pad(utc.getUTCMinutes())}:${pad(utc.getUTCSeconds())}`;
 
-    // Map result from new-engine perspective to PGN-style token
+    // Map result from SPRT's new-engine perspective to a PGN-style token
+    // from the board perspective (White/Black), using newPlaysWhite.
+    // - result === 'win'  means the NEW engine won.
+    // - result === 'loss' means the NEW engine lost.
+    // - newPlaysWhite indicates whether NEW had White.
     let resultToken = '*';
-    if (result === 'win') resultToken = '1-0';
-    else if (result === 'loss') resultToken = '0-1';
-    else if (result === 'draw') resultToken = '1/2-1/2';
+    if (result === 'draw') {
+        resultToken = '1/2-1/2';
+    } else if (result === 'win' || result === 'loss') {
+        // Did White win from the board POV?
+        const newWon = (result === 'win');
+        const whiteWon = newPlaysWhite ? newWon : !newWon;
+        resultToken = whiteWon ? '1-0' : '0-1';
+    }
 
     const whiteEngine = newPlaysWhite ? 'HydroChess New' : 'HydroChess Old';
     const blackEngine = newPlaysWhite ? 'HydroChess Old' : 'HydroChess New';
@@ -190,14 +199,41 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         `[UTCDate "${utcDate}"]`,
         `[UTCTime "${utcTime}"]`,
         `[Result "${resultToken}"]`,
-        `[TimeControl "-"]`,
+        `[TimeControl "${(timeControl || '-').replace(/\s+/g, '')}"]`,
         `[White "${whiteEngine}"]`,
         `[Black "${blackEngine}"]`,
     ];
 
-    if (endReason === 'material_adjudication') {
-        const th = typeof materialThreshold === 'number' && materialThreshold > 0 ? materialThreshold : 1500;
-        headerList.push(`[Termination "Material adjudication (|eval| >= ${th} cp)"]`);
+    if (endReason) {
+        let termination = null;
+        if (endReason === 'material_adjudication') {
+            const th = typeof materialThreshold === 'number' && materialThreshold > 0 ? materialThreshold : 1500;
+            termination = `Material adjudication (|eval| >= ${th} cp)`;
+        } else if (endReason === 'illegal_move') {
+            let detail = null;
+            if (workerLog) {
+                const illegalLine = workerLog.split('\n').find(l => l.startsWith('# Illegal move from '));
+                if (illegalLine) {
+                    detail = illegalLine.replace(/^# Illegal move from\s*/, '').trim();
+                }
+            }
+            termination = detail
+                ? `Loss on illegal move (${detail})`
+                : 'Loss on illegal move';
+        } else if (endReason === 'time_forfeit') {
+            termination = 'Loss on time';
+        } else if (endReason === 'checkmate') {
+            termination = 'Checkmate';
+        } else if (endReason === 'threefold') {
+            termination = 'Draw by threefold repetition';
+        } else if (endReason === 'fifty_move') {
+            termination = 'Draw by fifty-move rule';
+        } else if (endReason === 'insufficient_material') {
+            termination = 'Draw by insufficient material';
+        }
+        if (termination) {
+            headerList.push(`[Termination "${termination}"]`);
+        }
     }
 
     const headers = headerList.join(' ');
@@ -214,9 +250,24 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     const fullmove = 1;
     const halfmove = 0;
 
-    // Standard Classical starting position pieces (using coords x,y and simple abbreviations)
+    // Standard Classical starting position pieces (using coords x,y and simple abbreviations).
+    // Mark pawns, rooks, and kings that have special rights (double-step or castling) with '+'.
     const pieces = [];
-    const push = (abbr, x, y) => pieces.push(`${abbr}${x},${y}`);
+    const specials = new Set();
+    for (let i = 1; i <= 8; i++) {
+        specials.add(`P${i},2`);
+        specials.add(`p${i},7`);
+    }
+    specials.add('R1,1');
+    specials.add('R8,1');
+    specials.add('K5,1');
+    specials.add('r1,8');
+    specials.add('r8,8');
+    specials.add('k5,8');
+    const push = (abbr, x, y) => {
+        const base = `${abbr}${x},${y}`;
+        pieces.push(specials.has(base) ? base + '+' : base);
+    };
     // White back rank
     push('R', 1, 1); push('N', 2, 1); push('B', 3, 1); push('Q', 4, 1); push('K', 5, 1); push('B', 6, 1); push('N', 7, 1); push('R', 8, 1);
     for (let i = 1; i <= 8; i++) push('P', i, 2);
@@ -270,6 +321,24 @@ function calculateBounds(alpha, beta) {
     const lower = Math.log(beta / (1 - alpha));
     const upper = Math.log((1 - beta) / alpha);
     return { lower, upper };
+}
+
+function parseTimeControl(str) {
+    const raw = (str || '').toString().trim();
+    if (!raw) return null;
+    const parts = raw.split('+');
+    const baseSec = parseFloat(parts[0]);
+    if (!Number.isFinite(baseSec) || baseSec <= 0) return null;
+    let incSec = 0;
+    if (parts.length > 1 && parts[1].trim() !== '') {
+        const incParsed = parseFloat(parts[1]);
+        if (Number.isFinite(incParsed) && incParsed >= 0) {
+            incSec = incParsed;
+        }
+    }
+    const baseMs = Math.round(baseSec * 1000);
+    const incMs = Math.round(incSec * 1000);
+    return { baseSec, incSec, baseMs, incMs, tcString: raw };
 }
 
 function calculateLLR(wins, losses, draws, elo0, elo1) {
@@ -402,17 +471,30 @@ async function runSprt() {
     CONFIG.boundsMode = sprtBoundsMode.value || 'gainer';
     CONFIG.alpha = parseFloat(sprtAlphaEl.value) || 0.05;
     CONFIG.beta = parseFloat(sprtBetaEl.value) || 0.05;
-    CONFIG.timePerMove = parseInt(sprtTimePerMove.value) || 500;
-    CONFIG.concurrency = parseInt(sprtConcurrencyEl.value) || 1;
-    CONFIG.minGames = parseInt(sprtMinGames.value) || 500;
-    CONFIG.maxGames = parseInt(sprtMaxGames.value) || 1000;
-    CONFIG.maxMoves = parseInt(sprtMaxMoves.value) || 200;
+    CONFIG.timeControl = (sprtTimeControlEl.value || '').trim() || '10+0.1';
+    CONFIG.concurrency = parseInt(sprtConcurrencyEl.value, 10) || 1;
+    CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
+    CONFIG.maxGames = parseInt(sprtMaxGames.value, 10) || 1000;
+    CONFIG.maxMoves = parseInt(sprtMaxMoves.value, 10) || 200;
+    {
+        const mt = parseInt(sprtMaterialThresholdEl.value, 10);
+        CONFIG.materialThreshold = Number.isFinite(mt) && mt >= 0 ? mt : 1500;
+    }
 
     // Ensure min/max games are even (for game pairing)
     if (CONFIG.minGames % 2 !== 0) CONFIG.minGames++;
     if (CONFIG.maxGames % 2 !== 0) CONFIG.maxGames++;
 
     applyBoundsPreset();
+    const tc = parseTimeControl(CONFIG.timeControl);
+    if (!tc) {
+        log('Invalid time control: ' + CONFIG.timeControl + ' (expected base+inc in seconds, e.g. 10+0.1)', 'error');
+        sprtRunning = false;
+        runSprtBtn.disabled = false;
+        stopSprtBtn.disabled = true;
+        return;
+    }
+    const perMoveMs = Math.max(10, Math.round(((tc.baseSec / 20) + (tc.incSec / 2)) * 1000));
     const bounds = calculateBounds(CONFIG.alpha, CONFIG.beta);
     // reset last stats snapshot for this run
     lastBounds = bounds;
@@ -422,7 +504,7 @@ async function runSprt() {
     lastElo = 0;
     lastEloError = 0;
     lastLLR = 0;
-    const timePerMove = CONFIG.timePerMove;
+    const timePerMove = perMoveMs;
     const maxGames = CONFIG.maxGames;
     const maxMovesPerGame = CONFIG.maxMoves;
     
@@ -436,7 +518,7 @@ async function runSprt() {
     clearLog();
     sprtStatusEl.textContent = 'Status: running...';
     sprtStatusEl.className = 'sprt-status';
-    log('Starting SPRT: ' + maxGames + ' games (' + (maxGames / 2) + ' pairs), ' + timePerMove + 'ms/move', 'info');
+    log('Starting SPRT: ' + maxGames + ' games (' + (maxGames / 2) + ' pairs), TC=' + tc.tcString + ' (≈ ' + timePerMove + 'ms/move)', 'info');
     sprtLog('SPRT Test Started (random openings, paired games)');
 
     const maxConcurrent = Math.max(1, CONFIG.concurrency | 0);
@@ -469,6 +551,10 @@ async function runSprt() {
             maxMoves: maxMovesPerGame,
             newPlaysWhite,
             openingMove,
+            materialThreshold: CONFIG.materialThreshold,
+            baseTimeMs: tc.baseMs,
+            incrementMs: tc.incMs,
+            timeControl: tc.tcString,
         });
         return true;
     }
@@ -491,7 +577,15 @@ async function runSprt() {
                     const msg = e.data;
                     if (msg.type === 'result') {
                         const result = msg.result;
-                        const icnLog = generateICNFromWorkerLog(msg.log, msg.gameIndex, result, msg.newPlaysWhite, msg.reason);
+                        const icnLog = generateICNFromWorkerLog(
+                            msg.log,
+                            msg.gameIndex,
+                            result,
+                            msg.newPlaysWhite,
+                            msg.reason,
+                            msg.materialThreshold,
+                            msg.timeControl,
+                        );
                         gameLogs.push(icnLog);
 
                         if (result === 'win') wins++;

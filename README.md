@@ -14,6 +14,7 @@ A Rust-based chess engine compiled to WebAssembly for infinite chess variants.
 - **Transposition table** with Zobrist hashing
 - **Killer moves** and **history heuristic** for move ordering
 - **Quiescence search** for tactical accuracy
+- **Static Exchange Evaluation (SEE)** for accurate capture pruning and move ordering
 - **Coordinate normalization** for infinite board positions
 - **Gravity-style history heuristic** with bonuses/maluses and **history leaf pruning** in non-PV nodes
 - **Per-ply move buffer reuse** to avoid repeated allocations in the search tree
@@ -110,6 +111,12 @@ const gameState = {
 const engine = new Engine(gameState);
 const bestMove = engine.get_best_move();
 // Returns: { from: "5,4", to: "5,5", promotion: "q" }
+
+// Timed search with evaluation (time in milliseconds). This returns the same
+// move shape plus an `eval` field with the final root score in centipawns
+// from the side-to-move's perspective.
+const bestMoveTimed = engine.get_best_move_with_time(500);
+// Returns: { from: "5,4", to: "5,5", promotion: "q", eval: 34 }
 ```
 
 ### Move Conversion

@@ -21,16 +21,24 @@ extern "C" {
     pub fn log(s: &str);
 }
 
-#[wasm_bindgen]
-pub fn init_panic_hook() {
-    utils::set_panic_hook();
-}
+// #[wasm_bindgen]
+// pub fn init_panic_hook() {
+//     utils::set_panic_hook();
+// }
 
 #[derive(Serialize, Deserialize)]
 pub struct JsMove {
     pub from: String, // "x,y"
     pub to: String,   // "x,y"
     pub promotion: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct JsMoveWithEval {
+    pub from: String, // "x,y"
+    pub to: String,   // "x,y"
+    pub promotion: Option<String>,
+    pub eval: i32,    // centipawn score from side-to-move's perspective
 }
 
 #[derive(Deserialize)]
@@ -293,17 +301,26 @@ impl Engine {
         }
     }
 
+    /// Return the engine's static evaluation of the current position in centipawns,
+    /// from the side-to-move's perspective (positive = advantage for side to move).
+    pub fn evaluate_position(&mut self) -> i32 {
+        evaluation::evaluate(&self.game)
+    }
+
+    /// Timed search. This also exposes the search evaluation as an `eval` field alongside the move,
+    /// so callers can reuse the same search for adjudication.
     pub fn get_best_move_with_time(&mut self, time_limit_ms: u32) -> JsValue {
-        if let Some(best_move) = search::get_best_move_timed(
+        if let Some((best_move, eval)) = search::get_best_move_timed_with_eval(
             &mut self.game,
             50,
             time_limit_ms as u128,
             true,
         ) {
-            let js_move = JsMove {
+            let js_move = JsMoveWithEval {
                 from: format!("{},{}", best_move.from.x, best_move.from.y),
                 to: format!("{},{}", best_move.to.x, best_move.to.y),
                 promotion: best_move.promotion.map(|p| p.to_str().to_string()),
+                eval,
             };
             serde_wasm_bindgen::to_value(&js_move).unwrap()
         } else {

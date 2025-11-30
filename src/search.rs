@@ -5,20 +5,13 @@ use crate::moves::{Move, get_quiescence_captures};
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::Date;
-#[cfg(target_arch = "wasm32")]
-use web_sys::window;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 #[cfg(target_arch = "wasm32")]
 fn now_ms() -> f64 {
-    // Prefer high-resolution monotonic timer when available (browser)
-    if let Some(win) = window() {
-        if let Some(perf) = win.performance() {
-            return perf.now();
-        }
-    }
-    // Fallback for environments without window/performance (e.g. Node.js)
+    // Simple wall-clock timer for wasm; keeps the hot path small and avoids
+    // repeated window()/performance() lookups.
     Date::now()
 }
 
@@ -65,6 +58,9 @@ pub use tt::{TTEntry, TTFlag, TranspositionTable};
 
 mod ordering;
 use ordering::{hash_move_dest, sort_captures, sort_moves, sort_moves_root};
+
+mod see;
+pub(crate) use see::static_exchange_eval_impl as static_exchange_eval;
 
 pub mod zobrist;
 pub use zobrist::{piece_key, special_right_key, en_passant_key, SIDE_KEY};
@@ -237,7 +233,19 @@ impl Searcher {
     
     #[inline]
     pub fn check_time(&mut self) -> bool {
-        if self.nodes & 2047 == 0 {
+        // Fast-path: no time limit (used by offline test/perft helpers).
+        if self.time_limit_ms == u128::MAX {
+            return false;
+        }
+
+        // Check time only every N nodes to keep the hot path cheap, especially
+        // on wasm where elapsed_ms() crosses the JS boundary.
+        #[cfg(target_arch = "wasm32")]
+        const TIME_CHECK_MASK: u64 = 8191; // every 8192 nodes
+        #[cfg(not(target_arch = "wasm32"))]
+        const TIME_CHECK_MASK: u64 = 2047; // every 2048 nodes
+
+        if self.nodes & TIME_CHECK_MASK == 0 {
             if self.timer.elapsed_ms() >= self.time_limit_ms {
                 self.stopped = true;
             }
@@ -263,7 +271,7 @@ impl Searcher {
     pub fn print_info(&self, depth: usize, score: i32) {
         let time_ms = self.timer.elapsed_ms();
         let nps = if time_ms > 0 { (self.nodes as u128 * 1000) / time_ms } else { 0 };
-        let tt_fill = (self.tt.table.len() * 1000 / self.tt.size.max(1)) as u32; // permille
+        let tt_fill = self.tt.fill_permille();
         
         // Proper mate score display
         let score_str = if score > MATE_SCORE {
@@ -314,110 +322,21 @@ impl Searcher {
     }
 }
 
-/// Main entry point - iterative deepening search with aspiration windows
+/// Main entry point - iterative deepening search with aspiration windows.
+/// Uses the default THINK_TIME_MS and returns only the best move; the
+/// underlying implementation is shared with the timed-with-eval helper.
 pub fn get_best_move(game: &mut GameState, max_depth: usize) -> Option<Move> {
-    // Ensure fast per-color piece counts are in sync with the board
-    game.recompute_piece_counts();
-
-    let mut searcher = Searcher::new(THINK_TIME_MS);
-    
-    let moves = game.get_legal_moves();
-    if moves.is_empty() {
-        return None;
-    }
-    
-    // If only one move, return immediately
-    if moves.len() == 1 {
-        return Some(moves[0].clone());
-    }
-    
-    // Find first legal move as ultimate fallback
-    let fallback_move = moves.iter().find(|m| {
-        let undo = game.make_move(m);
-        let legal = !game.is_move_illegal();
-        game.undo_move(m, undo);
-        legal
-    }).cloned();
-    
-    let mut best_move: Option<Move> = fallback_move.clone();
-    let mut best_score = -INFINITY;
-    
-    // Iterative deepening with aspiration windows
-    for depth in 1..=max_depth {
-        searcher.reset_for_iteration();
-        searcher.decay_history();
-        
-        let score = if depth == 1 {
-            // First iteration: full window
-            negamax_root(&mut searcher, game, depth, -INFINITY, INFINITY)
-        } else {
-            // Aspiration window search
-            let mut alpha = searcher.prev_score - ASPIRATION_WINDOW;
-            let mut beta = searcher.prev_score + ASPIRATION_WINDOW;
-            let mut window_size = ASPIRATION_WINDOW;
-            let mut result;
-            
-            loop {
-                result = negamax_root(&mut searcher, game, depth, alpha, beta);
-                
-                if searcher.stopped {
-                    break;
-                }
-                
-                if result <= alpha {
-                    // Failed low - widen alpha
-                    window_size *= 4;
-                    alpha = searcher.prev_score - window_size;
-                } else if result >= beta {
-                    // Failed high - widen beta
-                    window_size *= 4;
-                    beta = searcher.prev_score + window_size;
-                } else {
-                    // Score within window
-                    break;
-                }
-                
-                // Fallback to full window if window gets too large
-                if window_size > 1000 {
-                    result = negamax_root(&mut searcher, game, depth, -INFINITY, INFINITY);
-                    break;
-                }
-            }
-            result
-        };
-        
-        // Update best move - even if stopped, use best from this iteration if found
-        if let Some(pv_move) = &searcher.pv_table[0][0] {
-            best_move = Some(pv_move.clone());
-            best_score = score;
-            searcher.best_move_root = Some(pv_move.clone());
-            searcher.prev_score = score;
-        }
-        
-        // Print info after each depth (even if stopped, for debugging)
-        if !searcher.stopped {
-            searcher.print_info(depth, score);
-        }
-        
-        // Check if we found mate or time is up
-        if searcher.stopped || best_score.abs() > MATE_SCORE {
-            break;
-        }
-        
-        // If we've used more than 90% of time, don't start another iteration
-        if searcher.timer.elapsed_ms() > searcher.time_limit_ms * 9 / 10 {
-            break;
-        }
-    }
-    
-    // Increment TT age for next search
-    searcher.tt.increment_age();
-    
-    best_move
+    get_best_move_timed_with_eval(game, max_depth, THINK_TIME_MS, false)
+        .map(|(m, _)| m)
 }
 
-/// Time-limited search entry point
-pub fn get_best_move_timed(game: &mut GameState, max_depth: usize, time_limit_ms: u128, silent: bool) -> Option<Move> {
+/// Time-limited search that also returns the final root score (cp from side-to-move's perspective).
+pub fn get_best_move_timed_with_eval(
+    game: &mut GameState,
+    max_depth: usize,
+    time_limit_ms: u128,
+    silent: bool,
+) -> Option<(Move, i32)> {
     // Ensure fast per-color piece counts are in sync with the board
     game.recompute_piece_counts();
 
@@ -429,9 +348,11 @@ pub fn get_best_move_timed(game: &mut GameState, max_depth: usize, time_limit_ms
         return None;
     }
     
-    // If only one move, return immediately
+    // If only one move, return immediately with a simple static eval as score
     if moves.len() == 1 {
-        return Some(moves[0].clone());
+        let single = moves[0].clone();
+        let score = evaluate(game);
+        return Some((single, score));
     }
     
     // Find first legal move as ultimate fallback (with time check)
@@ -519,8 +440,8 @@ pub fn get_best_move_timed(game: &mut GameState, max_depth: usize, time_limit_ms
             break;
         }
         
-        // If we've used more than 50% of time, don't start another iteration
-        if searcher.timer.elapsed_ms() > searcher.time_limit_ms / 2 {
+        // If we've used more than 80% of time, don't start another iteration
+        if searcher.timer.elapsed_ms() > searcher.time_limit_ms * 8 / 10 {
             break;
         }
     }
@@ -528,7 +449,23 @@ pub fn get_best_move_timed(game: &mut GameState, max_depth: usize, time_limit_ms
     // Increment TT age for next search
     searcher.tt.increment_age();
     
-    best_move
+    if let Some(m) = best_move {
+        Some((m, best_score))
+    } else {
+        None
+    }
+}
+
+/// Time-limited search entry point. Delegates to the core
+/// get_best_move_timed_with_eval implementation and discards the eval.
+pub fn get_best_move_timed(
+    game: &mut GameState,
+    max_depth: usize,
+    time_limit_ms: u128,
+    silent: bool,
+) -> Option<Move> {
+    get_best_move_timed_with_eval(game, max_depth, time_limit_ms, silent)
+        .map(|(m, _)| m)
 }
 
 pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
@@ -1040,15 +977,21 @@ fn quiescence(searcher: &mut Searcher, game: &mut GameState, ply: usize, mut alp
     const DELTA_MARGIN: i32 = 200;
     
     for m in &tactical_moves {
-        // Delta pruning: skip captures that can't raise alpha even in best case
-        // Only apply when not in check
+        // SEE-based pruning and delta pruning for captures when not in check.
+        // static_exchange_eval returns 0 for non-captures or special cases
+        // (e.g. en passant target squares), so it is safe to call unconditionally.
         if !in_check {
-            if let Some(captured) = game.board.get_piece(&m.to.x, &m.to.y) {
-                let captured_value = crate::evaluation::get_piece_value(captured.piece_type);
-                // If stand_pat + captured_value + margin can't beat alpha, skip
-                if stand_pat + captured_value + DELTA_MARGIN < alpha {
-                    continue;
-                }
+            let see_gain = static_exchange_eval(game, m);
+
+            // Prune clearly losing captures that don't even break even materially.
+            if see_gain < 0 {
+                continue;
+            }
+
+            // Delta pruning: if stand_pat + best possible material swing from this
+            // capture (SEE gain) plus a small margin cannot beat alpha, skip.
+            if stand_pat + see_gain + DELTA_MARGIN < alpha {
+                continue;
             }
         }
         
