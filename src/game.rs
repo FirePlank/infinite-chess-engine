@@ -67,7 +67,7 @@ pub struct GameState {
     /// Optional variant identifier (e.g. "Classical", "Pawn_Horde"), used for
     /// variant-specific evaluation and tuning. Not serialized.
     #[serde(skip)]
-    pub variant: Option<String>,
+    pub variant: Option<crate::Variant>,
     #[serde(skip)]
     pub hash: u64, // Incrementally maintained Zobrist hash
     #[serde(skip)]

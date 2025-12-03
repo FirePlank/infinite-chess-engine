@@ -1,5 +1,7 @@
 use crate::board::{Board, Coordinate, PieceType, PlayerColor};
 use crate::game::GameState;
+use crate::Variant;
+
 #[cfg(feature = "eval_tuning")]
 use once_cell::sync::Lazy;
 #[cfg(feature = "eval_tuning")]
@@ -70,12 +72,12 @@ macro_rules! bump_feat {
 
 /// Run a block of evaluation code only for a specific variant.
 /// Usage inside evaluate():
-///   variant_block!(game, "Pawn_Horde", {
+///   variant_block!(game, Variant::PawnHorde, {
 ///       score += 50;
 ///   });
 macro_rules! variant_block {
-    ($game:expr, $name:literal, $body:block) => {
-        if $game.variant.as_deref() == Some($name) {
+    ($game:expr, $name:expr, $body:block) => {
+        if $game.variant == Some($name) {
             $body
         }
     };
@@ -83,10 +85,10 @@ macro_rules! variant_block {
 
 /// Run a single statement only for a specific variant.
 /// Usage inside evaluate():
-///   variant_line!(game, "Space", score += 10;);
+///   variant_line!(game, Variant::Space, score += 10;);
 macro_rules! variant_line {
-    ($game:expr, $name:literal, $stmt:stmt) => {
-        if $game.variant.as_deref() == Some($name) {
+    ($game:expr, $name:expr, $stmt:stmt) => {
+        if $game.variant == Some($name) {
             $stmt
         }
     };
@@ -239,7 +241,7 @@ pub fn evaluate(game: &GameState) -> i32 {
     }
 
     // Extra eval only in certain variants:
-    variant_line!(game, "Pawn_Horde", {
+    variant_line!(game, Variant::PawnHorde, {
         // e.g. bonus when white has many pawns still alive
         if game.white_piece_count > game.black_piece_count {
             score += 10;

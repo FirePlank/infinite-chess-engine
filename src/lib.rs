@@ -14,6 +14,54 @@ use board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use evaluation::calculate_initial_material;
 use game::{EnPassantState, GameState};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    Classical,
+    ConfinedClassical,
+    ClassicalPlus,
+    CoaIP,
+    CoaIPHO,
+    CoaIPRO,
+    CoaIPNO,
+    Palace,
+    Pawndard,
+    Core,
+    Standarch,
+    SpaceClassic,
+    Space,
+    Abundance,
+    PawnHorde,
+    Knightline,
+    Obstocean,
+    Chess,
+}
+
+impl Variant {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Classical" => Variant::Classical,
+            "Confined_Classical" => Variant::ConfinedClassical,
+            "Classical_Plus" => Variant::ClassicalPlus,
+            "CoaIP" => Variant::CoaIP,
+            "CoaIP_HO" => Variant::CoaIPHO,
+            "CoaIP_RO" => Variant::CoaIPRO,
+            "CoaIP_NO" => Variant::CoaIPNO,
+            "Palace" => Variant::Palace,
+            "Pawndard" => Variant::Pawndard,
+            "Core" => Variant::Core,
+            "Standarch" => Variant::Standarch,
+            "Space_Classic" => Variant::SpaceClassic,
+            "Space" => Variant::Space,
+            "Abundance" => Variant::Abundance,
+            "Pawn_Horde" => Variant::PawnHorde,
+            "Knightline" => Variant::Knightline,
+            "Obstocean" => Variant::Obstocean,
+            "Chess" => Variant::Chess,
+            _ => Variant::Classical, // Default fallback
+        }
+    }
+}
+
 #[wasm_bindgen]
 extern "C" {
     fn alert(s: &str);
@@ -251,7 +299,10 @@ impl Engine {
             fullmove_number: 1,
             material_score: 0,
             game_rules,
-            variant: js_game.variant.clone(),
+            variant: js_game
+                .variant
+                .as_deref()
+                .map(|s| crate::Variant::from_str(s)),
             hash: 0, // Will be computed below
             hash_stack: Vec::with_capacity(js_game.move_history.len().saturating_add(8)),
             null_moves: 0,
@@ -451,7 +502,10 @@ impl Engine {
         #[cfg(target_arch = "wasm32")]
         {
             use crate::log;
-            let variant = self.game.variant.as_deref().unwrap_or("unknown");
+            let variant = self
+                .game
+                .variant
+                .map_or("unknown".to_string(), |v| format!("{:?}", v));
             if let Some(clock) = self.clock {
                 let side = match self.game.turn {
                     PlayerColor::White => "w",
