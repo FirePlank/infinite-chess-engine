@@ -286,6 +286,24 @@ impl Engine {
             game::GameRules::default()
         };
 
+        // Precompute effective promotion ranks and dynamic back ranks once per
+        // game from promotion_ranks. For standard chess this yields promo
+        // ranks 8/1 and back ranks 1/8.
+        let (white_promo_rank, black_promo_rank, white_back_rank, black_back_rank) =
+            if let Some(ref ranks) = game_rules.promotion_ranks {
+                let white_promo = ranks.white.iter().copied().max().unwrap_or(8);
+                let black_promo = ranks.black.iter().copied().min().unwrap_or(1);
+
+                // White's home side is near Black's promotion ranks, and vice versa.
+                let wb = black_promo; // white back rank
+                let bb = white_promo; // black back rank
+
+                (white_promo, black_promo, wb, bb)
+            } else {
+                // Classical default: white promotes on 8, black on 1; back ranks 1/8.
+                (8, 1, 1, 8)
+            };
+
         // Initialize game with starting position; clocks and turn will be fixed below.
         let mut game = GameState {
             board,
@@ -311,10 +329,18 @@ impl Engine {
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
+            starting_squares: std::collections::HashSet::new(),
+            white_back_rank,
+            black_back_rank,
+            white_promo_rank,
+            black_promo_rank,
         };
 
         game.material_score = calculate_initial_material(&game.board);
         game.recompute_piece_counts(); // Rebuild piece lists and counts
+                                       // Initialize development starting squares from the initial board
+                                       // before replaying move history.
+        game.init_starting_squares();
         game.recompute_hash(); // Compute initial hash from position
 
         // Helper to parse "x,y" into (i64, i64)
@@ -499,6 +525,23 @@ impl Engine {
     /// so callers can reuse the same search for adjudication.
     pub fn get_best_move_with_time(&mut self, time_limit_ms: u32) -> JsValue {
         let effective_limit = self.effective_time_limit_ms(time_limit_ms);
+
+        // // console log all legal moves in the position
+        // let moves = self.game.get_legal_moves();
+        // for m in &moves {
+        //     let piece_code = m.piece.piece_type.to_str();
+        //     let color_code = m.piece.color.to_str();
+        //     let promo_part = match m.promotion {
+        //         Some(p) => format!(" promo={}", p.to_str()),
+        //         None => String::new(),
+        //     };
+        //     let line = format!(
+        //         "{}{}: ({},{}) -> ({},{}){}",
+        //         color_code, piece_code, m.from.x, m.from.y, m.to.x, m.to.y, promo_part,
+        //     );
+        //     web_sys::console::debug_1(&JsValue::from(line));
+        // }
+
         #[cfg(target_arch = "wasm32")]
         {
             use crate::log;

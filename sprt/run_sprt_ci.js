@@ -69,7 +69,7 @@ function startWebSprtHelper() {
 }
 
 async function runHeadlessSprt(url) {
-  const games = Number.parseInt(process.env.SPRT_CI_GAMES || '100', 10) || 100;
+  const games = Number.parseInt(process.env.SPRT_CI_GAMES || '200', 10) || 200;
   const concurrency = Number.parseInt(process.env.SPRT_CI_CONCURRENCY || '2', 10) || 2;
   const timeControl = process.env.SPRT_CI_TC || '5+0.05';
   const maxRuntimeMs = Number.parseInt(process.env.SPRT_CI_TIMEOUT_MS || '900000', 10); // 15 minutes

@@ -1742,6 +1742,25 @@ fn generate_huygen_moves(
     let mut moves = Vec::new();
     let directions = [(1, 0), (0, 1)];
 
+    // If we don't have spatial indices, precompute which files (x) and ranks
+    // (y) actually contain pieces, so we can cheaply test alignment later.
+    use std::collections::HashSet;
+    let mut fallback_cols: Option<HashSet<i64>> = None;
+    let mut fallback_rows: Option<HashSet<i64>> = None;
+    if indices.is_none() {
+        let mut cols = HashSet::new();
+        let mut rows = HashSet::new();
+        for ((x, y), p) in &board.pieces {
+            if p.piece_type == PieceType::Void || p.piece_type == PieceType::Obstacle {
+                continue;
+            }
+            cols.insert(*x);
+            rows.insert(*y);
+        }
+        fallback_cols = Some(cols);
+        fallback_rows = Some(rows);
+    }
+
     for (dx_raw, dy_raw) in directions {
         for sign in [1, -1] {
             let dir_x = dx_raw * sign;
@@ -1851,19 +1870,16 @@ fn generate_huygen_moves(
             }
 
             let limit = closest_prime_dist.unwrap_or(100);
-            let scan_limit = if closest_prime_dist.is_some() {
-                limit
-            } else {
-                50
-            };
 
-            for s in 2..=scan_limit {
-                if is_prime_i64(s) {
-                    let to_x = from.x + (dir_x * s);
-                    let to_y = from.y + (dir_y * s);
+            if closest_prime_dist.is_some() {
+                // Original behavior: generate all prime-distance squares up to
+                // the blocking piece at `limit`.
+                for s in 2..=limit {
+                    if is_prime_i64(s) {
+                        let to_x = from.x + (dir_x * s);
+                        let to_y = from.y + (dir_y * s);
 
-                    {
-                        if s == limit && closest_prime_dist.is_some() {
+                        if s == limit {
                             if closest_piece_color != Some(piece.color) {
                                 moves.push(Move::new(
                                     from.clone(),
@@ -1871,13 +1887,55 @@ fn generate_huygen_moves(
                                     piece.clone(),
                                 ));
                             }
-                        } else if s < limit {
+                        } else {
                             moves.push(Move::new(
                                 from.clone(),
                                 Coordinate::new(to_x, to_y),
                                 piece.clone(),
                             ));
                         }
+                    }
+                }
+            } else {
+                // No blocking piece at any prime distance along this ray.
+                // Instead of generating all prime squares up to 50, only keep
+                // those whose destination is aligned with *some* piece on the
+                // orthogonal axis (file for horizontal moves, rank for
+                // vertical moves).
+                let scan_limit = 50i64;
+
+                for s in 2..=scan_limit {
+                    if !is_prime_i64(s) {
+                        continue;
+                    }
+
+                    let to_x = from.x + (dir_x * s);
+                    let to_y = from.y + (dir_y * s);
+
+                    let aligned = if dir_x != 0 {
+                        if let Some(idx) = indices {
+                            idx.cols.get(&to_x).map_or(false, |v| !v.is_empty())
+                        } else {
+                            fallback_cols
+                                .as_ref()
+                                .map_or(false, |set| set.contains(&to_x))
+                        }
+                    } else {
+                        if let Some(idx) = indices {
+                            idx.rows.get(&to_y).map_or(false, |v| !v.is_empty())
+                        } else {
+                            fallback_rows
+                                .as_ref()
+                                .map_or(false, |set| set.contains(&to_y))
+                        }
+                    };
+
+                    if aligned {
+                        moves.push(Move::new(
+                            from.clone(),
+                            Coordinate::new(to_x, to_y),
+                            piece.clone(),
+                        ));
                     }
                 }
             }

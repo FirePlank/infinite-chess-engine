@@ -1,3 +1,14 @@
+// Map internal engine piece letters to infinitechess.org two-letter codes
+function engineLetterToSiteCode(letter) {
+    const map = {
+        'k': 'K', 'q': 'Q', 'r': 'R', 'b': 'B', 'n': 'N', 'p': 'P',
+        'm': 'AM', 'c': 'CH', 'a': 'AR', 'h': 'HA', 'g': 'GU',
+        'l': 'CA', 'i': 'GI', 'z': 'ZE', 'e': 'CE', 'y': 'RQ',
+        'd': 'RC', 's': 'NR', 'u': 'HU', 'o': 'RO', 'x': 'OB', 'v': 'VO'
+    };
+    return map[letter] || letter.toUpperCase();
+}
+
 import initOld, { Engine as EngineOld } from './pkg-old/hydrochess_wasm.js';
 import initNew, { Engine as EngineNew } from './pkg-new/hydrochess_wasm.js';
 import { getVariantData, getAllVariants } from './variants.js';
@@ -42,7 +53,7 @@ function getVariantPosition(variantName, clock = null) {
 
         // Side to move comes from piece code casing (first char of code)
         const isWhite = pieceCode[0] === pieceCode[0].toUpperCase();
-        const player = isWhite ? 'w' : 'b';
+        let player = isWhite ? 'w' : 'b';
 
         // Handle special rights (+ suffix) - check both x and y for safety
         const hasSpecialRights = xRaw.endsWith('+') || yStr.endsWith('+');
@@ -120,15 +131,52 @@ function getVariantPosition(variantName, clock = null) {
 
             // Neutrals / other engine-local codes
             case 'ob':
-                piece_type = 'x'; break; // Obstacle
+                piece_type = 'x';
+                player = 'n';
+                break; // Obstacle (neutral blocker)
             case 'vo':
-                piece_type = 'v'; break; // Void
+                piece_type = 'v';
+                player = 'n';
+                break; // Void (neutral)
 
             default:
                 continue; // Skip unknown pieces
         }
 
         pieces.push({ x, y, piece_type, player });
+    }
+
+    // Variant-specific game rules (promotion ranks and allowed promotions) are
+    // encoded alongside positions in sprt/web/variants.js so that this worker
+    // stays in sync with the main site configuration. Pass them through
+    // unchanged to the WASM side.
+    const game_rules = variantData.game_rules || null;
+
+    // World bounds: approximate the site's playableRegion by taking the
+    // min/max piece coordinates and expanding them by worldBorder (if
+    // present). This mirrors how variant.ts uses worldBorder as padding
+    // between the furthest piece and the world border.
+    let world_bounds = null;
+    if (typeof variantData.worldBorder === 'number' && pieces.length > 0) {
+        const pad = variantData.worldBorder;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of pieces) {
+            const xi = parseInt(p.x, 10);
+            const yi = parseInt(p.y, 10);
+            if (Number.isNaN(xi) || Number.isNaN(yi)) continue;
+            if (xi < minX) minX = xi;
+            if (xi > maxX) maxX = xi;
+            if (yi < minY) minY = yi;
+            if (yi > maxY) maxY = yi;
+        }
+        if (minX !== Infinity) {
+            world_bounds = {
+                left: String(minX - pad),
+                right: String(maxX + pad),
+                bottom: String(minY - pad),
+                top: String(maxY + pad),
+            };
+        }
     }
 
     return {
@@ -140,8 +188,8 @@ function getVariantPosition(variantName, clock = null) {
         halfmove_clock: 0,
         fullmove_number: 1,
         move_history: [],
-        game_rules: null,
-        world_bounds: null,
+        game_rules,
+        world_bounds,
         clock,
         variant: variantName, // Add variant name for custom evaluation
     };
@@ -218,14 +266,25 @@ function applyMove(position, move) {
     return position;
 }
 
-function isGameOver(position) {
-    const kings = position.board.pieces.filter(p => p.piece_type === 'k');
-    if (kings.length < 2) {
-        return { over: true, reason: 'checkmate' };
-    }
-    if (position.board.pieces.length <= 2) {
-        return { over: true, reason: 'draw' };
-    }
+// Extremely conservative game-end detection for SPRT harness.
+//
+// The Rust engine already handles true terminal states (no legal moves) and
+// our harness adds:
+//   - material/eval adjudication
+//   - repetition (threefold) and 50-move rule
+//   - time forfeits
+//   - illegal moves / engine failure
+//
+// Several variants (e.g. Pawn_Horde) are *designed* to have only one king
+// on the board, so treating "kings < 2" as checkmate is incorrect and was
+// causing games to end after a single move in SPRT logs. To avoid
+// hardcoding variant-specific rules here (and to keep the harness fast), we
+// no longer try to detect wins or draws based solely on king count or total
+// piece count.
+//
+// For now, this helper never declares the game over; we rely entirely on
+// the engine and the explicit adjudication logic above.
+function isGameOver(_position) {
     return { over: false };
 }
 
@@ -441,15 +500,68 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
         }
 
         if (!move || !move.from || !move.to) {
-            // Engine failed to produce a move: treat as that engine losing.
-            moveLines.push('# Engine ' + (engineName === 'new' ? 'HydroChess New' : 'HydroChess Old') +
-                ' failed to return a move.');
-            const result = engineName === 'new' ? 'loss' : 'win';
-            const result_token = result === 'win' ? '1-0' : '0-1';
+            // Engine returned no move. Before treating this as a rules-based
+            // terminal state, ask the WASM side whether any legal moves exist
+            // from the same gameInput. If legal moves remain, classify this
+            // as an engine failure instead of checkmate.
+
+            let hasLegalMoves = false;
+            try {
+                const checker = new EngineClass(gameInput);
+                if (typeof checker.get_legal_moves_js === 'function') {
+                    const legal = checker.get_legal_moves_js();
+                    if (Array.isArray(legal) && legal.length > 0) {
+                        hasLegalMoves = true;
+                    }
+                }
+                checker.free();
+            } catch (e) {
+                // If the probe itself fails, fall back to conservative
+                // classification below.
+            }
+
+            let winningColor = sideToMove === 'w' ? 'b' : 'w';
+            let reason = null;
+
+            if (!hasLegalMoves) {
+                // True terminal: no legal moves for sideToMove. From SPRT's
+                // perspective this is a loss for that side (checkmate or
+                // stalemate-as-loss), with one special-case variant below.
+                reason = 'checkmate';
+
+                // Special handling for Pawn_Horde: Black also wins by
+                // eliminating all White pieces (the pawn horde). If that
+                // condition holds, record a distinct reason.
+                if (variantName === 'Pawn_Horde') {
+                    const whitePieces = position.board.pieces.filter((p) =>
+                        p.player === 'w' && p.piece_type !== 'x' && p.piece_type !== 'v'
+                    );
+                    if (whitePieces.length === 0) {
+                        winningColor = 'b';
+                        reason = 'horde_elimination';
+                    }
+                }
+            } else {
+                // Engine produced no move even though legal moves exist.
+                // Treat this as an engine failure, not a rules-based result.
+                reason = 'engine_failure';
+            }
+
+            const result = winningColor === newColor ? 'win' : 'loss';
+            const result_token = winningColor === 'w' ? '1-0' : '0-1';
             for (const s of texelSamples) {
                 s.result_token = result_token;
             }
-            return { result, log: moveLines.join('\n'), samples: texelSamples };
+
+            if (reason === 'horde_elimination') {
+                moveLines.push('# No move returned; treated as win by capturing all White pieces in Pawn Horde.');
+            } else if (reason === 'checkmate') {
+                moveLines.push('# No move returned; treated as checkmate / no legal moves for ' + (sideToMove === 'w' ? 'White' : 'Black') + '.');
+            } else {
+                moveLines.push('# No move returned; treated as engine failure (legal moves still exist).');
+            }
+
+            return { result, log: moveLines.join('\n'), reason, samples: texelSamples };
         }
 
         // Record this engine's last search evaluation (from White's POV) if
@@ -499,9 +611,15 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, openingMove,
         }
 
         // Only after a successful apply do we log and record the move.
+        let promotionSuffix = '';
+        if (move.promotion) {
+            // Convert engine promotion letter to site code, then apply case for side
+            const siteCode = engineLetterToSiteCode(move.promotion);
+            promotionSuffix = '=' + (sideToMove === 'w' ? siteCode.toUpperCase() : siteCode.toLowerCase());
+        }
+
         moveLines.push(
-            (sideToMove === 'w' ? 'W' : 'B') + ': ' + move.from + '>' + move.to +
-            (move.promotion ? '=' + move.promotion : '')
+            (sideToMove === 'w' ? 'W' : 'B') + ': ' + move.from + '>' + move.to + promotionSuffix
         );
 
         // Track move history from the initial position for subsequent engine calls
@@ -596,5 +714,21 @@ self.onmessage = async (e) => {
             type: 'variants',
             variants: getAllVariants(),
         });
+    } else if (msg.type === 'probe') {
+        // Lightweight probe used by the UI to determine how many workers
+        // can be created before WASM instantiation runs out of memory.
+        try {
+            await ensureInit();
+            self.postMessage({
+                type: 'probeResult',
+                ok: true,
+            });
+        } catch (err) {
+            self.postMessage({
+                type: 'probeResult',
+                ok: false,
+                error: err && err.message ? err.message : String(err),
+            });
+        }
     }
 };

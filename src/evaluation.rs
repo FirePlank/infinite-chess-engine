@@ -75,13 +75,13 @@ macro_rules! bump_feat {
 ///   variant_block!(game, Variant::PawnHorde, {
 ///       score += 50;
 ///   });
-macro_rules! variant_block {
-    ($game:expr, $name:expr, $body:block) => {
-        if $game.variant == Some($name) {
-            $body
-        }
-    };
-}
+// macro_rules! variant_block {
+//     ($game:expr, $name:expr, $body:block) => {
+//         if $game.variant == Some($name) {
+//             $body
+//         }
+//     };
+// }
 
 /// Run a single statement only for a specific variant.
 /// Usage inside evaluate():
@@ -129,17 +129,6 @@ pub fn get_piece_value(piece_type: PieceType) -> i32 {
         PieceType::Huygen => 355,
     }
 }
-
-// ==================== Evaluation Constants ====================
-
-// King safety (should be one of the largest positional terms)
-// Starting squares for pieces (standard chess layout)
-const WHITE_BACK_RANK: i64 = 1;
-const BLACK_BACK_RANK: i64 = 8;
-
-const DEV_QUEEN_BACK_RANK_PENALTY: i32 = 40;
-const DEV_ROOK_BACK_RANK_PENALTY: i32 = 18;
-const DEV_MINOR_BACK_RANK_PENALTY: i32 = 10;
 
 // Rook heuristics
 // Slightly increased based on Texel tuning (optimum around ~37), but kept
@@ -277,6 +266,11 @@ fn evaluate_pieces(
 ) -> i32 {
     let mut score: i32 = 0;
 
+    // let white_back_rank = game.white_back_rank;
+    // let black_back_rank = game.black_back_rank;
+    let white_promo_rank = game.white_promo_rank;
+    let black_promo_rank = game.black_promo_rank;
+
     let mut white_bishops = 0;
     let mut black_bishops = 0;
     let mut white_bishop_colors: (bool, bool) = (false, false); // (light, dark)
@@ -327,7 +321,9 @@ fn evaluate_pieces(
                 }
                 evaluate_bishop(game, *x, *y, piece.color, white_king, black_king)
             }
-            PieceType::Pawn => evaluate_pawn_position(*x, *y, piece.color),
+            PieceType::Pawn => {
+                evaluate_pawn_position(*x, *y, piece.color, white_promo_rank, black_promo_rank)
+            }
             _ => 0,
         };
 
@@ -348,33 +344,16 @@ fn evaluate_pieces(
             }
         }
 
-        // Development penalty: encourage higher-value pieces to leave back rank first.
-        let back_rank = if piece.color == PlayerColor::White {
-            WHITE_BACK_RANK
-        } else {
-            BLACK_BACK_RANK
-        };
-
-        if *y == back_rank {
-            let penalty = match piece.piece_type {
-                PieceType::Queen | PieceType::RoyalQueen => {
-                    bump_feat!(dev_queen_back_rank_penalty, 1);
-                    DEV_QUEEN_BACK_RANK_PENALTY
-                }
-                PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => {
-                    bump_feat!(dev_rook_back_rank_penalty, 1);
-                    DEV_ROOK_BACK_RANK_PENALTY
-                }
-                PieceType::Bishop
-                | PieceType::Knight
-                | PieceType::Archbishop
-                | PieceType::Centaur => {
-                    bump_feat!(dev_minor_back_rank_penalty, 1);
-                    DEV_MINOR_BACK_RANK_PENALTY
-                }
-                _ => 0,
-            };
-            piece_score -= penalty;
+        // Development penalty: only penalize non-pawn, non-royal pieces that
+        // have never left their original starting square. This encourages
+        // getting pieces out at least once, without over-penalizing pieces
+        // that operate from the back rank later.
+        if piece.piece_type != PieceType::Pawn && !piece.piece_type.is_royal() {
+            if game.starting_squares.contains(&Coordinate::new(*x, *y)) {
+                let base_val = get_piece_value(piece.piece_type).max(0);
+                let penalty = base_val / 100;
+                piece_score -= penalty;
+            }
         }
 
         if piece.color == PlayerColor::White {
@@ -740,18 +719,32 @@ fn evaluate_bishop(
     bonus
 }
 
-fn evaluate_pawn_position(x: i64, y: i64, color: PlayerColor) -> i32 {
-    // ...
+fn evaluate_pawn_position(
+    x: i64,
+    y: i64,
+    color: PlayerColor,
+    white_promo_rank: i64,
+    black_promo_rank: i64,
+) -> i32 {
     let mut bonus: i32 = 0;
 
-    // Advancement bonus - more advanced pawns are better
-    if color == PlayerColor::White {
-        bonus += ((y - 2) as i32).max(0) * 3; // Bonus for ranks 3+
-    } else {
-        bonus += ((7 - y) as i32).max(0) * 3; // Bonus for ranks 6-
+    // Advancement bonus - more advanced pawns (closer to promotion) are better.
+    // Compute progress relative to the promotion rank so we don't assume a
+    // uniform starting rank across variants.
+    match color {
+        PlayerColor::White => {
+            let dist = (white_promo_rank - y).max(0);
+            bonus += ((8 - dist.min(8)) as i32) * 3;
+        }
+        PlayerColor::Black => {
+            let dist = (y - black_promo_rank).max(0);
+            bonus += ((8 - dist.min(8)) as i32) * 3;
+        }
+        PlayerColor::Neutral => {}
     }
 
-    // Central pawns are valuable
+    // Central pawns are valuable (kept simple for now; could be widened for
+    // large boards in future tuning).
     if x >= 3 && x <= 5 {
         bonus += 5;
     }

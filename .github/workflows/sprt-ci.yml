@@ -21,13 +21,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Cache wasm-pack binary
         id: cache-wasm-pack
@@ -101,7 +100,7 @@ jobs:
         if: steps.build_old.outputs.has_parent == 'true'
         working-directory: sprt
         env:
-          SPRT_CI_GAMES: 100
+          SPRT_CI_GAMES: 200
           SPRT_CI_CONCURRENCY: 2
           SPRT_CI_TC: "5+0.05"
         run: node run_sprt_ci.js

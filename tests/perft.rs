@@ -1,4 +1,4 @@
-use hydrochess_wasm::board::{Piece, PieceType, PlayerColor};
+use hydrochess_wasm::board::{Board, Piece, PieceType, PlayerColor};
 use hydrochess_wasm::game::GameState;
 use hydrochess_wasm::moves::Move;
 
@@ -298,5 +298,167 @@ fn run_search_only_suite() {
         avg_depth7_micros as f64 / 1_000_000.0
     );
     println!("  Avg Depth {} NPS: {}", MAX_DEPTH, avg_d7_nps);
+    println!("================================================================");
+}
+
+#[test]
+fn perft_fairy_piece_mix() {
+    println!("\n================================================================");
+    println!("Perft: Fairy Piece Mix");
+    println!("================================================================");
+
+    let mut game = GameState::new();
+
+    // Clear any default setup and place a mix of fairy and classical pieces.
+    game.board = Board::new();
+    game.special_rights.clear();
+    game.en_passant = None;
+    game.turn = PlayerColor::White;
+    game.halfmove_clock = 0;
+    game.fullmove_number = 1;
+    game.hash_stack.clear();
+    game.null_moves = 0;
+
+    // White king to keep position legal
+    game.board
+        .set_piece(4, 1, Piece::new(PieceType::King, PlayerColor::White));
+    // Black king far away
+    game.board
+        .set_piece(4, 100, Piece::new(PieceType::King, PlayerColor::Black));
+
+    // Place a row of various non-pawn pieces to stress move generation.
+    // Classical
+    game.board
+        .set_piece(1, 2, Piece::new(PieceType::Queen, PlayerColor::White));
+    game.board
+        .set_piece(2, 2, Piece::new(PieceType::Rook, PlayerColor::White));
+    game.board
+        .set_piece(3, 2, Piece::new(PieceType::Bishop, PlayerColor::White));
+    game.board
+        .set_piece(5, 2, Piece::new(PieceType::Knight, PlayerColor::White));
+
+    // Fairy sliders / leapers
+    game.board
+        .set_piece(6, 2, Piece::new(PieceType::Amazon, PlayerColor::White));
+    game.board
+        .set_piece(7, 2, Piece::new(PieceType::Chancellor, PlayerColor::White));
+    game.board
+        .set_piece(8, 2, Piece::new(PieceType::Archbishop, PlayerColor::White));
+
+    game.board
+        .set_piece(1, 3, Piece::new(PieceType::Centaur, PlayerColor::White));
+    game.board.set_piece(
+        2,
+        3,
+        Piece::new(PieceType::RoyalCentaur, PlayerColor::White),
+    );
+    game.board
+        .set_piece(3, 3, Piece::new(PieceType::Hawk, PlayerColor::White));
+    game.board
+        .set_piece(4, 3, Piece::new(PieceType::Guard, PlayerColor::White));
+    game.board
+        .set_piece(5, 3, Piece::new(PieceType::Camel, PlayerColor::White));
+    game.board
+        .set_piece(6, 3, Piece::new(PieceType::Giraffe, PlayerColor::White));
+    game.board
+        .set_piece(7, 3, Piece::new(PieceType::Zebra, PlayerColor::White));
+    game.board
+        .set_piece(8, 3, Piece::new(PieceType::Knightrider, PlayerColor::White));
+
+    game.board
+        .set_piece(2, 4, Piece::new(PieceType::Rose, PlayerColor::White));
+    game.board
+        .set_piece(3, 4, Piece::new(PieceType::Huygen, PlayerColor::White));
+    game.board
+        .set_piece(5, 4, Piece::new(PieceType::RoyalQueen, PlayerColor::White));
+
+    // Keep a clean copy of the fairy position so we can reuse it for search tests.
+    let base_game = game.clone();
+
+    // run a search-only speed test on the same fairy position,
+    // similar to run_search_only_suite but limited to depth 4 and 3 runs.
+    const NUM_RUNS: usize = 3;
+    const MAX_SEARCH_DEPTH: usize = 5;
+
+    println!(
+        "\nFairy mix search-only benchmark ({} runs, depth 1..{}):",
+        NUM_RUNS, MAX_SEARCH_DEPTH
+    );
+
+    let mut sum_total_nodes: u128 = 0;
+    let mut sum_total_micros: u128 = 0;
+    let mut sum_dmax_nodes: u128 = 0;
+    let mut sum_dmax_micros: u128 = 0;
+
+    for run in 0..NUM_RUNS {
+        let mut g = base_game.clone();
+        g.recompute_piece_counts();
+        g.recompute_hash();
+
+        let mut total_nodes: u128 = 0;
+        let mut total_micros: u128 = 0;
+        let mut dmax_nodes: u64 = 0;
+        let mut dmax_micros: u128 = 0;
+
+        for depth in 1..=MAX_SEARCH_DEPTH {
+            let start = Instant::now();
+            let searched = negamax_node_count_for_depth(&mut g, depth);
+            let micros = start.elapsed().as_micros().max(1);
+
+            total_nodes += searched as u128;
+            total_micros += micros;
+
+            if depth == MAX_SEARCH_DEPTH {
+                dmax_nodes = searched;
+                dmax_micros = micros;
+            }
+        }
+
+        let nps = (total_nodes * 1_000_000) / total_micros.max(1);
+        let dmax_nps = (dmax_nodes as u128 * 1_000_000) / dmax_micros.max(1);
+
+        println!(
+            "  Run {}: total_nodes={:10} | total_time={:8}µs | NPS={:10} | D{}_nodes={:10} | D{}_NPS={:10}",
+            run + 1,
+            total_nodes,
+            total_micros,
+            nps,
+            MAX_SEARCH_DEPTH,
+            dmax_nodes,
+            MAX_SEARCH_DEPTH,
+            dmax_nps,
+        );
+
+        sum_total_nodes += total_nodes;
+        sum_total_micros += total_micros;
+        sum_dmax_nodes += dmax_nodes as u128;
+        sum_dmax_micros += dmax_micros;
+    }
+
+    let avg_total_nodes = sum_total_nodes / NUM_RUNS as u128;
+    let avg_total_micros = sum_total_micros / NUM_RUNS as u128;
+    let avg_dmax_nodes = sum_dmax_nodes / NUM_RUNS as u128;
+    let avg_dmax_micros = sum_dmax_micros / NUM_RUNS as u128;
+
+    let avg_nps = (avg_total_nodes * 1_000_000) / avg_total_micros.max(1);
+    let avg_dmax_nps = (avg_dmax_nodes * 1_000_000) / avg_dmax_micros.max(1);
+
+    println!("----------------------------------------------------------------");
+    println!(
+        "Fairy mix AVG: total_nodes={} | total_time={}µs ({:.2}s) | NPS={}",
+        avg_total_nodes,
+        avg_total_micros,
+        avg_total_micros as f64 / 1_000_000.0,
+        avg_nps,
+    );
+    println!(
+        "Fairy mix AVG depth {}: nodes={} | time={}µs ({:.2}s) | NPS={}",
+        MAX_SEARCH_DEPTH,
+        avg_dmax_nodes,
+        avg_dmax_micros,
+        avg_dmax_micros as f64 / 1_000_000.0,
+        avg_dmax_nps,
+    );
+
     println!("================================================================");
 }

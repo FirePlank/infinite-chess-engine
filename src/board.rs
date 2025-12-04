@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ impl PlayerColor {
             _ => None,
         }
     }
-    
+
     pub fn to_str(&self) -> &'static str {
         match self {
             PlayerColor::Neutral => "n",
@@ -45,7 +45,7 @@ impl PlayerColor {
             PlayerColor::Black => "b",
         }
     }
-    
+
     pub fn opponent(&self) -> Self {
         match self {
             PlayerColor::White => PlayerColor::Black,
@@ -110,7 +110,7 @@ impl PieceType {
             _ => None,
         }
     }
-    
+
     /// Convert piece type to single-character string
     pub fn to_str(&self) -> &'static str {
         match self {
@@ -138,17 +138,20 @@ impl PieceType {
             PieceType::Pawn => "p",
         }
     }
-    
+
     /// Check if this piece type is a neutral/blocking type (can't be moved by players)
     pub fn is_neutral_type(&self) -> bool {
         matches!(self, PieceType::Void | PieceType::Obstacle)
     }
-    
+
     /// Check if this piece type is a royal (king-like) piece
     pub fn is_royal(&self) -> bool {
-        matches!(self, PieceType::King | PieceType::RoyalQueen | PieceType::RoyalCentaur)
+        matches!(
+            self,
+            PieceType::King | PieceType::RoyalQueen | PieceType::RoyalCentaur
+        )
     }
-    
+
     /// Get all promotable piece types (for dynamic promotion)
     pub fn promotable_types() -> &'static [PieceType] {
         &[

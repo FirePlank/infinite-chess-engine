@@ -1,5 +1,6 @@
 import initOld, { Engine as EngineOld } from './pkg-old/hydrochess_wasm.js';
 import initNew, { Engine as EngineNew } from './pkg-new/hydrochess_wasm.js';
+import { VARIANTS, getVariantData } from './variants.js';
 
 // UI Elements
 const statusDot = document.getElementById('statusDot');
@@ -46,6 +47,8 @@ let lastElo = 0;
 let lastEloError = 0;
 let lastLLR = 0;
 let lastBounds = null;
+// Per-variant stats: variantName -> { wins, losses, draws }
+let perVariantStats = {};
 // Variant management
 let availableVariants = [];
 let selectedVariants = [];
@@ -67,6 +70,29 @@ const CONFIG = {
     concurrency: 1,
     materialThreshold: 1500,
 };
+
+const MAX_CONCURRENCY_STORAGE_KEY = 'sprtMaxSafeConcurrency';
+
+function loadStoredMaxConcurrency() {
+    try {
+        const raw = localStorage.getItem(MAX_CONCURRENCY_STORAGE_KEY);
+        if (!raw) return null;
+        const val = parseInt(raw, 10);
+        if (!Number.isFinite(val) || val <= 0) return null;
+        return val;
+    } catch (e) {
+        return null;
+    }
+}
+
+function saveStoredMaxConcurrency(val) {
+    try {
+        if (!Number.isFinite(val) || val <= 0) return;
+        localStorage.setItem(MAX_CONCURRENCY_STORAGE_KEY, String(val));
+    } catch (e) {
+        // Ignore storage failures
+    }
+}
 
 const WHITE_FIRST_MOVES = [
     // Pawn moves (16)
@@ -190,55 +216,70 @@ const BOUNDS_PRESETS = {
 };
 
 function getStandardPosition() {
+    // Use Classical variant definition from variants.js for sanity test
+    const variantData = getVariantData('Classical');
     const pieces = [];
-    // White back rank
-    pieces.push({ x: '1', y: '1', piece_type: 'r', player: 'w' });
-    pieces.push({ x: '2', y: '1', piece_type: 'n', player: 'w' });
-    pieces.push({ x: '3', y: '1', piece_type: 'b', player: 'w' });
-    pieces.push({ x: '4', y: '1', piece_type: 'q', player: 'w' });
-    pieces.push({ x: '5', y: '1', piece_type: 'k', player: 'w' });
-    pieces.push({ x: '6', y: '1', piece_type: 'b', player: 'w' });
-    pieces.push({ x: '7', y: '1', piece_type: 'n', player: 'w' });
-    pieces.push({ x: '8', y: '1', piece_type: 'r', player: 'w' });
-    // White pawns
-    for (let i = 1; i <= 8; i++) {
-        pieces.push({ x: String(i), y: '2', piece_type: 'p', player: 'w' });
-    }
-    // Black back rank
-    pieces.push({ x: '1', y: '8', piece_type: 'r', player: 'b' });
-    pieces.push({ x: '2', y: '8', piece_type: 'n', player: 'b' });
-    pieces.push({ x: '3', y: '8', piece_type: 'b', player: 'b' });
-    pieces.push({ x: '4', y: '8', piece_type: 'q', player: 'b' });
-    pieces.push({ x: '5', y: '8', piece_type: 'k', player: 'b' });
-    pieces.push({ x: '6', y: '8', piece_type: 'b', player: 'b' });
-    pieces.push({ x: '7', y: '8', piece_type: 'n', player: 'b' });
-    pieces.push({ x: '8', y: '8', piece_type: 'r', player: 'b' });
-    // Black pawns
-    for (let i = 1; i <= 8; i++) {
-        pieces.push({ x: String(i), y: '7', piece_type: 'p', player: 'b' });
-    }
-
-    // Standard infinite-chess special rights: all pawns (double-step)
-    // plus kings and rooks.
     const special_rights = [];
-    for (let i = 1; i <= 8; i++) {
-        special_rights.push(i + ',2'); // white pawns
-        special_rights.push(i + ',7'); // black pawns
+
+    for (const pieceStr of (variantData.position || '').split('|')) {
+        if (!pieceStr) continue;
+        const parts = pieceStr.split(',');
+        if (parts.length !== 2) continue;
+
+        const pieceInfo = parts[0];
+        const yStr = parts[1];
+        let splitIndex = 0;
+        while (splitIndex < pieceInfo.length) {
+            const ch = pieceInfo[splitIndex];
+            if ((ch >= '0' && ch <= '9') || ch === '-') break;
+            splitIndex++;
+        }
+        const pieceCode = pieceInfo.slice(0, splitIndex);
+        const xRaw = pieceInfo.slice(splitIndex);
+        if (!pieceCode || !xRaw) continue;
+
+        const isWhite = pieceCode[0] === pieceCode[0].toUpperCase();
+        const player = isWhite ? 'w' : 'b';
+
+        const hasSpecial = xRaw.endsWith('+') || yStr.endsWith('+');
+        const x = xRaw.endsWith('+') ? xRaw.slice(0, -1) : xRaw;
+        const y = yStr.endsWith('+') ? yStr.slice(0, -1) : yStr;
+        if (hasSpecial) special_rights.push(x + ',' + y);
+
+        const codeLower = pieceCode.toLowerCase();
+        let piece_type;
+        switch (codeLower) {
+            case 'k': piece_type = 'k'; break;
+            case 'q': piece_type = 'q'; break;
+            case 'r': piece_type = 'r'; break;
+            case 'b': piece_type = 'b'; break;
+            case 'n': piece_type = 'n'; break;
+            case 'p': piece_type = 'p'; break;
+            case 'am': piece_type = 'm'; break;
+            case 'ch': piece_type = 'c'; break;
+            case 'ar': piece_type = 'a'; break;
+            case 'ha': piece_type = 'h'; break;
+            case 'gu': piece_type = 'g'; break;
+            case 'ca': piece_type = 'l'; break;
+            case 'gi': piece_type = 'i'; break;
+            case 'ze': piece_type = 'z'; break;
+            case 'ce': piece_type = 'e'; break;
+            case 'rq': piece_type = 'y'; break;
+            case 'rc': piece_type = 'd'; break;
+            case 'nr': piece_type = 's'; break;
+            case 'hu': piece_type = 'u'; break;
+            case 'ro': piece_type = 'o'; break;
+            case 'ob': piece_type = 'x'; break;
+            case 'vo': piece_type = 'v'; break;
+            default: continue;
+        }
+
+        pieces.push({ x, y, piece_type, player });
     }
-    // White rooks and king
-    special_rights.push('1,1');
-    special_rights.push('8,1');
-    special_rights.push('5,1');
-    // Black rooks and king
-    special_rights.push('1,8');
-    special_rights.push('8,8');
-    special_rights.push('5,8');
 
     return {
-        board: { pieces: pieces },
-        // Starting side; Engine::new will infer current turn from move_history.
+        board: { pieces },
         turn: 'w',
-        // Support both old and new APIs in the browser sanity test as well.
         castling_rights: [],
         special_rights,
         en_passant: null,
@@ -278,10 +319,12 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     const whiteEngine = newPlaysWhite ? 'HydroChess New' : 'HydroChess Old';
     const blackEngine = newPlaysWhite ? 'HydroChess Old' : 'HydroChess New';
 
+    const displayVariantName = (variantName || 'Classical').replace(/_/g, ' ');
+
     const headerList = [
         `[Event "SPRT Test Game ${gameIndex}"]`,
         `[Site "https://www.infinitechess.org/"]`,
-        `[Variant "${variantName}"]`,
+        `[Variant "${displayVariantName}"]`,
         `[Round "-"]`,
         `[UTCDate "${utcDate}"]`,
         `[UTCTime "${utcTime}"]`,
@@ -309,6 +352,10 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
                 : 'Loss on illegal move';
         } else if (endReason === 'time_forfeit') {
             termination = 'Loss on time';
+        } else if (endReason === 'engine_failure') {
+            termination = 'Loss on engine failure (no move returned)';
+        } else if (endReason === 'horde_elimination') {
+            termination = `Win by capturing all White pieces in ${displayVariantName}`;
         } else if (endReason === 'checkmate') {
             termination = 'Checkmate';
         } else if (endReason === 'threefold') {
@@ -329,38 +376,29 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     const lines = (workerLog || '').split('\n').filter(l => l.trim().length > 0 && (l.startsWith('W:') || l.startsWith('B:')));
     const moveCount = lines.length;
     const lastSide = moveCount > 0 ? (lines[moveCount - 1].startsWith('W:') ? 'w' : 'b') : 'b';
-    // ICN here encodes the START position (standard classical), so we keep
-    // the header state fixed at the initial values: White to move, zero
-    // halfmove clock, and fullmove number 1. The move list then describes
-    // the history from that start.
+    // ICN encodes the START position for the selected variant, with
+    // White to move, zero halfmove clock, fullmove number 1.
     const nextTurn = 'w';
     const fullmove = 1;
     const halfmove = 0;
 
-    // Standard Classical starting position pieces (using coords x,y and simple abbreviations).
-    // Mark pawns, rooks, and kings that have special rights (double-step or castling) with '+'.
-    const pieces = [];
-    const specials = new Set();
-    for (let i = 1; i <= 8; i++) {
-        specials.add(`P${i},2`);
-        specials.add(`p${i},7`);
+    // Variant-specific starting position from variants.js
+    let startPositionStr = null;
+    try {
+        const vdata = getVariantData(variantName);
+        if (vdata && typeof vdata.position === 'string' && vdata.position.length > 0) {
+            startPositionStr = vdata.position;
+        }
+    } catch (e) {
+        // Fallback to Classical if variant missing for some reason
+        if (VARIANTS.Classical && typeof VARIANTS.Classical.position === 'string') {
+            startPositionStr = VARIANTS.Classical.position;
+        }
     }
-    specials.add('R1,1');
-    specials.add('R8,1');
-    specials.add('K5,1');
-    specials.add('r1,8');
-    specials.add('r8,8');
-    specials.add('k5,8');
-    const push = (abbr, x, y) => {
-        const base = `${abbr}${x},${y}`;
-        pieces.push(specials.has(base) ? base + '+' : base);
-    };
-    // White back rank
-    push('R', 1, 1); push('N', 2, 1); push('B', 3, 1); push('Q', 4, 1); push('K', 5, 1); push('B', 6, 1); push('N', 7, 1); push('R', 8, 1);
-    for (let i = 1; i <= 8; i++) push('P', i, 2);
-    // Black back rank
-    push('r', 1, 8); push('n', 2, 8); push('b', 3, 8); push('q', 4, 8); push('k', 5, 8); push('b', 6, 8); push('n', 7, 8); push('r', 8, 8);
-    for (let i = 1; i <= 8; i++) push('p', i, 7);
+
+    if (!startPositionStr) {
+        startPositionStr = '';
+    }
 
     // Moves string: parse worker log lines of form "W: x,y>u,v".
     const moves = lines.map((line) => {
@@ -372,7 +410,7 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     }).filter(Boolean);
 
     const movesStr = moves.join('|');
-    return `${headers} ${nextTurn} ${halfmove}/100 ${fullmove} (8|1) ${pieces.join('|')}${movesStr ? ' ' + movesStr : ''}`;
+    return `${headers} ${nextTurn} ${halfmove}/100 ${fullmove} (8|1) ${startPositionStr}${movesStr ? ' ' + movesStr : ''}`;
 }
 
 function log(message, type) {
@@ -545,6 +583,63 @@ function isGameOver(position) {
     return { over: false };
 }
 
+async function detectMaxConcurrency(maxCap = 64) {
+    // If we have a stored max from a previous run, reuse it and avoid
+    // probing again.
+    const stored = loadStoredMaxConcurrency();
+    if (stored && stored > 0) {
+        log('Using stored max safe concurrency from previous run: ' + stored, 'info');
+        sprtLog('Using stored max safe concurrency: ' + stored);
+        return stored;
+    }
+
+    // Otherwise, probe how many workers we can create that successfully
+    // initialize WASM before running out of memory. We incrementally spawn
+    // workers that send a lightweight 'probe' message (handled in
+    // sprt-worker.js) and stop at the first failure.
+    let lastOk = 0;
+    for (let n = 1; n <= maxCap; n++) {
+        const worker = new Worker(new URL('./sprt-worker.js', import.meta.url), { type: 'module' });
+        const ok = await new Promise((resolve) => {
+            let settled = false;
+            worker.onmessage = (e) => {
+                const msg = e.data;
+                if (msg && msg.type === 'probeResult') {
+                    settled = true;
+                    resolve(!!msg.ok);
+                }
+            };
+            worker.onerror = () => {
+                if (!settled) {
+                    settled = true;
+                    resolve(false);
+                }
+            };
+            try {
+                worker.postMessage({ type: 'probe' });
+            } catch (e) {
+                resolve(false);
+            }
+        });
+        try {
+            worker.terminate();
+        } catch (e) {}
+        if (!ok) {
+            break;
+        }
+        lastOk = n;
+    }
+
+    if (lastOk <= 0) {
+        lastOk = 1;
+    }
+
+    saveStoredMaxConcurrency(lastOk);
+    log('Detected max safe concurrency: ' + lastOk, 'info');
+    sprtLog('Max safe concurrency detected: ' + lastOk);
+    return lastOk;
+}
+
 async function runSprt() {
     if (!wasmReady || sprtRunning) return;
     
@@ -559,7 +654,15 @@ async function runSprt() {
     CONFIG.alpha = parseFloat(sprtAlphaEl.value) || 0.05;
     CONFIG.beta = parseFloat(sprtBetaEl.value) || 0.05;
     CONFIG.timeControl = (sprtTimeControlEl.value || '').trim() || '10+0.1';
-    CONFIG.concurrency = parseInt(sprtConcurrencyEl.value, 10) || 1;
+
+    const rawConcurrency = (sprtConcurrencyEl.value || '').toString().trim();
+    if (rawConcurrency.toLowerCase() === 'max') {
+        log('Concurrency set to "max" – probing for safe limit...', 'info');
+        sprtLog('Concurrency set to "max" – probing for maximum safe workers...');
+        CONFIG.concurrency = await detectMaxConcurrency(64);
+    } else {
+        CONFIG.concurrency = parseInt(rawConcurrency, 10) || 1;
+    }
     CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
     CONFIG.maxGames = parseInt(sprtMaxGames.value, 10) || 1000;
     CONFIG.maxMoves = parseInt(sprtMaxMoves.value, 10) || 200;
@@ -602,6 +705,7 @@ async function runSprt() {
     gameLogs = [];
     
     sprtOutput.innerHTML = '';
+    perVariantStats = {};
     clearLog();
     sprtStatusEl.textContent = 'Status: running...';
     sprtStatusEl.className = 'sprt-status';
@@ -683,10 +787,19 @@ async function runSprt() {
                             msg.variantName, // Add variant to ICN log
                         );
                         gameLogs.push(icnLog);
-
+                        // Global results
                         if (result === 'win') wins++;
                         else if (result === 'loss') losses++;
                         else draws++;
+
+                        // Per-variant results
+                        const vName = msg.variantName || 'Classical';
+                        if (!perVariantStats[vName]) {
+                            perVariantStats[vName] = { wins: 0, losses: 0, draws: 0 };
+                        }
+                        if (result === 'win') perVariantStats[vName].wins++;
+                        else if (result === 'loss') perVariantStats[vName].losses++;
+                        else perVariantStats[vName].draws++;
 
                         const total = wins + losses + draws;
                         llr = calculateLLR(wins, losses, draws, CONFIG.elo0, CONFIG.elo1);
@@ -743,6 +856,24 @@ async function runSprt() {
                     } else if (msg.type === 'error') {
                         console.error('Worker error for game', msg.gameIndex, msg.error);
                         activeWorkers--;
+
+                        // If this looks like a WebAssembly out-of-memory error,
+                        // dynamically lower the stored max safe concurrency so
+                        // future runs with "max" avoid this level.
+                        const errStr = (msg.error || '').toString();
+                        const oomLike = errStr.includes('Out of memory') ||
+                            errStr.includes('Cannot allocate Wasm memory');
+                        if (oomLike) {
+                            const stored = loadStoredMaxConcurrency();
+                            const current = CONFIG.concurrency | 0;
+                            const proposed = Math.max(1, Math.min(current - 1, stored || current));
+                            if (proposed < (stored || Infinity)) {
+                                saveStoredMaxConcurrency(proposed);
+                                log('Detected WASM OOM at concurrency ' + current + ', lowering stored max to ' + proposed, 'warn');
+                                sprtLog('WASM out-of-memory detected at concurrency ' + current + ' – new stored max: ' + proposed);
+                            }
+                        }
+
                         // This worker encountered an error; resolve its promise
                         resolve(undefined);
                     }
@@ -771,6 +902,16 @@ async function runSprt() {
     sprtLog('  Total Games: ' + totalGames);
     sprtLog('  Score: +' + wins + ' -' + losses + ' =' + draws + ' (' + winRate + '%)');
     sprtLog('  Elo Difference: ' + (finalElo >= 0 ? '+' : '') + finalElo.toFixed(1) + ' ±' + finalErr.toFixed(1));
+    sprtLog('');
+    sprtLog('Per-Variant Breakdown:');
+    const variantNames = Object.keys(perVariantStats).sort();
+    variantNames.forEach((name) => {
+        const s = perVariantStats[name];
+        const { elo, error } = estimateElo(s.wins, s.losses, s.draws);
+        const vtTotal = s.wins + s.losses + s.draws;
+        const vtScore = vtTotal > 0 ? (((s.wins + s.draws * 0.5) / vtTotal) * 100).toFixed(1) : '0.0';
+        sprtLog('  [' + name + ']: +' + s.wins + ' -' + s.losses + ' =' + s.draws + ' (' + vtScore + '%), Elo≈ ' + (elo >= 0 ? '+' : '') + elo.toFixed(1) + ' ±' + error.toFixed(1));
+    });
     sprtLog('═══════════════════════════════════════════════════════════════════');
     // Update status line with colored verdict
     sprtStatusEl.textContent = 'Status: ' + verdict;
@@ -814,13 +955,23 @@ function stopSprt() {
         sprtLog('Current Results (aborted):');
         sprtLog('  Total Games: ' + partialTotal);
         sprtLog('  Score: +' + lastWins + ' -' + lastLosses + ' =' + lastDraws + ' (' + partialWinRate + '%)');
+        sprtLog('');
+        sprtLog('Per-Variant Breakdown (partial):');
+        const variantNames = Object.keys(perVariantStats).sort();
+        variantNames.forEach((name) => {
+            const s = perVariantStats[name];
+            const { elo, error } = estimateElo(s.wins, s.losses, s.draws);
+            const vtTotal = s.wins + s.losses + s.draws;
+            const vtScore = vtTotal > 0 ? (((s.wins + s.draws * 0.5) / vtTotal) * 100).toFixed(1) : '0.0';
+            sprtLog('  [' + name + ']: +' + s.wins + ' -' + s.losses + ' =' + s.draws + ' (' + vtScore + '%), Elo≈ ' + (elo >= 0 ? '+' : '') + elo.toFixed(1) + ' ±' + error.toFixed(1));
+        });
+        sprtLog('═══════════════════════════════════════════════════════════════════');
         if (lastBounds) {
             sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
             sprtLog('  LLR=' + lastLLR.toFixed(2) + ' bounds [' + lastBounds.lower.toFixed(2) + ', ' + lastBounds.upper.toFixed(2) + ']');
         } else {
             sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
         }
-        sprtLog('═══════════════════════════════════════════════════════════════════');
     }
     // Allow downloads of games if any finished before abort
     const hasGamesAbort = gameLogs.length > 0;

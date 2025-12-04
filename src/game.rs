@@ -50,6 +50,10 @@ pub struct UndoMove {
     pub old_halfmove_clock: u32,
     pub old_hash: u64,                           // Hash before the move was made
     pub special_rights_removed: Vec<Coordinate>, // Track which special rights were removed (re-insert on undo)
+    /// If this move caused a piece to leave its original starting square,
+    /// we remove that coordinate from starting_squares. Store it here so
+    /// undo_move can restore starting_squares exactly.
+    pub starting_square_restored: Option<Coordinate>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -86,6 +90,24 @@ pub struct GameState {
     /// Spatial indices for fast sliding move and attack queries
     #[serde(skip)]
     pub spatial_indices: SpatialIndices,
+    /// Starting squares for development: coordinates where non-pawn,
+    /// non-royal pieces began the game. Used to apply a one-time
+    /// development penalty while a piece remains on its original square.
+    #[serde(skip)]
+    pub starting_squares: HashSet<Coordinate>,
+    /// Cached dynamic back ranks derived from promotion_ranks. These are
+    /// computed once when the game is created.
+    #[serde(skip)]
+    pub white_back_rank: i64,
+    #[serde(skip)]
+    pub black_back_rank: i64,
+    /// Cached effective promotion ranks per color, computed once when the
+    /// game is created. Used by pawn evaluation to avoid per-eval scans of
+    /// game_rules.promotion_ranks.
+    #[serde(skip)]
+    pub white_promo_rank: i64,
+    #[serde(skip)]
+    pub black_promo_rank: i64,
 }
 
 // For backwards compatibility, keep castling_rights as an alias
@@ -133,6 +155,11 @@ impl GameState {
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
+            starting_squares: HashSet::new(),
+            white_back_rank: 1,
+            black_back_rank: 8,
+            white_promo_rank: 8,
+            black_promo_rank: 1,
         }
     }
 
@@ -155,6 +182,11 @@ impl GameState {
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
+            starting_squares: HashSet::new(),
+            white_back_rank: 1,
+            black_back_rank: 8,
+            white_promo_rank: 8,
+            black_promo_rank: 1,
         }
     }
 
@@ -182,6 +214,19 @@ impl GameState {
         self.black_piece_count = black;
         // Rebuild spatial indices from current board
         self.spatial_indices = SpatialIndices::new(&self.board);
+    }
+
+    /// Initialize starting_squares from the current board: all non-pawn,
+    /// non-royal pieces' current coordinates are treated as their original
+    /// squares. Intended to be called once when constructing a GameState
+    /// from an initial position before replaying move history.
+    pub fn init_starting_squares(&mut self) {
+        self.starting_squares.clear();
+        for ((x, y), piece) in &self.board.pieces {
+            if piece.piece_type != PieceType::Pawn && !piece.piece_type.is_royal() {
+                self.starting_squares.insert(Coordinate::new(*x, *y));
+            }
+        }
     }
 
     #[inline]
@@ -692,6 +737,11 @@ impl GameState {
         let current_hash = self.generate_hash();
         self.hash_stack.push(current_hash);
 
+        // Once a piece moves from its original square, we no longer treat
+        // that coordinate as an undeveloped starting square.
+        self.starting_squares
+            .remove(&Coordinate::new(from_x, from_y));
+
         let piece = match self.board.remove_piece(&from_x, &from_y) {
             Some(p) => p,
             None => return, // No piece at from - invalid move, just skip
@@ -838,6 +888,8 @@ impl GameState {
         // Push current position hash BEFORE making the move (for repetition detection)
         self.hash_stack.push(self.hash);
 
+        let from_coord = Coordinate::new(m.from.x, m.from.y);
+
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
         // Update spatial indices: remove moving piece from source square
         self.spatial_indices.remove(m.from.x, m.from.y);
@@ -851,7 +903,15 @@ impl GameState {
             old_halfmove_clock: self.halfmove_clock,
             old_hash: self.hash_stack.last().copied().unwrap_or(0), // Save original hash
             special_rights_removed: Vec::new(),
+            starting_square_restored: None,
         };
+
+        // Once a piece moves from its original square, we no longer treat
+        // that coordinate as an undeveloped starting square. Record this so
+        // undo_move can restore starting_squares.
+        if self.starting_squares.remove(&from_coord) {
+            undo_info.starting_square_restored = Some(from_coord);
+        }
 
         // Handle captures
         let is_capture = undo_info.captured_piece.is_some();
@@ -1111,6 +1171,11 @@ impl GameState {
         // Re-insert removed special rights instead of restoring entire HashSet
         for coord in undo.special_rights_removed {
             self.special_rights.insert(coord);
+        }
+        // If this move caused a piece to leave its original starting square,
+        // restore that coordinate in starting_squares.
+        if let Some(coord) = undo.starting_square_restored {
+            self.starting_squares.insert(coord);
         }
         self.halfmove_clock = undo.old_halfmove_clock;
     }
