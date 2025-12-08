@@ -1590,6 +1590,10 @@ fn generate_sliding_moves(
 ) -> Vec<Move> {
     const ENEMY_WIGGLE: i64 = 2;
     const FRIEND_WIGGLE: i64 = 1;
+    // Maximum distance to consider for interception targets.
+    // Beyond this, pieces are too far away to meaningfully influence move selection.
+    // This prevents explosion of moves when pieces are at extreme coordinates.
+    const MAX_INTERCEPTION_DIST: i64 = 50;
 
     let piece_count = board.pieces.len();
     let mut moves = Vec::with_capacity(piece_count * 4);
@@ -1659,6 +1663,10 @@ fn generate_sliding_moves(
                 continue;
             }
 
+            // Limit for interception targets: min of max_dist and MAX_INTERCEPTION_DIST
+            // This prevents extreme distance interceptions when pieces are at 1e15, etc.
+            let interception_limit = max_dist.min(MAX_INTERCEPTION_DIST);
+
             // Collect target distances efficiently using a small fixed buffer for most cases
             let mut target_dists: Vec<i64> = Vec::with_capacity(32);
 
@@ -1680,38 +1688,55 @@ fn generate_sliding_moves(
                 };
 
                 if is_horizontal {
-                    // Check x coordinates
+                    // Check x coordinates - use interception_limit instead of max_dist
                     for w in -wiggle..=wiggle {
                         let tx = px + w;
                         let dx = tx - from.x;
                         if dx != 0 && dx.signum() == dir_x.signum() {
                             let d = dx.abs();
-                            if d <= max_dist {
+                            if d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
                     }
                 } else if is_vertical {
-                    // Check y coordinates
+                    // Check y coordinates - use interception_limit instead of max_dist
                     for w in -wiggle..=wiggle {
                         let ty = py + w;
                         let dy = ty - from.y;
                         if dy != 0 && dy.signum() == dir_y.signum() {
                             let d = dy.abs();
-                            if d <= max_dist {
+                            if d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
                     }
                 } else {
-                    // Diagonal movement - check both orthogonal AND diagonal proximity
-                    // Orthogonal: where our diagonal crosses piece's x or y coordinate
+                    // Diagonal movement
+                    // First, check if this piece is on the SAME ray we're moving along.
+                    // If so, it's already handled by the blocker logic - skip it here
+                    // to avoid generating massive target distances for faraway pieces.
+                    let pdx = px - from.x;
+                    let pdy = py - from.y;
+                    let on_this_ray = pdx.abs() == pdy.abs()
+                        && pdx != 0
+                        && pdx.signum() == dir_x.signum()
+                        && pdy.signum() == dir_y.signum();
+
+                    if on_this_ray {
+                        // Piece is on our ray - already handled by blocker wiggle (lines 1769-1782)
+                        continue;
+                    }
+
+                    // Orthogonal interception: where our diagonal crosses piece's x or y coordinate
+                    // This finds squares where we can attack pieces that are NOT on our diagonal
+                    // Use interception_limit to prevent explosion at extreme coordinates
                     for w in -wiggle..=wiggle {
                         let tx = px + w;
                         let dx = tx - from.x;
                         if dx != 0 && dx.signum() == dir_x.signum() {
                             let d = dx.abs();
-                            if d <= max_dist {
+                            if d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
@@ -1720,13 +1745,13 @@ fn generate_sliding_moves(
                         let dy = ty - from.y;
                         if dy != 0 && dy.signum() == dir_y.signum() {
                             let d = dy.abs();
-                            if d <= max_dist {
+                            if d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
                     }
 
-                    // Diagonal proximity: where our path passes within wiggle of piece's diagonal
+                    // Diagonal proximity: where our path passes close to a piece on a DIFFERENT diagonal
                     // For direction (1,1)/(-1,-1): we move along x-y = const, x+y changes
                     // For direction (1,-1)/(-1,1): we move along x+y = const, x-y changes
                     let diag_wiggle: i64 = 1; // Diagonal wiggle = 1 square
@@ -1743,7 +1768,7 @@ fn generate_sliding_moves(
 
                         for dw in -diag_wiggle..=diag_wiggle {
                             let d = base_d + dw;
-                            if d > 0 && d <= max_dist {
+                            if d > 0 && d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
@@ -1758,7 +1783,7 @@ fn generate_sliding_moves(
 
                         for dw in -diag_wiggle..=diag_wiggle {
                             let d = base_d + dw;
-                            if d > 0 && d <= max_dist {
+                            if d > 0 && d <= interception_limit {
                                 target_dists.push(d);
                             }
                         }
