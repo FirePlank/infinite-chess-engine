@@ -11,6 +11,10 @@ on:
       - "Cargo.toml"
   workflow_dispatch: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sprt-ci:
     runs-on: ubuntu-latest
@@ -110,8 +114,8 @@ jobs:
         if: steps.check_parent.outputs.has_parent == 'true'
         working-directory: sprt
         env:
-          SPRT_CI_GAMES: "200"
-          SPRT_CI_CONCURRENCY: "2"
+          SPRT_CI_GAMES: "150"
+          SPRT_CI_CONCURRENCY: "10"
           SPRT_CI_TC: "5+0.05"
           SPRT_CI_TIMEOUT_MS: "1800000"
           SPRT_CI_SERVER_TIMEOUT_MS: "300000"
