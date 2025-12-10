@@ -207,8 +207,7 @@ impl Engine {
     pub fn new(json_state: JsValue) -> Result<Engine, JsValue> {
         let js_game: JsFullGame = serde_wasm_bindgen::from_value(json_state)?;
 
-        // If this looks like a fresh game (no move history and starting fullmove number),
-        // clear any persistent search/TT state so we don't carry information across games.
+        // If this looks like a fresh game, clear any persistent search/TT state.
         if js_game.move_history.is_empty() && js_game.fullmove_number <= 1 {
             crate::search::reset_search_state();
         }

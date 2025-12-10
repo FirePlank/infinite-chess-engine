@@ -3,6 +3,7 @@ use crate::evaluation::evaluate;
 use crate::game::GameState;
 use crate::moves::{get_quiescence_captures, Move};
 use std::cell::RefCell;
+use wasm_bindgen::prelude::*;
 
 // For web WASM (browser), use js_sys::Date for timing
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -17,6 +18,13 @@ fn now_ms() -> f64 {
     // repeated window()/performance() lookups.
     Date::now()
 }
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = Math)]
+    fn random() -> f64;
+}
+
 
 pub const MAX_PLY: usize = 64;
 pub const INFINITY: i32 = 1_000_000;
@@ -166,12 +174,15 @@ pub fn get_current_tt_stats() -> SearchStats {
     })
 }
 
-/// Reset the global search state, including the transposition table and heuristics.
+/// Reset the global search state.
 /// Call this when starting a brand new game so old entries don't carry over.
 pub fn reset_search_state() {
     GLOBAL_SEARCHER.with(|cell| {
         *cell.borrow_mut() = None;
     });
+    
+    let seed = (random() * 1.8446744073709552e19) as u64;
+    crate::search::noisy::reset_noise_seed(seed);
 }
 
 /// Search state that persists across the search

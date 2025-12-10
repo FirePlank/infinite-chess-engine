@@ -1,6 +1,15 @@
 use super::params;
 use super::*;
 use crate::evaluation::evaluate;
+use std::cell::RefCell;
+
+thread_local! {
+    static NOISE_SEED: RefCell<u64> = RefCell::new(0);
+}
+
+pub fn reset_noise_seed(seed: u64) {
+    NOISE_SEED.with(|c| *c.borrow_mut() = seed);
+}
 
 #[inline]
 fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
@@ -11,8 +20,11 @@ fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
     if base.abs() >= MATE_SCORE {
         return base;
     }
+
+    // Generate a determenistic wiggle to the eval based on the game state
     let hash = TranspositionTable::generate_hash(game);
-    let mut x = hash as u64;
+    let seed = NOISE_SEED.with(|c| *c.borrow());
+    let mut x = (hash as u64) ^ seed;
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
