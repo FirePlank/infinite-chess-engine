@@ -25,7 +25,6 @@ extern "C" {
     fn random() -> f64;
 }
 
-
 pub const MAX_PLY: usize = 64;
 pub const INFINITY: i32 = 1_000_000;
 pub const MATE_VALUE: i32 = 900_000;
@@ -180,7 +179,7 @@ pub fn reset_search_state() {
     GLOBAL_SEARCHER.with(|cell| {
         *cell.borrow_mut() = None;
     });
-    
+
     let seed = (random() * 1.8446744073709552e19) as u64;
     crate::search::noisy::reset_noise_seed(seed);
 }
@@ -198,9 +197,10 @@ pub struct Searcher {
     // Transposition table
     pub tt: TranspositionTable,
 
-    // PV tracking
-    pub pv_table: Vec<Vec<Option<Move>>>,
-    pub pv_length: Vec<usize>,
+    // Triangular PV table: flat array indexed by pv_table[ply * MAX_PLY + offset]
+    // Using Box to avoid stack overflow with 64*64 = 4096 Move entries
+    pub pv_table: Box<[Option<Move>; MAX_PLY * MAX_PLY]>,
+    pub pv_length: [usize; MAX_PLY],
 
     // Killer moves (2 per ply)
     pub killers: Vec<[Option<Move>; 2]>,
@@ -253,14 +253,8 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn new(time_limit_ms: u128) -> Self {
-        let mut pv_table = Vec::with_capacity(MAX_PLY);
-        for _ in 0..MAX_PLY {
-            let mut row = Vec::with_capacity(MAX_PLY);
-            for _ in 0..MAX_PLY {
-                row.push(None);
-            }
-            pv_table.push(row);
-        }
+        // Triangular PV table - heap allocated to avoid stack overflow
+        let pv_table = Box::new([None; MAX_PLY * MAX_PLY]);
 
         let mut killers = Vec::with_capacity(MAX_PLY);
         for _ in 0..MAX_PLY {
@@ -281,7 +275,7 @@ impl Searcher {
             seldepth: 0,
             tt: TranspositionTable::new(32),
             pv_table,
-            pv_length: vec![0; MAX_PLY],
+            pv_length: [0; MAX_PLY],
             killers,
             history: [[0; 256]; 32],
             capture_history: [[0; 32]; 32],
@@ -306,13 +300,9 @@ impl Searcher {
         self.stopped = false;
         self.seldepth = 0;
 
-        // Reset PV table
-        for i in 0..MAX_PLY {
-            self.pv_length[i] = 0;
-            for j in 0..MAX_PLY {
-                self.pv_table[i][j] = None;
-            }
-        }
+        // Reset PV lengths only - much faster than clearing entire array
+        // The PV entries will be overwritten as needed during search
+        self.pv_length = [0; MAX_PLY];
     }
 
     /// Decay history scores at the start of each iteration
@@ -365,10 +355,11 @@ impl Searcher {
     /// Format PV line as string
     pub fn format_pv(&self) -> String {
         let mut pv_str = String::new();
+        // Root PV is at pv_table[0..pv_length[0]]
         for i in 0..self.pv_length[0] {
-            if let Some(m) = &self.pv_table[0][i] {
+            if let Some(m) = self.pv_table[i] {
                 if !pv_str.is_empty() {
-                    pv_str.push_str(" ");
+                    pv_str.push(' ');
                 }
                 pv_str.push_str(&format!("{},{}->{},{}", m.from.x, m.from.y, m.to.x, m.to.y));
             }
@@ -564,10 +555,11 @@ fn search_with_searcher(
         };
 
         // Update best move - even if stopped, use best from this iteration if found
-        if let Some(pv_move) = &searcher.pv_table[0][0] {
-            best_move = Some(pv_move.clone());
+        // Root PV is at pv_table[0]
+        if let Some(pv_move) = searcher.pv_table[0] {
+            best_move = Some(pv_move);
             best_score = score;
-            searcher.best_move_root = Some(pv_move.clone());
+            searcher.best_move_root = Some(pv_move);
             searcher.prev_score = score;
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
@@ -817,12 +809,13 @@ pub fn get_best_moves_multipv(
             game.undo_move(m, undo);
 
             if !searcher.stopped {
-                // Extract PV for this move
+                // Extract PV for this move from ply 1's triangular row
+                let child_base = MAX_PLY; // ply 1 base offset
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
-                pv.push(m.clone());
+                pv.push(*m);
                 for i in 0..searcher.pv_length[1] {
-                    if let Some(ref pv_move) = searcher.pv_table[1][i] {
-                        pv.push(pv_move.clone());
+                    if let Some(pv_move) = searcher.pv_table[child_base + i] {
+                        pv.push(pv_move);
                     }
                 }
                 root_scores.push((m.clone(), score, pv));
@@ -923,7 +916,7 @@ pub fn get_best_moves_multipv(
 
     // Update PV table with best move for stats
     if !best_lines.is_empty() {
-        searcher.pv_table[0][0] = Some(best_lines[0].mv.clone());
+        searcher.pv_table[0] = Some(best_lines[0].mv);
         searcher.pv_length[0] = 1;
     }
 
@@ -937,10 +930,11 @@ pub fn get_best_moves_multipv(
 
 /// Extract the PV line from the searcher's PV table as a Vec<Move>.
 fn extract_pv(searcher: &Searcher) -> Vec<Move> {
+    // Root PV is at pv_table[0..pv_length[0]]
     let mut pv = Vec::with_capacity(searcher.pv_length[0]);
     for i in 0..searcher.pv_length[0] {
-        if let Some(m) = &searcher.pv_table[0][i] {
-            pv.push(m.clone());
+        if let Some(m) = searcher.pv_table[i] {
+            pv.push(m);
         }
     }
     pv
@@ -1054,13 +1048,15 @@ fn negamax_root(
             if score > alpha {
                 alpha = score;
 
-                // Update PV
-                searcher.pv_table[0][0] = Some(m.clone());
-                searcher.pv_length[0] = searcher.pv_length[1] + 1;
-
-                for j in 0..searcher.pv_length[1] {
-                    searcher.pv_table[0][j + 1] = searcher.pv_table[1][j].clone();
+                // Update PV using triangular indexing
+                // Root (ply 0) stores PV at pv_table[0..], child (ply 1) at pv_table[MAX_PLY..]
+                searcher.pv_table[0] = Some(*m); // Head of PV is this move
+                let child_len = searcher.pv_length[1];
+                let child_base = MAX_PLY;
+                for j in 0..child_len {
+                    searcher.pv_table[1 + j] = searcher.pv_table[child_base + j];
                 }
+                searcher.pv_length[0] = child_len + 1;
             }
         }
 
@@ -1112,7 +1108,8 @@ fn negamax(
     let beta_orig = beta;
 
     searcher.nodes += 1;
-    searcher.pv_length[ply] = ply;
+    // Initialize PV length to 0; will be updated if alpha is raised
+    searcher.pv_length[ply] = 0;
 
     // Update seldepth
     if ply > searcher.seldepth {
@@ -1432,13 +1429,17 @@ fn negamax(
             if score > alpha {
                 alpha = score;
 
-                // Update PV
-                searcher.pv_table[ply][ply] = Some(m.clone());
-                searcher.pv_length[ply] = searcher.pv_length[ply + 1];
+                // Update PV using triangular indexing
+                // ply stores PV at pv_table[ply * MAX_PLY..], child at pv_table[(ply+1) * MAX_PLY..]
+                let ply_base = ply * MAX_PLY;
+                let child_base = (ply + 1) * MAX_PLY;
 
-                for j in (ply + 1)..searcher.pv_length[ply + 1] {
-                    searcher.pv_table[ply][j] = searcher.pv_table[ply + 1][j].clone();
+                searcher.pv_table[ply_base] = Some(*m); // Head of PV is this move
+                let child_len = searcher.pv_length[ply + 1];
+                for j in 0..child_len {
+                    searcher.pv_table[ply_base + 1 + j] = searcher.pv_table[child_base + j];
                 }
+                searcher.pv_length[ply] = child_len + 1;
             }
         }
 

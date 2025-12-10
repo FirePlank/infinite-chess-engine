@@ -233,7 +233,7 @@ fn run_single_search_test(max_depth: usize) -> (u128, u128, u64, u128) {
 #[test]
 fn run_search_only_suite() {
     println!("\n================================================================");
-    println!("Running Search-Only Suite for HydroChess (5 parallel runs, averaged)");
+    println!("Running Search-Only Suite for HydroChess (5 parallel runs, averaged)"); 
     println!("================================================================");
 
     const NUM_RUNS: usize = 5;

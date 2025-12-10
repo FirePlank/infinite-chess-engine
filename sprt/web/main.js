@@ -918,14 +918,10 @@ async function runSprt() {
                         sprtDrawsEl.textContent = String(draws);
                         sprtEloEl.textContent = String(Math.round(elo));
 
-                        // Extract opening move from log (first line)
-                        const firstLine = (msg.log || '').split('\n')[0] || '';
-                        const openingInfo = firstLine.includes('>') ? ' [' + firstLine.replace('W: ', '') + ']' : '';
-
                         sprtLog('Game ' + total + ': ' + result +
                             ' (W:' + wins + ' L:' + losses + ' D:' + draws + ')' +
                             ' Elo≈' + elo.toFixed(1) + '±' + error.toFixed(1) +
-                            ' LLR=' + llr.toFixed(2) + openingInfo);
+                            ' LLR=' + llr.toFixed(2));
 
                         log(
                             'Games: ' + total + '/' + maxGames +

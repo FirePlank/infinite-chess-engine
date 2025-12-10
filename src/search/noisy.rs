@@ -136,10 +136,11 @@ fn search_with_searcher_noisy(
             result
         };
 
-        if let Some(pv_move) = &searcher.pv_table[0][0] {
-            best_move = Some(pv_move.clone());
+        // Root PV is at pv_table[0]
+        if let Some(pv_move) = searcher.pv_table[0] {
+            best_move = Some(pv_move);
             best_score = score;
-            searcher.best_move_root = Some(pv_move.clone());
+            searcher.best_move_root = Some(pv_move);
             searcher.prev_score = score;
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
@@ -305,12 +306,14 @@ fn negamax_root_noisy(
             if score > alpha {
                 alpha = score;
 
-                searcher.pv_table[0][0] = Some(m.clone());
-                searcher.pv_length[0] = searcher.pv_length[1] + 1;
-
-                for j in 0..searcher.pv_length[1] {
-                    searcher.pv_table[0][j + 1] = searcher.pv_table[1][j].clone();
+                // Update PV using triangular indexing (root)
+                searcher.pv_table[0] = Some(*m);
+                let child_len = searcher.pv_length[1];
+                let child_base = MAX_PLY;
+                for j in 0..child_len {
+                    searcher.pv_table[1 + j] = searcher.pv_table[child_base + j];
                 }
+                searcher.pv_length[0] = child_len + 1;
             }
         }
 
@@ -358,7 +361,8 @@ fn negamax_noisy(
     let beta_orig = beta;
 
     searcher.nodes += 1;
-    searcher.pv_length[ply] = ply;
+    // Initialize PV length to 0; will be updated if alpha is raised
+    searcher.pv_length[ply] = 0;
 
     if ply > searcher.seldepth {
         searcher.seldepth = ply;
@@ -644,12 +648,16 @@ fn negamax_noisy(
             if score > alpha {
                 alpha = score;
 
-                searcher.pv_table[ply][ply] = Some(m.clone());
-                searcher.pv_length[ply] = searcher.pv_length[ply + 1];
+                // Update PV using triangular indexing
+                let ply_base = ply * MAX_PLY;
+                let child_base = (ply + 1) * MAX_PLY;
 
-                for j in (ply + 1)..searcher.pv_length[ply + 1] {
-                    searcher.pv_table[ply][j] = searcher.pv_table[ply + 1][j].clone();
+                searcher.pv_table[ply_base] = Some(*m);
+                let child_len = searcher.pv_length[ply + 1];
+                for j in 0..child_len {
+                    searcher.pv_table[ply_base + 1 + j] = searcher.pv_table[child_base + j];
                 }
+                searcher.pv_length[ply] = child_len + 1;
             }
         }
 
