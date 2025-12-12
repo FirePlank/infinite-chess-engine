@@ -2120,11 +2120,6 @@ pub fn has_sufficient_mating_material(
         }
     }
 
-    // Amazon can always mate
-    if amazons >= 1 {
-        return true;
-    }
-
     // Helper: check if we have "only" certain pieces (nothing else)
     let has_only = |q: i32,
                     r: i32,
@@ -2136,7 +2131,8 @@ pub fn has_sufficient_mating_material(
                     g: i32,
                     p: i32,
                     s: i32,
-                    hu: i32|
+                    hu: i32,
+                    am: i32|
      -> bool {
         queens <= q
             && rooks <= r
@@ -2149,6 +2145,7 @@ pub fn has_sufficient_mating_material(
             && pawns <= p
             && knightriders <= s
             && huygens <= hu
+            && amazons <= am
     };
 
     // =====================================================================
@@ -2156,26 +2153,31 @@ pub fn has_sufficient_mating_material(
     // These are INSUFFICIENT scenarios from insuffmatScenarios_1K1k
     // =====================================================================
     if has_our_king {
+        // Amazon + anything can mate
+        if amazons >= 1 {
+            return true;
+        }
+
         // {queensW: 1} - single queen insufficient
-        if queens == 1 && has_only(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+        if queens == 1 && has_only(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
             return false;
         }
 
         // {bishopsW: [Inf, 1]} - any number of same-color bishops insufficient
         if bishops > 0
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 0, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0)
+            && has_only(0, 0, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
 
         // {knightsW: 3} - up to 3 knights insufficient
-        if knights <= 3 && has_only(0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0) {
+        if knights <= 3 && has_only(0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0) {
             return false;
         }
 
         // {hawksW: 2} - 2 hawks insufficient
-        if hawks <= 2 && has_only(0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0) {
+        if hawks <= 2 && has_only(0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0) {
             return false;
         }
 
@@ -2183,13 +2185,13 @@ pub fn has_sufficient_mating_material(
         if hawks == 1
             && bishops == 1
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0)
+            && has_only(0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0)
         {
             return false;
         }
 
         // {rooksW: 1, knightsW: 1} - rook + knight insufficient
-        if rooks == 1 && knights == 1 && has_only(0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
+        if rooks == 1 && knights == 1 && has_only(0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0) {
             return false;
         }
 
@@ -2197,7 +2199,7 @@ pub fn has_sufficient_mating_material(
         if rooks == 1
             && bishops == 1
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+            && has_only(0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
@@ -2208,13 +2210,13 @@ pub fn has_sufficient_mating_material(
         if archbishops == 1
             && bishops == 1
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0)
+            && has_only(0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
 
         // {archbishopsW: 1, knightsW: 1} - archbishop + knight
-        if archbishops == 1 && knights == 1 && has_only(0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0) {
+        if archbishops == 1 && knights == 1 && has_only(0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0) {
             return false;
         }
 
@@ -2222,7 +2224,7 @@ pub fn has_sufficient_mating_material(
         if knights == 1
             && bishops > 0
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 0, i32::MAX, 1, 0, 0, 0, 0, 0, 0, 0)
+            && has_only(0, 0, i32::MAX, 1, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
@@ -2231,7 +2233,7 @@ pub fn has_sufficient_mating_material(
         if knights == 1
             && light_bishops == 1
             && dark_bishops == 1
-            && has_only(0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0)
+            && has_only(0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
@@ -2240,28 +2242,28 @@ pub fn has_sufficient_mating_material(
         if knights == 2
             && bishops == 1
             && (light_bishops == 0 || dark_bishops == 0)
-            && has_only(0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0)
+            && has_only(0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             return false;
         }
 
         // {guardsW: 1} - single guard insufficient
-        if guards == 1 && has_only(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0) {
+        if guards == 1 && has_only(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0) {
             return false;
         }
 
         // {chancellorsW: 1} - single chancellor insufficient
-        if chancellors == 1 && has_only(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0) {
+        if chancellors == 1 && has_only(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
             return false;
         }
 
         // {knightridersW: 2} - 2 knightriders insufficient
-        if knightriders <= 2 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0) {
+        if knightriders <= 2 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0) {
             return false;
         }
 
         // {pawnsW: 3} - up to 3 pawns insufficient
-        if pawns <= 3 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0) {
+        if pawns <= 3 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0) {
             return false;
         }
 
@@ -2275,13 +2277,43 @@ pub fn has_sufficient_mating_material(
     // Anything NOT in this list is sufficient
     // =====================================================================
 
+    // {amazonsW: 1} - Amazon alone cannot force mate alone
+    if amazons == 1 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1) {
+        return false;
+    }
+
+    // {queensW: 1}
+    if queens == 1 && has_only(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+        return false;
+    }
+
+    // {rooksW: 2}
+    if rooks <= 2 && has_only(0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+        return false;
+    }
+
+    // {chancellorsW: 1}
+    if chancellors == 1 && has_only(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
+        return false;
+    }
+
+    // {archbishopsW: 1}
+    if archbishops == 1 && has_only(0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0) {
+        return false;
+    }
+
+    // {hawksW: 2}
+    if hawks <= 2 && has_only(0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0) {
+        return false;
+    }
+
     // {queensW: 1, rooksW: 1}
-    if queens == 1 && rooks == 1 && has_only(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+    if queens == 1 && rooks == 1 && has_only(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {queensW: 1, knightsW: 1}
-    if queens == 1 && knights == 1 && has_only(1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
+    if queens == 1 && knights == 1 && has_only(1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
@@ -2289,18 +2321,18 @@ pub fn has_sufficient_mating_material(
     if queens == 1
         && bishops == 1
         && (light_bishops == 0 || dark_bishops == 0)
-        && has_only(1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
 
     // {queensW: 1, pawnsW: 1}
-    if queens == 1 && pawns == 1 && has_only(1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0) {
+    if queens == 1 && pawns == 1 && has_only(1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0) {
         return false;
     }
 
     // {bishopsW: [2,2]} - 2 light + 2 dark bishops
-    if light_bishops == 2 && dark_bishops == 2 && has_only(0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0) {
+    if light_bishops == 2 && dark_bishops == 2 && has_only(0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
@@ -2310,16 +2342,16 @@ pub fn has_sufficient_mating_material(
             || dark_bishops == 0
             || (light_bishops <= 1 && dark_bishops > 0)
             || (dark_bishops <= 1 && light_bishops > 0))
-        && has_only(0, 0, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 0, i32::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     {
-        // Actually: [Inf, 1] means unlimited of one color, at most 1 of the other
+        // [Inf, 1] means unlimited of one color, at most 1 of the other
         if (light_bishops == 0 || dark_bishops <= 1) && (dark_bishops == 0 || light_bishops <= 1) {
             return false;
         }
     }
 
     // {knightsW: 4}
-    if knights <= 4 && has_only(0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0) {
+    if knights <= 4 && has_only(0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
@@ -2327,7 +2359,7 @@ pub fn has_sufficient_mating_material(
     if knights <= 2
         && bishops > 0
         && (light_bishops == 0 || dark_bishops == 0)
-        && has_only(0, 0, i32::MAX, 2, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 0, i32::MAX, 2, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
@@ -2336,7 +2368,7 @@ pub fn has_sufficient_mating_material(
     if knights <= 2
         && light_bishops == 1
         && dark_bishops == 1
-        && has_only(0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
@@ -2346,13 +2378,13 @@ pub fn has_sufficient_mating_material(
         && light_bishops <= 2
         && dark_bishops <= 1
         && bishops <= 3
-        && has_only(0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
 
     // {hawksW: 3}
-    if hawks <= 3 && has_only(0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0) {
+    if hawks <= 3 && has_only(0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0) {
         return false;
     }
 
@@ -2361,23 +2393,23 @@ pub fn has_sufficient_mating_material(
         && knights == 1
         && bishops == 1
         && (light_bishops == 0 || dark_bishops == 0)
-        && has_only(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
 
     // {rooksW: 1, knightsW: 1, pawnsW: 1}
-    if rooks == 1 && knights == 1 && pawns == 1 && has_only(0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0) {
+    if rooks == 1 && knights == 1 && pawns == 1 && has_only(0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0) {
         return false;
     }
 
     // {rooksW: 1, knightsW: 2}
-    if rooks == 1 && knights <= 2 && has_only(0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0) {
+    if rooks == 1 && knights <= 2 && has_only(0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {rooksW: 1, guardsW: 1}
-    if rooks == 1 && guards == 1 && has_only(0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0) {
+    if rooks == 1 && guards == 1 && has_only(0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0) {
         return false;
     }
 
@@ -2385,18 +2417,18 @@ pub fn has_sufficient_mating_material(
     if rooks == 2
         && bishops == 1
         && (light_bishops == 0 || dark_bishops == 0)
-        && has_only(0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+        && has_only(0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
 
     // {rooksW: 2, knightsW: 1}
-    if rooks == 2 && knights == 1 && has_only(0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
+    if rooks == 2 && knights == 1 && has_only(0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {rooksW: 2, pawnsW: 1}
-    if rooks == 2 && pawns == 1 && has_only(0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0) {
+    if rooks == 2 && pawns == 1 && has_only(0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0) {
         return false;
     }
 
@@ -2404,7 +2436,7 @@ pub fn has_sufficient_mating_material(
     if archbishops == 1
         && bishops <= 2
         && (light_bishops == 0 || dark_bishops == 0)
-        && has_only(0, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0)
+        && has_only(0, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
@@ -2413,56 +2445,53 @@ pub fn has_sufficient_mating_material(
     if archbishops == 1
         && light_bishops == 1
         && dark_bishops == 1
-        && has_only(0, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0)
+        && has_only(0, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0)
     {
         return false;
     }
 
     // {archbishopsW: 1, knightsW: 2}
-    if archbishops == 1 && knights <= 2 && has_only(0, 0, 0, 2, 0, 1, 0, 0, 0, 0, 0) {
+    if archbishops == 1 && knights <= 2 && has_only(0, 0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {archbishopsW: 2}
-    if archbishops <= 2 && has_only(0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0) {
+    if archbishops <= 2 && has_only(0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {chancellorsW: 1, guardsW: 1}
-    if chancellors == 1 && guards == 1 && has_only(0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0) {
+    if chancellors == 1 && guards == 1 && has_only(0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0) {
         return false;
     }
 
     // {chancellorsW: 1, knightsW: 1}
-    if chancellors == 1 && knights == 1 && has_only(0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0) {
+    if chancellors == 1 && knights == 1 && has_only(0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {chancellorsW: 1, rooksW: 1}
-    if chancellors == 1 && rooks == 1 && has_only(0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0) {
+    if chancellors == 1 && rooks == 1 && has_only(0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0) {
         return false;
     }
 
     // {guardsW: 2}
-    if guards <= 2 && has_only(0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0) {
+    if guards <= 2 && has_only(0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0) {
         return false;
     }
-
-    // {amazonsW: 1} - amazon is always sufficient
-    // (already handled above)
 
     // {knightridersW: 3}
-    if knightriders <= 3 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0) {
+    if knightriders <= 3 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0) {
         return false;
     }
 
-    // {pawnsW: 6}
-    if pawns <= 6 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0) {
+    // {pawnsW: 2}
+    if pawns < 2 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0) {
         return false;
     }
 
     // {huygensW: 4}
-    if huygens <= 4 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4) {
+    if huygens <= 4 && has_only(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0) {
         return false;
     }
 
@@ -2474,7 +2503,7 @@ pub fn has_sufficient_mating_material(
 pub fn is_insufficient_material(board: &Board) -> bool {
     // Count pieces quickly - if too many pieces, definitely not insufficient
     let total_pieces = board.len();
-    if total_pieces >= 10 {
+    if total_pieces >= 6 {
         return false;
     } // Fast exit for complex positions
 
