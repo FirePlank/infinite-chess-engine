@@ -1980,7 +1980,7 @@ fn negamax(
                     }
                 }
 
-                // Continuation history update (like Zig: 1-ply, 2-ply, 4-ply back)
+                // Continuation history update (1-ply, 2-ply, 4-ply back)
 
                 for &plies_ago in &[0usize, 1, 3] {
                     if ply >= plies_ago + 1 {
@@ -2010,10 +2010,17 @@ fn negamax(
                 }
             } else if let Some(cap_type) = captured_type {
                 // Update capture history on beta cutoff
-                let bonus = (depth * depth) as i32;
-                searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize] += bonus;
+                let bonus = 8 * (depth * depth) as i32;
+                let e =
+                    &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
+                *e += bonus - *e * bonus / params::DEFAULT_HISTORY_MAX_GRAVITY;
             }
             break;
+        } else if let Some(cap_type) = captured_type {
+            // Penalize captures that didn't cause a cutoff
+            let malus = 2 * depth as i32;
+            let e = &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
+            *e += -malus - *e * malus / params::DEFAULT_HISTORY_MAX_GRAVITY;
         }
     }
 
