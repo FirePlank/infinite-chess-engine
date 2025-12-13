@@ -1821,6 +1821,92 @@ fn negamax(
     // Track quiet moves searched at this node for history maluses
     let mut quiets_searched: Vec<Move> = Vec::new();
 
+    // ==========================================================================
+    // Singular Extension (SE): Detect if the TT move is significantly better
+    // than all alternatives. If so, we extend its search to avoid missing
+    // critical tactical lines.
+    // ==========================================================================
+    let mut singular_extension = false;
+
+    // SE conditions: sufficient depth, have TT move, and TT entry is reliable
+    // Use depth >= 5 to reduce overhead (SE is expensive)
+    if depth >= 5 && !in_check && tt_move.is_some() {
+        // Probe TT for raw entry data (flag, depth, score)
+        if let Some((tt_flag, tt_depth, tt_score, _)) = searcher.tt.probe_for_singular(hash, ply) {
+            // Only consider LowerBound (failed high) or Exact entries
+            // TT depth must be sufficient (at least depth - 3)
+            if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
+                && tt_depth as usize >= depth.saturating_sub(3)
+                && tt_score.abs() < MATE_SCORE
+            // Don't extend near mate scores
+            {
+                // Singular beta: TT score minus a margin (3cp per depth ply)
+                let singular_beta = tt_score - (depth as i32) * 3;
+                let singular_depth = (depth - 1) / 2;
+
+                // Search first few moves EXCEPT TT move at reduced depth
+                // Limit to 4 moves to reduce overhead (like Multi-Cut)
+                const SE_MAX_MOVES: usize = 4;
+                let tt_m = tt_move.as_ref().unwrap();
+                let mut singular_best = -INFINITY;
+                let mut moves_checked = 0;
+
+                for m in &moves {
+                    // Skip the TT move
+                    if m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion {
+                        continue;
+                    }
+
+                    // Limit number of moves checked
+                    if moves_checked >= SE_MAX_MOVES {
+                        break;
+                    }
+
+                    let undo = game.make_move(m);
+                    if game.is_move_illegal() {
+                        game.undo_move(m, undo);
+                        continue;
+                    }
+
+                    moves_checked += 1;
+
+                    // Null-window search at reduced depth
+                    let s = -negamax(
+                        searcher,
+                        game,
+                        singular_depth,
+                        ply + 1,
+                        -singular_beta,
+                        -singular_beta + 1,
+                        false, // No null move in SE verification
+                        NodeType::Cut,
+                    );
+
+                    game.undo_move(m, undo);
+
+                    if searcher.stopped {
+                        std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
+                        return 0;
+                    }
+
+                    if s > singular_best {
+                        singular_best = s;
+                    }
+
+                    // If any move beats singular_beta, TT move is not singular - exit early
+                    if singular_best >= singular_beta {
+                        break;
+                    }
+                }
+
+                // TT move is singular if no other move reaches singular_beta
+                if singular_best < singular_beta {
+                    singular_extension = true;
+                }
+            }
+        }
+    }
+
     // Futility pruning flag
     let futility_pruning = !in_check && !is_pv && depth <= 3;
     let futility_base = if futility_pruning {
@@ -1891,6 +1977,22 @@ fn negamax(
 
         legal_moves += 1;
 
+        // Calculate per-move extension
+        // Apply singular extension if this is the TT move and it was determined to be singular
+        let extension = if singular_extension {
+            if let Some(ref tt_m) = tt_move {
+                if m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion {
+                    1 // Extend the singular TT move
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         let score;
         if legal_moves == 1 {
             // Child type depends on current node type:
@@ -1906,7 +2008,7 @@ fn negamax(
             score = -negamax(
                 searcher,
                 game,
-                depth - 1,
+                depth - 1 + extension,
                 ply + 1,
                 -beta,
                 -alpha,
@@ -1946,8 +2048,8 @@ fn negamax(
                 reduction = reduction.min(depth - 2);
             }
 
-            // Base child depth after LMR
-            let mut new_depth = depth as i32 - 1 - reduction as i32;
+            // Base child depth after LMR (with singular extension if applicable)
+            let mut new_depth = depth as i32 - 1 + extension as i32 - reduction as i32;
 
             // History Leaf Pruning (Fruit-style)
             // Only in non-PV, quiet, shallow nodes and after enough moves
@@ -2011,7 +2113,7 @@ fn negamax(
                 s = -negamax(
                     searcher,
                     game,
-                    depth - 1,
+                    depth - 1 + extension,
                     ply + 1,
                     -beta,
                     -alpha,

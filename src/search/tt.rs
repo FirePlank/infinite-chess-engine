@@ -376,6 +376,37 @@ impl TranspositionTable {
         None
     }
 
+    /// Probe the TT for Singular Extension data.
+    /// Returns raw entry data without applying cutoff logic.
+    /// Returns `Some((flag, depth, score, move))` if a matching entry exists.
+    pub fn probe_for_singular(
+        &self,
+        hash: u64,
+        ply: usize,
+    ) -> Option<(TTFlag, u8, i32, Option<Move>)> {
+        let idx = self.bucket_index(hash);
+        let key16 = Self::key16(hash);
+        let bucket = &self.buckets[idx];
+
+        for entry in &bucket.entries {
+            if entry.key16 != key16 || entry.is_empty() {
+                continue;
+            }
+
+            // Adjust mate scores for current ply
+            let mut score = entry.score;
+            if score > MATE_SCORE {
+                score -= ply as i32;
+            } else if score < -MATE_SCORE {
+                score += ply as i32;
+            }
+
+            return Some((entry.flag(), entry.depth, score, entry.best_move()));
+        }
+
+        None
+    }
+
     /// Store an entry in the TT.
     ///
     /// Uses a smart replacement strategy within the bucket:
