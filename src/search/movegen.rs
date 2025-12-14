@@ -9,14 +9,14 @@
 //! 6. Bad captures (SEE < threshold)
 
 use super::params::{
-    see_winning_threshold, sort_countermove, sort_gives_check, sort_killer1, sort_killer2,
-    DEFAULT_SORT_QUIET,
+    DEFAULT_SORT_QUIET, see_winning_threshold, sort_countermove, sort_gives_check, sort_killer1,
+    sort_killer2,
 };
-use super::{hash_coord_32, hash_move_dest, static_exchange_eval, Searcher};
+use super::{LOW_PLY_HISTORY_SIZE, Searcher, hash_coord_32, hash_move_dest, static_exchange_eval};
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::evaluation::get_piece_value;
 use crate::game::GameState;
-use crate::moves::{get_quiescence_captures, get_quiet_moves_into, Move};
+use crate::moves::{Move, get_quiescence_captures, get_quiet_moves_into};
 
 /// Stages of move generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +254,13 @@ impl StagedMoveGen {
                     }
                 }
             }
+        }
+
+        // Low-ply history: improves move ordering near the root (ply 0-4)
+        // Stockfish formula: 8 * lowPlyHistory[ply][move] / (1 + ply)
+        if ply < LOW_PLY_HISTORY_SIZE {
+            let idx = hash_move_dest(m);
+            score += 8 * searcher.low_ply_history[ply][idx] / (1 + ply as i32);
         }
 
         score

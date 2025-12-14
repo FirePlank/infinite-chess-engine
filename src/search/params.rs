@@ -231,9 +231,7 @@ pub fn get_search_params_as_json() -> String {
 
 #[cfg(feature = "search_tuning")]
 macro_rules! param {
-    ($field:ident) => {{
-        SEARCH_PARAMS.read().unwrap().$field
-    }};
+    ($field:ident) => {{ SEARCH_PARAMS.read().unwrap().$field }};
 }
 
 // Null Move Pruning
