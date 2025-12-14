@@ -1395,6 +1395,275 @@ fn extend_captures_only(
     }
 }
 
+/// Extend out with only quiet (non-capturing) moves from a pre-generated move list.
+fn extend_quiets_only(board: &Board, moves_in: Vec<Move>, out: &mut Vec<Move>) {
+    for m in moves_in {
+        if board.get_piece(&m.to.x, &m.to.y).is_none() {
+            out.push(m);
+        }
+    }
+}
+
+/// Generate only quiet (non-capturing) moves for staged move generation.
+/// This is the complement of get_quiescence_captures.
+pub fn get_quiet_moves_into(
+    board: &Board,
+    turn: PlayerColor,
+    special_rights: &FxHashSet<Coordinate>,
+    en_passant: &Option<EnPassantState>,
+    game_rules: &GameRules,
+    indices: &SpatialIndices,
+    out: &mut Vec<Move>,
+) {
+    out.clear();
+
+    if let Some(active) = &board.active_coords {
+        for (x, y) in active {
+            let piece = match board.get_piece(x, y) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            if piece.color() != turn {
+                continue;
+            }
+
+            let from = Coordinate::new(*x, *y);
+            generate_quiets_for_piece(
+                board,
+                piece,
+                &from,
+                special_rights,
+                en_passant,
+                game_rules,
+                indices,
+                out,
+            );
+        }
+    } else {
+        for ((x, y), piece) in board.iter() {
+            if piece.color() != turn || piece.color() == PlayerColor::Neutral {
+                continue;
+            }
+            let from = Coordinate::new(*x, *y);
+            generate_quiets_for_piece(
+                board,
+                piece,
+                &from,
+                special_rights,
+                en_passant,
+                game_rules,
+                indices,
+                out,
+            );
+        }
+    }
+}
+
+/// Generate only quiet moves for a single piece.
+fn generate_quiets_for_piece(
+    board: &Board,
+    piece: &Piece,
+    from: &Coordinate,
+    special_rights: &FxHashSet<Coordinate>,
+    _en_passant: &Option<EnPassantState>,
+    game_rules: &GameRules,
+    indices: &SpatialIndices,
+    out: &mut Vec<Move>,
+) {
+    match piece.piece_type() {
+        PieceType::Void | PieceType::Obstacle => {}
+
+        // Pawns: only forward moves (single and double push), no captures
+        PieceType::Pawn => {
+            generate_pawn_quiet_moves(board, from, piece, special_rights, game_rules, out);
+        }
+
+        // Knight-like leapers: filter to empty squares
+        PieceType::Knight => {
+            let m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Camel => {
+            let m = generate_leaper_moves(board, from, piece, 1, 3);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Giraffe => {
+            let m = generate_leaper_moves(board, from, piece, 1, 4);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Zebra => {
+            let m = generate_leaper_moves(board, from, piece, 2, 3);
+            extend_quiets_only(board, m, out);
+        }
+
+        // King: compass + castling
+        PieceType::King => {
+            let m = generate_compass_moves(board, from, piece, 1);
+            extend_quiets_only(board, m, out);
+            // Castling is always a quiet move
+            let castling = generate_castling_moves(board, from, piece, special_rights, indices);
+            out.extend(castling);
+        }
+        PieceType::Guard => {
+            let m = generate_compass_moves(board, from, piece, 1);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Centaur => {
+            let m = generate_compass_moves(board, from, piece, 1);
+            extend_quiets_only(board, m, out);
+            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, knight_m, out);
+        }
+        PieceType::RoyalCentaur => {
+            let m = generate_compass_moves(board, from, piece, 1);
+            extend_quiets_only(board, m, out);
+            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, knight_m, out);
+            let castling = generate_castling_moves(board, from, piece, special_rights, indices);
+            out.extend(castling);
+        }
+        PieceType::Hawk => {
+            let mut m = generate_compass_moves(board, from, piece, 2);
+            m.extend(generate_compass_moves(board, from, piece, 3));
+            extend_quiets_only(board, m, out);
+        }
+
+        // Sliders
+        PieceType::Rook => {
+            let m = generate_sliding_moves(board, from, piece, &[(1, 0), (0, 1)], indices, false);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Bishop => {
+            let m = generate_sliding_moves(board, from, piece, &[(1, 1), (1, -1)], indices, false);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Queen | PieceType::RoyalQueen => {
+            let mut m =
+                generate_sliding_moves(board, from, piece, &[(1, 0), (0, 1)], indices, false);
+            m.extend(generate_sliding_moves(
+                board,
+                from,
+                piece,
+                &[(1, 1), (1, -1)],
+                indices,
+                false,
+            ));
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Chancellor => {
+            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, knight_m, out);
+            let rook_m =
+                generate_sliding_moves(board, from, piece, &[(1, 0), (0, 1)], indices, false);
+            extend_quiets_only(board, rook_m, out);
+        }
+        PieceType::Archbishop => {
+            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, knight_m, out);
+            let bishop_m =
+                generate_sliding_moves(board, from, piece, &[(1, 1), (1, -1)], indices, false);
+            extend_quiets_only(board, bishop_m, out);
+        }
+        PieceType::Amazon => {
+            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
+            extend_quiets_only(board, knight_m, out);
+            let mut queen_m =
+                generate_sliding_moves(board, from, piece, &[(1, 0), (0, 1)], indices, false);
+            queen_m.extend(generate_sliding_moves(
+                board,
+                from,
+                piece,
+                &[(1, 1), (1, -1)],
+                indices,
+                false,
+            ));
+            extend_quiets_only(board, queen_m, out);
+        }
+
+        PieceType::Knightrider => {
+            let m = generate_knightrider_moves(board, from, piece);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Huygen => {
+            let m = generate_huygen_moves(board, from, piece, indices, false);
+            extend_quiets_only(board, m, out);
+        }
+        PieceType::Rose => {
+            let m = generate_rose_moves(board, from, piece);
+            extend_quiets_only(board, m, out);
+        }
+    }
+}
+
+/// Generate pawn quiet moves (forward pushes only, no captures)
+fn generate_pawn_quiet_moves(
+    board: &Board,
+    from: &Coordinate,
+    piece: &Piece,
+    special_rights: &FxHashSet<Coordinate>,
+    game_rules: &GameRules,
+    out: &mut Vec<Move>,
+) {
+    let direction = match piece.color() {
+        PlayerColor::White => 1,
+        PlayerColor::Black => -1,
+        PlayerColor::Neutral => return,
+    };
+
+    // Get promotion ranks
+    let promotion_ranks: Vec<i64> = match piece.color() {
+        PlayerColor::White => game_rules
+            .promotion_ranks
+            .as_ref()
+            .map(|p| p.white.clone())
+            .unwrap_or_else(|| vec![8]),
+        PlayerColor::Black => game_rules
+            .promotion_ranks
+            .as_ref()
+            .map(|p| p.black.clone())
+            .unwrap_or_else(|| vec![1]),
+        PlayerColor::Neutral => vec![],
+    };
+
+    let default_promos = [
+        PieceType::Queen,
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Knight,
+    ];
+    let promotion_pieces: &[PieceType] = game_rules
+        .promotion_types
+        .as_ref()
+        .map(|v| v.as_slice())
+        .unwrap_or(&default_promos);
+
+    // Single push
+    let to_y = from.y + direction;
+    let to_x = from.x;
+
+    if board.get_piece(&to_x, &to_y).is_none() {
+        // Square is empty, can push
+        if promotion_ranks.contains(&to_y) {
+            for &promo in promotion_pieces {
+                let mut m = Move::new(*from, Coordinate::new(to_x, to_y), *piece);
+                m.promotion = Some(promo);
+                out.push(m);
+            }
+        } else {
+            out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
+        }
+
+        // Double push if pawn has special rights
+        if special_rights.contains(from) {
+            let double_y = from.y + 2 * direction;
+            if board.get_piece(&to_x, &double_y).is_none() {
+                out.push(Move::new(*from, Coordinate::new(to_x, double_y), *piece));
+            }
+        }
+    }
+}
+
 fn generate_compass_moves(
     board: &Board,
     from: &Coordinate,

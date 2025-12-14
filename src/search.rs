@@ -92,6 +92,9 @@ use ordering::{
     hash_coord_32, hash_move_dest, hash_move_from, sort_captures, sort_moves, sort_moves_root,
 };
 
+mod movegen;
+use movegen::StagedMoveGen;
+
 mod see;
 pub(crate) use see::static_exchange_eval_impl as static_exchange_eval;
 
@@ -1750,162 +1753,34 @@ fn negamax(
         }
     }
 
-    // Reuse per-ply move buffer for this node
-    let mut moves = Vec::new();
-    std::mem::swap(&mut moves, &mut searcher.move_buffers[ply]);
-    game.get_legal_moves_into(&mut moves);
-
-    // Sort moves for better pruning
-    sort_moves(searcher, game, &mut moves, ply, &tt_move);
-
-    // Multi-Cut pruning: at expected Cut-nodes with sufficient depth,
-    // if multiple moves fail high at reduced depth, the node is likely not singular.
-    // M = 6 moves to check, C = 3 cutoffs needed, R = 2 depth reduction (less aggressive/safer)
-    const MC_M: usize = 6; // Number of moves to check
-    const MC_C: usize = 3; // Number of cutoffs to trigger pruning
-    const MC_R: usize = 2; // Depth reduction for multi-cut searches
-    const MC_MIN_DEPTH: usize = 5; // Minimum depth to apply multi-cut
-
-    if depth >= MC_MIN_DEPTH && !is_pv && !in_check && cut_node {
-        let mut mc_cutoffs = 0;
-        let mut mc_moves_checked = 0;
-
-        for m in &moves {
-            if mc_moves_checked >= MC_M {
-                break;
-            }
-
-            let undo = game.make_move(m);
-
-            // Skip illegal moves
-            if game.is_move_illegal() {
-                game.undo_move(m, undo);
-                continue;
-            }
-
-            mc_moves_checked += 1;
-
-            // Reduced depth search with null window around beta
-            let mc_score = -negamax(
-                searcher,
-                game,
-                depth.saturating_sub(1 + MC_R),
-                ply + 1,
-                -beta,
-                -beta + 1,
-                false,         // disallow null move in multi-cut searches
-                NodeType::Cut, // Multi-Cut verification
-            );
-
-            game.undo_move(m, undo);
-
-            if searcher.stopped {
-                std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
-                return 0;
-            }
-
-            if mc_score >= beta {
-                mc_cutoffs += 1;
-                if mc_cutoffs >= MC_C {
-                    // Multi-Cut prune: multiple moves fail high
-                    std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
-                    return beta;
-                }
-            }
-        }
-    }
+    // =========================================================================
+    // Staged Move Generation - generate moves in stages for better efficiency
+    // =========================================================================
+    let mut movegen = StagedMoveGen::new(tt_move.clone(), ply, searcher, game);
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
     let mut legal_moves = 0;
-    // Track quiet moves searched at this node for history maluses
     let mut quiets_searched: Vec<Move> = Vec::new();
 
-    // ==========================================================================
-    // Singular Extension (SE): Detect if the TT move is significantly better
-    // than all alternatives. If so, we extend its search to avoid missing
-    // critical tactical lines.
-    // ==========================================================================
-    let mut singular_extension = false;
-
-    // SE conditions: sufficient depth, have TT move, and TT entry is reliable
-    // Use depth >= 5 to reduce overhead (SE is expensive)
-    if depth >= 5 && !in_check && tt_move.is_some() {
-        // Probe TT for raw entry data (flag, depth, score)
+    // Singular extension conditions (checked when we reach the TT move in the loop)
+    // We cache the TT probe result here to avoid re-probing
+    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() {
         if let Some((tt_flag, tt_depth, tt_score, _)) = searcher.tt.probe_for_singular(hash, ply) {
-            // Only consider LowerBound (failed high) or Exact entries
-            // TT depth must be sufficient (at least depth - 3)
             if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
                 && tt_depth as usize >= depth.saturating_sub(3)
                 && tt_score.abs() < MATE_SCORE
-            // Don't extend near mate scores
             {
-                // Singular beta: TT score minus a margin (3cp per depth ply)
-                let singular_beta = tt_score - (depth as i32) * 3;
-                let singular_depth = (depth - 1) / 2;
-
-                // Search first few moves EXCEPT TT move at reduced depth
-                // Limit to 4 moves to reduce overhead (like Multi-Cut)
-                const SE_MAX_MOVES: usize = 4;
-                let tt_m = tt_move.as_ref().unwrap();
-                let mut singular_best = -INFINITY;
-                let mut moves_checked = 0;
-
-                for m in &moves {
-                    // Skip the TT move
-                    if m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion {
-                        continue;
-                    }
-
-                    // Limit number of moves checked
-                    if moves_checked >= SE_MAX_MOVES {
-                        break;
-                    }
-
-                    let undo = game.make_move(m);
-                    if game.is_move_illegal() {
-                        game.undo_move(m, undo);
-                        continue;
-                    }
-
-                    moves_checked += 1;
-
-                    // Null-window search at reduced depth
-                    let s = -negamax(
-                        searcher,
-                        game,
-                        singular_depth,
-                        ply + 1,
-                        -singular_beta,
-                        -singular_beta + 1,
-                        false, // No null move in SE verification
-                        NodeType::Cut,
-                    );
-
-                    game.undo_move(m, undo);
-
-                    if searcher.stopped {
-                        std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
-                        return 0;
-                    }
-
-                    if s > singular_best {
-                        singular_best = s;
-                    }
-
-                    // If any move beats singular_beta, TT move is not singular - exit early
-                    if singular_best >= singular_beta {
-                        break;
-                    }
-                }
-
-                // TT move is singular if no other move reaches singular_beta
-                if singular_best < singular_beta {
-                    singular_extension = true;
-                }
+                Some((tt_score, (depth - 1) / 2)) // (singular_beta_base, singular_depth)
+            } else {
+                None
             }
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // Futility pruning flag
     let futility_pruning = !in_check && !is_pv && depth <= 3;
@@ -1915,7 +1790,8 @@ fn negamax(
         0
     };
 
-    for m in &moves {
+    // Main move loop
+    while let Some(m) = movegen.next(game, searcher) {
         let captured_piece = game.board.get_piece(&m.to.x, &m.to.y);
         let is_capture = captured_piece.map_or(false, |p| !p.piece_type().is_neutral_type());
         let captured_type = captured_piece.map(|p| p.piece_type());
@@ -1940,7 +1816,7 @@ fn negamax(
         // SEE-based move pruning for captures
         // Skip clearly losing captures at non-PV nodes when we have at least one legal move
         if !in_check && !is_pv && is_capture && legal_moves > 0 && best_score > -MATE_SCORE {
-            let see_value = static_exchange_eval(game, m);
+            let see_value = static_exchange_eval(game, &m);
             // Threshold scales with depth: prune more aggressively at shallow depths
             // At depth 1: threshold = -80, depth 4: threshold = -320
             let see_threshold = -(depth as i32) * 80;
@@ -1949,11 +1825,11 @@ fn negamax(
             }
         }
 
-        let undo = game.make_move(m);
+        let undo = game.make_move(&m);
 
         // Check if move is illegal (leaves our king in check)
         if game.is_move_illegal() {
-            game.undo_move(m, undo);
+            game.undo_move(&m, undo);
             continue;
         }
 
@@ -1965,8 +1841,8 @@ fn negamax(
         // For this node at `ply`, this move becomes the previous move for child
         // ply + 1, stored as (from_hash, to_hash).
         let prev_entry_backup = searcher.prev_move_stack[ply];
-        let from_hash = hash_move_from(m);
-        let to_hash = hash_move_dest(m);
+        let from_hash = hash_move_from(&m);
+        let to_hash = hash_move_dest(&m);
         searcher.prev_move_stack[ply] = (from_hash, to_hash);
 
         // Store move and piece info for continuation history
@@ -1978,20 +1854,93 @@ fn negamax(
         legal_moves += 1;
 
         // Calculate per-move extension
-        // Apply singular extension if this is the TT move and it was determined to be singular
-        let extension = if singular_extension {
-            if let Some(ref tt_m) = tt_move {
-                if m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion {
-                    1 // Extend the singular TT move
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
+        // Stockfish-style Singular Extension + Multi-Cut:
+        // When we're about to search the TT move at sufficient depth, first verify
+        // it's truly singular by doing a reduced search excluding it.
+        let mut extension: usize = 0;
+
+        let is_tt_move = if let Some(ref tt_m) = tt_move {
+            m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion
         } else {
-            0
+            false
         };
+
+        if is_tt_move && !is_pv {
+            if let Some((tt_score, singular_depth)) = se_conditions {
+                let singular_beta = tt_score - (depth as i32) * 3;
+
+                // Undo the move we just made so we can search alternatives
+                game.undo_move(&m, undo.clone());
+
+                // Do a reduced search excluding the TT move to verify singularity
+                // Create a move generator that skips the TT move
+                let mut se_gen = StagedMoveGen::with_exclusion(
+                    None, // No TT move hint for this search
+                    ply,
+                    searcher,
+                    game,
+                    m.clone(), // Exclude the current (TT) move
+                );
+
+                let mut se_best = -INFINITY;
+                let mut se_moves_checked = 0;
+                const SE_MAX_MOVES: usize = 6;
+
+                while let Some(se_m) = se_gen.next(game, searcher) {
+                    if se_moves_checked >= SE_MAX_MOVES {
+                        break;
+                    }
+
+                    let se_undo = game.make_move(&se_m);
+                    if game.is_move_illegal() {
+                        game.undo_move(&se_m, se_undo);
+                        continue;
+                    }
+
+                    se_moves_checked += 1;
+
+                    let se_score = -negamax(
+                        searcher,
+                        game,
+                        singular_depth,
+                        ply + 1,
+                        -singular_beta,
+                        -singular_beta + 1,
+                        false,
+                        NodeType::Cut,
+                    );
+
+                    game.undo_move(&se_m, se_undo);
+
+                    if searcher.stopped {
+                        return 0;
+                    }
+
+                    if se_score > se_best {
+                        se_best = se_score;
+                    }
+
+                    // Early exit if we find a refuter
+                    if se_best >= singular_beta {
+                        break;
+                    }
+                }
+
+                // Re-make the TT move since we undid it above
+                let new_undo = game.make_move(&m);
+                // Update undo for later
+                let undo = new_undo;
+
+                if se_best < singular_beta {
+                    // TT move is singular - extend it
+                    extension = 1;
+                } else if se_best >= beta && !is_pv {
+                    // Multi-cut: alternatives also beat beta, prune the whole subtree
+                    game.undo_move(&m, undo);
+                    return beta;
+                }
+            }
+        }
 
         let score;
         if legal_moves == 1 {
@@ -2061,7 +2010,7 @@ fn negamax(
                 && legal_moves >= hlp_min_moves()
                 && best_score > -MATE_SCORE
             {
-                let idx = hash_move_dest(m);
+                let idx = hash_move_dest(&m);
                 let value = searcher.history[m.piece.piece_type() as usize][idx];
 
                 if value < hlp_history_reduce() {
@@ -2071,7 +2020,7 @@ fn negamax(
                     // If depth after reductions would drop to quiescence or below
                     // and history is really bad, prune this move entirely.
                     if new_depth <= 0 && value < hlp_history_leaf() {
-                        game.undo_move(m, undo);
+                        game.undo_move(&m, undo);
                         continue;
                     }
                 }
@@ -2124,7 +2073,7 @@ fn negamax(
             score = s;
         }
 
-        game.undo_move(m, undo);
+        game.undo_move(&m, undo);
 
         // Restore previous-move stack entry for this ply after child returns.
         searcher.prev_move_stack[ply] = prev_entry_backup;
@@ -2147,7 +2096,7 @@ fn negamax(
                 let ply_base = ply * MAX_PLY;
                 let child_base = (ply + 1) * MAX_PLY;
 
-                searcher.pv_table[ply_base] = Some(*m); // Head of PV is this move
+                searcher.pv_table[ply_base] = Some(m.clone()); // Head of PV is this move
                 let child_len = searcher.pv_length[ply + 1];
                 for j in 0..child_len {
                     searcher.pv_table[ply_base + 1 + j] = searcher.pv_table[child_base + j];
@@ -2159,7 +2108,7 @@ fn negamax(
         if alpha >= beta {
             if !is_capture {
                 // History bonus for quiet cutoff move, with maluses for previously searched quiets
-                let idx = hash_move_dest(m);
+                let idx = hash_move_dest(&m);
                 let bonus = history_bonus_base() * depth as i32 - history_bonus_sub();
                 let adj = bonus.min(history_bonus_cap());
                 let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
@@ -2176,7 +2125,7 @@ fn negamax(
 
                 // Killer move heuristic (for non-captures)
                 searcher.killers[ply][1] = searcher.killers[ply][0].clone();
-                searcher.killers[ply][0] = Some(*m);
+                searcher.killers[ply][0] = Some(m.clone());
 
                 // Countermove heuristic: on a quiet beta cutoff, record this move
                 // as the countermove to the move that led into this node.
@@ -2232,8 +2181,7 @@ fn negamax(
         }
     }
 
-    // Swap back move buffer for this ply before returning
-    std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
+    // Staged gen doesn't use move_buffers, so no swap needed
 
     // Checkmate or stalemate detection (also treat no-pieces as loss)
     if legal_moves == 0 {
