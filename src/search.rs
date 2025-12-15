@@ -29,11 +29,6 @@ pub const MAX_PLY: usize = 64;
 pub const INFINITY: i32 = 1_000_000;
 pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
-
-/// Low-ply history table size (plies 0-4 near the root)
-pub const LOW_PLY_HISTORY_SIZE: usize = 5;
-/// Maximum value for low-ply history entries (matches Stockfish's 7183)
-const LOW_PLY_HISTORY_MAX: i32 = 7183;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
 
 // Correction History constants (adapted for Infinite Chess)
@@ -491,10 +486,6 @@ pub struct Searcher {
     pub nonpawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub material_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub lastmove_corrhist: Box<[i32; LASTMOVE_CORRHIST_SIZE]>,
-
-    // Low-ply history: improves move ordering near the root (plies 0-4)
-    // Indexed by [ply][move_dest_hash], initialized to 97 (matching Stockfish)
-    pub low_ply_history: [[i32; 256]; LOW_PLY_HISTORY_SIZE],
 }
 
 impl Searcher {
@@ -542,8 +533,6 @@ impl Searcher {
             nonpawn_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
             material_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
             lastmove_corrhist: Box::new([0i32; LASTMOVE_CORRHIST_SIZE]),
-            // Initialize low-ply history to 97 (matching Stockfish's fill value)
-            low_ply_history: [[97i32; 256]; LOW_PLY_HISTORY_SIZE],
         }
     }
 
@@ -584,27 +573,6 @@ impl Searcher {
                 *val = *val * 9 / 10; // Decay by 10%
             }
         }
-        // Also decay low-ply history
-        for row in &mut self.low_ply_history {
-            for val in row.iter_mut() {
-                *val = *val * 9 / 10;
-            }
-        }
-    }
-
-    /// Update low-ply history with gravity-style update (matching Stockfish)
-    /// Called on quiet beta cutoffs for ply < LOW_PLY_HISTORY_SIZE
-    #[inline]
-    pub fn update_low_ply_history(&mut self, ply: usize, move_hash: usize, bonus: i32) {
-        if ply >= LOW_PLY_HISTORY_SIZE {
-            return;
-        }
-        // Stockfish uses bonus * 805 / 1024 for low-ply history
-        let scaled_bonus = bonus * 805 / 1024;
-        let clamped = scaled_bonus.clamp(-LOW_PLY_HISTORY_MAX, LOW_PLY_HISTORY_MAX);
-        let entry = &mut self.low_ply_history[ply][move_hash];
-        // Gravity-style update: entry += bonus - entry * |bonus| / max
-        *entry += clamped - *entry * clamped.abs() / LOW_PLY_HISTORY_MAX;
     }
 
     /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
@@ -1846,15 +1814,25 @@ fn negamax(
             }
         }
 
-        // Skip Quiet Moves optimization (Stockfish-style FutilityMoveCount)
+        // Skip Quiet Moves (Stockfish-style FutilityMoveCount)
         // When we've searched enough moves, stop generating quiets entirely.
+        // Conditions from Stockfish: !rootNode && non_pawn_material && !is_loss(bestValue)
         // Formula: threshold = (3 + depth*depth) / (2 - improving)
-        // This is more efficient than individual LMP because it skips quiet generation.
-        if !in_check && !is_pv && depth > 0 && best_score > -MATE_SCORE {
-            let improving_divisor = if improving { 1 } else { 2 };
-            let futility_move_count = (3 + depth * depth) / improving_divisor;
-            if legal_moves >= futility_move_count {
-                movegen.skip_quiet_moves();
+        if ply > 0 && !in_check && best_score > -MATE_SCORE {
+            // Check for piece material (at least one non-pawn piece)
+            // Using cached piece counts from GameState
+            let has_material = match game.turn {
+                crate::board::PlayerColor::White => game.white_piece_count > 0,
+                crate::board::PlayerColor::Black => game.black_piece_count > 0,
+                _ => true,
+            };
+
+            if has_material {
+                let improving_divisor = if improving { 1 } else { 2 };
+                let futility_move_count = (3 + depth * depth) / improving_divisor;
+                if legal_moves >= futility_move_count {
+                    movegen.skip_quiet_moves();
+                }
             }
         }
 
@@ -2159,20 +2137,6 @@ fn negamax(
                 let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                 searcher.update_history(m.piece.piece_type(), idx, bonus);
-
-                // Low-ply history update (for ply < 5, matching Stockfish)
-                if ply < LOW_PLY_HISTORY_SIZE {
-                    // Update best move with bonus
-                    searcher.update_low_ply_history(ply, idx, bonus);
-                    // Apply maluses to previously searched quiets
-                    for quiet in &quiets_searched {
-                        let qidx = hash_move_dest(quiet);
-                        if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
-                            continue;
-                        }
-                        searcher.update_low_ply_history(ply, qidx, -bonus);
-                    }
-                }
 
                 for quiet in &quiets_searched {
                     let qidx = hash_move_dest(quiet);

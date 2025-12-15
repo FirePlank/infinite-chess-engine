@@ -12,7 +12,7 @@ use super::params::{
     DEFAULT_SORT_QUIET, see_winning_threshold, sort_countermove, sort_gives_check, sort_killer1,
     sort_killer2,
 };
-use super::{LOW_PLY_HISTORY_SIZE, Searcher, hash_coord_32, hash_move_dest, static_exchange_eval};
+use super::{Searcher, hash_coord_32, hash_move_dest, static_exchange_eval};
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::evaluation::get_piece_value;
 use crate::game::GameState;
@@ -151,7 +151,7 @@ impl StagedMoveGen {
         }
     }
 
-    /// Check if move is pseudo-legal (strict validation)
+    /// Check if move is pseudo-legal
     #[inline]
     fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
         if let Some(piece) = game.board.get_piece(&m.from.x, &m.from.y) {
@@ -164,7 +164,7 @@ impl StagedMoveGen {
             // 1. Rook exists at rook_coord
             // 2. King's landing squares are clear (m.to and one square between)
             // 3. Rook's landing square is clear
-            if piece.piece_type().is_royal() && (m.to.x - m.from.x).abs() > 1 {
+            if piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() > 1 {
                 if let Some(rook_coord) = &m.rook_coord {
                     if let Some(rook) = game.board.get_piece(&rook_coord.x, &rook_coord.y) {
                         if rook.color() != game.turn {
@@ -318,13 +318,6 @@ impl StagedMoveGen {
                     }
                 }
             }
-        }
-
-        // Low-ply history: improves move ordering near the root (ply 0-4)
-        // Stockfish formula: 8 * lowPlyHistory[ply][move] / (1 + ply)
-        if ply < LOW_PLY_HISTORY_SIZE {
-            let idx = hash_move_dest(m);
-            score += 8 * searcher.low_ply_history[ply][idx] / (1 + ply as i32);
         }
 
         score
