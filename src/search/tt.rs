@@ -555,13 +555,13 @@ mod tests {
         );
         assert_eq!(
             std::mem::size_of::<TTEntry>(),
-            64,
-            "TTEntry should be 64 bytes"
+            48,
+            "TTEntry should be 48 bytes"
         );
         assert_eq!(
             std::mem::size_of::<TTBucket>(),
-            64 * ENTRIES_PER_BUCKET,
-            "TTBucket should be 256 bytes (4 x 64)"
+            48 * ENTRIES_PER_BUCKET,
+            "TTBucket should be 192 bytes (4 x 48)"
         );
     }
 

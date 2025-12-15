@@ -527,7 +527,7 @@ fn has_sufficient_mating_material(board: &Board, color: PlayerColor, has_our_kin
 ///
 /// Simplified rules:
 /// 1. If either side can force mate → None (normal eval)
-/// 2. If both sides have pieces → Some(4) (drawish, divide eval by 4)
+/// 2. If both sides have pieces → Some(divisor) (drawish, divide eval by divisor)
 /// 3. Otherwise (one side has no pieces) → Some(0) (insufficient, dead draw)
 pub fn evaluate_insufficient_material(board: &Board) -> Option<i32> {
     // Fast exit for complex positions
@@ -574,7 +574,7 @@ pub fn evaluate_insufficient_material(board: &Board) -> Option<i32> {
     // 2. If BOTH sides have non-king pieces, it's drawish but not dead draw
     // Use eval/divisor to dampen the score since it's likely a draw
     if white_pieces > 0 && black_pieces > 0 {
-        return Some(4);
+        return Some(8);
     }
 
     // 3. One side has no pieces - dead draw

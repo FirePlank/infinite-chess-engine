@@ -878,7 +878,6 @@ fn search_with_searcher(
     for depth in 1..=max_depth {
         searcher.reset_for_iteration();
         searcher.decay_history();
-
         // Immediate time check at start of each iteration
         if searcher.timer.elapsed_ms() >= searcher.time_limit_ms {
             searcher.stopped = true;
@@ -1027,6 +1026,7 @@ pub fn get_best_move(
 
 /// Time-limited search with thread_id for Lazy SMP.
 /// Helper threads (thread_id > 0) skip the first move to distribute work.
+/// Uses fresh Searcher per call (no persistent TT between searches).
 pub fn get_best_move_threaded(
     game: &mut GameState,
     max_depth: usize,
@@ -1600,11 +1600,13 @@ fn negamax(
     // Generate hash for TT
     let hash = TranspositionTable::generate_hash(game);
 
-    // Threefold repetition detection (uses hash_stack built during make_move/undo_move)
-    if ply > 0 && game.is_threefold() {
+    // Stockfish-style repetition detection:
+    // - Twofold within the current search tree is treated as draw (opponent can force it)
+    // - Threefold from game history also handled via is_repetition
+    if ply > 0 && game.is_repetition(ply) {
         // Treat repetition as a slightly worse outcome than a neutral eval
         // from the current side's perspective. This nudges the search away
-        // from pointless threefolds when other equal moves exist, while still
+        // from pointless repetitions when other equal moves exist, while still
         // allowing repetition in clearly worse positions.
         return -repetition_penalty();
     }

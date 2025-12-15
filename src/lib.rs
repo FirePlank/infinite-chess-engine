@@ -428,6 +428,7 @@ impl Engine {
             pawn_hash: 0,
             nonpawn_hash: 0,
             material_hash: 0,
+            repetition: 0,
         };
 
         game.material_score = calculate_initial_material(&game.board);

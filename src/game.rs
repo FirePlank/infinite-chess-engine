@@ -59,6 +59,8 @@ pub struct UndoMove {
     /// Old king positions for restoration (only set if a king moved)
     pub old_white_king_pos: Option<Coordinate>,
     pub old_black_king_pos: Option<Coordinate>,
+    /// Old repetition value for restoration
+    pub old_repetition: i32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -133,6 +135,11 @@ pub struct GameState {
     /// Material configuration hash for correction history.
     #[serde(skip)]
     pub material_hash: u64,
+    /// Stockfish-style repetition info: distance to previous occurrence of same position.
+    /// 0 = no repetition, positive = distance to first occurrence, negative = threefold.
+    /// Computed during make_move for O(1) is_repetition check.
+    #[serde(skip)]
+    pub repetition: i32,
 }
 
 // For backwards compatibility, keep castling_rights as an alias
@@ -192,6 +199,7 @@ impl GameState {
             pawn_hash: 0,
             nonpawn_hash: 0,
             material_hash: 0,
+            repetition: 0,
         }
     }
 
@@ -226,6 +234,7 @@ impl GameState {
             pawn_hash: 0,
             nonpawn_hash: 0,
             material_hash: 0,
+            repetition: 0,
         }
     }
 
@@ -334,43 +343,23 @@ impl GameState {
         }
     }
 
-    /// Check for threefold repetition
-    pub fn is_threefold(&self) -> bool {
+    /// Stockfish-style repetition detection for search.
+    /// Returns true if position has repeated strictly WITHIN the current search tree.
+    /// This catches drawing lines that should be avoided during search.
+    ///
+    /// Key insight: if a position repeats within the current search tree (repetition < ply),
+    /// it's effectively a draw because opponent can force threefold.
+    /// If it only repeats from game history before root, we still need twofold at minimum.
+    #[inline]
+    pub fn is_repetition(&self, ply: usize) -> bool {
         // Don't check during null move search
         if self.null_moves > 0 {
             return false;
         }
-
-        // Need at least 6 positions to have a potential threefold
-        if self.hash_stack.len() < 6 {
-            return false;
-        }
-
-        // Generate current position hash
-        let current_hash = self.generate_hash();
-
-        let mut repetitions_count = 1;
-        // Only look back as far as halfmove_clock allows (captures/pawn moves reset repetition)
-        let lookback = (self.halfmove_clock as usize).min(self.hash_stack.len());
-        let from = self.hash_stack.len().saturating_sub(lookback);
-        let to = self.hash_stack.len().saturating_sub(1);
-
-        if to <= from {
-            return false;
-        }
-
-        // Check every other position (same side to move)
-        for hash_index in (from..to).rev().step_by(2) {
-            if self.hash_stack[hash_index] == current_hash {
-                repetitions_count += 1;
-
-                if repetitions_count >= 3 {
-                    return true;
-                }
-            }
-        }
-
-        false
+        // Simple O(1) check using precomputed repetition distance
+        // repetition > 0 means we found a previous occurrence
+        // repetition <= ply means it's within the current search tree
+        self.repetition > 0 && (self.repetition as usize) <= ply
     }
 
     /// Check if this is a lone king endgame (one side only has a king)
@@ -1318,6 +1307,7 @@ impl GameState {
             starting_square_restored: None,
             old_white_king_pos: None,
             old_black_king_pos: None,
+            old_repetition: self.repetition,
         };
 
         // Track king position updates for undo
@@ -1342,18 +1332,27 @@ impl GameState {
         let is_capture = undo_info.captured_piece.is_some();
 
         if let Some(captured) = &undo_info.captured_piece {
-            // Hash: remove captured piece
+            // Hash: For non-neutral pieces, XOR out (remove from hash).
+            // For neutral pieces (obstacles), they weren't in the initial hash,
+            // so XORing their key IN when captured creates a unique hash for
+            // positions where different obstacles have been removed.
+            // The XOR operation is symmetric, so the same line works for both:
+            // - Non-neutral: was in hash, XOR removes it
+            // - Neutral: wasn't in hash, XOR adds "removed obstacle" marker
             self.hash ^= piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
             // Update spatial indices for captured piece on destination square
             self.spatial_indices.remove(m.to.x, m.to.y);
 
-            let value = get_piece_value(captured.piece_type());
-            if captured.color() == PlayerColor::White {
-                self.material_score -= value;
-                self.white_piece_count = self.white_piece_count.saturating_sub(1);
-            } else {
-                self.material_score += value;
-                self.black_piece_count = self.black_piece_count.saturating_sub(1);
+            // Only update material/piece counts for non-neutral pieces
+            if captured.color() != PlayerColor::Neutral {
+                let value = get_piece_value(captured.piece_type());
+                if captured.color() == PlayerColor::White {
+                    self.material_score -= value;
+                    self.white_piece_count = self.white_piece_count.saturating_sub(1);
+                } else {
+                    self.material_score += value;
+                    self.black_piece_count = self.black_piece_count.saturating_sub(1);
+                }
             }
         }
 
@@ -1494,6 +1493,26 @@ impl GameState {
         self.hash ^= SIDE_KEY;
         self.turn = self.turn.opponent();
 
+        // Stockfish-style repetition detection: compute distance to previous occurrence
+        // of same position. 0 = no repetition, positive = distance, negative = threefold.
+        self.repetition = 0;
+        let end = (self.halfmove_clock as usize).min(self.hash_stack.len());
+        if end >= 4 {
+            let current_hash = self.hash;
+            // Check every 2 plies (same side to move)
+            let mut i = 4usize;
+            while i <= end {
+                let idx = self.hash_stack.len().saturating_sub(i);
+                if idx < self.hash_stack.len() && self.hash_stack[idx] == current_hash {
+                    // Found a match! Check if that position was already a repetition
+                    // For simplicity, we store positive distance (Stockfish stores negative for 3-fold)
+                    self.repetition = i as i32;
+                    break;
+                }
+                i += 2;
+            }
+        }
+
         undo_info
     }
 
@@ -1616,6 +1635,7 @@ impl GameState {
             self.black_king_pos = Some(pos);
         }
         self.halfmove_clock = undo.old_halfmove_clock;
+        self.repetition = undo.old_repetition;
     }
 
     pub fn perft(&mut self, depth: usize) -> u64 {

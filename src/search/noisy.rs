@@ -385,7 +385,7 @@ fn negamax_noisy(
 
     let hash = TranspositionTable::generate_hash(game);
 
-    if ply > 0 && game.is_threefold() {
+    if ply > 0 && game.is_repetition(ply) {
         return -repetition_penalty();
     }
 

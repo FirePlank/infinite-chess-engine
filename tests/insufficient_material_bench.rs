@@ -174,7 +174,7 @@ fn test_insufficient_material_correctness() {
         "K vs K+N should be Some(0) (Lone King)"
     );
 
-    // K+N vs K+N (Equal extra). Both have pieces -> Some(4) (drawish)
+    // K+N vs K+N (Equal extra). Both have pieces -> Some(8) (drawish)
     let mut board = Board::new();
     board.set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
     board.set_piece(0, 1, Piece::new(PieceType::Knight, PlayerColor::White));
@@ -182,11 +182,11 @@ fn test_insufficient_material_correctness() {
     board.set_piece(4, 5, Piece::new(PieceType::Knight, PlayerColor::Black));
     assert_eq!(
         evaluate_insufficient_material(&board),
-        Some(4),
-        "K+N vs K+N should be Some(4) (Drawish)"
+        Some(8),
+        "K+N vs K+N should be Some(8) (Drawish)"
     );
 
-    // K+2N vs K+N (White 2, Black 1). Both have pieces -> Some(4) (drawish)
+    // K+2N vs K+N (White 2, Black 1). Both have pieces -> Some(8) (drawish)
     let mut board = Board::new();
     board.set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
     board.set_piece(0, 1, Piece::new(PieceType::Knight, PlayerColor::White));
@@ -195,8 +195,8 @@ fn test_insufficient_material_correctness() {
     board.set_piece(4, 5, Piece::new(PieceType::Knight, PlayerColor::Black));
     assert_eq!(
         evaluate_insufficient_material(&board),
-        Some(4),
-        "K+2N vs K+N should be Some(4) (Drawish)"
+        Some(8),
+        "K+2N vs K+N should be Some(8) (Drawish)"
     );
 
     // K+R vs K (White 1, Black 0). Lone King -> Some(0)
@@ -243,7 +243,7 @@ fn test_insufficient_material_correctness() {
         "Lone R vs K should be Some(0) (Lone King)"
     );
 
-    // K+R vs Q+R (White 1, Black 2). Both have pieces -> Some(4) (drawish)
+    // K+R vs Q+R (White 1, Black 2). Both have pieces -> Some(8) (drawish)
     let mut board = Board::new();
     board.set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
     board.set_piece(0, 1, Piece::new(PieceType::Rook, PlayerColor::White));
@@ -252,8 +252,8 @@ fn test_insufficient_material_correctness() {
     board.set_piece(7, 6, Piece::new(PieceType::Rook, PlayerColor::Black));
     assert_eq!(
         evaluate_insufficient_material(&board),
-        Some(4),
-        "K+R vs Q+R (No Black King) should be Some(4) (Drawish)"
+        Some(8),
+        "K+R vs Q+R (No Black King) should be Some(8) (Drawish)"
     );
 
     println!("All correctness tests passed!");
