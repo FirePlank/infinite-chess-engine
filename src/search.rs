@@ -1,5 +1,5 @@
 use crate::board::PieceType;
-use crate::evaluation::evaluate;
+use crate::evaluation::{evaluate, get_piece_value};
 use crate::game::GameState;
 use crate::moves::{Move, get_quiescence_captures};
 use std::cell::RefCell;
@@ -1871,15 +1871,47 @@ fn negamax(
             }
         }
 
-        // SEE-based move pruning for captures
-        // Skip clearly losing captures at non-PV nodes when we have at least one legal move
+        // Capture History-based Futility Pruning (Stockfish-style)
+        // For captures at shallow depths, use capture history to adjust futility threshold.
+        // Good captures in history = more likely to be good, less aggressive pruning.
         if !in_check && !is_pv && is_capture && legal_moves > 0 && best_score > -MATE_SCORE {
-            let see_value = static_exchange_eval(game, &m);
-            // Threshold scales with depth: prune more aggressively at shallow depths
-            // At depth 1: threshold = -80, depth 4: threshold = -320
-            let see_threshold = -(depth as i32) * 80;
-            if see_value < see_threshold {
-                continue;
+            if let Some(cap_type) = captured_type {
+                // Use depth as proxy for lmr_depth (actual LMR reduction happens later)
+                let lmr_depth = depth as i32;
+
+                if lmr_depth < 7 {
+                    let capt_hist =
+                        searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
+
+                    // Futility pruning for captures using capture history
+                    // Formula adapted from Stockfish: static_eval + base + depth_factor + piece_value + hist_factor
+                    // Our piece values are ~100-1550, Stockfish's are scaled differently
+                    let cap_value = get_piece_value(cap_type);
+                    let futility_value = static_eval
+                        + 200                           // base margin
+                        + 150 * lmr_depth               // depth contribution
+                        + cap_value                     // captured piece value
+                        + capt_hist / 8; // history contribution (scaled for our max ~16384)
+
+                    if futility_value <= alpha {
+                        continue;
+                    }
+                }
+
+                // SEE-based move pruning with capture history adjustment
+                // Good capture history = more lenient SEE threshold
+                let capt_hist =
+                    searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
+                let see_value = static_exchange_eval(game, &m);
+
+                // Stockfish uses: max(166 * depth + captHist / 29, 0)
+                // Our capture history scale is similar, so use similar divisor
+                let see_margin = (150 * depth as i32 + capt_hist / 30).max(0);
+                let see_threshold = -see_margin;
+
+                if see_value < see_threshold {
+                    continue;
+                }
             }
         }
 
