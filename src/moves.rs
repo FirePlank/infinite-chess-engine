@@ -1009,8 +1009,9 @@ pub fn is_square_attacked(
     // My generate_rose_moves checks `board.get_piece` and breaks if blocked.
     // So it is blocked by pieces.
     // So we can trace out from target.
+    let defender_color = attacker_color.opponent();
     let rose_moves =
-        generate_rose_moves(board, target, &Piece::new(PieceType::Rose, attacker_color)); // Dummy piece
+        generate_rose_moves(board, target, &Piece::new(PieceType::Rose, defender_color));
     for m in rose_moves {
         if let Some(piece) = board.get_piece(&m.to.x, &m.to.y) {
             if piece.color() == attacker_color && piece.piece_type() == PieceType::Rose {
