@@ -279,6 +279,17 @@ pub struct Timer {
     start: Instant,
 }
 
+/// Hot data struct - grouped together for cache efficiency.
+/// These fields are accessed every node or very frequently during search.
+pub struct SearcherHot {
+    pub nodes: u64,
+    pub qnodes: u64,
+    pub timer: Timer,
+    pub time_limit_ms: u128,
+    pub stopped: bool,
+    pub seldepth: usize,
+}
+
 impl Timer {
     pub fn new() -> Self {
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -351,10 +362,10 @@ where
 {
     // Disable persistent searcher: create a fresh one per call so TT does not persist across searches.
     let mut searcher = Searcher::new(time_limit_ms);
-    searcher.time_limit_ms = time_limit_ms;
+    searcher.hot.time_limit_ms = time_limit_ms;
     searcher.silent = silent;
-    searcher.stopped = false;
-    searcher.timer.reset();
+    searcher.hot.stopped = false;
+    searcher.hot.timer.reset();
 
     f(&mut searcher)
 }
@@ -435,13 +446,8 @@ pub fn reset_search_state() {
 
 /// Search state that persists across the search
 pub struct Searcher {
-    pub nodes: u64,
-    pub qnodes: u64,
-
-    pub timer: Timer,
-    pub time_limit_ms: u128,
-    pub stopped: bool,
-    pub seldepth: usize,
+    /// Hot data - grouped for cache efficiency
+    pub hot: SearcherHot,
 
     // Transposition table
     pub tt: TranspositionTable,
@@ -541,12 +547,14 @@ impl Searcher {
         }
 
         Searcher {
-            nodes: 0,
-            qnodes: 0,
-            timer: Timer::new(),
-            time_limit_ms,
-            stopped: false,
-            seldepth: 0,
+            hot: SearcherHot {
+                nodes: 0,
+                qnodes: 0,
+                timer: Timer::new(),
+                time_limit_ms,
+                stopped: false,
+                seldepth: 0,
+            },
             tt: TranspositionTable::new(32),
             pv_table,
             pv_length: [0; MAX_PLY],
@@ -577,10 +585,10 @@ impl Searcher {
 
     pub fn reset_for_iteration(&mut self) {
         // Note: DO NOT reset timer here - we want global time limit across all iterations
-        self.nodes = 0;
-        self.qnodes = 0;
-        self.stopped = false;
-        self.seldepth = 0;
+        self.hot.nodes = 0;
+        self.hot.qnodes = 0;
+        self.hot.stopped = false;
+        self.hot.seldepth = 0;
 
         // Reset PV lengths only - much faster than clearing entire array
         // The PV entries will be overwritten as needed during search
@@ -633,7 +641,7 @@ impl Searcher {
     #[inline]
     pub fn check_time(&mut self) -> bool {
         // Fast-path: no time limit (used by offline test/perft helpers).
-        if self.time_limit_ms == u128::MAX {
+        if self.hot.time_limit_ms == u128::MAX {
             return false;
         }
 
@@ -644,12 +652,12 @@ impl Searcher {
         #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
         const TIME_CHECK_MASK: u64 = 2047; // every 2048 nodes
 
-        if self.nodes & TIME_CHECK_MASK == 0 {
-            if self.timer.elapsed_ms() >= self.time_limit_ms {
-                self.stopped = true;
+        if self.hot.nodes & TIME_CHECK_MASK == 0 {
+            if self.hot.timer.elapsed_ms() >= self.hot.time_limit_ms {
+                self.hot.stopped = true;
             }
         }
-        self.stopped
+        self.hot.stopped
     }
 
     /// Apply correction history to raw static evaluation.
@@ -776,9 +784,9 @@ impl Searcher {
 
     /// Print UCI-style info string with MultiPV index
     pub fn print_info_multipv(&self, depth: usize, score: i32, multipv: usize) {
-        let time_ms = self.timer.elapsed_ms();
+        let time_ms = self.hot.timer.elapsed_ms();
         let nps = if time_ms > 0 {
-            (self.nodes as u128 * 1000) / time_ms
+            (self.hot.nodes as u128 * 1000) / time_ms
         } else {
             0
         };
@@ -806,11 +814,11 @@ impl Searcher {
                 log(&format!(
                     "info depth {} seldepth {} multipv {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
                     depth,
-                    self.seldepth,
+                    self.hot.seldepth,
                     multipv,
                     score_str,
-                    self.nodes,
-                    self.qnodes,
+                    self.hot.nodes,
+                    self.hot.qnodes,
                     nps,
                     time_ms,
                     tt_fill,
@@ -820,10 +828,10 @@ impl Searcher {
                 log(&format!(
                     "info depth {} seldepth {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
                     depth,
-                    self.seldepth,
+                    self.hot.seldepth,
                     score_str,
-                    self.nodes,
-                    self.qnodes,
+                    self.hot.nodes,
+                    self.hot.qnodes,
                     nps,
                     time_ms,
                     tt_fill,
@@ -837,11 +845,11 @@ impl Searcher {
                 eprintln!(
                     "info depth {} seldepth {} multipv {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
                     depth,
-                    self.seldepth,
+                    self.hot.seldepth,
                     multipv,
                     score_str,
-                    self.nodes,
-                    self.qnodes,
+                    self.hot.nodes,
+                    self.hot.qnodes,
                     nps,
                     time_ms,
                     tt_fill,
@@ -851,10 +859,10 @@ impl Searcher {
                 eprintln!(
                     "info depth {} seldepth {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
                     depth,
-                    self.seldepth,
+                    self.hot.seldepth,
                     score_str,
-                    self.nodes,
-                    self.qnodes,
+                    self.hot.nodes,
+                    self.hot.qnodes,
                     nps,
                     time_ms,
                     tt_fill,
@@ -918,8 +926,8 @@ fn search_with_searcher(
         searcher.reset_for_iteration();
         searcher.decay_history();
         // Immediate time check at start of each iteration
-        if searcher.timer.elapsed_ms() >= searcher.time_limit_ms {
-            searcher.stopped = true;
+        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+            searcher.hot.stopped = true;
             break;
         }
 
@@ -939,7 +947,7 @@ fn search_with_searcher(
                 result = negamax_root(searcher, game, depth, alpha, beta, &mut legal_moves);
                 retries += 1;
 
-                if searcher.stopped {
+                if searcher.hot.stopped {
                     break;
                 }
 
@@ -987,19 +995,19 @@ fn search_with_searcher(
             prev_root_move_coords = Some(coords);
         }
 
-        if !searcher.stopped && !searcher.silent {
+        if !searcher.hot.stopped && !searcher.silent {
             searcher.print_info(depth, score);
         }
 
         // Check if we found mate or time is up
-        if searcher.stopped || best_score.abs() > MATE_SCORE {
+        if searcher.hot.stopped || best_score.abs() > MATE_SCORE {
             break;
         }
 
         // If we've used more than 50% of time, don't start another iteration
-        if searcher.time_limit_ms != u128::MAX {
-            let elapsed = searcher.timer.elapsed_ms();
-            let limit = searcher.time_limit_ms;
+        if searcher.hot.time_limit_ms != u128::MAX {
+            let elapsed = searcher.hot.timer.elapsed_ms();
+            let limit = searcher.hot.time_limit_ms;
 
             if best_move.is_some() {
                 let mut factor = 1.1_f64 - 0.03_f64 * (stability as f64);
@@ -1080,7 +1088,7 @@ pub fn get_best_move_threaded(
 
     // Use a fresh searcher per call (no persistent TT/state between searches).
     let mut searcher = Searcher::new(time_limit_ms);
-    searcher.time_limit_ms = time_limit_ms;
+    searcher.hot.time_limit_ms = time_limit_ms;
     searcher.silent = silent;
     searcher.thread_id = thread_id;
     // Set correction mode based on variant (zero overhead during search)
@@ -1111,14 +1119,14 @@ pub fn get_best_moves_multipv(
     // MultiPV = 1: Zero overhead path - just do normal search
     if multi_pv == 1 {
         let mut searcher = Searcher::new(time_limit_ms);
-        searcher.time_limit_ms = time_limit_ms;
+        searcher.hot.time_limit_ms = time_limit_ms;
         searcher.silent = silent;
         searcher.set_corrhist_mode(game);
 
         let mut lines: Vec<PVLine> = Vec::with_capacity(1);
         if let Some((best_move, score)) = search_with_searcher(&mut searcher, game, max_depth) {
             let pv = extract_pv(&searcher);
-            let depth = max_depth.min(searcher.seldepth.max(1));
+            let depth = max_depth.min(searcher.hot.seldepth.max(1));
             lines.push(PVLine {
                 mv: best_move,
                 score,
@@ -1132,7 +1140,7 @@ pub fn get_best_moves_multipv(
 
     // MultiPV > 1: Search with special root handling to collect multiple best moves
     let mut searcher = Searcher::new(time_limit_ms);
-    searcher.time_limit_ms = time_limit_ms;
+    searcher.hot.time_limit_ms = time_limit_ms;
     searcher.silent = silent;
     searcher.set_corrhist_mode(game);
 
@@ -1204,8 +1212,8 @@ fn get_best_moves_multipv_impl(
         searcher.decay_history();
 
         // Time check at start of each iteration
-        if searcher.timer.elapsed_ms() >= searcher.time_limit_ms {
-            searcher.stopped = true;
+        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+            searcher.hot.stopped = true;
             break;
         }
 
@@ -1216,7 +1224,7 @@ fn get_best_moves_multipv_impl(
 
         // Search each root move (ordered by previous iteration's scores)
         for (move_idx, m) in legal_root_moves.iter().enumerate() {
-            if searcher.stopped {
+            if searcher.hot.stopped {
                 break;
             }
 
@@ -1254,7 +1262,7 @@ fn get_best_moves_multipv_impl(
                     true,
                     NodeType::Cut,
                 );
-                if s > alpha && !searcher.stopped {
+                if s > alpha && !searcher.hot.stopped {
                     // Re-search with full window to get accurate score
                     s = -negamax(
                         searcher,
@@ -1272,7 +1280,7 @@ fn get_best_moves_multipv_impl(
 
             game.undo_move(m, undo);
 
-            if !searcher.stopped {
+            if !searcher.hot.stopped {
                 // Extract PV for this move from ply 1's triangular row
                 let child_base = MAX_PLY; // ply 1 base offset
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
@@ -1293,7 +1301,7 @@ fn get_best_moves_multipv_impl(
             }
         }
 
-        if searcher.stopped && root_scores.is_empty() {
+        if searcher.hot.stopped && root_scores.is_empty() {
             break;
         }
 
@@ -1318,7 +1326,7 @@ fn get_best_moves_multipv_impl(
             });
 
             // Print info for each PV line
-            if !silent && !searcher.stopped {
+            if !silent && !searcher.hot.stopped {
                 // Format PV string
                 let pv_str: String = pv
                     .iter()
@@ -1326,9 +1334,9 @@ fn get_best_moves_multipv_impl(
                     .collect::<Vec<_>>()
                     .join(" ");
 
-                let time_ms = searcher.timer.elapsed_ms();
+                let time_ms = searcher.hot.timer.elapsed_ms();
                 let nps = if time_ms > 0 {
-                    (searcher.nodes as u128 * 1000) / time_ms
+                    (searcher.hot.nodes as u128 * 1000) / time_ms
                 } else {
                     0
                 };
@@ -1349,10 +1357,10 @@ fn get_best_moves_multipv_impl(
                     log(&format!(
                         "info depth {} seldepth {} multipv {} score {} nodes {} nps {} time {} pv {}",
                         depth,
-                        searcher.seldepth,
+                        searcher.hot.seldepth,
                         idx + 1,
                         score_str,
-                        searcher.nodes,
+                        searcher.hot.nodes,
                         nps,
                         time_ms,
                         pv_str
@@ -1363,10 +1371,10 @@ fn get_best_moves_multipv_impl(
                     eprintln!(
                         "info depth {} seldepth {} multipv {} score {} nodes {} nps {} time {} pv {}",
                         depth,
-                        searcher.seldepth,
+                        searcher.hot.seldepth,
                         idx + 1,
                         score_str,
-                        searcher.nodes,
+                        searcher.hot.nodes,
                         nps,
                         time_ms,
                         pv_str
@@ -1376,7 +1384,7 @@ fn get_best_moves_multipv_impl(
         }
 
         // Check for mate or time up
-        if searcher.stopped {
+        if searcher.hot.stopped {
             break;
         }
         if !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
@@ -1384,9 +1392,9 @@ fn get_best_moves_multipv_impl(
         }
 
         // Soft time limit check - don't start next iteration if past 50%
-        if searcher.time_limit_ms != u128::MAX {
-            let elapsed = searcher.timer.elapsed_ms();
-            if elapsed >= searcher.time_limit_ms / 2 {
+        if searcher.hot.time_limit_ms != u128::MAX {
+            let elapsed = searcher.hot.timer.elapsed_ms();
+            if elapsed >= searcher.hot.time_limit_ms / 2 {
                 break;
             }
         }
@@ -1450,7 +1458,7 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
         INFINITY,
         &mut legal_moves,
     );
-    searcher.nodes
+    searcher.hot.nodes
 }
 
 /// Root negamax - special handling for root node
@@ -1559,7 +1567,7 @@ fn negamax_root(
         // Restore previous-move stack entry for root after returning from child.
         searcher.prev_move_stack[0] = prev_entry_backup;
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             return best_score;
         }
 
@@ -1641,15 +1649,15 @@ fn negamax(
 
     // Initialize node state
     let in_check = game.is_in_check();
-    searcher.nodes += 1;
+    searcher.hot.nodes += 1;
     searcher.pv_length[ply] = 0;
 
     // Time management and selective depth tracking
     if searcher.check_time() {
         return 0;
     }
-    if is_pv && ply > searcher.seldepth {
-        searcher.seldepth = ply;
+    if is_pv && ply > searcher.hot.seldepth {
+        searcher.hot.seldepth = ply;
     }
 
     // Non-root node: check for draws and mate distance pruning
@@ -1804,7 +1812,7 @@ fn negamax(
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
 
-                if searcher.stopped {
+                if searcher.hot.stopped {
                     return 0;
                 }
 
@@ -2051,7 +2059,7 @@ fn negamax(
 
                     game.undo_move(&se_m, se_undo);
 
-                    if searcher.stopped {
+                    if searcher.hot.stopped {
                         return 0;
                     }
 
@@ -2283,7 +2291,7 @@ fn negamax(
         searcher.move_history[ply] = move_history_backup;
         searcher.moved_piece_history[ply] = piece_history_backup;
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             return best_score;
         }
 
@@ -2490,12 +2498,12 @@ fn quiescence(
         return evaluate(game);
     }
 
-    searcher.nodes += 1;
-    searcher.qnodes += 1;
+    searcher.hot.nodes += 1;
+    searcher.hot.qnodes += 1;
 
     // Update seldepth
-    if ply > searcher.seldepth {
-        searcher.seldepth = ply;
+    if ply > searcher.hot.seldepth {
+        searcher.hot.seldepth = ply;
     }
 
     if searcher.check_time() {
@@ -2587,7 +2595,7 @@ fn quiescence(
 
         game.undo_move(m, undo);
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             // Swap back move buffer before returning early
             std::mem::swap(&mut searcher.move_buffers[ply], &mut tactical_moves);
             return best_score;

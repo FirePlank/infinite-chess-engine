@@ -45,7 +45,7 @@ pub fn get_best_move_with_noise(
     // Initialize correction history hashes
     game.recompute_correction_hashes();
     let mut searcher = Searcher::new(time_limit_ms);
-    searcher.time_limit_ms = time_limit_ms;
+    searcher.hot.time_limit_ms = time_limit_ms;
     searcher.silent = silent;
     searcher.set_corrhist_mode(game);
 
@@ -97,8 +97,8 @@ fn search_with_searcher_noisy(
         searcher.reset_for_iteration();
         searcher.decay_history();
 
-        if searcher.timer.elapsed_ms() >= searcher.time_limit_ms {
-            searcher.stopped = true;
+        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+            searcher.hot.stopped = true;
             break;
         }
 
@@ -116,7 +116,7 @@ fn search_with_searcher_noisy(
                 result = negamax_root_noisy(searcher, game, depth, alpha, beta, noise_amp);
                 retries += 1;
 
-                if searcher.stopped {
+                if searcher.hot.stopped {
                     break;
                 }
 
@@ -159,17 +159,17 @@ fn search_with_searcher_noisy(
             prev_root_move_coords = Some(coords);
         }
 
-        if !searcher.stopped && !searcher.silent {
+        if !searcher.hot.stopped && !searcher.silent {
             searcher.print_info(depth, score);
         }
 
-        if searcher.stopped || best_score.abs() > MATE_SCORE {
+        if searcher.hot.stopped || best_score.abs() > MATE_SCORE {
             break;
         }
 
-        if searcher.time_limit_ms != u128::MAX {
-            let elapsed = searcher.timer.elapsed_ms();
-            let limit = searcher.time_limit_ms;
+        if searcher.hot.time_limit_ms != u128::MAX {
+            let elapsed = searcher.hot.timer.elapsed_ms();
+            let limit = searcher.hot.time_limit_ms;
 
             if best_move.is_some() {
                 let mut factor = 1.1_f64 - 0.03_f64 * (stability as f64);
@@ -302,7 +302,7 @@ fn negamax_root_noisy(
 
         searcher.prev_move_stack[0] = prev_entry_backup;
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             return best_score;
         }
 
@@ -382,15 +382,15 @@ fn negamax_noisy(
 
     // Initialize node state
     let in_check = game.is_in_check();
-    searcher.nodes += 1;
+    searcher.hot.nodes += 1;
     searcher.pv_length[ply] = 0;
 
     // Time management and selective depth tracking
     if searcher.check_time() {
         return 0;
     }
-    if is_pv && ply > searcher.seldepth {
-        searcher.seldepth = ply;
+    if is_pv && ply > searcher.hot.seldepth {
+        searcher.hot.seldepth = ply;
     }
 
     // Non-root node: check for draws and mate distance pruning
@@ -516,7 +516,7 @@ fn negamax_noisy(
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
 
-                if searcher.stopped {
+                if searcher.hot.stopped {
                     return 0;
                 }
 
@@ -755,7 +755,7 @@ fn negamax_noisy(
         searcher.move_history[ply] = move_history_backup;
         searcher.moved_piece_history[ply] = piece_history_backup;
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
             return 0;
         }
@@ -882,11 +882,11 @@ fn quiescence_noisy(
         return evaluate_with_noise(game, noise_amp);
     }
 
-    searcher.nodes += 1;
-    searcher.qnodes += 1;
+    searcher.hot.nodes += 1;
+    searcher.hot.qnodes += 1;
 
-    if ply > searcher.seldepth {
-        searcher.seldepth = ply;
+    if ply > searcher.hot.seldepth {
+        searcher.hot.seldepth = ply;
     }
 
     if searcher.check_time() {
@@ -961,7 +961,7 @@ fn quiescence_noisy(
 
         game.undo_move(m, undo);
 
-        if searcher.stopped {
+        if searcher.hot.stopped {
             std::mem::swap(&mut searcher.move_buffers[ply], &mut tactical_moves);
             return best_score;
         }
