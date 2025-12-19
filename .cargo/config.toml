@@ -1,0 +1,5 @@
+# Cargo configuration for hydrochess-wasm
+# Automatically enables SIMD 128-bit for WebAssembly targets
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

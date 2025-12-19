@@ -229,7 +229,10 @@ const DEVELOPED_PHASE_ATTACK_SCALE: i32 = 100;
 #[inline]
 fn calculate_game_phase(game: &GameState) -> i32 {
     // Use the cached counts from GameState (set at game start, updated by make/undo)
-    let current_pieces = (game.white_piece_count + game.black_piece_count) as i32;
+    // We only count non-pawn pieces for game phase.
+    let current_pieces = (game.white_piece_count.saturating_sub(game.white_pawn_count)
+        + game.black_piece_count.saturating_sub(game.black_pawn_count))
+        as i32;
     let starting_pieces = (game.starting_white_pieces + game.starting_black_pieces) as i32;
 
     if starting_pieces == 0 {
@@ -278,6 +281,11 @@ pub fn evaluate_lazy(game: &GameState) -> i32 {
 
     // BITBOARD: Use tile-based CTZ iteration for O(popcount) positional scoring
     for (cx, cy, tile) in game.board.tiles.iter() {
+        // SIMD: Fast skip empty tiles
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+            continue;
+        }
+
         let mut bits = tile.occ_all;
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
@@ -436,6 +444,11 @@ pub fn evaluate_pieces(
     let mut cloud_count: i64 = 0;
 
     for (cx, cy, tile) in game.board.tiles.iter() {
+        // SIMD: Fast skip empty tiles using parallel zero check
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+            continue;
+        }
+
         let cloud_bits = tile.occ_all & !tile.occ_void & !tile.occ_pawns;
         if cloud_bits != 0 {
             let n = cloud_bits.count_ones() as i64;
@@ -511,6 +524,11 @@ pub fn evaluate_pieces(
 
     // BITBOARD: Pass 2 - Main evaluation
     for (cx, cy, tile) in game.board.tiles.iter() {
+        // SIMD: Fast skip empty tiles
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+            continue;
+        }
+
         let mut bits = tile.occ_all;
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
@@ -2259,14 +2277,43 @@ fn needs_king_for_mate(board: &Board, color: PlayerColor) -> bool {
 }
 
 pub fn calculate_initial_material(board: &Board) -> i32 {
-    let mut score = 0;
-    for (_, piece) in board.iter() {
-        let value = get_piece_value(piece.piece_type());
-        match piece.color() {
-            PlayerColor::White => score += value,
-            PlayerColor::Black => score -= value,
-            PlayerColor::Neutral => {}
+    let mut score: i32 = 0;
+
+    // BITBOARD: Use tile-based CTZ iteration for O(popcount) scan
+    for (cx, cy, tile) in board.tiles.iter() {
+        // SIMD: Fast skip empty tiles
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+            continue;
         }
+
+        // Process white pieces
+        let mut white_bits = tile.occ_white;
+        while white_bits != 0 {
+            let idx = white_bits.trailing_zeros() as usize;
+            white_bits &= white_bits - 1;
+
+            let packed = tile.piece[idx];
+            if packed != 0 {
+                let piece = crate::board::Piece::from_packed(packed);
+                score += get_piece_value(piece.piece_type());
+            }
+        }
+
+        // Process black pieces
+        let mut black_bits = tile.occ_black;
+        while black_bits != 0 {
+            let idx = black_bits.trailing_zeros() as usize;
+            black_bits &= black_bits - 1;
+
+            let packed = tile.piece[idx];
+            if packed != 0 {
+                let piece = crate::board::Piece::from_packed(packed);
+                score -= get_piece_value(piece.piece_type());
+            }
+        }
+
+        // Suppress unused variable warnings
+        let _ = (cx, cy);
     }
     score
 }

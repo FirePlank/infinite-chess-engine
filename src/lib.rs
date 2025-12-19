@@ -8,6 +8,7 @@ pub mod evaluation;
 pub mod game;
 pub mod moves;
 pub mod search;
+pub mod simd;
 pub mod tiles;
 mod utils;
 
