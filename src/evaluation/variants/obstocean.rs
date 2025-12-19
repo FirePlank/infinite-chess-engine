@@ -39,8 +39,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
     // Check for endgame with lone king
-    let white_only_king = base::is_lone_king(&game.board, PlayerColor::White);
-    let black_only_king = base::is_lone_king(&game.board, PlayerColor::Black);
+    let white_only_king = base::is_lone_king(game, PlayerColor::White);
+    let black_only_king = base::is_lone_king(game, PlayerColor::Black);
 
     // Handle lone king endgames
     if black_only_king && black_king.is_some() {
@@ -357,19 +357,19 @@ fn evaluate_tunnel(px: i64, py: i64, promo_rank: i64, board: &Board, is_white: b
         let check_y = if is_white { py + i } else { py - i };
 
         // Center obstacle
-        if let Some(p) = board.get_piece(&px, &check_y) {
+        if let Some(p) = board.get_piece(px, check_y) {
             if p.piece_type() == PieceType::Obstacle {
                 weighted_density += 1.0;
             }
         }
 
         // Adjacent obstacles (eating shield) - worth more
-        if let Some(p) = board.get_piece(&(px - 1), &check_y) {
+        if let Some(p) = board.get_piece(px - 1, check_y) {
             if p.piece_type() == PieceType::Obstacle {
                 weighted_density += 2.0;
             }
         }
-        if let Some(p) = board.get_piece(&(px + 1), &check_y) {
+        if let Some(p) = board.get_piece(px + 1, check_y) {
             if p.piece_type() == PieceType::Obstacle {
                 weighted_density += 2.0;
             }
@@ -444,7 +444,7 @@ fn evaluate_free_runner(
     // Check if contested
     for i in 1..=limit {
         let check_y = if is_white { py + i } else { py - i };
-        if let Some(p) = board.get_piece(&px, &check_y) {
+        if let Some(p) = board.get_piece(px, check_y) {
             if p.color() == enemy_color {
                 return 0; // Contested, no bonus
             }
@@ -481,12 +481,13 @@ fn get_closest_piece_distance(
     color: PlayerColor,
 ) -> i64 {
     let mut min_dist = 1000i64;
-    for ((x, y), piece) in board.iter() {
-        if piece.color() == color {
-            let dist = (x - target_x).abs().max((y - target_y).abs());
-            if dist < min_dist {
-                min_dist = dist;
-            }
+    for (x, y, _piece) in board
+        .tiles
+        .iter_pieces_by_color(color == PlayerColor::White)
+    {
+        let dist = (x - target_x).abs().max((y - target_y).abs());
+        if dist < min_dist {
+            min_dist = dist;
         }
     }
     min_dist

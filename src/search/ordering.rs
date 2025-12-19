@@ -284,7 +284,7 @@ pub fn sort_moves(
         }
 
         // BITBOARD: Fast capture detection
-        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
+        if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             // Capture: MVV-LVA + SEE threshold + capture history.
             let victim_val = get_piece_value(target.piece_type());
             let attacker_val = get_piece_value(m.piece.piece_type());
@@ -386,7 +386,7 @@ pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
     moves.sort_by_cached_key(|m| {
         let mut score = 0;
         // BITBOARD: Fast piece lookup
-        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
+        if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             // MVV-LVA: prioritize capturing high value pieces with low value attackers
             score -=
                 get_piece_value(target.piece_type()) * 10 - get_piece_value(m.piece.piece_type());

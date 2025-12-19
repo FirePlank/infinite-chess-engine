@@ -49,6 +49,10 @@ pub fn evaluate(game: &GameState) -> i32 {
     // Using a simple vector check is fast enough for ~36 items
 
     for ((x, y), piece) in game.board.iter() {
+        if piece.color() == PlayerColor::Neutral {
+            continue;
+        }
+
         let coord = Coordinate::new(*x, *y);
         match piece.color() {
             PlayerColor::White => {

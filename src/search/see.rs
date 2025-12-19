@@ -13,7 +13,7 @@ const SEE_MAX_PIECES: usize = 128;
 #[inline]
 pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     // BITBOARD: Fast piece check
-    let captured = match game.board.get_piece_fast(m.to.x, m.to.y) {
+    let captured = match game.board.get_piece(m.to.x, m.to.y) {
         Some(p) => p,
         None => return 0 >= threshold, // No capture: SEE = 0
     };
@@ -45,7 +45,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     // Only meaningful for captures; quiet moves (or moves to empty squares)
     // have no immediate material swing.
     // BITBOARD: Fast piece check
-    let captured = match game.board.get_piece_fast(m.to.x, m.to.y) {
+    let captured = match game.board.get_piece(m.to.x, m.to.y) {
         Some(p) => p,
         None => return 0,
     };

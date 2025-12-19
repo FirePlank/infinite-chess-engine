@@ -46,6 +46,9 @@ fn has_sufficient_mating_material(board: &Board, color: PlayerColor, has_our_kin
     let mut dark_bishops = 0;
 
     for ((x, y), piece) in board.iter() {
+        if piece.color() == PlayerColor::Neutral {
+            continue;
+        }
         if piece.color() != color {
             continue;
         }
@@ -54,7 +57,7 @@ fn has_sufficient_mating_material(board: &Board, color: PlayerColor, has_our_kin
             PieceType::Rook => rooks += 1,
             PieceType::Bishop => {
                 bishops += 1;
-                if (x + y) % 2 == 0 {
+                if (*x + *y) % 2 == 0 {
                     light_bishops += 1;
                 } else {
                     dark_bishops += 1;
@@ -584,6 +587,9 @@ fn compute_insufficient_material(board: &Board) -> Option<i32> {
     let mut black_pieces = 0; // Non-king pieces
 
     for (_, p) in board.iter() {
+        if p.color() == PlayerColor::Neutral {
+            continue;
+        }
         let is_royal = p.piece_type().is_royal();
         match p.color() {
             PlayerColor::White => {

@@ -173,7 +173,7 @@ impl StagedMoveGen {
     #[inline]
     fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
         // BITBOARD: Fast piece check using tile array
-        if let Some(piece) = game.board.get_piece_fast(m.from.x, m.from.y) {
+        if let Some(piece) = game.board.get_piece(m.from.x, m.from.y) {
             if piece.color() != game.turn || piece.piece_type() != m.piece.piece_type() {
                 return false;
             }
@@ -211,7 +211,7 @@ impl StagedMoveGen {
 
     /// Score capture move (BITBOARD: uses fast piece retrieval)
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
-        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
+        if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             let victim_val = get_piece_value(target.piece_type());
             let cap_hist = searcher.capture_history[m.piece.piece_type() as usize]
                 [target.piece_type() as usize];

@@ -360,8 +360,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
     // Check for endgame with lone king
-    let white_only_king = is_lone_king(&game.board, PlayerColor::White);
-    let black_only_king = is_lone_king(&game.board, PlayerColor::Black);
+    let white_only_king = is_lone_king(game, PlayerColor::White);
+    let black_only_king = is_lone_king(game, PlayerColor::Black);
 
     // Check if attacking side has promotable pawns - if so, prioritize promotion over mating net
     let white_has_promotable_pawn =
@@ -844,7 +844,7 @@ pub fn evaluate_rook(
     }
 
     // Penalize completely idle rooks stuck behind both own and enemy pawns on their file.
-    let (own_pawns_on_file, enemy_pawns_on_file) = count_pawns_on_file(game, x, color);
+    let (own_pawns_on_file, enemy_pawns_on_file) = count_pawns_on_file(&game.board, x, color);
     if own_pawns_on_file > 0 && enemy_pawns_on_file > 0 {
         bonus -= ROOK_IDLE_PENALTY;
         bump_feat!(rook_idle_penalty, -1);
@@ -1229,7 +1229,7 @@ fn evaluate_knightrider(
         let mut steps = 0;
         // Count empty squares along the knight-ray (max 5 steps for efficiency)
         while steps < 5 {
-            if board.get_piece(&nx, &ny).is_some() {
+            if board.get_piece(nx, ny).is_some() {
                 break;
             }
             steps += 1;
@@ -1303,7 +1303,7 @@ fn evaluate_king_shelter(game: &GameState, king: &Coordinate, color: PlayerColor
             }
             let cx = king.x + dx;
             let cy = king.y + dy;
-            if let Some(piece) = game.board.get_piece(&cx, &cy) {
+            if let Some(piece) = game.board.get_piece(cx, cy) {
                 if piece.color() == color {
                     if piece.piece_type() == PieceType::Pawn
                         || piece.piece_type() == PieceType::Guard
@@ -1324,32 +1324,49 @@ fn evaluate_king_shelter(game: &GameState, king: &Coordinate, color: PlayerColor
     // We look for pawns roughly on the same files as the king (+/- 2 files) to keep it local.
     let mut has_pawn_ahead = false;
     let mut has_pawn_behind = false;
-    for ((px, py), piece) in game.board.iter() {
-        if piece.color() != color || piece.piece_type() != PieceType::Pawn {
+
+    // BITBOARD: Use tile-based pawn iteration
+    let is_white = color == PlayerColor::White;
+    for (cx, cy, tile) in game.board.tiles.iter() {
+        let color_pawns = tile.occ_pawns
+            & if is_white {
+                tile.occ_white
+            } else {
+                tile.occ_black
+            };
+        if color_pawns == 0 {
             continue;
         }
 
-        // Only consider pawns near the king in file-space
-        if (px - king.x).abs() > 2 {
-            continue;
-        }
+        let mut bits = color_pawns;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let px = cx * 8 + (idx % 8) as i64;
+            let py = cy * 8 + (idx / 8) as i64;
 
-        match color {
-            PlayerColor::White => {
-                if *py > king.y {
-                    has_pawn_ahead = true;
-                } else if *py < king.y {
-                    has_pawn_behind = true;
-                }
+            // Only consider pawns near the king in file-space
+            if (px - king.x).abs() > 2 {
+                continue;
             }
-            PlayerColor::Black => {
-                if *py < king.y {
-                    has_pawn_ahead = true;
-                } else if *py > king.y {
-                    has_pawn_behind = true;
+
+            match color {
+                PlayerColor::White => {
+                    if py > king.y {
+                        has_pawn_ahead = true;
+                    } else if py < king.y {
+                        has_pawn_behind = true;
+                    }
                 }
+                PlayerColor::Black => {
+                    if py < king.y {
+                        has_pawn_ahead = true;
+                    } else if py > king.y {
+                        has_pawn_behind = true;
+                    }
+                }
+                PlayerColor::Neutral => {}
             }
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
         }
     }
 
@@ -1382,7 +1399,7 @@ fn evaluate_king_shelter(game: &GameState, king: &Coordinate, color: PlayerColor
         for _step in 0..8 {
             cx += dx;
             cy += dy;
-            if let Some(piece) = game.board.get_piece(&cx, &cy) {
+            if let Some(piece) = game.board.get_piece(cx, cy) {
                 // Friendly piece stops the ray and provides some cover
                 if piece.color() == color {
                     ray_open = false;
@@ -1615,71 +1632,63 @@ fn compute_pawn_structure(game: &GameState) -> i32 {
     score
 }
 
-pub fn find_kings(board: &Board) -> (Option<Coordinate>, Option<Coordinate>) {
-    let mut white_king: Option<Coordinate> = None;
-    let mut black_king: Option<Coordinate> = None;
-
-    for ((x, y), piece) in board.iter() {
-        if piece.piece_type() == PieceType::King {
-            if piece.color() == PlayerColor::White {
-                white_king = Some(Coordinate { x: *x, y: *y });
-            } else {
-                black_king = Some(Coordinate { x: *x, y: *y });
-            }
-        }
-    }
-
-    (white_king, black_king)
-}
-
 /// Check if a side only has a king (no other pieces)
-pub fn is_lone_king(board: &Board, color: PlayerColor) -> bool {
-    for (_, piece) in board.iter() {
-        if piece.color() == color && piece.piece_type() != PieceType::King {
-            return false;
-        }
+pub fn is_lone_king(game: &GameState, color: PlayerColor) -> bool {
+    if color == PlayerColor::White {
+        game.white_pawn_count == 0 && !game.white_non_pawn_material
+    } else if color == PlayerColor::Black {
+        game.black_pawn_count == 0 && !game.black_non_pawn_material
+    } else {
+        false
     }
-    true
 }
 
 /// Check if a side has any pawn that can still promote (not past the promotion rank)
 fn has_promotable_pawn(board: &Board, color: PlayerColor, promo_rank: i64) -> bool {
-    for ((_, y), piece) in board.iter() {
-        if piece.color() != color || piece.piece_type() != PieceType::Pawn {
-            continue;
-        }
-
-        // Check if pawn is on the correct side of promotion rank
+    for (_, y, _) in board
+        .tiles
+        .iter_pieces_by_color_and_type(color, PieceType::Pawn)
+    {
         match color {
             PlayerColor::White => {
-                if *y < promo_rank {
-                    return true; // Can still advance toward promotion
-                }
-            }
-            PlayerColor::Black => {
-                if *y > promo_rank {
+                if y < promo_rank {
                     return true;
                 }
             }
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
+            PlayerColor::Black => {
+                if y > promo_rank {
+                    return true;
+                }
+            }
+            PlayerColor::Neutral => {}
         }
     }
     false
 }
 
-// (Your existing evaluate_lone_king_endgame + needs_king_for_mate here; unchanged)
-
-pub fn count_pawns_on_file(game: &GameState, file: i64, color: PlayerColor) -> (i32, i32) {
+/// Count how many pawns of each side are on a specific file (including neighboring files)
+pub fn count_pawns_on_file(board: &Board, x: i64, color: PlayerColor) -> (i32, i32) {
     let mut own_pawns = 0;
     let mut enemy_pawns = 0;
 
-    for ((x, _), piece) in game.board.iter() {
-        if *x == file && piece.piece_type() == PieceType::Pawn {
-            if piece.color() == color {
-                own_pawns += 1;
-            } else {
-                enemy_pawns += 1;
-            }
+    let enemy_color = color.opponent();
+
+    // Iterate through pieces of target color and enemy color that are pawns
+    // This is more efficient than iterating all tiles if pieces are sparse.
+    for (px, _, _) in board
+        .tiles
+        .iter_pieces_by_color_and_type(color, PieceType::Pawn)
+    {
+        if (px - x).abs() <= 1 {
+            own_pawns += 1;
+        }
+    }
+    for (px, _, _) in board
+        .tiles
+        .iter_pieces_by_color_and_type(enemy_color, PieceType::Pawn)
+    {
+        if (px - x).abs() <= 1 {
+            enemy_pawns += 1;
         }
     }
 
@@ -1706,7 +1715,7 @@ pub fn slider_mobility(
         for _ in 0..max_steps {
             cx += dx;
             cy += dy;
-            if board.get_piece(&cx, &cy).is_some() {
+            if board.get_piece(cx, cy).is_some() {
                 break;
             }
             count += 1;
@@ -1784,13 +1793,17 @@ pub fn evaluate_lone_king_endgame(
     }
     let mut sliders: Vec<SliderInfo> = Vec::new();
 
-    for ((x, y), piece) in game.board.iter() {
-        if piece.color() != winning_color || piece.piece_type().is_royal() {
+    for (x, y, piece) in game
+        .board
+        .tiles
+        .iter_pieces_by_color(winning_color == PlayerColor::White)
+    {
+        if piece.piece_type().is_royal() {
             continue;
         }
         match piece.piece_type() {
             PieceType::Rook | PieceType::Chancellor | PieceType::Queen | PieceType::Amazon => {
-                sliders.push(SliderInfo { x: *x, y: *y });
+                sliders.push(SliderInfo { x, y });
             }
             _ => {}
         }
@@ -2082,51 +2095,31 @@ pub fn evaluate_lone_king_endgame(
     // the evaluation really wants the short-range pieces to participate.
     let short_base_scale: i32 = if few_sliders { 6 } else { 3 };
 
-    for ((px, py), piece) in game.board.iter() {
-        if piece.color() != winning_color {
-            continue;
-        }
-
+    for (px, py, piece) in game
+        .board
+        .tiles
+        .iter_pieces_by_color(winning_color == PlayerColor::White)
+    {
         // Skip long-range sliders here; they are already handled by the
         // sandwich/fence logic above.
-        let is_slider_piece = matches!(
-            piece.piece_type(),
-            PieceType::Rook
-                | PieceType::Chancellor
-                | PieceType::Queen
-                | PieceType::RoyalQueen
-                | PieceType::Bishop
-                | PieceType::Amazon
-                | PieceType::Knightrider
-                | PieceType::Huygen
-        );
-
-        if is_slider_piece {
-            continue;
-        }
-
-        // King proximity is already handled by the king-involvement logic
-        // above; avoid double-counting it here.
-        if piece.piece_type() == PieceType::King {
+        if piece.piece_type().is_slider() || piece.piece_type().is_royal() {
             continue;
         }
 
         let dist = (px - enemy_king.x).abs() + (py - enemy_king.y).abs();
         let capped = dist.min(12);
         let prox = (12 - capped) as i32; // 1 step closer = positive bonus, far away ~ 0
-        if prox <= 0 {
-            continue;
+        if prox > 0 {
+            // Scale more strongly for true short-range attackers.
+            let piece_scale: i32 = match piece.piece_type() {
+                PieceType::Guard | PieceType::Centaur | PieceType::RoyalCentaur => 3,
+                PieceType::Knight | PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => 3,
+                PieceType::Hawk | PieceType::Rose => 2,
+                _ => 1,
+            };
+
+            bonus += prox * short_base_scale * piece_scale;
         }
-
-        // Scale more strongly for true short-range attackers.
-        let piece_scale: i32 = match piece.piece_type() {
-            PieceType::Guard | PieceType::Centaur | PieceType::RoyalCentaur => 3,
-            PieceType::Knight | PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => 3,
-            PieceType::Hawk | PieceType::Rose => 2,
-            _ => 1,
-        };
-
-        bonus += prox * short_base_scale * piece_scale;
     }
 
     bonus
@@ -2145,10 +2138,10 @@ fn needs_king_for_mate(board: &Board, color: PlayerColor) -> bool {
     let mut hawks = 0;
     let mut guards = 0;
 
-    for (_, piece) in board.iter() {
-        if piece.color() != color {
-            continue;
-        }
+    for (_, _, piece) in board
+        .tiles
+        .iter_pieces_by_color(color == PlayerColor::White)
+    {
         match piece.piece_type() {
             PieceType::Queen | PieceType::RoyalQueen => queens += 1,
             PieceType::Rook => rooks += 1,

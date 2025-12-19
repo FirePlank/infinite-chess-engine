@@ -283,7 +283,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                 }
 
                 // Rook on open/semi-open file
-                let file = ((*x - 1) as usize).min(7);
+                let file = ((x - 1) as usize).min(7);
                 let own_pawn = if is_white {
                     white_pawn_files[file]
                 } else {
@@ -387,7 +387,7 @@ fn count_bishop_mobility(board: &Board, x: i64, y: i64) -> i32 {
         let mut nx = x + dx;
         let mut ny = y + dy;
         while on_board(nx, ny) {
-            if board.get_piece(&nx, &ny).is_some() {
+            if board.get_piece(nx, ny).is_some() {
                 break;
             }
             count += 1;
@@ -405,7 +405,7 @@ fn count_rook_mobility(board: &Board, x: i64, y: i64) -> i32 {
         let mut nx = x + dx;
         let mut ny = y + dy;
         while on_board(nx, ny) {
-            if board.get_piece(&nx, &ny).is_some() {
+            if board.get_piece(nx, ny).is_some() {
                 break;
             }
             count += 1;

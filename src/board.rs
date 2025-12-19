@@ -138,9 +138,32 @@ impl PieceType {
             "u" => Some(PieceType::Huygen),
             "r" => Some(PieceType::Rook),
             "b" => Some(PieceType::Bishop),
-            "p" => Some(PieceType::Pawn),
             _ => None,
         }
+    }
+
+    #[inline]
+    pub fn is_slider(&self) -> bool {
+        matches!(
+            self,
+            PieceType::Rook
+                | PieceType::Bishop
+                | PieceType::Queen
+                | PieceType::RoyalQueen
+                | PieceType::Amazon
+                | PieceType::Chancellor
+                | PieceType::Archbishop
+                | PieceType::Knightrider
+                | PieceType::Huygen
+        )
+    }
+
+    #[inline]
+    pub fn is_royal(&self) -> bool {
+        matches!(
+            self,
+            PieceType::King | PieceType::RoyalQueen | PieceType::RoyalCentaur
+        )
     }
 
     /// Convert piece type to single-character string
@@ -175,15 +198,6 @@ impl PieceType {
     #[inline]
     pub fn is_neutral_type(&self) -> bool {
         matches!(self, PieceType::Void | PieceType::Obstacle)
-    }
-
-    /// Check if this piece type is a royal (king-like) piece
-    #[inline]
-    pub fn is_royal(&self) -> bool {
-        matches!(
-            self,
-            PieceType::King | PieceType::RoyalQueen | PieceType::RoyalCentaur
-        )
     }
 
     /// Get all promotable piece types (for dynamic promotion)
@@ -418,6 +432,23 @@ impl Board {
         }
     }
 
+    /// Fast bitboard-based iteration of pieces by color.
+    /// TOGGLE: Rename to iter_pieces_by_color to use bitboard version as default.
+    #[inline]
+    pub fn iter_pieces_by_color_bitboard(
+        &self,
+        is_white: bool,
+    ) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
+        self.tiles.iter_pieces_by_color(is_white)
+    }
+
+    /// Iterate all pieces on the board using bitboards.
+    /// TOGGLE: Rename to iter_all_pieces to use bitboard version as default.
+    #[inline]
+    pub fn iter_all_pieces_bitboard(&self) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
+        self.tiles.iter_all_pieces()
+    }
+
     pub fn set_piece(&mut self, x: i64, y: i64, piece: Piece) {
         let pos = (x, y);
 
@@ -458,8 +489,8 @@ impl Board {
     }
 
     #[inline]
-    pub fn get_piece(&self, x: &i64, y: &i64) -> Option<&Piece> {
-        self.pieces.get(&(*x, *y))
+    pub fn get_piece(&self, x: i64, y: i64) -> Option<&Piece> {
+        self.pieces.get(&(x, y))
     }
 
     /// BITBOARD: O(1) occupancy check using tile bitboards.
@@ -495,8 +526,9 @@ impl Board {
     /// BITBOARD: O(1) piece retrieval using tile bitboards.
     /// Returns packed piece directly from tile array (no HashMap lookup).
     /// Use when you already know the square is occupied.
+    /// TOGGLE: Rename this to get_piece_fast to use bitboard version as default.
     #[inline]
-    pub fn get_piece_fast(&self, x: i64, y: i64) -> Option<Piece> {
+    pub fn get_piece_bitboard(&self, x: i64, y: i64) -> Option<Piece> {
         let (cx, cy) = tile_coords(x, y);
         if let Some(tile) = self.tiles.get_tile(cx, cy) {
             let idx = local_index(x, y);

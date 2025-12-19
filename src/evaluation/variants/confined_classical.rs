@@ -45,8 +45,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
     // Check for endgame with lone king
-    let white_only_king = base::is_lone_king(&game.board, PlayerColor::White);
-    let black_only_king = base::is_lone_king(&game.board, PlayerColor::Black);
+    let white_only_king = base::is_lone_king(game, PlayerColor::White);
+    let black_only_king = base::is_lone_king(game, PlayerColor::Black);
 
     // Handle lone king endgames
     if black_only_king && black_king.is_some() {
@@ -303,7 +303,7 @@ fn evaluate_queen_confined(
     }
 
     // Idle penalty from pawns on file (same as base)
-    let (own_pawns_on_file, enemy_pawns_on_file) = base::count_pawns_on_file(game, x, color);
+    let (own_pawns_on_file, enemy_pawns_on_file) = base::count_pawns_on_file(&game.board, x, color);
     if own_pawns_on_file > 0 && enemy_pawns_on_file > 0 {
         bonus -= 15;
     }

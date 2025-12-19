@@ -51,7 +51,7 @@ pub struct UndoMove {
     pub old_en_passant: Option<EnPassantState>,
     pub old_halfmove_clock: u32,
     pub old_hash: u64, // Hash before the move was made
-    pub special_rights_removed: ArrayVec<Coordinate, 4>, // Track which special rights were removed (re-insert on undo)sert on undo)
+    pub special_rights_removed: ArrayVec<Coordinate, 4>, // Track which special rights were removed (re-insert on undo)
     /// If this move caused a piece to leave its original starting square,
     /// we remove that coordinate from starting_squares. Store it here so
     /// undo_move can restore starting_squares exactly.
@@ -61,6 +61,9 @@ pub struct UndoMove {
     pub old_black_king_pos: Option<Coordinate>,
     /// Old repetition value for restoration
     pub old_repetition: i32,
+    pub old_cloud_sum_x: i64,
+    pub old_cloud_sum_y: i64,
+    pub old_cloud_count: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -89,13 +92,23 @@ pub struct GameState {
     pub white_piece_count: u16,
     #[serde(skip)]
     pub black_piece_count: u16,
+    #[serde(skip)]
+    pub white_pawn_count: u16,
+    #[serde(skip)]
+    pub black_pawn_count: u16,
     /// Starting piece counts (non-pawn) for game phase calculation
     /// Set once when game is initialized, never changes
     #[serde(skip)]
     pub starting_white_pieces: u16,
     #[serde(skip)]
     pub starting_black_pieces: u16,
-    /// Piece coordinates per color for fast iteration
+    #[serde(skip)]
+    pub cloud_sum_x: i64,
+    #[serde(skip)]
+    pub cloud_sum_y: i64,
+    #[serde(skip)]
+    pub cloud_count: u64,
+    /// Is the tile bitboard infrastructure valid? (Usually true after first access)
     #[serde(skip)]
     pub white_pieces: Vec<(i64, i64)>,
     #[serde(skip)]
@@ -155,7 +168,7 @@ impl GameState {
     pub fn castling_rights(&self) -> FxHashSet<Coordinate> {
         let mut rights = FxHashSet::default();
         for coord in &self.special_rights {
-            if let Some(piece) = self.board.get_piece(&coord.x, &coord.y) {
+            if let Some(piece) = self.board.get_piece(coord.x, coord.y) {
                 // Only include kings and rooks (not pawns) in castling rights
                 if piece.piece_type() == PieceType::King
                     || piece.piece_type() == PieceType::Rook
@@ -191,8 +204,13 @@ impl GameState {
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
+            white_pawn_count: 0,
+            black_pawn_count: 0,
             starting_white_pieces: 0,
             starting_black_pieces: 0,
+            cloud_sum_x: 0,
+            cloud_sum_y: 0,
+            cloud_count: 0,
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
@@ -207,8 +225,8 @@ impl GameState {
             nonpawn_hash: 0,
             material_hash: 0,
             repetition: 0,
-            white_non_pawn_material: true,
-            black_non_pawn_material: true,
+            white_non_pawn_material: false,
+            black_non_pawn_material: false,
         }
     }
 
@@ -228,8 +246,13 @@ impl GameState {
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
+            white_pawn_count: 0,
+            black_pawn_count: 0,
             starting_white_pieces: 0,
             starting_black_pieces: 0,
+            cloud_sum_x: 0,
+            cloud_sum_y: 0,
+            cloud_count: 0,
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
@@ -244,15 +267,18 @@ impl GameState {
             nonpawn_hash: 0,
             material_hash: 0,
             repetition: 0,
-            white_non_pawn_material: true,
-            black_non_pawn_material: true,
+            white_non_pawn_material: false,
+            black_non_pawn_material: false,
         }
     }
 
     /// Recompute piece counts, rebuild piece lists, and find king positions from the board
+    /// Recompute piece counts, rebuild piece lists, and find king positions from the board
     pub fn recompute_piece_counts(&mut self) {
         let mut white: u16 = 0;
         let mut black: u16 = 0;
+        let mut white_pawns: u16 = 0;
+        let mut black_pawns: u16 = 0;
         let mut white_npm = false;
         let mut black_npm = false;
         self.white_pieces.clear();
@@ -262,7 +288,7 @@ impl GameState {
 
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -278,16 +304,20 @@ impl GameState {
                     PlayerColor::White => {
                         white = white.saturating_add(1);
                         self.white_pieces.push((*x, *y));
-                        // Track non-pawn material
-                        if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
+                        // Track pawns and non-pawn material
+                        if piece.piece_type() == PieceType::Pawn {
+                            white_pawns += 1;
+                        } else if !piece.piece_type().is_royal() {
                             white_npm = true;
                         }
                     }
                     PlayerColor::Black => {
                         black = black.saturating_add(1);
                         self.black_pieces.push((*x, *y));
-                        // Track non-pawn material
-                        if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
+                        // Track pawns and non-pawn material
+                        if piece.piece_type() == PieceType::Pawn {
+                            black_pawns += 1;
+                        } else if !piece.piece_type().is_royal() {
                             black_npm = true;
                         }
                     }
@@ -308,16 +338,20 @@ impl GameState {
                     PlayerColor::White => {
                         white = white.saturating_add(1);
                         self.white_pieces.push((*x, *y));
-                        // Track non-pawn material
-                        if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
+                        // Track pawns and non-pawn material
+                        if piece.piece_type() == PieceType::Pawn {
+                            white_pawns += 1;
+                        } else if !piece.piece_type().is_royal() {
                             white_npm = true;
                         }
                     }
                     PlayerColor::Black => {
                         black = black.saturating_add(1);
                         self.black_pieces.push((*x, *y));
-                        // Track non-pawn material
-                        if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
+                        // Track pawns and non-pawn material
+                        if piece.piece_type() == PieceType::Pawn {
+                            black_pawns += 1;
+                        } else if !piece.piece_type().is_royal() {
                             black_npm = true;
                         }
                     }
@@ -327,13 +361,15 @@ impl GameState {
         }
         self.white_piece_count = white;
         self.black_piece_count = black;
+        self.white_pawn_count = white_pawns;
+        self.black_pawn_count = black_pawns;
         self.white_non_pawn_material = white_npm;
         self.black_non_pawn_material = black_npm;
         // Rebuild spatial indices from current board
         self.spatial_indices = SpatialIndices::new(&self.board);
     }
 
-    /// Initialize starting_squares from the current board: all non-pawn,
+    /// Initialize Starting_squares from the current board: all non-pawn,
     /// non-royal pieces' current coordinates are treated as their original
     /// squares. Intended to be called once when constructing a GameState
     /// from an initial position before replaying move history.
@@ -418,7 +454,7 @@ impl GameState {
 
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -508,7 +544,7 @@ impl GameState {
         // Hash all pieces (excluding obstacles/voids for performance)
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -621,7 +657,7 @@ impl GameState {
 
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -668,7 +704,7 @@ impl GameState {
         let mut royal_pos: Option<(Coordinate, Piece)> = None;
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -714,7 +750,7 @@ impl GameState {
             let pawn_y = king_sq.y - pawn_dir;
             for dx in [-1i64, 1] {
                 let px = king_sq.x + dx;
-                if let Some(p) = self.board.get_piece(&px, &pawn_y) {
+                if let Some(p) = self.board.get_piece(px, pawn_y) {
                     if p.color() == their_color && p.piece_type() == PieceType::Pawn {
                         checkers.push(Coordinate::new(px, pawn_y));
                     }
@@ -726,7 +762,7 @@ impl GameState {
         for &(dx, dy) in &KNIGHT_OFFSETS {
             let x = king_sq.x + dx;
             let y = king_sq.y + dy;
-            if let Some(p) = self.board.get_piece(&x, &y) {
+            if let Some(p) = self.board.get_piece(x, y) {
                 if p.color() == their_color && p.piece_type() == PieceType::Knight {
                     checkers.push(Coordinate::new(x, y));
                 }
@@ -737,7 +773,7 @@ impl GameState {
         for &(dx, dy) in &KING_OFFSETS {
             let x = king_sq.x + dx;
             let y = king_sq.y + dy;
-            if let Some(p) = self.board.get_piece(&x, &y) {
+            if let Some(p) = self.board.get_piece(x, y) {
                 if p.color() == their_color && p.piece_type() == PieceType::King {
                     checkers.push(Coordinate::new(x, y));
                 }
@@ -853,7 +889,7 @@ impl GameState {
 
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -1014,7 +1050,7 @@ impl GameState {
 
                 let pseudo = get_pseudo_legal_moves_for_piece(
                     &self.board,
-                    piece,
+                    &piece,
                     &from,
                     &self.special_rights,
                     &self.en_passant,
@@ -1056,7 +1092,7 @@ impl GameState {
                 return true;
             }
             // For standard variants with just a King, we're done
-            if let Some(piece) = self.board.get_piece(&king_pos.x, &king_pos.y) {
+            if let Some(piece) = self.board.get_piece(king_pos.x, king_pos.y) {
                 if piece.piece_type() == PieceType::King {
                     return false;
                 }
@@ -1077,7 +1113,7 @@ impl GameState {
     ) -> bool {
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -1120,7 +1156,7 @@ impl GameState {
             // For standard variants, we're done. But for variants with multiple royals
             // (e.g., RoyalQueen, RoyalCentaur), we need to check all of them.
             // We can skip the full scan if the piece at cached position is the only royal.
-            if let Some(piece) = self.board.get_piece(&king_pos.x, &king_pos.y) {
+            if let Some(piece) = self.board.get_piece(king_pos.x, king_pos.y) {
                 // If it's a standard King, there's typically only one - skip full scan
                 if piece.piece_type() == PieceType::King {
                     return false;
@@ -1138,7 +1174,7 @@ impl GameState {
     fn is_in_check_full_scan(&self, attacker_color: PlayerColor, indices: &SpatialIndices) -> bool {
         if let Some(active) = &self.board.active_coords {
             for (x, y) in active {
-                let piece = match self.board.get_piece(x, y) {
+                let piece = match self.board.get_piece(*x, *y) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -1231,9 +1267,11 @@ impl GameState {
                         if captured_pawn.color() == PlayerColor::White {
                             self.material_score -= value;
                             self.white_piece_count = self.white_piece_count.saturating_sub(1);
+                            self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
                         } else {
                             self.material_score += value;
                             self.black_piece_count = self.black_piece_count.saturating_sub(1);
+                            self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
                         }
                     }
                 }
@@ -1274,7 +1312,7 @@ impl GameState {
                 let rook_dir = if dx > 0 { 1 } else { -1 };
                 let mut rook_x = to_x + rook_dir; // Start searching past king's destination
                 while rook_x >= -1_000_000 && rook_x <= 1_000_000 {
-                    if let Some(r) = self.board.get_piece(&rook_x, &from_y) {
+                    if let Some(r) = self.board.get_piece(rook_x, from_y) {
                         if r.piece_type() == PieceType::Rook && r.color() == piece.color() {
                             // Found the rook - move it to the square the king jumped over
                             let rook = self.board.remove_piece(&rook_x, &from_y).unwrap();
@@ -1348,17 +1386,34 @@ impl GameState {
         // Hash: remove piece from source
         self.hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
 
+        // Update cloud center: remove piece from source
+        if piece.color() != PlayerColor::Neutral {
+            self.cloud_sum_x -= m.from.x;
+            self.cloud_sum_y -= m.from.y;
+            self.cloud_count -= 1;
+        }
+
         let mut undo_info = UndoMove {
-            captured_piece: self.board.get_piece(&m.to.x, &m.to.y).copied(),
+            captured_piece: self.board.get_piece(m.to.x, m.to.y).copied(),
             old_en_passant: self.en_passant.clone(),
             old_halfmove_clock: self.halfmove_clock,
-            old_hash: self.hash_stack.last().copied().unwrap_or(0), // Save original hash
+            old_hash: self.hash_stack.last().copied().unwrap_or(0),
             special_rights_removed: ArrayVec::new(),
             starting_square_restored: None,
             old_white_king_pos: None,
             old_black_king_pos: None,
             old_repetition: self.repetition,
+            old_cloud_sum_x: self.cloud_sum_x,
+            old_cloud_sum_y: self.cloud_sum_y,
+            old_cloud_count: self.cloud_count,
         };
+
+        // Update cloud center: add piece to target
+        if piece.color() != PlayerColor::Neutral {
+            self.cloud_sum_x += m.to.x;
+            self.cloud_sum_y += m.to.y;
+            self.cloud_count += 1;
+        }
 
         // Track king position updates for undo
         if piece.piece_type().is_royal() {
@@ -1404,9 +1459,15 @@ impl GameState {
                 if captured.color() == PlayerColor::White {
                     self.material_score -= value;
                     self.white_piece_count = self.white_piece_count.saturating_sub(1);
+                    if captured.piece_type() == PieceType::Pawn {
+                        self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
+                    }
                 } else {
                     self.material_score += value;
                     self.black_piece_count = self.black_piece_count.saturating_sub(1);
+                    if captured.piece_type() == PieceType::Pawn {
+                        self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
+                    }
                 }
             }
         }
@@ -1442,9 +1503,11 @@ impl GameState {
                         if captured_pawn.color() == PlayerColor::White {
                             self.material_score -= value;
                             self.white_piece_count = self.white_piece_count.saturating_sub(1);
+                            self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
                         } else {
                             self.material_score += value;
                             self.black_piece_count = self.black_piece_count.saturating_sub(1);
+                            self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
                         }
                     }
                 }
@@ -1466,9 +1529,13 @@ impl GameState {
             if piece.color() == PlayerColor::White {
                 self.material_score -= pawn_val;
                 self.material_score += promo_val;
+                self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
+                self.white_non_pawn_material = true;
             } else {
                 self.material_score += pawn_val;
                 self.material_score -= promo_val;
+                self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
+                self.black_non_pawn_material = true;
             }
         }
 
@@ -1603,6 +1670,12 @@ impl GameState {
 
         // Pop the hash that was pushed in make_move and restore the saved hash
         self.hash_stack.pop();
+        // Revert Cloud Center
+        self.cloud_sum_x = undo.old_cloud_sum_x;
+        self.cloud_sum_y = undo.old_cloud_sum_y;
+        self.cloud_count = undo.old_cloud_count;
+
+        // Restore saved hash
         self.hash = undo.old_hash;
 
         // Revert turn
@@ -1660,9 +1733,15 @@ impl GameState {
             if captured.color() == PlayerColor::White {
                 self.material_score += value;
                 self.white_piece_count = self.white_piece_count.saturating_add(1);
+                if captured.piece_type() == PieceType::Pawn {
+                    self.white_pawn_count = self.white_pawn_count.saturating_add(1);
+                }
             } else {
                 self.material_score -= value;
                 self.black_piece_count = self.black_piece_count.saturating_add(1);
+                if captured.piece_type() == PieceType::Pawn {
+                    self.black_pawn_count = self.black_pawn_count.saturating_add(1);
+                }
             }
             self.board.set_piece(m.to.x, m.to.y, captured);
             // Update spatial indices for restored captured piece
@@ -1700,9 +1779,11 @@ impl GameState {
                     if captured_pawn.color() == PlayerColor::White {
                         self.material_score += value;
                         self.white_piece_count = self.white_piece_count.saturating_add(1);
+                        self.white_pawn_count = self.white_pawn_count.saturating_add(1);
                     } else {
                         self.material_score -= value;
                         self.black_piece_count = self.black_piece_count.saturating_add(1);
+                        self.black_pawn_count = self.black_pawn_count.saturating_add(1);
                     }
                 }
             }

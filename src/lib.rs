@@ -415,6 +415,8 @@ impl Engine {
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
+            white_pawn_count: 0,
+            black_pawn_count: 0,
             starting_white_pieces: 0,
             starting_black_pieces: 0,
             white_pieces: Vec::new(),
@@ -431,8 +433,11 @@ impl Engine {
             nonpawn_hash: 0,
             material_hash: 0,
             repetition: 0,
-            white_non_pawn_material: true,
-            black_non_pawn_material: true,
+            white_non_pawn_material: false,
+            black_non_pawn_material: false,
+            cloud_sum_x: 0,
+            cloud_sum_y: 0,
+            cloud_count: 0,
         };
 
         game.material_score = calculate_initial_material(&game.board);

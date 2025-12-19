@@ -136,7 +136,7 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
                 break;
             }
 
-            if let Some(blocker) = board.get_piece(&x, &y) {
+            if let Some(blocker) = board.get_piece(x, y) {
                 // Enemy: can capture on this square.
                 if blocker.color() != piece.color() && blocker.piece_type() != PieceType::Void {
                     moves.push(Move::new(*from, Coordinate::new(x, y), *piece));
@@ -909,7 +909,7 @@ pub fn is_square_attacked(
         loop {
             let x = target.x + dx * k;
             let y = target.y + dy * k;
-            if let Some(piece) = board.get_piece(&x, &y) {
+            if let Some(piece) = board.get_piece(x, y) {
                 if piece.color() == attacker_color && piece.piece_type() == PieceType::Knightrider {
                     return true;
                 }
@@ -962,7 +962,7 @@ pub fn is_square_attacked(
     let rose_moves =
         generate_rose_moves(board, target, &Piece::new(PieceType::Rose, defender_color));
     for m in rose_moves {
-        if let Some(piece) = board.get_piece(&m.to.x, &m.to.y) {
+        if let Some(piece) = board.get_piece(m.to.x, m.to.y) {
             if piece.color() == attacker_color && piece.piece_type() == PieceType::Rose {
                 return true;
             }
@@ -1044,7 +1044,7 @@ fn generate_pawn_moves(
     let to_x = from.x;
 
     // Check if square is blocked
-    let forward_blocked = board.get_piece(&to_x, &to_y).is_some();
+    let forward_blocked = board.get_piece(to_x, to_y).is_some();
 
     if !forward_blocked {
         add_pawn_move_inner(
@@ -1063,7 +1063,7 @@ fn generate_pawn_moves(
         if special_rights.contains(from) {
             let to_y_2 = from.y + (direction * 2);
             // Must also check that the target square isn't blocked
-            if board.get_piece(&to_x, &to_y_2).is_none() {
+            if board.get_piece(to_x, to_y_2).is_none() {
                 moves.push(Move::new(*from, Coordinate::new(to_x, to_y_2), *piece));
             }
         }
@@ -1074,7 +1074,7 @@ fn generate_pawn_moves(
         let capture_x = from.x + dx;
         let capture_y = from.y + direction;
 
-        if let Some(target) = board.get_piece(&capture_x, &capture_y) {
+        if let Some(target) = board.get_piece(capture_x, capture_y) {
             // Can capture any piece that's not the same color as us
             // This includes neutral pieces (obstacles can be captured)
             if is_enemy_piece(target, piece.color()) {
@@ -1175,8 +1175,8 @@ fn generate_pawn_capture_moves(
         let capture_x = from.x + dx;
         let capture_y = from.y + direction;
 
-        if let Some(target) = board.get_piece(&capture_x, &capture_y) {
-            if is_enemy_piece(target, piece.color()) {
+        if let Some(target) = board.get_piece(capture_x, capture_y) {
+            if is_enemy_piece(&target, piece.color()) {
                 // Obstocean Optimization:
                 // If it's a neutral piece (Obstacle), capturing it is a "quiet" move in material terms (0 -> 0).
                 // Doing this for all obstacles causes a QS explosion.
@@ -1223,7 +1223,7 @@ fn generate_castling_moves(
 
     // Find all pieces with special rights that could be castling partners
     for coord in special_rights.iter() {
-        if let Some(target_piece) = board.get_piece(&coord.x, &coord.y) {
+        if let Some(target_piece) = board.get_piece(coord.x, coord.y) {
             // Must be same color and a valid castling partner (rook-like piece, not pawn)
             if target_piece.color() == piece.color()
                 && target_piece.piece_type() != PieceType::Pawn
@@ -1238,7 +1238,7 @@ fn generate_castling_moves(
                     let mut clear = true;
                     let mut current_x = from.x + dir;
                     while current_x != coord.x {
-                        if board.get_piece(&current_x, &from.y).is_some() {
+                        if board.get_piece(current_x, from.y).is_some() {
                             clear = false;
                             break;
                         }
@@ -1277,7 +1277,9 @@ fn generate_castling_moves(
     moves
 }
 
-/// Generate only sliding captures for quiescence, scanning along rays until the first blocker.
+/// Generate only sliding captures for quiescence using BITBOARD-OPTIMIZED step-by-step.
+/// Uses tile occupancy check for O(1) empty square detection, avoiding HashMap lookups
+/// for empty squares which are the common case along rays.
 fn generate_sliding_capture_moves(
     board: &Board,
     from: &Coordinate,
@@ -1286,37 +1288,61 @@ fn generate_sliding_capture_moves(
     _indices: &SpatialIndices,
     out: &mut MoveList,
 ) {
-    for (dx_raw, dy_raw) in directions {
+    use crate::tiles::{local_index, tile_coords};
+
+    let our_color = piece.color();
+
+    for &(dx_raw, dy_raw) in directions {
         for sign in [1i64, -1i64] {
-            let dir_x = dx_raw * sign;
-            let dir_y = dy_raw * sign;
-            if dir_x == 0 && dir_y == 0 {
+            let dx = dx_raw * sign;
+            let dy = dy_raw * sign;
+            if dx == 0 && dy == 0 {
                 continue;
             }
 
             let mut step = 1i64;
             loop {
-                let x = from.x + dir_x * step;
-                let y = from.y + dir_y * step;
+                let x = from.x + dx * step;
+                let y = from.y + dy * step;
 
                 if !in_bounds(x, y) {
                     break;
                 }
 
-                if let Some(target) = board.get_piece(&x, &y) {
-                    // For sliders in QS, we do NOT want to capture obstacles (quiet positional moves).
-                    if is_enemy_piece(target, piece.color())
-                        && !target.piece_type().is_neutral_type()
-                    {
-                        out.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                // BITBOARD FAST PATH: Check tile occupancy for O(1) empty detection
+                let (cx, cy) = tile_coords(x, y);
+                let local_idx = local_index(x, y);
+
+                // Get tile - if no tile exists, square is empty
+                let is_occupied = if let Some(tile) = board.tiles.get_tile(cx, cy) {
+                    (tile.occ_all >> local_idx) & 1 != 0
+                } else {
+                    false
+                };
+
+                if !is_occupied {
+                    // Empty square - continue along ray
+                    step += 1;
+                    if step > 50 {
+                        break;
                     }
-                    break; // Any piece blocks further along this ray
+                    continue;
                 }
 
-                step += 1;
-                if step > 50 {
-                    break;
-                } // Safety for infinite board
+                // Square is occupied - get piece details from tile
+                if let Some(tile) = board.tiles.get_tile(cx, cy) {
+                    let packed = tile.piece[local_idx];
+                    if packed != 0 {
+                        let target = Piece::from_packed(packed);
+                        if target.color() != our_color
+                            && target.color() != PlayerColor::Neutral
+                            && !target.piece_type().is_neutral_type()
+                        {
+                            out.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                        }
+                    }
+                }
+                break; // Square occupied = ray blocked
             }
         }
     }
@@ -1330,8 +1356,8 @@ fn extend_captures_only(
     out: &mut MoveList,
 ) {
     for m in moves_in {
-        if let Some(target) = board.get_piece(&m.to.x, &m.to.y) {
-            if is_enemy_piece(target, our_color) && !target.piece_type().is_neutral_type() {
+        if let Some(target) = board.get_piece(m.to.x, m.to.y) {
+            if is_enemy_piece(&target, our_color) && !target.piece_type().is_neutral_type() {
                 out.push(m);
             }
         }
@@ -1341,7 +1367,7 @@ fn extend_captures_only(
 /// Extend out with only quiet (non-capturing) moves from a pre-generated move list.
 fn extend_quiets_only(board: &Board, moves_in: MoveList, out: &mut MoveList) {
     for m in moves_in {
-        if board.get_piece(&m.to.x, &m.to.y).is_none() {
+        if board.get_piece(m.to.x, m.to.y).is_none() {
             out.push(m);
         }
     }
@@ -1360,46 +1386,26 @@ pub fn get_quiet_moves_into(
 ) {
     out.clear();
 
-    if let Some(active) = &board.active_coords {
-        for (x, y) in active {
-            let piece = match board.get_piece(x, y) {
-                Some(p) => p,
-                None => continue,
-            };
-
-            if piece.color() != turn {
-                continue;
-            }
-
-            let from = Coordinate::new(*x, *y);
-            generate_quiets_for_piece(
-                board,
-                piece,
-                &from,
-                special_rights,
-                en_passant,
-                game_rules,
-                indices,
-                out,
-            );
+    // Use HashMap-based iteration (toggle by renaming to iter_pieces_by_color_bitboard)
+    let is_white = turn == PlayerColor::White;
+    for ((x, y), piece) in board.iter() {
+        if (piece.color() == PlayerColor::White) != is_white {
+            continue;
         }
-    } else {
-        for ((x, y), piece) in board.iter() {
-            if piece.color() != turn || piece.color() == PlayerColor::Neutral {
-                continue;
-            }
-            let from = Coordinate::new(*x, *y);
-            generate_quiets_for_piece(
-                board,
-                piece,
-                &from,
-                special_rights,
-                en_passant,
-                game_rules,
-                indices,
-                out,
-            );
+        if piece.color() == PlayerColor::Neutral {
+            continue;
         }
+        let from = Coordinate::new(*x, *y);
+        generate_quiets_for_piece(
+            board,
+            &piece,
+            &from,
+            special_rights,
+            en_passant,
+            game_rules,
+            indices,
+            out,
+        );
     }
 }
 
@@ -1585,7 +1591,7 @@ fn generate_pawn_quiet_moves(
     let to_y = from.y + direction;
     let to_x = from.x;
 
-    if board.get_piece(&to_x, &to_y).is_none() {
+    if board.get_piece(to_x, to_y).is_none() {
         // Square is empty, can push
         if promotion_ranks.contains(&to_y) {
             for &promo in promotion_pieces {
@@ -1600,7 +1606,7 @@ fn generate_pawn_quiet_moves(
         // Double push if pawn has special rights
         if special_rights.contains(from) {
             let double_y = from.y + 2 * direction;
-            if board.get_piece(&to_x, &double_y).is_none() {
+            if board.get_piece(to_x, double_y).is_none() {
                 out.push(Move::new(*from, Coordinate::new(to_x, double_y), *piece));
             }
         }
@@ -1635,8 +1641,8 @@ fn generate_compass_moves(
             continue;
         }
 
-        if let Some(target) = board.get_piece(&to_x, &to_y) {
-            if is_enemy_piece(target, piece.color()) {
+        if let Some(target) = board.get_piece(to_x, to_y) {
+            if is_enemy_piece(&target, piece.color()) {
                 moves.push(Move::new(
                     from.clone(),
                     Coordinate::new(to_x, to_y),
@@ -1697,8 +1703,8 @@ fn generate_leaper_moves_into(
             continue;
         }
 
-        if let Some(target) = board.get_piece(&to_x, &to_y) {
-            if is_enemy_piece(target, piece.color()) {
+        if let Some(target) = board.get_piece(to_x, to_y) {
+            if is_enemy_piece(&target, piece.color()) {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
@@ -1737,8 +1743,8 @@ fn generate_compass_moves_into(
             continue;
         }
 
-        if let Some(target) = board.get_piece(&to_x, &to_y) {
-            if is_enemy_piece(target, piece.color()) {
+        if let Some(target) = board.get_piece(to_x, to_y) {
+            if is_enemy_piece(&target, piece.color()) {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
@@ -1809,17 +1815,11 @@ pub fn generate_sliding_moves(
     indices: &SpatialIndices,
     fallback: bool,
 ) -> MoveList {
-    // Original wiggle values - important for tactics
     const ENEMY_WIGGLE: i64 = 2;
     const FRIEND_WIGGLE: i64 = 1;
-    // Maximum distance for interception - 50 is needed for long-range tactics
-    // We only cap "interception" moves (crossing an enemy's line), not direct captures!
     const MAX_INTERCEPTION_DIST: i64 = 50;
-
-    // Fallback limit for short-range slider moves
     const FALLBACK_LIMIT: i64 = 10;
 
-    let _piece_count = board.len();
     let mut moves = MoveList::new();
     let our_color = piece.color();
 
@@ -1836,20 +1836,15 @@ pub fn generate_sliding_moves(
                 for dist in 1..=FALLBACK_LIMIT {
                     let tx = from.x + dir_x * dist;
                     let ty = from.y + dir_y * dist;
-
-                    // Stop if out of bounds (though unlikely with infinite board coords)
                     if !in_bounds(tx, ty) {
                         break;
                     }
 
-                    if let Some(target) = board.get_piece(&tx, &ty) {
-                        // If blocked, check if we can capture
-                        let is_enemy =
-                            target.color() != our_color && target.color() != PlayerColor::Neutral;
-                        if is_enemy {
+                    if let Some(target) = board.get_piece(tx, ty) {
+                        if target.color() != our_color && target.color() != PlayerColor::Neutral {
                             moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                         }
-                        break; // blocked
+                        break;
                     } else {
                         moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                     }
@@ -1860,7 +1855,6 @@ pub fn generate_sliding_moves(
             let is_vertical = dir_x == 0;
             let is_horizontal = dir_y == 0;
 
-            // Use spatial indices for O(log n) blocker finding when available
             let (closest_dist, closest_is_enemy) =
                 find_blocker_via_indices(board, from, dir_x, dir_y, indices, our_color);
 
@@ -1873,7 +1867,7 @@ pub fn generate_sliding_moves(
             } else {
                 match ray_border_distance(from, dir_x, dir_y) {
                     Some(d) if d > 0 => d,
-                    _ => 0,
+                    _ => i64::MAX / 2,
                 }
             };
 
@@ -1881,137 +1875,143 @@ pub fn generate_sliding_moves(
                 continue;
             }
 
-            // Efficient interception limit for OFF-RAY pieces
             let interception_limit = max_dist.min(MAX_INTERCEPTION_DIST);
+            let mut target_dists: Vec<i64> = Vec::with_capacity(32);
 
-            // Use Vec for target distances to avoid overflow
-            let mut target_dists: Vec<i64> = Vec::with_capacity(64);
-
-            // Start wiggle room (always add these)
             for d in 1..=ENEMY_WIGGLE {
                 target_dists.push(d);
             }
 
-            // Process ALL pieces for interception (needed for tactics)
-            for ((px, py), p) in board.iter() {
-                let is_enemy = p.color() != our_color && p.color() != PlayerColor::Neutral;
-                let wiggle = if is_enemy {
-                    ENEMY_WIGGLE
+            if is_horizontal {
+                for y in (from.y - ENEMY_WIGGLE)..=(from.y + ENEMY_WIGGLE) {
+                    if let Some(list) = indices.rows.get(&y) {
+                        let diff_y = (y - from.y).abs();
+                        for &(px, packed) in list {
+                            let p = Piece::from_packed(packed);
+                            let is_enemy =
+                                p.color() != our_color && p.color() != PlayerColor::Neutral;
+                            let wiggle = if is_enemy {
+                                ENEMY_WIGGLE
+                            } else {
+                                FRIEND_WIGGLE
+                            };
+                            if diff_y > wiggle {
+                                continue;
+                            }
+
+                            for w in -wiggle..=wiggle {
+                                let tx = px + w;
+                                let dx = tx - from.x;
+                                if dx != 0 && dx.signum() == dir_x.signum() {
+                                    let d = dx.abs();
+                                    let is_direct = is_enemy && y == from.y && w == 0;
+                                    let limit = if is_direct {
+                                        max_dist
+                                    } else {
+                                        interception_limit
+                                    };
+                                    if d <= limit {
+                                        target_dists.push(d);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if is_vertical {
+                for x in (from.x - ENEMY_WIGGLE)..=(from.x + ENEMY_WIGGLE) {
+                    if let Some(list) = indices.cols.get(&x) {
+                        let diff_x = (x - from.x).abs();
+                        for &(py, packed) in list {
+                            let p = Piece::from_packed(packed);
+                            let is_enemy =
+                                p.color() != our_color && p.color() != PlayerColor::Neutral;
+                            let wiggle = if is_enemy {
+                                ENEMY_WIGGLE
+                            } else {
+                                FRIEND_WIGGLE
+                            };
+                            if diff_x > wiggle {
+                                continue;
+                            }
+
+                            for w in -wiggle..=wiggle {
+                                let ty = py + w;
+                                let dy = ty - from.y;
+                                if dy != 0 && dy.signum() == dir_y.signum() {
+                                    let d = dy.abs();
+                                    let is_direct = is_enemy && x == from.x && w == 0;
+                                    let limit = if is_direct {
+                                        max_dist
+                                    } else {
+                                        interception_limit
+                                    };
+                                    if d <= limit {
+                                        target_dists.push(d);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let is_diag1 = dir_x == dir_y;
+                let k = if is_diag1 {
+                    from.x - from.y
                 } else {
-                    FRIEND_WIGGLE
+                    from.x + from.y
                 };
-
-                let pdx = *px - from.x;
-                let pdy = *py - from.y;
-
-                if is_horizontal {
-                    // Check x coordinates
-                    for w in -wiggle..=wiggle {
-                        let tx = *px + w;
-                        let dx = tx - from.x;
-                        if dx != 0 && dx.signum() == dir_x.signum() {
-                            let d = dx.abs();
-                            // CRITICAL: specific check
-                            // - If enemy is exactly on the ray (capture), use max_dist
-                            // - If enemy is offset (interception), use interception_limit
-                            let is_direct_capture = is_enemy && *py == from.y && w == 0;
-                            let limit = if is_direct_capture {
-                                max_dist
-                            } else {
-                                interception_limit
-                            };
-
-                            if d <= limit {
-                                target_dists.push(d);
-                            }
-                        }
-                    }
-                } else if is_vertical {
-                    // Check y coordinates
-                    for w in -wiggle..=wiggle {
-                        let ty = *py + w;
-                        let dy = ty - from.y;
-                        if dy != 0 && dy.signum() == dir_y.signum() {
-                            let d = dy.abs();
-                            // CRITICAL: specific check
-                            let is_direct_capture = is_enemy && *px == from.x && w == 0;
-                            let limit = if is_direct_capture {
-                                max_dist
-                            } else {
-                                interception_limit
-                            };
-
-                            if d <= limit {
-                                target_dists.push(d);
-                            }
-                        }
-                    }
+                let map = if is_diag1 {
+                    &indices.diag1
                 } else {
-                    // Diagonal movement
-                    // Check if this piece is on the SAME ray we're moving along
-                    let on_this_ray = pdx.abs() == pdy.abs()
-                        && pdx != 0
-                        && pdx.signum() == dir_x.signum()
-                        && pdy.signum() == dir_y.signum();
-
-                    if on_this_ray {
-                        // Piece is on our ray - handled by blocker wiggle (which uses max_dist/closest_dist)
-                        continue;
-                    }
-
-                    // Orthogonal interception
-                    for w in -wiggle..=wiggle {
-                        let tx = *px + w;
-                        let dx = tx - from.x;
-                        if dx != 0 && dx.signum() == dir_x.signum() {
-                            let d = dx.abs();
-                            if d <= interception_limit {
-                                target_dists.push(d);
-                            }
-                        }
-
-                        let ty = *py + w;
-                        let dy = ty - from.y;
-                        if dy != 0 && dy.signum() == dir_y.signum() {
-                            let d = dy.abs();
-                            if d <= interception_limit {
-                                target_dists.push(d);
-                            }
-                        }
-                    }
-
-                    // Diagonal proximity
-                    let diag_wiggle: i64 = 1;
-
-                    if dir_x * dir_y > 0 {
-                        let from_sum = from.x + from.y;
-                        let piece_sum = *px + *py;
-                        let diff = piece_sum - from_sum;
-                        let base_d = if dir_x > 0 { diff / 2 } else { -diff / 2 };
-
-                        for dw in -diag_wiggle..=diag_wiggle {
-                            let d = base_d + dw;
-                            if d > 0 && d <= interception_limit {
-                                target_dists.push(d);
-                            }
-                        }
-                    } else {
-                        let from_diff = from.x - from.y;
-                        let piece_diff = *px - *py;
-                        let diff = piece_diff - from_diff;
-                        let base_d = if dir_x > 0 { diff / 2 } else { -diff / 2 };
-
-                        for dw in -diag_wiggle..=diag_wiggle {
-                            let d = base_d + dw;
-                            if d > 0 && d <= interception_limit {
-                                target_dists.push(d);
+                    &indices.diag2
+                };
+                for offset in -ENEMY_WIGGLE..=ENEMY_WIGGLE {
+                    if let Some(list) = map.get(&(k + offset)) {
+                        for &(px, packed) in list {
+                            let py = if is_diag1 {
+                                px - (k + offset)
+                            } else {
+                                (k + offset) - px
+                            };
+                            let p = Piece::from_packed(packed);
+                            let is_enemy =
+                                p.color() != our_color && p.color() != PlayerColor::Neutral;
+                            let wiggle = if is_enemy {
+                                ENEMY_WIGGLE
+                            } else {
+                                FRIEND_WIGGLE
+                            };
+                            for wx in -wiggle..=wiggle {
+                                for wy in -wiggle..=wiggle {
+                                    let tx = px + wx;
+                                    let ty = py + wy;
+                                    let rdx = tx - from.x;
+                                    let rdy = ty - from.y;
+                                    if rdx != 0
+                                        && rdx.signum() == dir_x.signum()
+                                        && rdx.abs() == rdy.abs()
+                                    {
+                                        if rdy.signum() == dir_y.signum() {
+                                            let d = rdx.abs();
+                                            let is_direct = is_enemy && wx == 0 && wy == 0;
+                                            let limit = if is_direct {
+                                                max_dist
+                                            } else {
+                                                interception_limit
+                                            };
+                                            if d <= limit {
+                                                target_dists.push(d);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Add blocker wiggle room (up to max_dist)
             if closest_dist < i64::MAX {
                 let wr = if closest_is_enemy {
                     ENEMY_WIGGLE
@@ -2026,33 +2026,24 @@ pub fn generate_sliding_moves(
                 }
             }
 
-            // Sort and deduplicate
             target_dists.sort_unstable();
             target_dists.dedup();
 
-            // Generate moves
             for d in target_dists {
                 if d <= 0 || d > max_dist {
                     continue;
                 }
-
-                // Skip if this is a friendly blocker square
                 if d == closest_dist && !closest_is_enemy {
                     continue;
                 }
-
                 let sq_x = from.x + dir_x * d;
                 let sq_y = from.y + dir_y * d;
-
-                if !in_bounds(sq_x, sq_y) {
-                    continue;
+                if in_bounds(sq_x, sq_y) {
+                    moves.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
                 }
-
-                moves.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
             }
         }
     }
-
     moves
 }
 
@@ -2142,7 +2133,7 @@ fn generate_huygen_moves(
                     for step in 1..target_dist {
                         let sx = from.x + dir_x * step;
                         let sy = from.y + dir_y * step;
-                        if board.get_piece(&sx, &sy).is_some() {
+                        if board.get_piece(sx, sy).is_some() {
                             path_blocked = true;
                             break;
                         }
@@ -2153,7 +2144,7 @@ fn generate_huygen_moves(
                     }
 
                     // Check target square
-                    if let Some(target) = board.get_piece(&tx, &ty) {
+                    if let Some(target) = board.get_piece(tx, ty) {
                         // Void blocks like friendly
                         if target.piece_type() == PieceType::Void {
                             break;
@@ -2221,8 +2212,8 @@ fn generate_huygen_moves(
 
             if !found_via_indices {
                 for ((px, py), target_piece) in board.iter() {
-                    let dx = px - from.x;
-                    let dy = py - from.y;
+                    let dx = *px - from.x;
+                    let dy = *py - from.y;
                     let k = if dir_x != 0 {
                         if dx % dir_x == 0 && dy == 0 {
                             Some(dx / dir_x)
@@ -2352,7 +2343,7 @@ fn generate_rose_moves_into(board: &Board, from: &Coordinate, piece: &Piece, out
                 current_x += dx;
                 current_y += dy;
 
-                if let Some(target) = board.get_piece(&current_x, &current_y) {
+                if let Some(target) = board.get_piece(current_x, current_y) {
                     if is_enemy_piece(target, piece.color()) {
                         out.push(Move::new(
                             *from,
@@ -2447,7 +2438,7 @@ fn generate_pawn_moves_into(
     // Move forward 1
     let to_y = from.y + direction;
     let to_x = from.x;
-    let forward_blocked = board.get_piece(&to_x, &to_y).is_some();
+    let forward_blocked = board.get_piece(to_x, to_y).is_some();
 
     if !forward_blocked {
         add_pawn_move(
@@ -2463,7 +2454,7 @@ fn generate_pawn_moves_into(
         // Double push
         if special_rights.contains(from) {
             let to_y_2 = from.y + (direction * 2);
-            if board.get_piece(&to_x, &to_y_2).is_none() {
+            if board.get_piece(to_x, to_y_2).is_none() {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y_2), *piece));
             }
         }
@@ -2474,7 +2465,7 @@ fn generate_pawn_moves_into(
         let capture_x = from.x + dx;
         let capture_y = from.y + direction;
 
-        if let Some(target) = board.get_piece(&capture_x, &capture_y) {
+        if let Some(target) = board.get_piece(capture_x, capture_y) {
             if is_enemy_piece(target, piece.color()) {
                 add_pawn_move(
                     out,
@@ -2513,7 +2504,7 @@ fn generate_castling_moves_into(
     }
 
     for coord in special_rights.iter() {
-        if let Some(target_piece) = board.get_piece(&coord.x, &coord.y) {
+        if let Some(target_piece) = board.get_piece(coord.x, coord.y) {
             if target_piece.color() == piece.color()
                 && target_piece.piece_type() != PieceType::Pawn
                 && !target_piece.piece_type().is_royal()
@@ -2526,7 +2517,7 @@ fn generate_castling_moves_into(
                     let mut clear = true;
                     let mut current_x = from.x + dir;
                     while current_x != coord.x {
-                        if board.get_piece(&current_x, &from.y).is_some() {
+                        if board.get_piece(current_x, from.y).is_some() {
                             clear = false;
                             break;
                         }

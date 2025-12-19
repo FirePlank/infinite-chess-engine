@@ -48,6 +48,7 @@ fn setup_2queen_vs_king() -> GameState {
     game
 }
 
+#[allow(dead_code)]
 fn setup_classical_start_position() -> GameState {
     let mut game = GameState::new();
 
@@ -103,12 +104,15 @@ fn setup_classical_start_position() -> GameState {
 
     // Set material score to the sum of piece values (white minus black)
     let mut score = 0;
-    for (_, piece) in game.board.iter() {
+    for (_, _, piece) in game.board.tiles.iter_all_pieces() {
+        if piece.color() == PlayerColor::Neutral {
+            continue;
+        }
         let val = hydrochess_wasm::evaluation::get_piece_value(piece.piece_type());
         match piece.color() {
             PlayerColor::White => score += val,
             PlayerColor::Black => score -= val,
-            PlayerColor::Neutral => {}
+            PlayerColor::Neutral => {} // This case is now handled by the continue statement above
         }
     }
     game.material_score = score;
