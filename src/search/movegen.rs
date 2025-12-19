@@ -165,14 +165,15 @@ impl StagedMoveGen {
         Self::moves_match(m, &self.tt_move)
     }
 
-    /// Check if move is a capture
+    /// Check if move is a capture (BITBOARD: O(1) bit check)
     #[inline]
     fn is_capture(game: &GameState, m: &Move) -> bool {
-        game.board.get_piece(&m.to.x, &m.to.y).is_some()
+        game.board.is_occupied(m.to.x, m.to.y)
     }
     #[inline]
     fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
-        if let Some(piece) = game.board.get_piece(&m.from.x, &m.from.y) {
+        // BITBOARD: Fast piece check using tile array
+        if let Some(piece) = game.board.get_piece_fast(m.from.x, m.from.y) {
             if piece.color() != game.turn || piece.piece_type() != m.piece.piece_type() {
                 return false;
             }
@@ -180,21 +181,22 @@ impl StagedMoveGen {
             // Castling check
             if piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() > 1 {
                 if let Some(rook_coord) = &m.rook_coord {
-                    if let Some(rook) = game.board.get_piece(&rook_coord.x, &rook_coord.y) {
-                        if rook.color() != game.turn {
-                            return false;
-                        }
-                        let dir = if m.to.x > m.from.x { 1 } else { -1 };
-                        if game.board.get_piece(&(m.from.x + dir), &m.from.y).is_some() {
-                            return false;
-                        }
-                        if game.board.get_piece(&m.to.x, &m.from.y).is_some() {
-                            return false;
-                        }
-                        if dir < 0 && game.board.get_piece(&(m.from.x - 3), &m.from.y).is_some() {
-                            return false;
-                        }
-                    } else {
+                    // BITBOARD: Check rook exists and is our color
+                    if !game
+                        .board
+                        .is_occupied_by_color(rook_coord.x, rook_coord.y, game.turn)
+                    {
+                        return false;
+                    }
+                    let dir = if m.to.x > m.from.x { 1 } else { -1 };
+                    // BITBOARD: Fast occupancy checks for castling path
+                    if game.board.is_occupied(m.from.x + dir, m.from.y) {
+                        return false;
+                    }
+                    if game.board.is_occupied(m.to.x, m.from.y) {
+                        return false;
+                    }
+                    if dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y) {
                         return false;
                     }
                 } else {
@@ -207,9 +209,9 @@ impl StagedMoveGen {
         }
     }
 
-    /// Score capture move (Stockfish formula: captureHistory + 7 * pieceValue)
+    /// Score capture move (BITBOARD: uses fast piece retrieval)
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
-        if let Some(target) = game.board.get_piece(&m.to.x, &m.to.y) {
+        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
             let victim_val = get_piece_value(target.piece_type());
             let cap_hist = searcher.capture_history[m.piece.piece_type() as usize]
                 [target.piece_type() as usize];

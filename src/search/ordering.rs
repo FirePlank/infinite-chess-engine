@@ -164,7 +164,8 @@ fn move_gives_check(game: &GameState, m: &Move, enemy_king: &Coordinate) -> bool
                         for step in 1..kx_steps {
                             let cx = to.x + ndx * step;
                             let cy = to.y + ndy * step;
-                            if game.board.get_piece(&cx, &cy).is_some() {
+                            // BITBOARD: Fast occupancy check
+                            if game.board.is_occupied(cx, cy) {
                                 clear = false;
                                 break;
                             }
@@ -241,7 +242,8 @@ fn path_clear_to_king(
     let mut steps = 0;
 
     while (x != to.x || y != to.y) && steps < MAX_PATH_CHECK {
-        if game.board.get_piece(&x, &y).is_some() {
+        // BITBOARD: Fast occupancy check
+        if game.board.is_occupied(x, y) {
             return false;
         }
         x += step_x;
@@ -281,7 +283,8 @@ pub fn sort_moves(
             }
         }
 
-        if let Some(target) = game.board.get_piece(&m.to.x, &m.to.y) {
+        // BITBOARD: Fast capture detection
+        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
             // Capture: MVV-LVA + SEE threshold + capture history.
             let victim_val = get_piece_value(target.piece_type());
             let attacker_val = get_piece_value(m.piece.piece_type());
@@ -382,7 +385,8 @@ pub fn sort_moves_root(
 pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
     moves.sort_by_cached_key(|m| {
         let mut score = 0;
-        if let Some(target) = game.board.get_piece(&m.to.x, &m.to.y) {
+        // BITBOARD: Fast piece lookup
+        if let Some(target) = game.board.get_piece_fast(m.to.x, m.to.y) {
             // MVV-LVA: prioritize capturing high value pieces with low value attackers
             score -=
                 get_piece_value(target.piece_type()) * 10 - get_piece_value(m.piece.piece_type());

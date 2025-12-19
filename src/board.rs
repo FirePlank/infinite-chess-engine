@@ -462,6 +462,54 @@ impl Board {
         self.pieces.get(&(*x, *y))
     }
 
+    /// BITBOARD: O(1) occupancy check using tile bitboards.
+    /// Use this instead of get_piece().is_some() in hot paths.
+    #[inline]
+    pub fn is_occupied(&self, x: i64, y: i64) -> bool {
+        let (cx, cy) = tile_coords(x, y);
+        if let Some(tile) = self.tiles.get_tile(cx, cy) {
+            let idx = local_index(x, y);
+            (tile.occ_all >> idx) & 1 != 0
+        } else {
+            false
+        }
+    }
+
+    /// BITBOARD: O(1) color-specific occupancy check.
+    #[inline]
+    pub fn is_occupied_by_color(&self, x: i64, y: i64, color: PlayerColor) -> bool {
+        let (cx, cy) = tile_coords(x, y);
+        if let Some(tile) = self.tiles.get_tile(cx, cy) {
+            let idx = local_index(x, y);
+            let occ = match color {
+                PlayerColor::White => tile.occ_white,
+                PlayerColor::Black => tile.occ_black,
+                PlayerColor::Neutral => tile.occ_void,
+            };
+            (occ >> idx) & 1 != 0
+        } else {
+            false
+        }
+    }
+
+    /// BITBOARD: O(1) piece retrieval using tile bitboards.
+    /// Returns packed piece directly from tile array (no HashMap lookup).
+    /// Use when you already know the square is occupied.
+    #[inline]
+    pub fn get_piece_fast(&self, x: i64, y: i64) -> Option<Piece> {
+        let (cx, cy) = tile_coords(x, y);
+        if let Some(tile) = self.tiles.get_tile(cx, cy) {
+            let idx = local_index(x, y);
+            if (tile.occ_all >> idx) & 1 != 0 {
+                let packed = tile.piece[idx];
+                if packed != 0 {
+                    return Some(Piece::from_packed(packed));
+                }
+            }
+        }
+        None
+    }
+
     pub fn remove_piece(&mut self, x: &i64, y: &i64) -> Option<Piece> {
         let pos = (*x, *y);
         let removed = self.pieces.remove(&pos);

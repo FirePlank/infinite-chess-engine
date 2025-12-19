@@ -12,7 +12,8 @@ const SEE_MAX_PIECES: usize = 128;
 /// Uses early cutoffs to avoid full SEE calculation when possible.
 #[inline]
 pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
-    let captured = match game.board.get_piece(&m.to.x, &m.to.y) {
+    // BITBOARD: Fast piece check
+    let captured = match game.board.get_piece_fast(m.to.x, m.to.y) {
         Some(p) => p,
         None => return 0 >= threshold, // No capture: SEE = 0
     };
@@ -43,7 +44,8 @@ pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
 pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     // Only meaningful for captures; quiet moves (or moves to empty squares)
     // have no immediate material swing.
-    let captured = match game.board.get_piece(&m.to.x, &m.to.y) {
+    // BITBOARD: Fast piece check
+    let captured = match game.board.get_piece_fast(m.to.x, m.to.y) {
         Some(p) => p,
         None => return 0,
     };
@@ -70,16 +72,28 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         alive: bool,
     }
 
-    // Build piece list from the board HashMap - now stack-allocated
+    // Build piece list using tile bitboards - faster than HashMap iteration
     let mut pieces: ArrayVec<PieceInfo, SEE_MAX_PIECES> = ArrayVec::new();
-    for ((x, y), piece) in game.board.iter() {
-        pieces.push(PieceInfo {
-            x: *x,
-            y: *y,
-            piece_type: piece.piece_type(),
-            color: piece.color(),
-            alive: true,
-        });
+    for (cx, cy, tile) in game.board.tiles.iter() {
+        let mut bits = tile.occ_all;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let packed = tile.piece[idx];
+            if packed == 0 {
+                continue;
+            }
+            let piece = crate::board::Piece::from_packed(packed);
+            let x = cx * 8 + (idx % 8) as i64;
+            let y = cy * 8 + (idx / 8) as i64;
+            pieces.push(PieceInfo {
+                x,
+                y,
+                piece_type: piece.piece_type(),
+                color: piece.color(),
+                alive: true,
+            });
+        }
     }
 
     // Helper to find the index of a live piece at given coordinates.

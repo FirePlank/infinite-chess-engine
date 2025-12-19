@@ -1874,7 +1874,8 @@ fn negamax(
 
     // Main move loop - iterate through staged moves
     while let Some(m) = movegen.next(game, searcher) {
-        let captured_piece = game.board.get_piece(&m.to.x, &m.to.y);
+        // BITBOARD: Fast capture detection
+        let captured_piece = game.board.get_piece_fast(m.to.x, m.to.y);
         let is_capture = captured_piece.map_or(false, |p| !p.piece_type().is_neutral_type());
         let captured_type = captured_piece.map(|p| p.piece_type());
         let is_promotion = m.promotion.is_some();
@@ -2466,7 +2467,8 @@ fn negamax(
     if !in_check {
         let best_move_is_quiet = match &best_move {
             Some(m) => {
-                let captured = game.board.get_piece(&m.to.x, &m.to.y);
+                // BITBOARD: Fast capture check
+                let captured = game.board.get_piece_fast(m.to.x, m.to.y);
                 let is_capture = captured.map_or(false, |p| !p.piece_type().is_neutral_type());
                 !is_capture && m.promotion.is_none()
             }
