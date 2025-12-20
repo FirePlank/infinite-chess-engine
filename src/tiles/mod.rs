@@ -6,6 +6,7 @@
 //!
 //! The design is SIMD-ready: piece array scans can be vectorized with u8x16.
 
+pub mod magic;
 pub mod masks;
 
 use crate::board::{Piece, PlayerColor};

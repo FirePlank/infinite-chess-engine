@@ -865,7 +865,6 @@ pub fn is_square_attacked(
 
     // 3. Check Sliding Pieces (Orthogonal and Diagonal) using SpatialIndices
     // Helper to check rays using indices for fast O(log n) nearest-piece lookup
-    // Now uses inline piece data to avoid secondary board lookups
     let check_ray = |dirs: &[(i64, i64)], type_mask: PieceTypeMask| -> bool {
         for &(dx, dy) in dirs {
             let line_vec = if dx == 0 {
@@ -882,7 +881,6 @@ pub fn is_square_attacked(
                 let val = if dx == 0 { target.y } else { target.x };
                 let step_dir = if dx == 0 { dy } else { dx };
 
-                // Use new find_nearest helper with inline piece data
                 if let Some((_, packed)) = SpatialIndices::find_nearest(vec, val, step_dir) {
                     let piece = Piece::from_packed(packed);
                     if piece.color() == attacker_color
@@ -1277,9 +1275,25 @@ fn generate_castling_moves(
     moves
 }
 
-/// Generate only sliding captures for quiescence using BITBOARD-OPTIMIZED step-by-step.
-/// Uses tile occupancy check for O(1) empty square detection, avoiding HashMap lookups
-/// for empty squares which are the common case along rays.
+/// Check if ray is blocked within tile before reaching edge (for magic optimization)
+#[inline]
+// fn is_ray_blocked_in_tile(from_local: usize, dx: i64, dy: i64, occ: u64) -> bool {
+//     let r = (from_local / 8) as i64;
+//     let f = (from_local % 8) as i64;
+//     let mut cr = r + dy;
+//     let mut cf = f + dx;
+//     while cr >= 0 && cr < 8 && cf >= 0 && cf < 8 {
+//         if (occ >> ((cr as usize) * 8 + cf as usize)) & 1 != 0 {
+//             return true;
+//         }
+//         cr += dy;
+//         cf += dx;
+//     }
+//     false
+// }
+
+/// Generate only sliding captures for quiescence search.
+/// Uses step-by-step ray tracing with bitboard occupancy fast-path.
 fn generate_sliding_capture_moves(
     board: &Board,
     from: &Coordinate,
@@ -1321,7 +1335,6 @@ fn generate_sliding_capture_moves(
                 };
 
                 if !is_occupied {
-                    // Empty square - continue along ray
                     step += 1;
                     if step > 50 {
                         break;
@@ -1334,7 +1347,7 @@ fn generate_sliding_capture_moves(
                     let packed = tile.piece[local_idx];
                     if packed != 0 {
                         let target = Piece::from_packed(packed);
-                        // Allow capturing obstacles (neutral but capturable), block only Voids
+                        // Obstacles are neutral but capturable - check is_uncapturable()
                         if target.color() != our_color && !target.piece_type().is_uncapturable() {
                             out.push(Move::new(*from, Coordinate::new(x, y), *piece));
                         }
@@ -1345,6 +1358,28 @@ fn generate_sliding_capture_moves(
         }
     }
 }
+
+/// Distance from local square to tile edge in given direction
+#[inline]
+// fn distance_to_tile_edge(from_local: usize, dx: i64, dy: i64) -> i64 {
+//     let r = (from_local / 8) as i64;
+//     let f = (from_local % 8) as i64;
+//     let dist_r = if dy > 0 {
+//         7 - r
+//     } else if dy < 0 {
+//         r
+//     } else {
+//         i64::MAX
+//     };
+//     let dist_f = if dx > 0 {
+//         7 - f
+//     } else if dx < 0 {
+//         f
+//     } else {
+//         i64::MAX
+//     };
+//     dist_r.min(dist_f)
+// }
 
 /// Extend out with only capturing moves from a pre-generated move list.
 fn extend_captures_only(
@@ -1847,8 +1882,9 @@ pub fn generate_sliding_moves(
 
                     if let Some(target) = board.get_piece(tx, ty) {
                         // If blocked, check if we can capture
+                        // Obstacles are neutral but capturable - check is_uncapturable()
                         let is_enemy =
-                            target.color() != our_color && target.color() != PlayerColor::Neutral;
+                            target.color() != our_color && !target.piece_type().is_uncapturable();
                         if is_enemy {
                             moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                         }
@@ -1897,7 +1933,8 @@ pub fn generate_sliding_moves(
 
             // Process ALL pieces for interception (needed for tactics)
             for ((px, py), p) in board.iter() {
-                let is_enemy = p.color() != our_color && p.color() != PlayerColor::Neutral;
+                // Obstacles are neutral but capturable - check is_uncapturable()
+                let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
                 let wiggle = if is_enemy {
                     ENEMY_WIGGLE
                 } else {
@@ -2099,7 +2136,8 @@ fn find_blocker_via_indices(
             }
 
             let piece = Piece::from_packed(packed);
-            let is_enemy = piece.color() != our_color && piece.color() != PlayerColor::Neutral;
+            // Obstacles are neutral but capturable - check is_uncapturable()
+            let is_enemy = piece.color() != our_color && !piece.piece_type().is_uncapturable();
             return (dist, is_enemy);
         }
     }
@@ -2161,8 +2199,9 @@ fn generate_huygen_moves(
                         if target.piece_type() == PieceType::Void {
                             break;
                         }
+                        // Obstacles are neutral but capturable - check is_uncapturable()
                         let is_enemy = target.color() != piece.color()
-                            && target.color() != PlayerColor::Neutral;
+                            && !target.piece_type().is_uncapturable();
                         if is_enemy {
                             moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                         }

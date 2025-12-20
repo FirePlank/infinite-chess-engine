@@ -273,6 +273,9 @@ pub struct Engine {
 impl Engine {
     #[wasm_bindgen(constructor)]
     pub fn new(json_state: JsValue) -> Result<Engine, JsValue> {
+        // Initialize magic bitboards for O(1) slider attacks
+        // crate::tiles::magic::init();
+
         let js_game: JsFullGame = serde_wasm_bindgen::from_value(json_state)?;
 
         // If this looks like a fresh game, clear any persistent search/TT state.

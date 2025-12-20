@@ -1,43 +1,44 @@
 //! Magic Bitboards for Sliders on 8×8 Tiles
 //!
-//! This module implements fast, deterministic magic bitboards for O(1) slider attack
-//! generation within 8×8 tiles.
+//! This module implements fast magic bitboards for O(1) slider attack
+//! generation within 8×8 tiles for infinite chess.
 //!
-//! ## Architecture
-//! - Uses fixed Kannan-style magic numbers and shifts.
-//! - Thread-safe initialization via `std::sync::Once`.
-//! - Flat attack tables for cache efficiency.
+//! ## Key Difference from Standard Chess
+//! Standard chess excludes edge squares from masks because edge blockers
+//! can't affect attacks (board boundary stops the ray anyway).
+//! For **infinite chess**, edges ARE included because rays continue to the next tile.
 
-use std::ptr::{addr_of, addr_of_mut};
+#![allow(static_mut_refs)]
+
 use std::sync::Once;
 
 // ============================================================================
-// Public API
+// Public API - Maximum performance with inline hints
 // ============================================================================
 
 /// Get rook attacks for a square within a single tile.
+/// Returns a bitboard of squares the rook can attack/move to within the tile.
 #[inline(always)]
 pub fn rook_attacks(sq: usize, occ: u64) -> u64 {
     debug_assert!(sq < 64);
-    init();
     unsafe {
-        let mask = *addr_of!(ROOK_MASKS).cast::<u64>().add(sq);
-        let idx =
-            (((occ & mask).wrapping_mul(*ROOK_MAGICS.get_unchecked(sq))) >> ROOK_SHIFT) as usize;
-        *addr_of!(ROOK_ATTACKS).cast::<u64>().add((sq << 12) | idx)
+        let mask = ROOK_MASKS[sq];
+        let shift = ROOK_SHIFTS[sq] as u32;
+        let idx = (((occ & mask).wrapping_mul(ROOK_MAGICS[sq])) >> shift) as usize;
+        *ROOK_ATTACKS.get_unchecked(ROOK_OFFSETS[sq] + idx)
     }
 }
 
 /// Get bishop attacks for a square within a single tile.
+/// Returns a bitboard of squares the bishop can attack/move to within the tile.
 #[inline(always)]
 pub fn bishop_attacks(sq: usize, occ: u64) -> u64 {
     debug_assert!(sq < 64);
-    init();
     unsafe {
-        let mask = *addr_of!(BISHOP_MASKS).cast::<u64>().add(sq);
-        let shift = *BISHOP_SHIFTS.get_unchecked(sq) as u32;
-        let idx = (((occ & mask).wrapping_mul(*BISHOP_MAGICS.get_unchecked(sq))) >> shift) as usize;
-        *addr_of!(BISHOP_ATTACKS).cast::<u64>().add((sq << 9) | idx)
+        let mask = BISHOP_MASKS[sq];
+        let shift = BISHOP_SHIFTS[sq] as u32;
+        let idx = (((occ & mask).wrapping_mul(BISHOP_MAGICS[sq])) >> shift) as usize;
+        *BISHOP_ATTACKS.get_unchecked(BISHOP_OFFSETS[sq] + idx)
     }
 }
 
@@ -47,507 +48,363 @@ pub fn queen_attacks(sq: usize, occ: u64) -> u64 {
     rook_attacks(sq, occ) | bishop_attacks(sq, occ)
 }
 
-/// Get ray mask for a direction (0=N, 1=E, 2=S, 3=W, 4=NE, 5=SE, 6=SW, 7=NW)
-pub fn get_ray_mask(sq: usize, dir: usize) -> u64 {
-    init();
-    unsafe { (*addr_of!(RAY_MASKS).cast::<[u64; 8]>().add(sq))[dir] }
-}
-
 /// Initialize magic bitboards (thread-safe, called automatically or at startup)
+#[inline]
 pub fn init() {
-    INIT.call_once(|| unsafe { init_inner() });
+    INIT.call_once(|| unsafe { init_tables() });
 }
 
-/// Legacy alias for init()
+/// Legacy alias
 pub fn init_magic_bitboards() {
     init();
 }
 
 // ============================================================================
-// Internals
+// Pre-generated Edge-Inclusive Magic Numbers
+// ============================================================================
+
+#[rustfmt::skip]
+const ROOK_MAGICS: [u64; 64] = [
+    0x2084001004080400, 0x82000A0040102080, 0x020004200A001040, 0x0200020010080420,
+    0x0200010428B00200, 0x0200028200041908, 0x0200005400A10200, 0x0004082100408010,
+    0x0005040080114000, 0x0002001020408200, 0x0002000820104200, 0x0000100010530620,
+    0x0812000102840200, 0x0000040081004200, 0x000C000082011048, 0x0200080A21004080,
+    0x0000280800308700, 0x0000420010220080, 0x0000420008201200, 0x8000160006201200,
+    0x0000420001840E00, 0xC800020004008148, 0x00000400010200C8, 0x0000001110841440,
+    0x0001004A04020800, 0x0000220200104080, 0x00001022000A0040, 0x0000201600061200,
+    0x0000040200010890, 0x00004C0200010298, 0x2000010400008208, 0x0000002404001204,
+    0x00000A1425040200, 0x0000204082001200, 0x0000102202000840, 0x8000522016000600,
+    0x0000010A02000210, 0x0000040082000108, 0x8800008204000128, 0x4800002140080410,
+    0x000A504023808000, 0x8000308040020400, 0x40001D3020000A00, 0xC008420100200080,
+    0x4000082040100080, 0x2000040081020008, 0x000004B902040008, 0xA000004500003080,
+    0x0002422200910600, 0x8000408010220200, 0x0001104108220200, 0x00000A000C200600,
+    0x0000040200810A00, 0x3000408409080600, 0x1000220140880400, 0x0000072101804A00,
+    0x0000620100415282, 0x8000402082000812, 0x400020400E06000A, 0x0000040312002002,
+    0x000000810402000A, 0x00000104080040A2, 0x200000A042010804, 0x0000002080401102,
+];
+
+#[rustfmt::skip]
+const ROOK_SHIFTS: [u8; 64] = [
+    51, 52, 52, 52, 52, 52, 52, 51,
+    51, 53, 53, 51, 51, 51, 52, 52,
+    51, 53, 53, 53, 52, 52, 53, 51,
+    51, 53, 53, 53, 52, 52, 53, 51,
+    51, 53, 53, 53, 52, 52, 53, 51,
+    52, 52, 52, 51, 52, 52, 53, 51,
+    53, 53, 53, 53, 52, 52, 53, 52,
+    52, 52, 52, 51, 51, 51, 52, 51,
+];
+
+#[rustfmt::skip]
+const BISHOP_MAGICS: [u64; 64] = [
+    0x08581101080A1080, 0x0102100400808004, 0x012101310200000C, 0x00080A0020000013,
+    0x0642021000009000, 0x8182020220004840, 0x0002010120100008, 0x484A04420084A000,
+    0x0004041022120400, 0x0080020A0A0C0100, 0x0001100142042000, 0x0000080A00200008,
+    0x0004442420000100, 0x1000220202200484, 0x0001040441080800, 0x3010090258040400,
+    0x0040202104041080, 0x6002000404040404, 0x0001008800440080, 0x0008040082004000,
+    0x0004001080A00000, 0x0000200202012000, 0x0002012C00820880, 0x000020C200840400,
+    0x2010400808080140, 0x0008021004100200, 0x0000280004004404, 0x0000808018020002,
+    0x0000848024002000, 0xC012008064100080, 0x200904020A022100, 0x2024022080420200,
+    0x0010900500080800, 0x4008040204040800, 0x9004004400080020, 0x0000080800A20A00,
+    0x0040002020020080, 0x0008020020041000, 0x01020A0201040080, 0x0004090454012400,
+    0x2000820841102000, 0x8004020802000400, 0x0000220022005000, 0x0120004208004080,
+    0x0000880100400400, 0x000AA00401202100, 0x00080200D4000200, 0x0002040420850420,
+    0x1000451010B00400, 0x0400840108024100, 0x1000011401040000, 0x0002240042020000,
+    0x0008001002088000, 0x0000C05002008A00, 0x0088028418120048, 0x80CD080600420400,
+    0x2004804400A00800, 0x0600020500880400, 0x0100080884008814, 0x108800000084040A,
+    0x0000030030021600, 0x040102C082040108, 0x0900624404088401, 0x0040080901020114,
+];
+
+#[rustfmt::skip]
+const BISHOP_SHIFTS: [u8; 64] = [
+    58, 59, 59, 59, 59, 59, 59, 58,
+    59, 59, 59, 59, 59, 59, 59, 59,
+    59, 59, 57, 57, 57, 57, 59, 59,
+    59, 59, 57, 55, 55, 57, 59, 59,
+    59, 59, 57, 55, 55, 57, 59, 59,
+    59, 59, 57, 57, 57, 57, 59, 59,
+    59, 59, 59, 59, 59, 59, 59, 59,
+    58, 59, 59, 59, 59, 59, 59, 58,
+];
+
+// ============================================================================
+// Static Tables
 // ============================================================================
 
 static INIT: Once = Once::new();
 
-// Flat tables: [sq][index] but flattened for faster addressing
-static mut ROOK_ATTACKS: [u64; 64 * 4096] = [0; 64 * 4096];
-static mut BISHOP_ATTACKS: [u64; 64 * 512] = [0; 64 * 512];
+// Edge-inclusive magics need larger tables than standard chess
+// Rook: max shift=51 -> 2^13=8192 per square, 64 squares -> 524288 max
+// Bishop: max shift=55 -> 2^9=512 per square, 64 squares -> 32768 max
+const ROOK_TABLE_SIZE: usize = 524288;
+const BISHOP_TABLE_SIZE: usize = 32768;
 
+static mut ROOK_ATTACKS: [u64; ROOK_TABLE_SIZE] = [0; ROOK_TABLE_SIZE];
+static mut BISHOP_ATTACKS: [u64; BISHOP_TABLE_SIZE] = [0; BISHOP_TABLE_SIZE];
+static mut ROOK_OFFSETS: [usize; 64] = [0; 64];
+static mut BISHOP_OFFSETS: [usize; 64] = [0; 64];
 static mut ROOK_MASKS: [u64; 64] = [0; 64];
 static mut BISHOP_MASKS: [u64; 64] = [0; 64];
 
-/// Ray masks for each square and direction.
-/// Directions: 0=N, 1=E, 2=S, 3=W, 4=NE, 5=SE, 6=SW, 7=NW
-static mut RAY_MASKS: [[u64; 8]; 64] = [[0; 8]; 64];
+// ============================================================================
+// Initialization
+// ============================================================================
 
-const ROOK_SHIFT: u32 = 52;
-
-// Kannan-style “fixed shift” rook magics (64 entries)
-const ROOK_MAGICS: [u64; 64] = [
-    0x0080001020400080,
-    0x0040001000200040,
-    0x0080081000200080,
-    0x0080040800100080,
-    0x0080020400080080,
-    0x0080010200040080,
-    0x0080008001000200,
-    0x0080002040800100,
-    0x0000800020400080,
-    0x0000400020005000,
-    0x0000801000200080,
-    0x0000800800100080,
-    0x0000800400080080,
-    0x0000800200040080,
-    0x0000800100020080,
-    0x0000800040800100,
-    0x0000208000400080,
-    0x0000404000201000,
-    0x0000808010002000,
-    0x0000808008001000,
-    0x0000808004000800,
-    0x0000808002000400,
-    0x0000010100020004,
-    0x0000020000408104,
-    0x0000208080004000,
-    0x0000200040005000,
-    0x0000100080200080,
-    0x0000080080100080,
-    0x0000040080080080,
-    0x0000020080040080,
-    0x0000010080800200,
-    0x0000800080004100,
-    0x0000204000800080,
-    0x0000200040401000,
-    0x0000100080802000,
-    0x0000080080801000,
-    0x0000040080800800,
-    0x0000020080800400,
-    0x0000020001010004,
-    0x0000800040800100,
-    0x0000204000808000,
-    0x0000200040008080,
-    0x0000100020008080,
-    0x0000080010008080,
-    0x0000040008008080,
-    0x0000020004008080,
-    0x0000010002008080,
-    0x0000004081020004,
-    0x0000204000800080,
-    0x0000200040008080,
-    0x0000100020008080,
-    0x0000080010008080,
-    0x0000040008008080,
-    0x0000020004008080,
-    0x0000800100020080,
-    0x0000800041000080,
-    0x00FFFCDDFCED714A,
-    0x007FFCDDFCED714A,
-    0x003FFFCDFFD88096,
-    0x0000040810002101,
-    0x0001FFCE07800410,
-    0x0000FFFFFE040008,
-    0x00000FFFF8100040,
-    0x0000FFFE81000040,
-];
-
-// Kannan-style bishop shifts + magics (64 each)
-const BISHOP_SHIFTS: [u8; 64] = [
-    58, 59, 59, 59, 59, 59, 59, 58, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 57, 57, 57, 57, 59, 59,
-    59, 59, 57, 55, 55, 57, 59, 59, 59, 59, 57, 55, 55, 57, 59, 59, 59, 59, 57, 57, 57, 57, 59, 59,
-    59, 59, 59, 59, 59, 59, 59, 59, 58, 59, 59, 59, 59, 59, 59, 58,
-];
-
-const BISHOP_MAGICS: [u64; 64] = [
-    0x0040201008040200,
-    0x0000402010080400,
-    0x0000804020100804,
-    0x0001008040201008,
-    0x0002010080402010,
-    0x0004020100804020,
-    0x0008040201008040,
-    0x0010080402010080,
-    0x0000020100804028,
-    0x0000040201008050,
-    0x0000080402010080,
-    0x0000100804020100,
-    0x0000200814040200,
-    0x0000401028080400,
-    0x0000802050100800,
-    0x0001004020100800,
-    0x0000020408102200,
-    0x0000040810204400,
-    0x0000081020408000,
-    0x0000102040008000,
-    0x0000204081010200,
-    0x0000408102020400,
-    0x0000810504020800,
-    0x0001021008041000,
-    0x0000040404080200,
-    0x0000080808100400,
-    0x0000101010200800,
-    0x0000202020401000,
-    0x0000404080810200,
-    0x0000808101020400,
-    0x0001010282040800,
-    0x0002020405001000,
-    0x0000100402010080,
-    0x0000200805020100,
-    0x0000401008040200,
-    0x0000020020080080,
-    0x0000040020100000,
-    0x0000080040201000,
-    0x0000100080402000,
-    0x0000200100804000,
-    0x0000050100802000,
-    0x00000a0201004000,
-    0x0000140402008000,
-    0x0000280804010000,
-    0x0000500810020000,
-    0x0000a01020040000,
-    0x0001402040080000,
-    0x0002804081000000,
-    0x0000080810200200,
-    0x0000101020400400,
-    0x0000202040008800,
-    0x0000404080011000,
-    0x0000808100022000,
-    0x0001010200044000,
-    0x0002020400088000,
-    0x0004040800110000,
-    0x0000010204102000,
-    0x0000020408205000,
-    0x0000040810400400,
-    0x0000081020800800,
-    0x0000102040011000,
-    0x0000204800022000,
-    0x0000408000044000,
-    0x0001000000088000,
-];
-
-unsafe fn init_inner() {
-    // Masks
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn init_tables() {
+    // Generate masks
     for sq in 0..64 {
-        unsafe {
-            *addr_of_mut!(ROOK_MASKS).cast::<u64>().add(sq) = gen_rook_mask(sq);
-            *addr_of_mut!(BISHOP_MASKS).cast::<u64>().add(sq) = gen_bishop_mask(sq);
-
-            // Ray masks
-            let r = (sq / 8) as i32;
-            let f = (sq % 8) as i32;
-
-            let mut n = 0u64;
-            for rr in (r + 1)..8 {
-                n |= bit((rr as usize) * 8 + f as usize);
-            }
-            let mut e = 0u64;
-            for ff in (f + 1)..8 {
-                e |= bit((r as usize) * 8 + ff as usize);
-            }
-            let mut s = 0u64;
-            for rr in (0..r).rev() {
-                s |= bit((rr as usize) * 8 + f as usize);
-            }
-            let mut w = 0u64;
-            for ff in (0..f).rev() {
-                w |= bit((r as usize) * 8 + ff as usize);
-            }
-
-            let mut ne = 0u64;
-            {
-                let mut rr = r + 1;
-                let mut ff = f + 1;
-                while rr < 8 && ff < 8 {
-                    ne |= bit((rr as usize) * 8 + ff as usize);
-                    rr += 1;
-                    ff += 1;
-                }
-            }
-            let mut se = 0u64;
-            {
-                let mut rr = r - 1;
-                let mut ff = f + 1;
-                while rr >= 0 && ff < 8 {
-                    se |= bit((rr as usize) * 8 + ff as usize);
-                    rr -= 1;
-                    ff += 1;
-                }
-            }
-            let mut sw = 0u64;
-            {
-                let mut rr = r - 1;
-                let mut ff = f - 1;
-                while rr >= 0 && ff >= 0 {
-                    sw |= bit((rr as usize) * 8 + ff as usize);
-                    rr -= 1;
-                    ff -= 1;
-                }
-            }
-            let mut nw = 0u64;
-            {
-                let mut rr = r + 1;
-                let mut ff = f - 1;
-                while rr < 8 && ff >= 0 {
-                    nw |= bit((rr as usize) * 8 + ff as usize);
-                    rr += 1;
-                    ff -= 1;
-                }
-            }
-
-            let rms = addr_of_mut!(RAY_MASKS).cast::<[u64; 8]>().add(sq);
-            (*rms)[0] = n;
-            (*rms)[1] = e;
-            (*rms)[2] = s;
-            (*rms)[3] = w;
-            (*rms)[4] = ne;
-            (*rms)[5] = se;
-            (*rms)[6] = sw;
-            (*rms)[7] = nw;
-        }
+        ROOK_MASKS[sq] = gen_rook_mask(sq);
+        BISHOP_MASKS[sq] = gen_bishop_mask(sq);
     }
 
-    // Rook attacks
+    // Initialize rook attack tables
+    let mut rook_offset = 0usize;
     for sq in 0..64 {
-        unsafe {
-            let mask = *addr_of!(ROOK_MASKS).cast::<u64>().add(sq);
-            let mut occ = 0u64;
-            let p_magic = *ROOK_MAGICS.get_unchecked(sq);
-            loop {
-                let idx = (((occ & mask).wrapping_mul(p_magic)) >> ROOK_SHIFT) as usize;
-                *addr_of_mut!(ROOK_ATTACKS)
-                    .cast::<u64>()
-                    .add((sq << 12) | idx) = gen_rook_attacks(sq, occ);
+        ROOK_OFFSETS[sq] = rook_offset;
+        let mask = ROOK_MASKS[sq];
+        let shift = ROOK_SHIFTS[sq] as u32;
+        let magic = ROOK_MAGICS[sq];
+        let table_size = 1usize << (64 - shift);
 
-                occ = occ.wrapping_sub(mask) & mask;
-                if occ == 0 {
-                    break;
-                }
+        let mut occ = 0u64;
+        loop {
+            let idx = (((occ & mask).wrapping_mul(magic)) >> shift) as usize;
+            ROOK_ATTACKS[rook_offset + idx] = gen_rook_attacks(sq, occ);
+            occ = occ.wrapping_sub(mask) & mask;
+            if occ == 0 {
+                break;
             }
         }
+        rook_offset += table_size;
     }
 
-    // Bishop attacks
+    // Initialize bishop attack tables
+    let mut bishop_offset = 0usize;
     for sq in 0..64 {
-        unsafe {
-            let mask = *addr_of!(BISHOP_MASKS).cast::<u64>().add(sq);
-            let shift = *BISHOP_SHIFTS.get_unchecked(sq) as u32;
-            let p_magic = *BISHOP_MAGICS.get_unchecked(sq);
-            let mut occ = 0u64;
-            loop {
-                let idx = (((occ & mask).wrapping_mul(p_magic)) >> shift) as usize;
-                *addr_of_mut!(BISHOP_ATTACKS)
-                    .cast::<u64>()
-                    .add((sq << 9) | idx) = gen_bishop_attacks(sq, occ);
+        BISHOP_OFFSETS[sq] = bishop_offset;
+        let mask = BISHOP_MASKS[sq];
+        let shift = BISHOP_SHIFTS[sq] as u32;
+        let magic = BISHOP_MAGICS[sq];
+        let table_size = 1usize << (64 - shift);
 
-                occ = occ.wrapping_sub(mask) & mask;
-                if occ == 0 {
-                    break;
-                }
+        let mut occ = 0u64;
+        loop {
+            let idx = (((occ & mask).wrapping_mul(magic)) >> shift) as usize;
+            BISHOP_ATTACKS[bishop_offset + idx] = gen_bishop_attacks(sq, occ);
+            occ = occ.wrapping_sub(mask) & mask;
+            if occ == 0 {
+                break;
             }
         }
+        bishop_offset += table_size;
     }
 }
 
 #[inline(always)]
-fn bit(sq: usize) -> u64 {
+const fn bit(sq: usize) -> u64 {
     1u64 << sq
 }
 
+/// Generate rook mask (EDGE-INCLUSIVE for infinite chess)
 fn gen_rook_mask(sq: usize) -> u64 {
     let r = (sq / 8) as i32;
     let f = (sq % 8) as i32;
     let mut m = 0u64;
-    for rr in (r + 1)..7 {
-        m |= bit((rr as usize) * 8 + (f as usize));
+    for rr in (r + 1)..=7 {
+        m |= bit((rr as usize) * 8 + f as usize);
     }
-    for rr in 1..r {
-        m |= bit((rr as usize) * 8 + (f as usize));
+    for rr in 0..r {
+        m |= bit((rr as usize) * 8 + f as usize);
     }
-    for ff in (f + 1)..7 {
-        m |= bit((r as usize) * 8 + (ff as usize));
+    for ff in (f + 1)..=7 {
+        m |= bit((r as usize) * 8 + ff as usize);
     }
-    for ff in 1..f {
-        m |= bit((r as usize) * 8 + (ff as usize));
+    for ff in 0..f {
+        m |= bit((r as usize) * 8 + ff as usize);
     }
     m
 }
 
+/// Generate bishop mask (EDGE-INCLUSIVE for infinite chess)
 fn gen_bishop_mask(sq: usize) -> u64 {
     let r = (sq / 8) as i32;
     let f = (sq % 8) as i32;
     let mut m = 0u64;
-    {
-        let mut rr = r + 1;
-        let mut ff = f + 1;
-        while rr < 7 && ff < 7 {
-            m |= bit((rr as usize) * 8 + (ff as usize));
-            rr += 1;
-            ff += 1;
-        }
+    let mut rr = r + 1;
+    let mut ff = f + 1;
+    while rr <= 7 && ff <= 7 {
+        m |= bit((rr as usize) * 8 + ff as usize);
+        rr += 1;
+        ff += 1;
     }
-    {
-        let mut rr = r + 1;
-        let mut ff = f - 1;
-        while rr < 7 && ff > 0 {
-            m |= bit((rr as usize) * 8 + (ff as usize));
-            rr += 1;
-            ff -= 1;
-        }
+    rr = r + 1;
+    ff = f - 1;
+    while rr <= 7 && ff >= 0 {
+        m |= bit((rr as usize) * 8 + ff as usize);
+        rr += 1;
+        ff -= 1;
     }
-    {
-        let mut rr = r - 1;
-        let mut ff = f + 1;
-        while rr > 0 && ff < 7 {
-            m |= bit((rr as usize) * 8 + (ff as usize));
-            rr -= 1;
-            ff += 1;
-        }
+    rr = r - 1;
+    ff = f + 1;
+    while rr >= 0 && ff <= 7 {
+        m |= bit((rr as usize) * 8 + ff as usize);
+        rr -= 1;
+        ff += 1;
     }
-    {
-        let mut rr = r - 1;
-        let mut ff = f - 1;
-        while rr > 0 && ff > 0 {
-            m |= bit((rr as usize) * 8 + (ff as usize));
-            rr -= 1;
-            ff -= 1;
-        }
+    rr = r - 1;
+    ff = f - 1;
+    while rr >= 0 && ff >= 0 {
+        m |= bit((rr as usize) * 8 + ff as usize);
+        rr -= 1;
+        ff -= 1;
     }
     m
 }
 
+/// Generate rook attacks given occupancy
 fn gen_rook_attacks(sq: usize, occ: u64) -> u64 {
     let r = (sq / 8) as i32;
     let f = (sq % 8) as i32;
     let mut a = 0u64;
     for rr in (r + 1)..=7 {
-        let s = (rr as usize) * 8 + (f as usize);
+        let s = (rr as usize) * 8 + f as usize;
         a |= bit(s);
-        if (occ & bit(s)) != 0 {
+        if occ & bit(s) != 0 {
             break;
         }
     }
     for rr in (0..r).rev() {
-        let s = (rr as usize) * 8 + (f as usize);
+        let s = (rr as usize) * 8 + f as usize;
         a |= bit(s);
-        if (occ & bit(s)) != 0 {
+        if occ & bit(s) != 0 {
             break;
         }
     }
     for ff in (f + 1)..=7 {
-        let s = (r as usize) * 8 + (ff as usize);
+        let s = (r as usize) * 8 + ff as usize;
         a |= bit(s);
-        if (occ & bit(s)) != 0 {
+        if occ & bit(s) != 0 {
             break;
         }
     }
     for ff in (0..f).rev() {
-        let s = (r as usize) * 8 + (ff as usize);
+        let s = (r as usize) * 8 + ff as usize;
         a |= bit(s);
-        if (occ & bit(s)) != 0 {
+        if occ & bit(s) != 0 {
             break;
         }
     }
     a
 }
 
+/// Generate bishop attacks given occupancy
 fn gen_bishop_attacks(sq: usize, occ: u64) -> u64 {
     let r = (sq / 8) as i32;
     let f = (sq % 8) as i32;
     let mut a = 0u64;
-    {
-        let mut rr = r + 1;
-        let mut ff = f + 1;
-        while rr <= 7 && ff <= 7 {
-            let s = (rr as usize) * 8 + (ff as usize);
-            a |= bit(s);
-            if (occ & bit(s)) != 0 {
-                break;
-            }
-            rr += 1;
-            ff += 1;
+    let mut rr = r + 1;
+    let mut ff = f + 1;
+    while rr <= 7 && ff <= 7 {
+        let s = (rr as usize) * 8 + ff as usize;
+        a |= bit(s);
+        if occ & bit(s) != 0 {
+            break;
         }
+        rr += 1;
+        ff += 1;
     }
-    {
-        let mut rr = r + 1;
-        let mut ff = f - 1;
-        while rr <= 7 && ff >= 0 {
-            let s = (rr as usize) * 8 + (ff as usize);
-            a |= bit(s);
-            if (occ & bit(s)) != 0 {
-                break;
-            }
-            rr += 1;
-            ff -= 1;
+    rr = r + 1;
+    ff = f - 1;
+    while rr <= 7 && ff >= 0 {
+        let s = (rr as usize) * 8 + ff as usize;
+        a |= bit(s);
+        if occ & bit(s) != 0 {
+            break;
         }
+        rr += 1;
+        ff -= 1;
     }
-    {
-        let mut rr = r - 1;
-        let mut ff = f + 1;
-        while rr >= 0 && ff <= 7 {
-            let s = (rr as usize) * 8 + (ff as usize);
-            a |= bit(s);
-            if (occ & bit(s)) != 0 {
-                break;
-            }
-            rr -= 1;
-            ff += 1;
+    rr = r - 1;
+    ff = f + 1;
+    while rr >= 0 && ff <= 7 {
+        let s = (rr as usize) * 8 + ff as usize;
+        a |= bit(s);
+        if occ & bit(s) != 0 {
+            break;
         }
+        rr -= 1;
+        ff += 1;
     }
-    {
-        let mut rr = r - 1;
-        let mut ff = f - 1;
-        while rr >= 0 && ff >= 0 {
-            let s = (rr as usize) * 8 + (ff as usize);
-            a |= bit(s);
-            if (occ & bit(s)) != 0 {
-                break;
-            }
-            rr -= 1;
-            ff -= 1;
+    rr = r - 1;
+    ff = f - 1;
+    while rr >= 0 && ff >= 0 {
+        let s = (rr as usize) * 8 + ff as usize;
+        a |= bit(s);
+        if occ & bit(s) != 0 {
+            break;
         }
+        rr -= 1;
+        ff -= 1;
     }
     a
 }
 
 // ============================================================================
-// Cross-Tile Slider Rays
+// Tests
 // ============================================================================
 
-/// Check if a ray from `from_sq` in direction `(dx, dy)` exits the tile at edge.
-/// Returns the exit direction as (tile_dx, tile_dy, edge_bit_index).
-#[inline]
-pub fn ray_exit_info(from_sq: usize, dx: i32, dy: i32) -> Option<(i64, i64, usize)> {
-    let file = (from_sq % 8) as i32;
-    let rank = (from_sq / 8) as i32;
-    let mut r = rank;
-    let mut f = file;
-    let mut last_sq = from_sq;
-    loop {
-        let next_r = r + dy;
-        let next_f = f + dx;
-        if next_r < 0 || next_r > 7 || next_f < 0 || next_f > 7 {
-            break;
-        }
-        r = next_r;
-        f = next_f;
-        last_sq = (r * 8 + f) as usize;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init() {
+        init();
+        init(); // Safe to call multiple times
     }
-    let mut tile_dx = 0;
-    let mut tile_dy = 0;
-    let next_r_exit = r + dy;
-    let next_f_exit = f + dx;
-    if next_f_exit > 7 {
-        tile_dx = 1;
-    } else if next_f_exit < 0 {
-        tile_dx = -1;
+
+    #[test]
+    fn test_rook_attacks_center() {
+        init();
+        let attacks = rook_attacks(28, 0); // e4 empty board
+        assert_eq!(attacks.count_ones(), 14);
     }
-    if next_r_exit > 7 {
-        tile_dy = 1;
-    } else if next_r_exit < 0 {
-        tile_dy = -1;
+
+    #[test]
+    fn test_rook_attacks_with_blocker() {
+        init();
+        let occ = 1u64 << 44; // blocker at e6
+        let attacks = rook_attacks(28, occ);
+        assert!(attacks & (1u64 << 36) != 0); // e5
+        assert!(attacks & (1u64 << 44) != 0); // e6 (blocker)
+        assert!(attacks & (1u64 << 52) == 0); // e7 blocked
     }
-    if tile_dx == 0 && tile_dy == 0 {
-        None
-    } else {
-        Some((tile_dx, tile_dy, last_sq))
+
+    #[test]
+    fn test_bishop_attacks_center() {
+        init();
+        let attacks = bishop_attacks(27, 0); // d4
+        assert_eq!(attacks.count_ones(), 13);
+    }
+
+    #[test]
+    fn test_edge_inclusive() {
+        init();
+        // Rook at a4 should attack h4 (edge)
+        let attacks = rook_attacks(24, 0);
+        assert!(attacks & (1u64 << 31) != 0, "Must attack h4");
+        assert!(attacks & (1u64 << 0) != 0, "Must attack a1");
+        assert!(attacks & (1u64 << 56) != 0, "Must attack a8");
+    }
+
+    #[test]
+    fn test_queen_attacks() {
+        init();
+        let sq = 27;
+        assert_eq!(
+            queen_attacks(sq, 0),
+            rook_attacks(sq, 0) | bishop_attacks(sq, 0)
+        );
     }
 }

@@ -555,7 +555,7 @@ impl Searcher {
                 stopped: false,
                 seldepth: 0,
             },
-            tt: TranspositionTable::new(32),
+            tt: TranspositionTable::new(16),
             pv_table,
             pv_length: [0; MAX_PLY],
             killers,
