@@ -44,34 +44,45 @@ fn evaluate_inner(game: &GameState) -> i32 {
     // Use cached king positions (O(1) instead of O(n) board scan)
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
-    // Check for endgame with lone king
-    let white_only_king = base::is_lone_king(game, PlayerColor::White);
-    let black_only_king = base::is_lone_king(game, PlayerColor::Black);
+    // Try scaled mop-up evaluation based on material imbalance
+    let mut mop_up_applied = false;
 
-    // Handle lone king endgames
-    if black_only_king && black_king.is_some() {
-        let our_king = white_king
-            .as_ref()
-            .cloned()
-            .unwrap_or(Coordinate { x: 4, y: 4 });
-        score += base::evaluate_lone_king_endgame(
-            game,
-            &our_king,
-            black_king.as_ref().unwrap(),
-            PlayerColor::White,
-        );
-    } else if white_only_king && white_king.is_some() {
-        let our_king = black_king
-            .as_ref()
-            .cloned()
-            .unwrap_or(Coordinate { x: 4, y: 4 });
-        score -= base::evaluate_lone_king_endgame(
-            game,
-            &our_king,
-            white_king.as_ref().unwrap(),
-            PlayerColor::Black,
-        );
-    } else {
+    // Check if black is losing
+    if let Some(_scale) =
+        crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::Black)
+    {
+        if let (Some(wk), Some(bk)) = (&white_king, &black_king) {
+            score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                game,
+                wk,
+                bk,
+                PlayerColor::White,
+                PlayerColor::Black,
+            );
+            mop_up_applied = true;
+        }
+    }
+
+    // Check if white is losing
+    if !mop_up_applied {
+        if let Some(_scale) =
+            crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White)
+        {
+            if let (Some(wk), Some(bk)) = (&white_king, &black_king) {
+                score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                    game,
+                    bk,
+                    wk,
+                    PlayerColor::Black,
+                    PlayerColor::White,
+                );
+                mop_up_applied = true;
+            }
+        }
+    }
+
+    // If mop-up wasn't applied, use normal Confined Classical evaluation
+    if !mop_up_applied {
         // Custom piece evaluation for Confined Classical
         score += evaluate_pieces_confined(game, &white_king, &black_king);
 

@@ -7,6 +7,7 @@
 pub mod base;
 pub mod helpers;
 pub mod insufficient_material;
+pub mod mop_up;
 pub mod pieces;
 pub mod variants;
 

@@ -367,42 +367,61 @@ fn evaluate_inner(game: &GameState) -> i32 {
     // Use cached king positions (O(1) instead of O(n) board scan)
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
-    // Check for endgame with lone king
-    let white_only_king = is_lone_king(game, PlayerColor::White);
-    let black_only_king = is_lone_king(game, PlayerColor::Black);
+    // Try scaled mop-up evaluation based on material imbalance
+    // This runs when one side has < 40% of starting material
+    let mut mop_up_applied = false;
 
-    // Check if attacking side has promotable pawns - if so, prioritize promotion over mating net
-    let white_has_promotable_pawn =
-        has_promotable_pawn(&game.board, PlayerColor::White, game.white_promo_rank);
-    let black_has_promotable_pawn =
-        has_promotable_pawn(&game.board, PlayerColor::Black, game.black_promo_rank);
+    // Check if black is losing (white has material advantage or black has few pieces)
+    if let Some(_scale) =
+        crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::Black)
+    {
+        if let (Some(wk), Some(bk)) = (&white_king, &black_king) {
+            // Don't prioritize mop-up if we have promotable pawns
+            let white_has_promo = crate::evaluation::mop_up::has_promotable_pawn(
+                &game.board,
+                PlayerColor::White,
+                game.white_promo_rank,
+            );
+            if !white_has_promo {
+                score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                    game,
+                    wk,
+                    bk,
+                    PlayerColor::White,
+                    PlayerColor::Black,
+                );
+                mop_up_applied = true;
+            }
+        }
+    }
 
-    // Handle lone king endgames - but NOT if attacker has a promotable pawn
-    // (prioritize pawn promotion over building mating net)
-    if black_only_king && black_king.is_some() && !white_has_promotable_pawn {
-        let our_king = white_king
-            .as_ref()
-            .cloned()
-            .unwrap_or(Coordinate { x: 4, y: 4 });
-        score += evaluate_lone_king_endgame(
-            game,
-            &our_king,
-            black_king.as_ref().unwrap(),
-            PlayerColor::White,
-        );
-    } else if white_only_king && white_king.is_some() && !black_has_promotable_pawn {
-        let our_king = black_king
-            .as_ref()
-            .cloned()
-            .unwrap_or(Coordinate { x: 4, y: 4 });
-        score -= evaluate_lone_king_endgame(
-            game,
-            &our_king,
-            white_king.as_ref().unwrap(),
-            PlayerColor::Black,
-        );
-    } else {
-        // Normal game - use standard positional evaluation
+    // Check if white is losing (black has material advantage or white has few pieces)
+    if !mop_up_applied {
+        if let Some(_scale) =
+            crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White)
+        {
+            if let (Some(wk), Some(bk)) = (&white_king, &black_king) {
+                let black_has_promo = crate::evaluation::mop_up::has_promotable_pawn(
+                    &game.board,
+                    PlayerColor::Black,
+                    game.black_promo_rank,
+                );
+                if !black_has_promo {
+                    score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                        game,
+                        bk,
+                        wk,
+                        PlayerColor::Black,
+                        PlayerColor::White,
+                    );
+                    mop_up_applied = true;
+                }
+            }
+        }
+    }
+
+    // If mop-up wasn't applied, use normal positional evaluation
+    if !mop_up_applied {
         score += evaluate_pieces(game, &white_king, &black_king);
         score += evaluate_king_safety(game, &white_king, &black_king);
         score += evaluate_pawn_structure(game);
@@ -1650,58 +1669,6 @@ fn compute_pawn_structure(game: &GameState) -> i32 {
     score
 }
 
-/// Check if a side only has a king (no other pieces)
-pub fn is_lone_king(game: &GameState, color: PlayerColor) -> bool {
-    if color == PlayerColor::White {
-        game.white_pawn_count == 0 && !game.white_non_pawn_material
-    } else if color == PlayerColor::Black {
-        game.black_pawn_count == 0 && !game.black_non_pawn_material
-    } else {
-        false
-    }
-}
-
-/// Check if a side has any pawn that can still promote (not past the promotion rank)
-fn has_promotable_pawn(board: &Board, color: PlayerColor, promo_rank: i64) -> bool {
-    // BITBOARD: Use occ_pawns for fast pawn detection
-    let is_white = color == PlayerColor::White;
-    for (_cx, cy, tile) in board.tiles.iter() {
-        let color_pawns = tile.occ_pawns
-            & if is_white {
-                tile.occ_white
-            } else {
-                tile.occ_black
-            };
-        if color_pawns == 0 {
-            continue;
-        }
-
-        let mut bits = color_pawns;
-        while bits != 0 {
-            let idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let y = cy * 8 + (idx / 8) as i64;
-
-            match color {
-                PlayerColor::White => {
-                    if y < promo_rank {
-                        return true;
-                    }
-                }
-                PlayerColor::Black => {
-                    if y > promo_rank {
-                        return true;
-                    }
-                }
-                PlayerColor::Neutral => {}
-            }
-        }
-    }
-    false
-}
-
-// (Your existing evaluate_lone_king_endgame + needs_king_for_mate here; unchanged)
-
 pub fn count_pawns_on_file(game: &GameState, file: i64, color: PlayerColor) -> (i32, i32) {
     let mut own_pawns = 0;
     let mut enemy_pawns = 0;
@@ -1811,468 +1778,6 @@ pub fn is_clear_line_between(board: &Board, from: &Coordinate, to: &Coordinate) 
         }
     }
 
-    true
-}
-
-/// evaluation when opponent only has a lone king
-/// Key strategy for 2+ rooks: SANDWICH the king
-/// - Rooks on adjacent ranks (e.g., rank 8 and 10 if king on rank 9)
-/// - Rooks protect each other (same file)
-/// - This cuts off both sides, king can't escape or attack rooks
-/// - Then bring our king in to help deliver mate
-pub fn evaluate_lone_king_endgame(
-    game: &GameState,
-    our_king: &Coordinate,
-    enemy_king: &Coordinate,
-    winning_color: PlayerColor,
-) -> i32 {
-    let mut bonus: i32 = 0;
-
-    let king_needed = needs_king_for_mate(&game.board, winning_color);
-
-    // Collect slider positions
-    struct SliderInfo {
-        x: i64,
-        y: i64,
-    }
-    let mut sliders: Vec<SliderInfo> = Vec::new();
-
-    for ((x, y), piece) in game.board.iter() {
-        if piece.color() != winning_color || piece.piece_type().is_royal() {
-            continue;
-        }
-        match piece.piece_type() {
-            PieceType::Rook | PieceType::Chancellor | PieceType::Queen | PieceType::Amazon => {
-                sliders.push(SliderInfo { x: *x, y: *y });
-            }
-            _ => {}
-        }
-    }
-
-    // ========== SANDWICH DETECTION ==========
-    // The ideal formation: two rooks on ADJACENT ranks/files to the enemy king
-    // Example: enemy king on rank 9, rooks on ranks 8 and 10 (same file to protect each other)
-
-    let mut has_sandwich_horizontal = false; // Rooks on files adjacent to king's file (king sandwiched on files)
-    let mut has_sandwich_vertical = false; // Rooks on ranks adjacent to king's rank (king sandwiched on ranks)
-
-    // Collect ranks/files above/below and left/right of the enemy king
-    let ranks_above: Vec<i64> = sliders
-        .iter()
-        .filter(|s| s.y > enemy_king.y)
-        .map(|s| s.y)
-        .collect();
-    let ranks_below: Vec<i64> = sliders
-        .iter()
-        .filter(|s| s.y < enemy_king.y)
-        .map(|s| s.y)
-        .collect();
-    let files_right: Vec<i64> = sliders
-        .iter()
-        .filter(|s| s.x > enemy_king.x)
-        .map(|s| s.x)
-        .collect();
-    let files_left: Vec<i64> = sliders
-        .iter()
-        .filter(|s| s.x < enemy_king.x)
-        .map(|s| s.x)
-        .collect();
-
-    // Closest fences in each direction as Option<i64>, reusable for box/run geometry
-    let closest_above = ranks_above.iter().min().copied();
-    let closest_below = ranks_below.iter().max().copied();
-    let closest_right = files_right.iter().min().copied();
-    let closest_left = files_left.iter().max().copied();
-
-    // Rank sandwich (rooks above and below king's rank)
-    if let (Some(ca), Some(cb)) = (closest_above, closest_below) {
-        has_sandwich_vertical = true;
-        let gap = ca - cb - 1; // Gap the king is confined to
-
-        // MASSIVE bonus for tight sandwich
-        if gap <= 1 {
-            bonus += 600; // King trapped to 1 rank
-        } else if gap <= 2 {
-            bonus += 450;
-        } else if gap <= 3 {
-            bonus += 350;
-        } else if gap <= 5 {
-            bonus += 250;
-        } else {
-            bonus += 150;
-        }
-    }
-
-    // File sandwich (rooks left and right of king's file)
-    if let (Some(cr), Some(cl)) = (closest_right, closest_left) {
-        has_sandwich_horizontal = true;
-        let gap = cr - cl - 1;
-
-        if gap <= 1 {
-            bonus += 600;
-        } else if gap <= 2 {
-            bonus += 450;
-        } else if gap <= 3 {
-            bonus += 350;
-        } else if gap <= 5 {
-            bonus += 250;
-        } else {
-            bonus += 150;
-        }
-    }
-
-    // ========== ROOK MUTUAL PROTECTION ==========
-    // Rooks on the same rank OR same file protect each other
-    // This is CRITICAL - enemy king can't attack protected rooks
-
-    let mut protected_count = 0;
-    for i in 0..sliders.len() {
-        let mut is_protected = false;
-        for j in 0..sliders.len() {
-            if i != j {
-                if sliders[i].x == sliders[j].x || sliders[i].y == sliders[j].y {
-                    is_protected = true;
-                    break;
-                }
-            }
-        }
-        if is_protected {
-            protected_count += 1;
-        }
-    }
-    bonus += protected_count as i32 * 150; // Big bonus for each protected rook
-
-    // ========== FENCE CLOSENESS ==========
-    // Bonus for having rooks close to the enemy king (but not ON same rank/file)
-
-    for s in &sliders {
-        let rank_dist = (s.y - enemy_king.y).abs();
-        let file_dist = (s.x - enemy_king.x).abs();
-
-        // Rank fence quality (rook NOT on same rank as king)
-        if s.y != enemy_king.y {
-            if rank_dist == 1 {
-                bonus += 200; // Perfect fence - 1 rank away
-            } else if rank_dist == 2 {
-                bonus += 150;
-            } else if rank_dist <= 4 {
-                bonus += 100;
-            } else if rank_dist <= 6 {
-                bonus += 50;
-            } else {
-                bonus += 20;
-            }
-        }
-
-        // File fence quality
-        if s.x != enemy_king.x {
-            if file_dist == 1 {
-                bonus += 200;
-            } else if file_dist == 2 {
-                bonus += 150;
-            } else if file_dist <= 4 {
-                bonus += 100;
-            } else if file_dist <= 6 {
-                bonus += 50;
-            } else {
-                bonus += 20;
-            }
-        }
-    }
-
-    // ========== STRONG PENALTY FOR CHECKING ==========
-    // Rook on same rank/file as king = giving check, NOT fencing
-    // This breaks the sandwich and lets king escape
-
-    for s in &sliders {
-        if s.x == enemy_king.x {
-            let dist = (s.y - enemy_king.y).abs();
-            if dist > 1 {
-                bonus -= 250; // Very bad - checking instead of fencing
-            } else if dist == 1 {
-                bonus -= 50; // Adjacent might be part of mate, small penalty
-            }
-        }
-        if s.y == enemy_king.y {
-            let dist = (s.x - enemy_king.x).abs();
-            if dist > 1 {
-                bonus -= 250;
-            } else if dist == 1 {
-                bonus -= 50;
-            }
-        }
-    }
-
-    // ========== CUTTING OFF ESCAPE DIRECTION ==========
-    // Bonus for having fences on the side AWAY from our king
-    // This pushes enemy king toward our king
-
-    let our_dx = our_king.x - enemy_king.x;
-    let our_dy = our_king.y - enemy_king.y;
-
-    // If our king is to the right, we want fences on the left to push enemy right
-    if our_dx > 0 && !files_left.is_empty() {
-        bonus += 200;
-    }
-    if our_dx < 0 && !files_right.is_empty() {
-        bonus += 200;
-    }
-    if our_dy > 0 && !ranks_below.is_empty() {
-        bonus += 200;
-    }
-    if our_dy < 0 && !ranks_above.is_empty() {
-        bonus += 200;
-    }
-
-    // ========== KING INVOLVEMENT ==========
-    let king_dist = (our_king.x - enemy_king.x).abs() + (our_king.y - enemy_king.y).abs();
-    let dx_abs = our_dx.abs();
-    let dy_abs = our_dy.abs();
-
-    // General escape geometry using run distances in all four directions.
-    // We measure how many squares the enemy king can run in each cardinal
-    // direction before hitting a fence (or effectively "infinity" if there is
-    // no fence). If the king can only run a very small number of squares in
-    // the directions that increase distance from our king, we treat it as
-    // boxed in and start bringing our king in aggressively.
-
-    // Distances to the nearest fence in each direction (or a large value if none)
-    let run_up = closest_above.map(|f| f - enemy_king.y - 1).unwrap_or(1000);
-    let run_down = closest_below.map(|f| enemy_king.y - f - 1).unwrap_or(1000);
-    let run_right = closest_right.map(|f| f - enemy_king.x - 1).unwrap_or(1000);
-    let run_left = closest_left.map(|f| enemy_king.x - f - 1).unwrap_or(1000);
-
-    // Small grace: allow the king to shuffle a couple of squares in the
-    // "escape" directions without counting it as a real escape. This fixes
-    // the jankiness where the king steps just past our king's file/rank but
-    // is still effectively trapped in the same box.
-    const RUN_GRACE: i64 = 2;
-
-    // Horizontal run in the direction that increases distance from our king
-    let run_away_h = if our_dx > 0 {
-        // Our king is to the right, so running left increases distance
-        run_left
-    } else if our_dx < 0 {
-        // Our king is to the left, so running right increases distance
-        run_right
-    } else {
-        // Same file: any horizontal direction that has the longer run
-        run_left.max(run_right)
-    };
-
-    // Vertical run in the direction that increases distance from our king
-    let run_away_v = if our_dy > 0 {
-        // Our king is above, so running down increases distance
-        run_down
-    } else if our_dy < 0 {
-        // Our king is below, so running up increases distance
-        run_up
-    } else {
-        // Same rank: take the longer vertical run
-        run_up.max(run_down)
-    };
-
-    let enemy_can_run_away = run_away_h > RUN_GRACE || run_away_v > RUN_GRACE;
-
-    // Also check if rooks are protected - if so, king can't harass them
-    let rooks_protected = protected_count >= 2 || (protected_count >= 1 && sliders.len() >= 2);
-
-    if king_needed {
-        // Bring king in if:
-        // 1. Enemy can't run away more than a couple of squares in the
-        //    directions that increase distance from our king (boxed in), or
-        // 2. Rooks are protected so king harassment doesn't matter, or
-        // 3. We have a strong sandwich in either axis.
-        let should_approach = !enemy_can_run_away
-            || rooks_protected
-            || has_sandwich_horizontal
-            || has_sandwich_vertical;
-
-        if should_approach {
-            // Enemy is trapped - bring king in AGGRESSIVELY.
-            // Make king approach dominate over any small rook shuffles once the
-            // box/net is effectively closed.
-            let prox = (30 - king_dist.min(30)) as i32;
-            bonus += prox * 40; // Stronger approach bonus so K-moves beat rook shuffles
-
-            // Opposition bonus
-            if (dx_abs == 2 && dy_abs == 0) || (dx_abs == 0 && dy_abs == 2) {
-                bonus += 250;
-            }
-            // Very close
-            if dx_abs <= 2 && dy_abs <= 2 {
-                bonus += 150;
-            }
-            if dx_abs <= 1 && dy_abs <= 1 && (dx_abs + dy_abs) > 0 {
-                bonus += 100;
-            }
-        } else {
-            // Enemy can still escape - mild king approach, focus on fencing
-            let prox = (20 - king_dist.min(20)) as i32;
-            bonus += prox * 5;
-        }
-    } else {
-        // King not needed (3+ sliders) - small tiebreaker
-        let prox = (15 - king_dist.min(15)) as i32;
-        bonus += prox * 2;
-    }
-
-    // ========== SLIDER COUNT BONUS ==========
-    if sliders.len() >= 2 {
-        bonus += 100;
-    }
-    if sliders.len() >= 3 {
-        bonus += 150;
-    }
-
-    // ========== SHORT-RANGE PIECE MOBILIZATION ==========
-    // Reward short-range pieces (king, knights, etc.) for moving closer to the
-    // enemy king, especially when we don't yet have enough sliders to build a
-    // perfect box. This fixes cases like Q+2N vs K where the knights drift
-    // away because only the slider heuristics are active.
-    let few_sliders = sliders.len() <= 1;
-    // Stronger base when there is only a single slider (e.g. Q+2N vs K), so
-    // the evaluation really wants the short-range pieces to participate.
-    let short_base_scale: i32 = if few_sliders { 6 } else { 3 };
-
-    for ((px, py), piece) in game.board.iter() {
-        if piece.color() != winning_color {
-            continue;
-        }
-
-        // Skip long-range sliders here; they are already handled by the
-        // sandwich/fence logic above.
-        let is_slider_piece = matches!(
-            piece.piece_type(),
-            PieceType::Rook
-                | PieceType::Chancellor
-                | PieceType::Queen
-                | PieceType::RoyalQueen
-                | PieceType::Bishop
-                | PieceType::Amazon
-                | PieceType::Knightrider
-                | PieceType::Huygen
-        );
-
-        if is_slider_piece {
-            continue;
-        }
-
-        // King proximity is already handled by the king-involvement logic
-        // above; avoid double-counting it here.
-        if piece.piece_type() == PieceType::King {
-            continue;
-        }
-
-        let dist = (px - enemy_king.x).abs() + (py - enemy_king.y).abs();
-        let capped = dist.min(12);
-        let prox = (12 - capped) as i32; // 1 step closer = positive bonus, far away ~ 0
-        if prox <= 0 {
-            continue;
-        }
-
-        // Scale more strongly for true short-range attackers.
-        let piece_scale: i32 = match piece.piece_type() {
-            PieceType::Guard | PieceType::Centaur | PieceType::RoyalCentaur => 3,
-            PieceType::Knight | PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => 3,
-            PieceType::Hawk | PieceType::Rose => 2,
-            _ => 1,
-        };
-
-        bonus += prox * short_base_scale * piece_scale;
-    }
-
-    bonus
-}
-
-/// Determine if king is needed for mate based on material
-/// Based on the spreadsheet: "Forced Mate with King?" column
-fn needs_king_for_mate(board: &Board, color: PlayerColor) -> bool {
-    let mut queens = 0;
-    let mut rooks = 0;
-    let mut bishops = 0;
-    let mut knights = 0;
-    let mut chancellors = 0;
-    let mut archbishops = 0;
-    let mut amazons = 0;
-    let mut hawks = 0;
-    let mut guards = 0;
-
-    for (_, piece) in board.iter() {
-        if piece.color() != color {
-            continue;
-        }
-        match piece.piece_type() {
-            PieceType::Queen | PieceType::RoyalQueen => queens += 1,
-            PieceType::Rook => rooks += 1,
-            PieceType::Bishop => bishops += 1,
-            PieceType::Knight => knights += 1,
-            PieceType::Chancellor => chancellors += 1,
-            PieceType::Archbishop => archbishops += 1,
-            PieceType::Amazon => amazons += 1,
-            PieceType::Hawk => hawks += 1,
-            PieceType::Guard => guards += 1,
-            _ => {}
-        }
-    }
-
-    // Cases where king is NOT needed (can mate without king)
-    // 3+ Rooks, 2+ Chancellors, 2+ Queens, Amazon, etc.
-    if rooks >= 3 {
-        return false;
-    }
-    if chancellors >= 2 {
-        return false;
-    }
-    if queens >= 2 {
-        return false;
-    }
-    if amazons >= 1 {
-        return false;
-    }
-    if archbishops >= 3 {
-        return false;
-    }
-    if hawks >= 4 {
-        return false;
-    }
-    if bishops >= 6 {
-        return false;
-    }
-
-    // Strong combinations that don't need king
-    if queens >= 1 && chancellors >= 1 {
-        return false;
-    }
-    if queens >= 1 && bishops >= 2 {
-        return false;
-    }
-    if queens >= 1 && knights >= 2 {
-        return false;
-    }
-    if queens >= 1 && guards >= 2 {
-        return false;
-    }
-    if queens >= 1 && rooks >= 1 && (bishops >= 1 || knights >= 1) {
-        return false;
-    }
-    if chancellors >= 1 && bishops >= 2 {
-        return false;
-    }
-    if rooks >= 2 && (bishops >= 2 || knights >= 2 || guards >= 1) {
-        return false;
-    }
-    if rooks >= 1 && bishops >= 3 {
-        return false;
-    }
-    if rooks >= 1 && knights >= 4 {
-        return false;
-    }
-    if rooks >= 1 && guards >= 2 {
-        return false;
-    }
-
-    // Default: king is needed
     true
 }
 
