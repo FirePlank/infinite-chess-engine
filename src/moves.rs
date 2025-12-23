@@ -10,10 +10,10 @@ pub type MoveList = Vec<Move>;
 
 // World border for infinite chess. These are initialized to a very large box,
 // but can be overridden from JS via the playableRegion values.
-static mut COORD_MIN_X: i64 = i64::MIN / 2;
-static mut COORD_MAX_X: i64 = i64::MAX / 2;
-static mut COORD_MIN_Y: i64 = i64::MIN / 2;
-static mut COORD_MAX_Y: i64 = i64::MAX / 2;
+static mut COORD_MIN_X: i64 = -1_000_000_000_000_000; // default -1e15
+static mut COORD_MAX_X: i64 = 1_000_000_000_000_000; // default  1e15
+static mut COORD_MIN_Y: i64 = -1_000_000_000_000_000; // default -1e15
+static mut COORD_MAX_Y: i64 = 1_000_000_000_000_000; // default  1e15
 
 /// Update world borders from JS playableRegion (left, right, bottom, top).
 pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
@@ -2010,6 +2010,180 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     }
 }
 
+/// Find cross-ray attack targets for sliders (ULTRA-FAST).
+///
+/// Mathematical Intersection Approach:
+/// 1. Iterate over ALL pieces on the board (O(N), usually < 60).
+/// 2. For each piece P, calculate if any of its 8 attack rays intersect our slider's ray.
+/// 3. If an intersection S exists within max_dist, verify reachability.
+#[inline]
+fn find_cross_ray_targets_into(
+    board: &Board,
+    from: &Coordinate,
+    dir_x: i64,
+    dir_y: i64,
+    max_dist: i64,
+    indices: &SpatialIndices,
+    our_color: PlayerColor,
+    piece_type: PieceType,
+    enemy_wiggle: i64,
+    friend_wiggle: i64,
+    out: &mut Vec<i64>,
+) {
+    // Filter by piece type attack capabilities
+    let checks_ortho = matches!(
+        piece_type,
+        PieceType::Queen
+            | PieceType::RoyalQueen
+            | PieceType::Rook
+            | PieceType::Chancellor
+            | PieceType::Amazon
+    );
+    let checks_diag = matches!(
+        piece_type,
+        PieceType::Queen
+            | PieceType::RoyalQueen
+            | PieceType::Bishop
+            | PieceType::Archbishop
+            | PieceType::Amazon
+    );
+
+    if !checks_ortho && !checks_diag {
+        return;
+    }
+
+    // Precompute constant ray properties
+    let ray_diff = dir_x - dir_y;
+    let ray_sum = dir_x + dir_y;
+
+    // Iterate all pieces on the board once
+    for (px, py, p) in board.tiles.iter_all_pieces() {
+        // Skip same position or same color
+        if (px == from.x && py == from.y) || p.color() == our_color {
+            continue;
+        }
+
+        let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
+        let wiggle = if is_enemy {
+            enemy_wiggle
+        } else {
+            friend_wiggle
+        };
+
+        // 1. Orthogonal Cross-Rays (Vertical/Horizontal)
+        if checks_ortho {
+            // Vertical cross: S.x = px
+            if dir_x != 0 {
+                let num = px - from.x;
+                if num.signum() == dir_x.signum() && num % dir_x == 0 {
+                    let d = num / dir_x;
+                    if d > 0 && d <= max_dist {
+                        let sy = from.y + d * dir_y;
+                        if py != sy {
+                            let step = (py - sy).signum();
+                            if let Some(pieces_in_col) = indices.cols.get(&px) {
+                                if let Some((nearest_y, _)) =
+                                    SpatialIndices::find_nearest(pieces_in_col, sy, step)
+                                {
+                                    if nearest_y == py {
+                                        // Wiggle allowed for orthogonal
+                                        for w in -wiggle..=wiggle {
+                                            let wd = d + w;
+                                            if wd > 0 && wd <= max_dist {
+                                                out.push(wd);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Horizontal cross: S.y = py
+            if dir_y != 0 {
+                let num = py - from.y;
+                if num.signum() == dir_y.signum() && num % dir_y == 0 {
+                    let d = num / dir_y;
+                    if d > 0 && d <= max_dist {
+                        let sx = from.x + d * dir_x;
+                        if px != sx {
+                            let step = (px - sx).signum();
+                            if let Some(pieces_in_row) = indices.rows.get(&py) {
+                                if let Some((nearest_x, _)) =
+                                    SpatialIndices::find_nearest(pieces_in_row, sx, step)
+                                {
+                                    if nearest_x == px {
+                                        // Wiggle allowed for orthogonal
+                                        for w in -wiggle..=wiggle {
+                                            let wd = d + w;
+                                            if wd > 0 && wd <= max_dist {
+                                                out.push(wd);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Diagonal Cross-Rays
+        if checks_diag {
+            // Diag1: S.x - S.y = px - py
+            if ray_diff != 0 {
+                let num = (px - py) - (from.x - from.y);
+                if num.signum() == ray_diff.signum() && num % ray_diff == 0 {
+                    let d = num / ray_diff;
+                    if d > 0 && d <= max_dist {
+                        let sx = from.x + d * dir_x;
+                        if px != sx {
+                            let step = (px - sx).signum();
+                            if let Some(pieces_on_diag) = indices.diag1.get(&(px - py)) {
+                                if let Some((nearest_x, _)) =
+                                    SpatialIndices::find_nearest(pieces_on_diag, sx, step)
+                                {
+                                    if nearest_x == px {
+                                        // NO wiggle for diagonal
+                                        out.push(d);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Diag2: S.x + S.y = px + py
+            if ray_sum != 0 {
+                let num = (px + py) - (from.x + from.y);
+                if num.signum() == ray_sum.signum() && num % ray_sum == 0 {
+                    let d = num / ray_sum;
+                    if d > 0 && d <= max_dist {
+                        let sx = from.x + d * dir_x;
+                        if px != sx {
+                            let step = (px - sx).signum();
+                            if let Some(pieces_on_diag) = indices.diag2.get(&(px + py)) {
+                                if let Some((nearest_x, _)) =
+                                    SpatialIndices::find_nearest(pieces_on_diag, sx, step)
+                                {
+                                    if nearest_x == px {
+                                        // NO wiggle for diagonal
+                                        out.push(d);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn generate_sliding_moves(
     board: &Board,
     from: &Coordinate,
@@ -2029,7 +2203,6 @@ pub fn generate_sliding_moves(
     // Fallback limit for short-range slider moves
     const FALLBACK_LIMIT: i64 = 10;
 
-    let _piece_count = board.len();
     let mut moves = MoveList::new();
     let our_color = piece.color();
 
@@ -2237,6 +2410,22 @@ pub fn generate_sliding_moves(
                         }
                     }
                 }
+
+                // Add cross-ray attack targets: pieces on perpendicular rays that we could
+                // attack from squares along our current ray direction
+                find_cross_ray_targets_into(
+                    board,
+                    from,
+                    dir_x,
+                    dir_y,
+                    interception_limit,
+                    indices,
+                    our_color,
+                    piece.piece_type(),
+                    ENEMY_WIGGLE,
+                    FRIEND_WIGGLE,
+                    &mut target_dists,
+                );
 
                 // Store computed distances in cache
                 indices
