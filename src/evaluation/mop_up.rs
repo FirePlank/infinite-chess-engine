@@ -432,10 +432,10 @@ fn evaluate_mop_up_core(
 
         // Reward Back Side Placement (Cutting Off Escape relative to our king)
         if on_back_x {
-            bonus += 350;
+            bonus += 70;
         }
         if on_back_y {
-            bonus += 350;
+            bonus += 70;
         }
 
         // Diagonals Back Side
@@ -445,10 +445,10 @@ fn evaluate_mop_up_core(
             let our_dp = ok.x + ok.y - enemy_diag_pos;
             let our_dn = ok.x - ok.y - enemy_diag_neg;
             if (our_dp > 0 && pdp < 0) || (our_dp < 0 && pdp > 0) {
-                bonus += 200;
+                bonus += 40;
             }
             if (our_dn > 0 && pdn < 0) || (our_dn < 0 && pdn > 0) {
-                bonus += 200;
+                bonus += 40;
             }
         }
 
@@ -472,9 +472,9 @@ fn evaluate_mop_up_core(
                 || (our_dy.signum() == pdy.signum() && pdy != 0);
 
             if is_frontal_check {
-                bonus -= 300;
+                bonus -= 60;
             } else {
-                bonus -= 100; // Minimal penalty for checks from behind/side
+                bonus -= 20; // Minimal penalty for checks from behind/side
             }
         }
 
@@ -484,18 +484,18 @@ fn evaluate_mop_up_core(
 
             // Strong bonus for being close - MUST outweigh other mop-up bonuses
             if dist <= 3 {
-                short_range_bonus += 800; // Very close - huge bonus
+                short_range_bonus += 160; // Very close - huge bonus
             } else if dist <= 6 {
-                short_range_bonus += 500; // Close
+                short_range_bonus += 100; // Close
             } else if dist <= 10 {
-                short_range_bonus += 300; // Medium
+                short_range_bonus += 60; // Medium
             } else if dist <= 15 {
-                short_range_bonus += 150; // Far but approaching
+                short_range_bonus += 30; // Far but approaching
             } else if dist <= 25 {
-                short_range_bonus += 80; // Very far
+                short_range_bonus += 15; // Very far
             } else {
                 // PENALTY for being too far - knight is useless here
-                short_range_bonus -= 400; // Doubled penalty
+                short_range_bonus -= 80; // Doubled penalty
             }
         }
     }
@@ -555,34 +555,34 @@ fn evaluate_mop_up_core(
             // CASE A: OVERWHELMING - Use precise Cage/Box logic to bring the king for the kill
             if bitboard_caged {
                 cage_score = if reached_area <= 5 {
-                    2500
+                    500
                 } else if reached_area <= 10 {
-                    1800
+                    360
                 } else if reached_area <= 16 {
-                    1200
+                    240
                 } else if reached_area <= 40 {
-                    800
+                    160
                 } else if reached_area <= 100 {
-                    400
+                    80
                 } else {
-                    200
+                    40
                 };
             }
             if macro_box {
-                cage_score = if macro_area <= 100 { 350 } else { 150 };
+                cage_score = if macro_area <= 100 { 70 } else { 30 };
             }
             bonus += cage_score;
 
             // Continuous King Approach Gradient
             // CRITICAL: We want the king to approach EVEN IF not caged yet
             // B+Q+K vs K and similar: King MUST approach aggressively
-            let king_approach_bonus = (100 - king_dist.min(100) as i32) * 80; // Increased to 80 for aggressive hunting
+            let king_approach_bonus = (100 - king_dist.min(100) as i32) * 16; // Scaled down for material respect
             bonus += king_approach_bonus;
 
             if king_dist <= 2 {
-                bonus += 800; // Huge bonus for being adjacent
+                bonus += 160; // Huge bonus for being adjacent
             } else if king_dist <= 4 {
-                bonus += 400; // Good bonus for being close
+                bonus += 80; // Good bonus for being close
             }
 
             // ALL PIECES should approach once caged - add unified approach bonuses
@@ -592,13 +592,13 @@ fn evaluate_mop_up_core(
 
                 // Scale by cage tightness - tighter cage = more urgency to close in
                 let approach_weight = if bitboard_caged && reached_area <= 16 {
-                    120 // Massive weight for tight cages
+                    24 // Massive weight for tight cages
                 } else if bitboard_caged {
-                    80
+                    16
                 } else if macro_box {
-                    50
+                    10
                 } else {
-                    40 // Slightly increased base weight
+                    8 // Slightly increased base weight
                 };
 
                 const LONG_RANGE: i64 = 100;
@@ -608,7 +608,7 @@ fn evaluate_mop_up_core(
                 // This prevents the "Amazon in corner, King in other corner" drift.
                 if let Some(ok) = our_king {
                     let king_piece_dist = (s.x - ok.x).abs().max((s.y - ok.y).abs());
-                    bonus += (60 - king_piece_dist.min(60) as i32) * 15;
+                    bonus += (60 - king_piece_dist.min(60) as i32) * 3;
                 }
             }
         } else if ortho_count == 2
@@ -646,15 +646,15 @@ fn evaluate_mop_up_core(
                 has_sand_v = true;
                 let gap = ca - cb - 1;
                 bonus += if gap <= 1 {
-                    800
+                    160
                 } else if gap <= 2 {
-                    600
+                    120
                 } else if gap <= 3 {
-                    450
+                    90
                 } else if gap <= 5 {
-                    300
+                    60
                 } else {
-                    150
+                    30
                 };
             }
 
@@ -663,15 +663,15 @@ fn evaluate_mop_up_core(
                 has_sand_h = true;
                 let gap = cr - cl - 1;
                 bonus += if gap <= 1 {
-                    800
+                    160
                 } else if gap <= 2 {
-                    600
+                    120
                 } else if gap <= 3 {
-                    450
+                    90
                 } else if gap <= 5 {
-                    300
+                    60
                 } else {
-                    150
+                    30
                 };
             }
 
@@ -688,7 +688,7 @@ fn evaluate_mop_up_core(
                     }
                 }
             }
-            bonus += protected_count as i32 * 200;
+            bonus += protected_count as i32 * 40;
 
             // Fence closeness
             for i in 0..our_pieces_count {
@@ -697,24 +697,24 @@ fn evaluate_mop_up_core(
                 let file_dist = (s.x - enemy_x).abs();
                 if s.y != enemy_y {
                     bonus += if rank_dist == 1 {
-                        250
+                        50
                     } else if rank_dist == 2 {
-                        180
+                        36
                     } else if rank_dist <= 4 {
-                        120
+                        24
                     } else {
-                        40
+                        8
                     };
                 }
                 if s.x != enemy_x {
                     bonus += if file_dist == 1 {
-                        250
+                        50
                     } else if file_dist == 2 {
-                        180
+                        36
                     } else if file_dist <= 4 {
-                        120
+                        24
                     } else {
-                        40
+                        8
                     };
                 }
             }
@@ -749,14 +749,14 @@ fn evaluate_mop_up_core(
 
             if should_approach {
                 let prox = (30 - king_dist.min(30)) as i32;
-                bonus += prox * 50;
+                bonus += prox * 10;
                 let dx_abs = our_dx.abs();
                 let dy_abs = our_dy.abs();
                 if dx_abs <= 2 && dy_abs <= 2 {
-                    bonus += 200;
+                    bonus += 40;
                 }
                 if dx_abs <= 1 && dy_abs <= 1 && (dx_abs + dy_abs) > 0 {
-                    bonus += 100;
+                    bonus += 20;
                 }
 
                 // 2R+K HARDCODE: Approach from the SIDE (where a rook is), NOT from the front.
@@ -767,32 +767,32 @@ fn evaluate_mop_up_core(
                         // Rooks sandwich horizontally - king should be on same rank as a rook
                         for i in 0..our_pieces_count {
                             if our_pieces[i].y == ok.y {
-                                bonus += 400;
+                                bonus += 80;
                             }
                         }
                         if ok.x == enemy_x {
-                            bonus -= 300;
+                            bonus -= 60;
                         }
                     } else if has_sand_v && !has_sand_h {
                         // Rooks sandwich vertically - king should be on same file as a rook
                         for i in 0..our_pieces_count {
                             if our_pieces[i].x == ok.x {
-                                bonus += 400;
+                                bonus += 80;
                             }
                         }
                         if ok.y == enemy_y {
-                            bonus -= 300;
+                            bonus -= 60;
                         }
                     } else if has_sand_h && has_sand_v {
-                        bonus += 500;
+                        bonus += 100;
                     }
                 } else if has_sand_h && has_sand_v {
                     // Full box - just get close, doesn't matter from where
-                    bonus += 500;
+                    bonus += 100;
                 }
             } else {
                 let prox = (20 - king_dist.min(20)) as i32;
-                bonus += prox * 3;
+                bonus += prox * 1;
             }
         } else {
             // CASE B: TECHNICAL/SPARSE - Use technical Ladders/Sandwiches.
@@ -809,7 +809,7 @@ fn evaluate_mop_up_core(
                     protected_count += 1;
                 }
             }
-            bonus += protected_count as i32 * 200;
+            bonus += protected_count as i32 * 40;
 
             let mut sand_h = false;
             let mut sand_v = false;
@@ -824,13 +824,13 @@ fn evaluate_mop_up_core(
                     }
                 }
                 bonus += if gap <= 1 {
-                    800
+                    160
                 } else if gap <= 2 {
-                    600
+                    120
                 } else if gap <= 3 {
-                    500
+                    100
                 } else {
-                    200
+                    40
                 };
             }
             if ortho_x_min_right != i64::MAX && ortho_x_max_left != i64::MIN {
@@ -842,13 +842,13 @@ fn evaluate_mop_up_core(
                     }
                 }
                 bonus += if gap <= 1 {
-                    800
+                    160
                 } else if gap <= 2 {
-                    600
+                    120
                 } else if gap <= 3 {
-                    500
+                    100
                 } else {
-                    200
+                    40
                 };
             }
             let mut sand_dp = false;
@@ -859,11 +859,11 @@ fn evaluate_mop_up_core(
                     sand_dp = true;
                 }
                 bonus += if gap <= 1 {
-                    600
+                    120
                 } else if gap <= 2 {
-                    450
+                    90
                 } else {
-                    150
+                    30
                 };
             }
             if diag_neg_min_above != i64::MAX && diag_neg_max_below != i64::MIN {
@@ -872,11 +872,11 @@ fn evaluate_mop_up_core(
                     sand_dn = true;
                 }
                 bonus += if gap <= 1 {
-                    600
+                    120
                 } else if gap <= 2 {
-                    450
+                    90
                 } else {
-                    150
+                    30
                 };
             }
 
@@ -896,7 +896,7 @@ fn evaluate_mop_up_core(
                         && (ortho_y_max_below - ortho_y_max_below_2) == 1);
                 if ladder_x || ladder_y {
                     ladder = true;
-                    bonus += 1200;
+                    bonus += 240;
                 }
             }
 
@@ -934,8 +934,8 @@ fn evaluate_mop_up_core(
             } else {
                 r_up.max(r_down)
             };
-            bonus += (20 - run_h.min(20)) as i32 * 60;
-            bonus += (20 - run_v.min(20)) as i32 * 60;
+            bonus += (20 - run_h.min(20)) as i32 * 12;
+            bonus += (20 - run_v.min(20)) as i32 * 12;
 
             let is_contained = ladder
                 || (sand_h && tight_h)
@@ -945,7 +945,7 @@ fn evaluate_mop_up_core(
                 || (bitboard_caged && reached_area <= 12);
 
             // Continuous King Approach Gradient for Case B too (Dominant)
-            let king_approach_bonus = (100 - king_dist.min(100) as i32) * 40; // Increased to 40
+            let king_approach_bonus = (100 - king_dist.min(100) as i32) * 8; // Scaled down
             bonus += king_approach_bonus;
 
             // Technical piece approach (Long range)
@@ -954,35 +954,35 @@ fn evaluate_mop_up_core(
                 let dist = (s.x - enemy_x).abs().max((s.y - enemy_y).abs());
 
                 // Pieces approach even in technical branch
-                bonus += (80 - dist.min(80) as i32) * 20;
+                bonus += (80 - dist.min(80) as i32) * 4;
                 // Pieces stay with king (only if we have a king)
                 if let Some(ok) = our_king {
                     let king_piece_dist = (s.x - ok.x).abs().max((s.y - ok.y).abs());
-                    bonus += (50 - king_piece_dist.min(50) as i32) * 12;
+                    bonus += (50 - king_piece_dist.min(50) as i32) * 2;
                 }
             }
 
             if is_contained {
                 let prox = (30 - king_dist.min(30)) as i32;
-                bonus += prox * 80;
+                bonus += prox * 16;
                 if king_dist <= 2 {
-                    bonus += 400;
+                    bonus += 80;
                 }
             } else {
                 let prox = (20 - king_dist.min(20)) as i32;
-                bonus += prox * 2;
+                bonus += prox * 1;
             }
         }
     }
 
     if total_sliders >= 2 {
-        bonus += 100;
+        bonus += 20;
     }
     if total_sliders >= 3 {
-        bonus += 150;
+        bonus += 30;
     }
     if ortho_count >= 1 && diag_count >= 1 {
-        bonus += 80;
+        bonus += 15;
     }
 
     bonus

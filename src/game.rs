@@ -1091,15 +1091,20 @@ impl GameState {
 
         let mut block_squares: Vec<Coordinate> = Vec::new();
         let is_slider = dx_check == 0 || dy_check == 0 || dx_check.abs() == dy_check.abs();
+        let check_dist = dx_check.abs().max(dy_check.abs());
+        let step_x = dx_check.signum();
+        let step_y = dy_check.signum();
+
+        // Instead of generating all block squares (O(distance)), we'll check if moves
+        // land on the ray dynamically. Only generate a small number of nearby blocks
+        // for move filtering, the rest is checked via ray math.
         if is_slider {
-            let step_x = dx_check.signum();
-            let step_y = dy_check.signum();
-            let mut x = king_sq.x + step_x;
-            let mut y = king_sq.y + step_y;
-            while x != checker_sq.x || y != checker_sq.y {
+            // Generate only first 50 block squares for filtering
+            let blocks_to_gen = check_dist.min(50);
+            for i in 1..blocks_to_gen {
+                let x = king_sq.x + step_x * i;
+                let y = king_sq.y + step_y * i;
                 block_squares.push(Coordinate::new(x, y));
-                x += step_x;
-                y += step_y;
             }
         }
 
@@ -1196,11 +1201,33 @@ impl GameState {
                     self.enemy_king_pos(),
                 );
                 for m in pseudo {
+                    let mut is_valid = false;
+                    // Check explicit targets
                     for target in &targets {
                         if m.to.x == target.x && m.to.y == target.y {
-                            out.push(m);
+                            is_valid = true;
                             break;
                         }
+                    }
+                    // For sliders, also check if move lands on the ray beyond generated blocks
+                    if !is_valid && is_slider && check_dist > 50 {
+                        let to_dx = m.to.x - king_sq.x;
+                        let to_dy = m.to.y - king_sq.y;
+                        // Check if move is on the same ray as the check
+                        let on_ray = (step_x == 0 && to_dx == 0 && to_dy.signum() == step_y)
+                            || (step_y == 0 && to_dy == 0 && to_dx.signum() == step_x)
+                            || (step_x != 0
+                                && step_y != 0
+                                && to_dx.abs() == to_dy.abs()
+                                && to_dx.signum() == step_x
+                                && to_dy.signum() == step_y);
+                        let move_dist = to_dx.abs().max(to_dy.abs());
+                        if on_ray && move_dist > 0 && move_dist < check_dist {
+                            is_valid = true;
+                        }
+                    }
+                    if is_valid {
+                        out.push(m);
                     }
                 }
             }
@@ -1285,11 +1312,31 @@ impl GameState {
                     self.enemy_king_pos(),
                 );
                 for m in pseudo {
+                    let mut is_valid = false;
                     for target in &targets {
                         if m.to.x == target.x && m.to.y == target.y {
-                            out.push(m);
+                            is_valid = true;
                             break;
                         }
+                    }
+                    // For sliders, also check if move lands on the ray beyond generated blocks
+                    if !is_valid && is_slider && check_dist > 50 {
+                        let to_dx = m.to.x - king_sq.x;
+                        let to_dy = m.to.y - king_sq.y;
+                        let on_ray = (step_x == 0 && to_dx == 0 && to_dy.signum() == step_y)
+                            || (step_y == 0 && to_dy == 0 && to_dx.signum() == step_x)
+                            || (step_x != 0
+                                && step_y != 0
+                                && to_dx.abs() == to_dy.abs()
+                                && to_dx.signum() == step_x
+                                && to_dy.signum() == step_y);
+                        let move_dist = to_dx.abs().max(to_dy.abs());
+                        if on_ray && move_dist > 0 && move_dist < check_dist {
+                            is_valid = true;
+                        }
+                    }
+                    if is_valid {
+                        out.push(m);
                     }
                 }
             }
@@ -1452,19 +1499,18 @@ impl GameState {
         if piece.piece_type() == PieceType::King {
             let dx = to_x - from_x;
             if dx.abs() > 1 {
-                // Find the rook BEYOND the king's destination (rook is outside the path)
-                // e.g., kingside: king 5,1->7,1, rook at 8,1 moves to 6,1
-                let rook_dir = if dx > 0 { 1 } else { -1 };
-                let mut rook_x = to_x + rook_dir; // Start searching past king's destination
-                while rook_x >= -100 && rook_x <= 100 {
-                    if let Some(r) = self.board.get_piece(rook_x, from_y) {
+                // Use spatial indices to find rook - O(log n) instead of O(distance)
+                let rook_dir = if dx > 0 { 1i64 } else { -1i64 };
+                if let Some(row_pieces) = self.spatial_indices.rows.get(&from_y) {
+                    // Find nearest piece past king's destination
+                    if let Some((rook_x, packed)) =
+                        SpatialIndices::find_nearest(row_pieces, to_x, rook_dir)
+                    {
+                        let r = Piece::from_packed(packed);
                         if r.piece_type() == PieceType::Rook && r.color() == piece.color() {
                             m.rook_coord = Some(Coordinate::new(rook_x, from_y));
-                            break;
                         }
-                        break; // Hit a non-rook piece, stop searching
                     }
-                    rook_x += rook_dir;
                 }
             }
         }
