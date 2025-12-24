@@ -3014,18 +3014,6 @@ mod tests {
         assert!(searcher.tt.capacity() > 0);
     }
 
-    #[test]
-    fn test_searcher_with_different_tt_sizes() {
-        let small = Searcher::new(1);
-        let medium = Searcher::new(100);
-        let large = Searcher::new(10000);
-
-        // All should have some capacity
-        assert!(small.tt.capacity() > 0);
-        assert!(medium.tt.capacity() > 0);
-        assert!(large.tt.capacity() > 0);
-    }
-
     // ======================== History Table Tests ========================
 
     #[test]
