@@ -110,6 +110,15 @@ Recommended extensions:
 1. **rust-analyzer** - Rust language support
 2. **CodeLLDB** - Debugging support
 
+Settings (`.vscode/settings.json`):
+
+```json
+{
+  "rust-analyzer.cargo.target": null,
+  "rust-analyzer.check.command": "clippy"
+}
+```
+
 ### IntelliJ / CLion
 
 Install the **Rust** plugin from JetBrains Marketplace.
