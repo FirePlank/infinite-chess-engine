@@ -9,8 +9,6 @@ This guide walks you through setting up your development environment for HydroCh
 ## Prerequisites
 
 - **Git** - For version control
-- **Rust** - The programming language
-- **wasm-pack** - Tool for building Rust to WebAssembly
 - **Node.js** (optional) - For running SPRT tests
 
 ---
@@ -68,7 +66,7 @@ wasm-pack --version
 ```bash
 # Clone the repository (if not already done)
 git clone <repository-url>
-cd hydrochess-wasm
+cd <repository-name>
 
 # Build for browser
 wasm-pack build --target web
@@ -112,15 +110,6 @@ Recommended extensions:
 1. **rust-analyzer** - Rust language support
 2. **CodeLLDB** - Debugging support
 
-Settings (`.vscode/settings.json`):
-
-```json
-{
-    "rust-analyzer.cargo.target": null,
-    "rust-analyzer.checkOnSave.command": "clippy"
-}
-```
-
 ### IntelliJ / CLion
 
 Install the **Rust** plugin from JetBrains Marketplace.
@@ -146,6 +135,7 @@ Run:
 rustup update
 rustup target add wasm32-unknown-unknown
 ```
+
 ---
 
 ## Next Steps
