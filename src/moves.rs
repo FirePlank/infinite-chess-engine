@@ -2111,8 +2111,19 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
     let ray_diff = dir_x - dir_y;
     let ray_sum = dir_x + dir_y;
 
+    // Early termination: stop after finding enough targets to avoid excessive computation
+    const MAX_CROSS_RAY_TARGETS: usize = 12;
+
+    // Distance limit for friendly piece cross-ray contributions (rarely useful beyond this)
+    const FRIENDLY_CROSS_RAY_LIMIT: i64 = 15;
+
     // Iterate all pieces on the board once
     for (px, py, p) in board.tiles.iter_all_pieces() {
+        // Early termination if we have enough targets
+        if out.len() >= MAX_CROSS_RAY_TARGETS {
+            return;
+        }
+
         // Skip only the piece at our exact position (can't target ourselves)
         // Note: we process both enemy and friendly pieces - enemy pieces can be attacked,
         // and friendly pieces contribute to the reachable area via wiggle room extension
@@ -2121,6 +2132,16 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
         }
 
         let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
+
+        // Skip friendly pieces that are too far for useful cross-ray contributions
+        if !is_enemy {
+            let dist_x = (px - from.x).abs();
+            let dist_y = (py - from.y).abs();
+            if dist_x > FRIENDLY_CROSS_RAY_LIMIT && dist_y > FRIENDLY_CROSS_RAY_LIMIT {
+                continue;
+            }
+        }
+
         let wiggle = if is_enemy {
             enemy_wiggle
         } else {
@@ -2249,8 +2270,9 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
     // Original wiggle values - important for tactics
     const ENEMY_WIGGLE: i64 = 2;
     const FRIEND_WIGGLE: i64 = 1;
-    // Maximum distance for interception - 50 is needed for long-range tactics
-    // We only cap "interception" moves (crossing an enemy's line), not direct captures!
+    // Reduced interception distance for better performance - still covers practical cases
+    // Full distance only used when enemy king is within range (for check tactics)
+    const BASE_INTERCEPTION_DIST: i64 = 25;
     const MAX_INTERCEPTION_DIST: i64 = 50;
 
     // Fallback limit for short-range slider moves
@@ -2258,6 +2280,16 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
 
     let mut moves = MoveList::new();
     let our_color = piece.color();
+
+    // Distance-aware wiggle calculation:
+    // Close range (1-10): full wiggle
+    // Far range (11+): no wiggle (only direct targets)
+    #[inline(always)]
+    fn distance_wiggle(dist: i64, is_enemy: bool, base_wiggle: i64) -> i64 {
+        if dist <= 10 {
+            base_wiggle
+        } else if is_enemy { 1 } else { 0 }
+    }
 
     let ek_ref = enemy_king_pos;
 
@@ -2320,8 +2352,30 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                 continue;
             }
 
-            // Efficient interception limit for OFF-RAY pieces
-            let interception_limit = max_dist.min(MAX_INTERCEPTION_DIST);
+            // Dynamic interception limit: use shorter range normally, extend for king-targeting
+            // If enemy king is along this ray, use full interception distance for check tactics
+            let king_on_ray = ek_ref.is_some_and(|ek| {
+                let kdx = ek.x - from.x;
+                let kdy = ek.y - from.y;
+                // Check if king is in this ray direction
+                if dir_x == 0 && dir_y != 0 {
+                    kdx == 0 && kdy.signum() == dir_y.signum()
+                } else if dir_y == 0 && dir_x != 0 {
+                    kdy == 0 && kdx.signum() == dir_x.signum()
+                } else if dir_x.abs() == dir_y.abs() {
+                    kdx.abs() == kdy.abs()
+                        && kdx.signum() == dir_x.signum()
+                        && kdy.signum() == dir_y.signum()
+                } else {
+                    false
+                }
+            });
+            let effective_interception = if king_on_ray {
+                MAX_INTERCEPTION_DIST
+            } else {
+                BASE_INTERCEPTION_DIST
+            };
+            let interception_limit = max_dist.min(effective_interception);
 
             // Use Vec for target distances to avoid overflow
             let mut target_dists: Vec<i64> = Vec::with_capacity(64);
@@ -2378,11 +2432,12 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
-                            let wiggle = if is_enemy {
+                            let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
+                            let wiggle = distance_wiggle(piece_dist, is_enemy, base_wiggle);
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
@@ -2407,11 +2462,12 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
-                            let wiggle = if is_enemy {
+                            let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
+                            let wiggle = distance_wiggle(piece_dist, is_enemy, base_wiggle);
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
@@ -2448,11 +2504,12 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
-                            let wiggle = if is_enemy {
+                            let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
+                            let wiggle = distance_wiggle(piece_dist, is_enemy, base_wiggle);
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
