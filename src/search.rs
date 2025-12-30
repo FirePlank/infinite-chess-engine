@@ -335,6 +335,9 @@ pub struct SearcherHot {
     pub time_limit_ms: u128,
     pub stopped: bool,
     pub seldepth: usize,
+    /// Tracks the minimum depth that must be completed before time stops are allowed.
+    /// Set to 1 at search start, cleared to 0 after depth 1 completes.
+    pub min_depth_required: usize,
 }
 
 impl Default for Timer {
@@ -615,6 +618,7 @@ impl Searcher {
                 time_limit_ms,
                 stopped: false,
                 seldepth: 0,
+                min_depth_required: 1, // Must complete at least depth 1
             },
             tt: TranspositionTable::new(16),
             pv_table,
@@ -712,6 +716,11 @@ impl Searcher {
     pub fn check_time(&mut self) -> bool {
         // Fast-path: no time limit (used by offline test/perft helpers).
         if self.hot.time_limit_ms == u128::MAX {
+            return false;
+        }
+
+        // Don't stop until we've completed at least depth 1
+        if self.hot.min_depth_required > 0 {
             return false;
         }
 
@@ -1039,8 +1048,13 @@ fn search_with_searcher(
             result
         };
 
-        // Update best move - even if stopped, use best from this iteration if found
-        // Root PV is at pv_table[0]
+        // After depth 1 completes, allow time stops for subsequent depths
+        if depth == 1 {
+            searcher.hot.min_depth_required = 0;
+        }
+
+        // Update best move from this iteration (guaranteed to have a result since
+        // check_time doesn't stop during depth 1)
         if let Some(pv_move) = searcher.pv_table[0] {
             best_move = Some(pv_move);
             best_score = score;

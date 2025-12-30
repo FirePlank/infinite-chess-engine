@@ -119,7 +119,11 @@ fn search_with_searcher_noisy(
         searcher.reset_for_iteration();
         searcher.decay_history();
 
-        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+        // Time check at iteration start - but note that check_time won't stop
+        // during depth 1 due to min_depth_required
+        if searcher.hot.min_depth_required == 0
+            && searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms
+        {
             searcher.hot.stopped = true;
             break;
         }
@@ -161,7 +165,13 @@ fn search_with_searcher_noisy(
             result
         };
 
-        // Root PV is at pv_table[0]
+        // After depth 1 completes, allow time stops for subsequent depths
+        if depth == 1 {
+            searcher.hot.min_depth_required = 0;
+        }
+
+        // Update best move from this iteration (guaranteed to have a result since
+        // check_time doesn't stop during depth 1)
         if let Some(pv_move) = searcher.pv_table[0] {
             best_move = Some(pv_move);
             best_score = score;
