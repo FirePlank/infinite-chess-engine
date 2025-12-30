@@ -233,16 +233,14 @@ pub struct GameState {
 
 // For backwards compatibility, keep castling_rights as an alias
 impl GameState {
-    /// Returns pieces that can castle (kings and rooks with special rights)
+    /// Returns pieces that can castle (kings/royals and any non-pawn partner with special rights)
     pub fn castling_rights(&self) -> FxHashSet<Coordinate> {
         let mut rights = FxHashSet::default();
         for coord in &self.special_rights {
             if let Some(piece) = self.board.get_piece(coord.x, coord.y) {
-                // Only include kings and rooks (not pawns) in castling rights
-                if piece.piece_type() == PieceType::King
-                    || piece.piece_type() == PieceType::Rook
-                    || piece.piece_type() == PieceType::RoyalCentaur
-                {
+                // Include royals (kings) and any non-pawn piece as potential castling partners
+                // This matches the move generation logic which accepts any non-pawn, non-royal piece
+                if piece.piece_type().is_royal() || piece.piece_type() != PieceType::Pawn {
                     rights.insert(*coord);
                 }
             }
@@ -1853,20 +1851,27 @@ impl GameState {
             rook_coord: None,
         };
 
-        // Detect if this is a castling move to populate rook_coord
-        if piece.piece_type() == PieceType::King {
+        // Detect if this is a castling move to populate rook_coord (partner_coord)
+        // Castling works with any non-pawn, non-royal piece that has special rights
+        if piece.piece_type().is_royal() {
             let dx = to_x - from_x;
             if dx.abs() > 1 {
-                // Use spatial indices to find rook - O(log n) instead of O(distance)
-                let rook_dir = if dx > 0 { 1i64 } else { -1i64 };
+                // Use spatial indices to find castling partner - O(log n) instead of O(distance)
+                let partner_dir = if dx > 0 { 1i64 } else { -1i64 };
                 if let Some(row_pieces) = self.spatial_indices.rows.get(&from_y) {
                     // Find nearest piece past king's destination
-                    if let Some((rook_x, packed)) =
-                        SpatialIndices::find_nearest(row_pieces, to_x, rook_dir)
+                    if let Some((partner_x, packed)) =
+                        SpatialIndices::find_nearest(row_pieces, to_x, partner_dir)
                     {
-                        let r = Piece::from_packed(packed);
-                        if r.piece_type() == PieceType::Rook && r.color() == piece.color() {
-                            m.rook_coord = Some(Coordinate::new(rook_x, from_y));
+                        let partner = Piece::from_packed(packed);
+                        let partner_coord = Coordinate::new(partner_x, from_y);
+                        // Accept any non-pawn, non-royal piece with special rights as a castling partner
+                        if partner.color() == piece.color()
+                            && partner.piece_type() != PieceType::Pawn
+                            && !partner.piece_type().is_royal()
+                            && self.special_rights.contains(&partner_coord)
+                        {
+                            m.rook_coord = Some(partner_coord);
                         }
                     }
                 }
