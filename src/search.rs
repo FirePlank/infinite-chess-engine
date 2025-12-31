@@ -999,8 +999,10 @@ fn search_with_searcher(
     for depth in 1..=max_depth {
         searcher.reset_for_iteration();
         searcher.decay_history();
-        // Immediate time check at start of each iteration
-        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+        // Time check at start of each iteration - but always complete depth 1
+        if searcher.hot.min_depth_required == 0
+            && searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms
+        {
             searcher.hot.stopped = true;
             break;
         }
@@ -1053,13 +1055,22 @@ fn search_with_searcher(
             searcher.hot.min_depth_required = 0;
         }
 
-        // Update best move from this iteration (guaranteed to have a result since
-        // check_time doesn't stop during depth 1)
+        // Update best move from this iteration.
+        // IMPORTANT: Only update best_score if the search wasn't stopped mid-iteration,
+        // because an interrupted search might return garbage values (like -INFINITY or
+        // aspiration window bounds). If stopped, we keep the valid score from the previous
+        // completed depth. The pv_table[0] check ensures a move was found.
         if let Some(pv_move) = searcher.pv_table[0] {
+            // Always update the best_move to the latest PV move (even if stopped,
+            // the move itself is valid from a previous iteration)
             best_move = Some(pv_move);
-            best_score = score;
             searcher.best_move_root = Some(pv_move);
-            searcher.prev_score = score;
+
+            // ONLY update score if search was not interrupted
+            if !searcher.hot.stopped {
+                best_score = score;
+                searcher.prev_score = score;
+            }
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
             if let Some(prev_coords) = prev_root_move_coords {
@@ -1298,8 +1309,10 @@ fn get_best_moves_multipv_impl(
         searcher.reset_for_iteration();
         searcher.decay_history();
 
-        // Time check at start of each iteration
-        if searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms {
+        // Time check at start of each iteration - but always complete depth 1
+        if searcher.hot.min_depth_required == 0
+            && searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms
+        {
             searcher.hot.stopped = true;
             break;
         }
@@ -1477,6 +1490,11 @@ fn get_best_moves_multipv_impl(
                     );
                 }
             }
+        }
+
+        // After depth 1 completes, allow time stops for subsequent depths
+        if depth == 1 {
+            searcher.hot.min_depth_required = 0;
         }
 
         // Check for mate or time up
