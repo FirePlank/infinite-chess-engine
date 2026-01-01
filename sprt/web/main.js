@@ -28,8 +28,8 @@ const sprtOutput = document.getElementById('sprtOutput');
 const gameLogEl = document.getElementById('gameLog');
 const copyLogBtn = document.getElementById('copyLog');
 const downloadLogsBtn = document.getElementById('downloadLogs');
-const downloadGamesBtn = document.getElementById('downloadGames');
-const downloadGamesJsonBtn = document.getElementById('downloadGamesJson');
+const downloadGamesTxtBtn = document.getElementById('downloadGames-txt');
+const downloadGamesJsonBtn = document.getElementById('downloadGames-json');
 const icnOutputEl = document.getElementById('icnOutput');
 const icnTextEl = document.getElementById('icnText');
 const sprtStatusEl = document.getElementById('sprtStatus');
@@ -850,6 +850,10 @@ async function runSprt() {
     let llr = 0;
     gameLogs = [];
 
+    // Disable download buttons as logs are cleared
+    downloadGamesTxtBtn.disabled = true;
+    downloadGamesJsonBtn.disabled = true;
+
     sprtOutput.innerHTML = '';
     perVariantStats = {};
     clearLog();
@@ -925,6 +929,9 @@ async function runSprt() {
                             msg.variantName, // Add variant to ICN log
                         );
                         gameLogs.push(icnLog);
+                        // Enable download buttons immediately upon first result
+                        downloadGamesTxtBtn.disabled = false;
+                        downloadGamesJsonBtn.disabled = false;
                         // Global results
                         if (result === 'win') wins++;
                         else if (result === 'loss') losses++;
@@ -1085,12 +1092,6 @@ async function runSprt() {
     sprtRunning = false;
     runSprtBtn.disabled = false;
     stopSprtBtn.disabled = true;
-    // Show/enable download games if we have any ICN logs
-    const hasGames = gameLogs.length > 0;
-    downloadGamesBtn.disabled = !hasGames;
-    downloadGamesBtn.style.display = hasGames ? '' : 'none';
-    downloadGamesJsonBtn.disabled = !hasGames;
-    downloadGamesJsonBtn.style.display = hasGames ? '' : 'none';
 }
 
 function stopSprt() {
@@ -1136,12 +1137,10 @@ function stopSprt() {
             sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
         }
     }
-    // Allow downloads of games if any finished before abort
+    // Allow download of any completed games
     const hasGamesAbort = gameLogs.length > 0;
-    downloadGamesBtn.disabled = !hasGamesAbort;
-    downloadGamesBtn.style.display = hasGamesAbort ? '' : 'none';
+    downloadGamesTxtBtn.disabled = !hasGamesAbort;
     downloadGamesJsonBtn.disabled = !hasGamesAbort;
-    downloadGamesJsonBtn.style.display = hasGamesAbort ? '' : 'none';
 }
 
 function copyLog() {
@@ -1193,116 +1192,6 @@ function downloadGames() {
     URL.revokeObjectURL(url);
 }
 
-/**
- * Parse an ICN string and extract game metadata and moves into a JSON-friendly object.
- * ICN format after headers: turn halfmove/100 fullmove (whitePromo|blackPromo) worldBounds startPosition moves
- */
-function parseICNToJSON(icnString) {
-    if (!icnString || typeof icnString !== 'string') return null;
-
-    const result = {
-        headers: {},
-        startPosition: null,
-        worldBounds: null,
-        moves: [],
-        turn: 'w',
-        halfmoveClock: 0,
-        fullmoveNumber: 1,
-        promotionRanks: null
-    };
-
-    // Parse headers: [Key "Value"]
-    const headerRegex = /\[([^\]]+)\s+"([^"]*)"\]/g;
-    let match;
-    let lastHeaderEnd = 0;
-    while ((match = headerRegex.exec(icnString)) !== null) {
-        result.headers[match[1]] = match[2];
-        lastHeaderEnd = headerRegex.lastIndex;
-    }
-
-    const afterHeaders = icnString.slice(lastHeaderEnd).trim();
-    if (!afterHeaders) return result;
-
-    // Split by whitespace robustly
-    const tokens = afterHeaders.split(/\s+/);
-
-    let idx = 0;
-
-    // Token 0: turn (w or b)
-    if (tokens.length > idx && (tokens[idx] === 'w' || tokens[idx] === 'b')) {
-        result.turn = tokens[idx];
-        idx++;
-    }
-
-    // Token 1: halfmove/100
-    if (tokens.length > idx && tokens[idx].includes('/')) {
-        const halfmovePart = tokens[idx];
-        const slashIdx = halfmovePart.indexOf('/');
-        result.halfmoveClock = parseInt(halfmovePart.slice(0, slashIdx), 10) || 0;
-        idx++;
-    }
-
-    // Token 2: fullmove number
-    if (tokens.length > idx && /^\d+$/.test(tokens[idx])) {
-        result.fullmoveNumber = parseInt(tokens[idx], 10) || 1;
-        idx++;
-    }
-
-    // Token 3: promotion ranks like (8|1)
-    if (tokens.length > idx && tokens[idx].startsWith('(') && tokens[idx].includes('|')) {
-        result.promotionRanks = tokens[idx];
-        idx++;
-    }
-
-    // Token 4 might be world bounds (format: minX,maxX,minY,maxY - 4 numbers separated by 3 commas)
-    if (tokens.length > idx) {
-        const token = tokens[idx];
-        const commaCount = (token.match(/,/g) || []).length;
-        const hasLetterExceptE = /[a-df-zA-DF-Z]/.test(token);
-        const hasPipe = token.includes('|');
-        const hasGt = token.includes('>');
-
-        if (commaCount === 3 && !hasLetterExceptE && !hasPipe && !hasGt) {
-            result.worldBounds = token;
-            idx++;
-        }
-    }
-
-    // Remaining tokens: start position and moves
-    let positionParts = [];
-
-    for (let i = idx; i < tokens.length; i++) {
-        const token = tokens[i];
-        if (!token) continue;
-
-        if (token.includes('>')) {
-            // Moves token (pipe-separated)
-            const movesRaw = token.split('|');
-            for (const moveStr of movesRaw) {
-                if (!moveStr.includes('>')) continue;
-                const braceIdx = moveStr.indexOf('{');
-                const cleanMove = braceIdx !== -1 ? moveStr.slice(0, braceIdx).trim() : moveStr.trim();
-                if (cleanMove.includes('>')) {
-                    result.moves.push(cleanMove);
-                }
-            }
-        } else if (token.includes('|') || /[a-zA-Z]/.test(token)) {
-            // Position piece(s)
-            const pieces = token.split('|').filter(p => p.length > 0);
-            positionParts.push(...pieces);
-        } else if (token.includes(',')) {
-            // Possible world bounds if not already found, or coordinate-only piece
-            positionParts.push(token);
-        }
-    }
-
-    if (positionParts.length > 0) {
-        result.startPosition = positionParts.join('|');
-    }
-
-    return result;
-}
-
 
 function downloadGamesJson() {
     if (!gameLogs.length) {
@@ -1310,27 +1199,7 @@ function downloadGamesJson() {
         return;
     }
 
-    const games = gameLogs.map((icn, index) => {
-        const parsed = parseICNToJSON(icn);
-        return {
-            gameIndex: index + 1,
-            event: parsed?.headers?.Event || null,
-            variant: parsed?.headers?.Variant || 'Classical',
-            result: parsed?.headers?.Result || '*',
-            white: parsed?.headers?.White || null,
-            black: parsed?.headers?.Black || null,
-            termination: parsed?.headers?.Termination || null,
-            timeControl: parsed?.headers?.TimeControl || null,
-            utcDate: parsed?.headers?.UTCDate || null,
-            utcTime: parsed?.headers?.UTCTime || null,
-            worldBounds: parsed?.worldBounds || null,
-            startPosition: parsed?.startPosition || null,
-            moves: parsed?.moves || [],
-            rawICN: icn
-        };
-    });
-
-    const jsonOutput = JSON.stringify({ games, exportedAt: new Date().toISOString() }, null, 2);
+    const jsonOutput = JSON.stringify(gameLogs, null, 2);
     const blob = new Blob([jsonOutput], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1348,7 +1217,7 @@ runSprtBtn.addEventListener('click', runSprt);
 stopSprtBtn.addEventListener('click', stopSprt);
 copyLogBtn.addEventListener('click', copyLog);
 downloadLogsBtn.addEventListener('click', downloadLogs);
-downloadGamesBtn.addEventListener('click', downloadGames);
+downloadGamesTxtBtn.addEventListener('click', downloadGames);
 downloadGamesJsonBtn.addEventListener('click', downloadGamesJson);
 sprtVariantsEl.addEventListener('change', updateSelectedVariants);
 
@@ -1425,11 +1294,6 @@ window.__sprt_compute_features = async (rawSamples) => {
 };
 
 initWasm();
-// Initially hide & disable games download until we have results
-downloadGamesBtn.disabled = true;
-downloadGamesBtn.style.display = 'none';
-downloadGamesJsonBtn.disabled = true;
-downloadGamesJsonBtn.style.display = 'none';
 
 /* UI Logic for TC Mode */
 if (typeof sprtTcMode !== 'undefined' && sprtTcMode) {
