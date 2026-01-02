@@ -75,19 +75,72 @@ pub fn is_prime_i64(n: i64) -> bool {
         return false;
     }
 
-    // 6k ± 1 wheel: 5, 7, 11, 13, 17, 19, ...
-    let mut i: i64 = 5;
-    let mut step: i64 = 2;
+    // For large numbers, use Miller-Rabin primality test (O(log^3 n))
+    // rather than trial division (O(sqrt(n))).
+    // 90 trillion takes ~10M iterations with trial division but < 100 with Miller-Rabin.
+    is_prime_miller_rabin(n)
+}
 
-    // Avoid overflow via division
-    while i <= n / i {
-        if n % i == 0 {
-            return false;
+fn mod_pow(mut base: u128, mut exp: u128, modulus: u128) -> u128 {
+    if modulus == 1 {
+        return 0;
+    }
+    let mut res = 1;
+    base %= modulus;
+    while exp > 0 {
+        if exp % 2 == 1 {
+            res = (res * base) % modulus;
         }
-        i += step;
-        step = 6 - step;
+        base = (base * base) % modulus;
+        exp /= 2;
+    }
+    res
+}
+
+fn is_prime_miller_rabin(n: i64) -> bool {
+    let n = n.abs();
+    if n < 2 {
+        return false;
+    }
+    if n == 2 || n == 3 {
+        return true;
+    }
+    if n % 2 == 0 || n % 3 == 0 {
+        return false;
     }
 
+    // Write n-1 as 2^s * d
+    let mut d = (n - 1) as u128;
+    let mut s = 0;
+    while d % 2 == 0 {
+        d /= 2;
+        s += 1;
+    }
+
+    // Witnesses for 64-bit integers
+    // See: https://en.wikipedia.org/wiki/Miller%E2%80%93Rabin_primality_test#Testing_against_small_sets_of_bases
+    let witnesses: [u128; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+
+    for &a in &witnesses {
+        if a >= n as u128 {
+            break;
+        }
+        let mut x = mod_pow(a, d, n as u128);
+        if x == 1 || x == (n - 1) as u128 {
+            continue;
+        }
+        let mut composite = true;
+        for _ in 0..s - 1 {
+            x = (x * x) % n as u128;
+            if x == (n - 1) as u128 {
+                composite = false;
+                break;
+            }
+        }
+        if composite {
+            return false;
+        }
+    }
     true
 }
 

@@ -1474,13 +1474,11 @@ impl GameState {
         let step_x = dx_check.signum();
         let step_y = dy_check.signum();
 
-        // SPECIAL CASE: Huygen checker with our Huygen on the same ray
-        // When our Huygen is on the ray, it can potentially block at MANY prime distances.
-        // OPTIMIZATION: Just find ONE valid blocking move and return immediately.
-        // For checkmate detection, we only need to know if ANY evasion exists.
+        // SPECIAL CASE: Huygen checker - Fast Path
+        // Always active. Checks the first 128 primes from the checker towards the king.
+        // Handles both Huygens between and Huygens outside (jumping over checker).
         if is_huygen_checker {
             use crate::utils::PRIMES_UNDER_128;
-            use crate::utils::is_prime_fast;
 
             let is_horizontal = dy_check == 0;
             let checker_coord = if is_horizontal {
@@ -1489,8 +1487,8 @@ impl GameState {
                 checker_sq.y
             };
             let king_coord = if is_horizontal { king_sq.x } else { king_sq.y };
+            let dir_from_checker_to_king = (king_coord - checker_coord).signum();
 
-            // Find our Huygens on the same ray using spatial indices
             let line_vec = if is_horizontal {
                 self.spatial_indices.rows.get(&checker_sq.y)
             } else {
@@ -1504,71 +1502,72 @@ impl GameState {
                         continue;
                     }
 
-                    // Check if this Huygen is between king and checker
                     let our_huygen_coord = coord;
-                    let between_king_checker = if checker_coord > king_coord {
-                        our_huygen_coord > king_coord && our_huygen_coord < checker_coord
-                    } else {
-                        our_huygen_coord < king_coord && our_huygen_coord > checker_coord
-                    };
-
-                    if !between_king_checker {
-                        continue;
-                    }
-
-                    // Distance from our Huygen to the checker
-                    let d = (checker_coord - our_huygen_coord).abs();
-                    let dir_to_checker = (checker_coord - our_huygen_coord).signum();
-
-                    // Pre-collect blockers at prime distances (these are rare, usually 0-2)
-                    // Only check small distances using fast lookup
-                    let mut min_blocker = i64::MAX;
-                    for &(blocker_coord, _) in vec {
-                        if blocker_coord == our_huygen_coord {
-                            continue;
-                        }
-                        let blocker_dist = (blocker_coord - our_huygen_coord) * dir_to_checker;
-                        if blocker_dist > 0 && blocker_dist < 128 && is_prime_fast(blocker_dist) {
-                            min_blocker = min_blocker.min(blocker_dist);
-                        }
-                    }
-
-                    // Pre-compute from coordinate (doesn't change)
                     let from_sq = if is_horizontal {
                         Coordinate::new(our_huygen_coord, checker_sq.y)
                     } else {
                         Coordinate::new(checker_sq.x, our_huygen_coord)
                     };
 
-                    // Find valid blocking moves using Goldbach decomposition
-                    // Single pass through primes, generating all valid moves
-                    for &p in &PRIMES_UNDER_128 {
-                        if p >= d || p >= min_blocker {
-                            break;
-                        }
+                    'outer_huygen_fast: for &p_from_checker in &PRIMES_UNDER_128 {
+                        let block_coord = checker_coord + dir_from_checker_to_king * p_from_checker;
 
-                        let remainder = d - p;
-                        if !is_prime_i64(remainder) {
+                        // Must be between king and checker
+                        let block_between = if checker_coord > king_coord {
+                            block_coord > king_coord && block_coord < checker_coord
+                        } else {
+                            block_coord < king_coord && block_coord > checker_coord
+                        };
+                        if !block_between {
+                            let past_king = if checker_coord > king_coord {
+                                block_coord <= king_coord
+                            } else {
+                                block_coord >= king_coord
+                            };
+                            if past_king {
+                                break;
+                            }
                             continue;
                         }
 
-                        let dest_coord = our_huygen_coord + dir_to_checker * p;
-
-                        // Verify destination is between king and checker
-                        let dest_between = if checker_coord > king_coord {
-                            dest_coord > king_coord && dest_coord < checker_coord
-                        } else {
-                            dest_coord < king_coord && dest_coord > checker_coord
-                        };
-
-                        if dest_between {
-                            let to_sq = if is_horizontal {
-                                Coordinate::new(dest_coord, checker_sq.y)
-                            } else {
-                                Coordinate::new(checker_sq.x, dest_coord)
-                            };
-                            out.push(Move::new(from_sq, to_sq, piece));
+                        let dist_from_huygen = (block_coord - our_huygen_coord).abs();
+                        if dist_from_huygen == 0 {
+                            continue;
                         }
+
+                        // Use robust prime check for distance from Huygen
+                        if !is_prime_i64(dist_from_huygen) {
+                            continue;
+                        }
+
+                        // Blocker check (ignore checker since it's the checker)
+                        let dir_to_block = (block_coord - our_huygen_coord).signum();
+                        for &(other_coord, _) in vec {
+                            if other_coord == our_huygen_coord || other_coord == checker_coord {
+                                continue;
+                            }
+
+                            let other_dir = (other_coord - our_huygen_coord).signum();
+                            if other_dir != dir_to_block {
+                                continue;
+                            }
+
+                            let other_dist = (other_coord - our_huygen_coord).abs();
+                            if other_dist >= dist_from_huygen {
+                                continue;
+                            }
+
+                            if is_prime_i64(other_dist) {
+                                continue 'outer_huygen_fast;
+                            }
+                        }
+
+                        let to_sq = if is_horizontal {
+                            Coordinate::new(block_coord, checker_sq.y)
+                        } else {
+                            Coordinate::new(checker_sq.x, block_coord)
+                        };
+                        out.push(Move::new(from_sq, to_sq, piece));
                     }
                 }
             }
@@ -2033,6 +2032,109 @@ impl GameState {
         } else {
             for (&(ax, ay), p) in self.board.iter() {
                 process_piece(self, Coordinate::new(ax, ay), p, out);
+            }
+        }
+
+        // SLOW FALLBACK: Only if no moves found
+        // Handles cases where Huygen needs to jump over the checker or block at larger distances.
+        if out.is_empty() && is_huygen_checker {
+            use crate::utils::PRIMES_UNDER_128;
+
+            let is_horizontal = dy_check == 0;
+            let checker_coord = if is_horizontal {
+                checker_sq.x
+            } else {
+                checker_sq.y
+            };
+            let king_coord = if is_horizontal { king_sq.x } else { king_sq.y };
+            let dir_from_checker_to_king = (king_coord - checker_coord).signum();
+
+            let line_vec = if is_horizontal {
+                self.spatial_indices.rows.get(&checker_sq.y)
+            } else {
+                self.spatial_indices.cols.get(&checker_sq.x)
+            };
+
+            if let Some(vec) = line_vec {
+                for &(our_huygen_coord, packed) in vec {
+                    let piece = Piece::from_packed(packed);
+                    if piece.color() != our_color || piece.piece_type() != PieceType::Huygen {
+                        continue;
+                    }
+
+                    // Iterate blocking squares (prime distance P from Checker toward King)
+                    'outer_huygen_fallback: for &p in &PRIMES_UNDER_128 {
+                        let block_coord = checker_coord + dir_from_checker_to_king * p;
+
+                        // Must be between king and checker
+                        let block_between = if checker_coord > king_coord {
+                            block_coord > king_coord && block_coord < checker_coord
+                        } else {
+                            block_coord < king_coord && block_coord > checker_coord
+                        };
+
+                        if !block_between {
+                            let past_king = if checker_coord > king_coord {
+                                block_coord <= king_coord
+                            } else {
+                                block_coord >= king_coord
+                            };
+                            if past_king {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        // Check if our Huygen can reach this square
+                        let dist_from_huygen = (block_coord - our_huygen_coord).abs();
+                        if dist_from_huygen == 0 {
+                            continue;
+                        }
+
+                        // Distance must be prime (Miller-Rabin for large distances)
+                        if !is_prime_i64(dist_from_huygen) {
+                            continue;
+                        }
+
+                        // Check for blockers: any piece at prime distance from our Huygen
+                        // that is BETWEEN our Huygen and the blocking square.
+                        // CRITICAL Fallback Rule: Checker piece DOES NOT block us (jump over).
+                        let dir_to_block = (block_coord - our_huygen_coord).signum();
+                        for &(other_coord, _) in vec {
+                            if other_coord == our_huygen_coord || other_coord == checker_coord {
+                                continue;
+                            }
+
+                            let other_dir = (other_coord - our_huygen_coord).signum();
+                            if other_dir != dir_to_block {
+                                continue;
+                            }
+
+                            let other_dist = (other_coord - our_huygen_coord).abs();
+                            if other_dist >= dist_from_huygen {
+                                continue;
+                            }
+
+                            // If this piece is at a prime distance from our Huygen, it blocks.
+                            if is_prime_i64(other_dist) {
+                                continue 'outer_huygen_fallback;
+                            }
+                        }
+
+                        // Legal block found!
+                        let from_sq = if is_horizontal {
+                            Coordinate::new(our_huygen_coord, checker_sq.y)
+                        } else {
+                            Coordinate::new(checker_sq.x, our_huygen_coord)
+                        };
+                        let to_sq = if is_horizontal {
+                            Coordinate::new(block_coord, checker_sq.y)
+                        } else {
+                            Coordinate::new(checker_sq.x, block_coord)
+                        };
+                        out.push(Move::new(from_sq, to_sq, piece));
+                    }
+                }
             }
         }
     }
