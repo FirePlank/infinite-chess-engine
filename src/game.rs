@@ -1429,6 +1429,40 @@ impl GameState {
         // Huygen blocking is special: only squares at prime distances FROM THE HUYGEN can block
         let is_huygen_checker = checker_type == PieceType::Huygen;
 
+        // Identify if checker is a Knightrider
+        // Knightrider blocking is special: blocking squares are along the knight hop path
+        let is_knightrider_checker = checker_type == PieceType::Knightrider;
+
+        // Pre-compute knightrider blocking squares: the intermediate knight hops between checker and king
+        // The knightrider attacks along a line of repeated knight moves: (dx, dy) * n
+        // For a check from checker_sq to king_sq, we need to find which knight direction was used
+        let knightrider_blocking_squares: arrayvec::ArrayVec<Coordinate, 32> =
+            if is_knightrider_checker {
+                use crate::attacks::KNIGHTRIDER_DIRS;
+                let mut blocking = arrayvec::ArrayVec::new();
+                // Find which knight direction matches the check vector
+                for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
+                    // Check if dx_check = ndx * n and dy_check = ndy * n for some positive n
+                    if ndx != 0 && ndy != 0 {
+                        let n_x = dx_check / ndx;
+                        let n_y = dy_check / ndy;
+                        if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
+                            // Found the knight direction! Compute intermediate squares
+                            let n = n_x;
+                            for i in 1..n {
+                                let bx = king_sq.x + ndx * i;
+                                let by = king_sq.y + ndy * i;
+                                blocking.push(Coordinate::new(bx, by));
+                            }
+                            break;
+                        }
+                    }
+                }
+                blocking
+            } else {
+                arrayvec::ArrayVec::new()
+            };
+
         // For non-linear checkers, compute blocking squares up front
         let nonlinear_blocking_squares = if is_nonlinear_checker {
             self.get_nonlinear_blocking_squares(&checker_sq, &king_sq, checker_type)
@@ -1565,6 +1599,28 @@ impl GameState {
                     target_p.color() != our_color
                 } else {
                     true
+                }
+            };
+
+            // Helper to check if a target square is on the check blocking path
+            // For knightrider checkers, use the pre-computed knight hop path
+            // For other checkers, use the standard check ray logic
+            let is_valid_blocking_square = |tx: i64, ty: i64| -> bool {
+                if is_knightrider_checker {
+                    // For knightrider checkers, blocking squares are along the knight hop path
+                    knightrider_blocking_squares
+                        .iter()
+                        .any(|sq| sq.x == tx && sq.y == ty)
+                } else {
+                    // For other sliders, use standard check ray logic
+                    s.is_on_check_ray(
+                        &Coordinate::new(tx, ty),
+                        &king_sq,
+                        step_x,
+                        step_y,
+                        check_dist,
+                        checker_type,
+                    )
                 }
             };
 
@@ -1755,15 +1811,7 @@ impl GameState {
                     for &(dx, dy) in &KNIGHT_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1774,15 +1822,7 @@ impl GameState {
                     for &(dx, dy) in &KING_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1793,15 +1833,7 @@ impl GameState {
                     for &(dx, dy) in &CAMEL_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1812,15 +1844,7 @@ impl GameState {
                     for &(dx, dy) in &ZEBRA_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1831,15 +1855,7 @@ impl GameState {
                     for &(dx, dy) in &GIRAFFE_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1850,15 +1866,7 @@ impl GameState {
                     for &(dx, dy) in &HAWK_OFFSETS {
                         let tx = from.x + dx;
                         let ty = from.y + dy;
-                        if s.is_on_check_ray(
-                            &Coordinate::new(tx, ty),
-                            &king_sq,
-                            step_x,
-                            step_y,
-                            check_dist,
-                            checker_type,
-                        ) && can_block_at(tx, ty)
-                        {
+                        if is_valid_blocking_square(tx, ty) && can_block_at(tx, ty) {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     }
@@ -1989,10 +1997,17 @@ impl GameState {
                         }
                     }
                 }
-                // Blocking moves for sliders (straight line check rays)
-                if is_slider
-                    && !has_optimized_blocking
-                    && s.is_on_check_ray(&m.to, &king_sq, step_x, step_y, check_dist, checker_type)
+                // Blocking moves for sliders (straight line check rays) and knightrider checkers
+                if is_slider && !has_optimized_blocking && is_valid_blocking_square(m.to.x, m.to.y)
+                {
+                    out.push(m);
+                    continue;
+                }
+                // Blocking moves for knightrider checkers (for pieces not covered above)
+                if is_knightrider_checker
+                    && knightrider_blocking_squares
+                        .iter()
+                        .any(|sq| sq.x == m.to.x && sq.y == m.to.y)
                 {
                     out.push(m);
                     continue;
