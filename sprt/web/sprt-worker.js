@@ -207,6 +207,14 @@ function applyMove(position, move) {
 
     const capturedIdx = pieces.findIndex(p => p.x === toX && p.y === toY);
     if (capturedIdx !== -1) {
+        // Remove special rights for the captured piece if it had any
+        if (position.special_rights) {
+            const toKey = toX + ',' + toY;
+            const sIdx = position.special_rights.indexOf(toKey);
+            if (sIdx !== -1) {
+                position.special_rights.splice(sIdx, 1);
+            }
+        }
         pieces.splice(capturedIdx, 1);
     }
 
@@ -381,32 +389,35 @@ function makePositionKey(position) {
                 continue;
             }
 
-            // King has rights - check if any castling partner has rights
-            // Castling partners are any friendly non-pawn, non-king piece on the same rank
-            const kingY = parseInt(king.y, 10);
-            let hasPartnerWithRights = false;
+            if (kingHasRights) {
+                // King has rights - check which castling partners (left/right) have rights
+                // Castling partners are any friendly non-pawn, non-king piece on the same rank
+                const kingY = parseInt(king.y, 10);
+                const kingX = parseInt(king.x, 10);
+                let leftPartner = false;
+                let rightPartner = false;
 
-            for (const p of boardPieces) {
-                if (p.player !== color) continue;
-                // Any non-pawn, non-king piece can be a castling partner
-                if (p.piece_type === 'p' || p.piece_type === 'k') continue;
+                for (const p of boardPieces) {
+                    if (p.player !== color) continue;
+                    if (p.piece_type === 'p' || p.piece_type === 'k') continue;
 
-                const partnerY = parseInt(p.y, 10);
-                // For infinite chess, we check pieces on the same rank as the king
-                if (partnerY !== kingY) continue;
+                    const partnerY = parseInt(p.y, 10);
+                    if (partnerY !== kingY) continue;
 
-                const partnerKey = p.x + ',' + p.y;
-                if (rights.has(partnerKey)) {
-                    hasPartnerWithRights = true;
-                    break;
+                    const partnerKey = p.x + ',' + p.y;
+                    if (rights.has(partnerKey)) {
+                        const partnerX = parseInt(p.x, 10);
+                        if (partnerX < kingX) {
+                            leftPartner = true;
+                        } else {
+                            rightPartner = true;
+                        }
+                    }
                 }
-            }
 
-            if (hasPartnerWithRights) {
-                // This side CAN castle
-                castlingRights += color;
+                if (leftPartner) castlingRights += color + 'L';
+                if (rightPartner) castlingRights += color + 'R';
             }
-            // If no partner has rights, king's rights are irrelevant - this side cannot castle
         }
     }
 
