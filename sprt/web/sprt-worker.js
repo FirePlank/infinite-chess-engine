@@ -559,56 +559,17 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 });
             }
 
-            // winner, stop early and award the game. Only start checking after at
-            // least 20 plies, and only if both engines have provided evals.
-            if (moveHistory.length >= 20 && lastEvalNew !== null && lastEvalOld !== null) {
-                const threshold = typeof materialThreshold === 'number' ? materialThreshold : 0;
+            // Perform terminal check at start of ply (covers results of previous move)
+            const earlyTerminal = getTerminalResult(' (terminal state detected at start of ply)');
+            if (earlyTerminal) return earlyTerminal;
 
-                if (threshold > 0) {
-                    function winnerFromWhiteEval(score) {
-                        if (score >= threshold) return 'w';
-                        if (score <= -threshold) return 'b';
-                        return null;
-                    }
-
-                    const newWinner = winnerFromWhiteEval(lastEvalNew);
-                    const oldWinner = winnerFromWhiteEval(lastEvalOld);
-
-                    let winningColor = null;
-                    if (newWinner && oldWinner && newWinner === oldWinner) {
-                        winningColor = newWinner;
-                    }
-
-                    if (winningColor) {
-                        const terminal = getTerminalResult(' (terminal state detected during adjudication)');
-                        if (terminal) return terminal;
-
-                        const evalCp = winningColor === 'w'
-                            ? Math.min(lastEvalNew, lastEvalOld)
-                            : Math.max(lastEvalNew, lastEvalOld);
-                        const result = winningColor === newColor ? 'win' : 'loss';
-                        const winnerStr = winningColor === 'w' ? 'White' : 'Black';
-                        moveLines.push('# Game adjudicated by material: ~' + (evalCp > 0 ? '+' : '') + evalCp + ' cp for ' + winnerStr + ' (threshold ' + threshold + ' cp, both engines agree; search eval from main search)');
-                        moveLines.push('# Engines: new=' + (newColor === 'w' ? 'White' : 'Black') + ', old=' + (newColor === 'w' ? 'Black' : 'White'));
-                        const result_token = winningColor === 'w' ? '1-0' : '0-1';
-                        for (const s of texelSamples) {
-                            s.result_token = result_token;
-                        }
-                        return { result, log: moveLines.join('\n'), reason: 'material_adjudication', materialThreshold: threshold, samples: texelSamples };
-                    }
-                }
-            }
-
-            // Otherwise, let the appropriate engine choose a move from the full
-            // game history starting from the standard position. We rebuild
-            // gameInput each ply so the WASM side can reconstruct all dynamic
-            // state (clocks, en passant, special rights) by replaying moves.
-            const gameInput = clonePosition(startPosition);
-            gameInput.move_history = moveHistory.slice();
-
-            // Include clock info in the game state so the engine can manage its own time
+            // Build authoritative game input for engine search
+            const engineInput = clonePosition(startPosition);
+            engineInput.move_history = moveHistory.slice();
+            engineInput.halfmove_clock = halfmoveClock;
+            engineInput.fullmove_number = fullmoveNumber;
             if (haveClocks) {
-                gameInput.clock = {
+                engineInput.clock = {
                     wtime: Math.floor(whiteClock),
                     btime: Math.floor(blackClock),
                     winc: Math.floor(increment),
@@ -616,11 +577,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 };
             }
 
-            // Pass authoritative game counters to the engine
-            gameInput.halfmove_clock = halfmoveClock;
-            gameInput.fullmove_number = fullmoveNumber;
-
-            // Let the appropriate engine choose a move on this gameInput
+            // Let the appropriate engine choose a move
             const EngineClass = isWhiteTurn
                 ? (newPlaysWhite ? EngineNew : EngineOld)
                 : (newPlaysWhite ? EngineOld : EngineNew);
@@ -629,8 +586,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 : (newPlaysWhite ? 'old' : 'new');
 
             let searchTimeMs = timePerMove;
-            let flaggedOnTime = false;
-            const engine = new EngineClass(gameInput);
+            const engine = new EngineClass(engineInput);
             const startMs = nowMs();
 
             // Safety check: if clock time is already zero or negative, flag timeout immediately
@@ -656,6 +612,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             const currentPly = moveHistory.length;
             const noiseAmp = currentPly < 4 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
 
+            let flaggedOnTime = false;
             const move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp);
             engine.free();
 
@@ -697,7 +654,12 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
                 let hasLegalMoves = false;
                 try {
-                    const checker = new EngineNew(gameInput);
+                    const checkerInput = clonePosition(startPosition);
+                    checkerInput.move_history = moveHistory.slice();
+                    checkerInput.halfmove_clock = halfmoveClock;
+                    checkerInput.fullmove_number = fullmoveNumber;
+
+                    const checker = new EngineNew(checkerInput);
                     if (typeof checker.get_legal_moves_js === 'function') {
                         const legal = checker.get_legal_moves_js();
                         if (Array.isArray(legal) && legal.length > 0) {
@@ -715,7 +677,12 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
                 if (!hasLegalMoves) {
                     // True terminal: no legal moves for sideToMove.
-                    const checker = new EngineNew(gameInput);
+                    const checkerInput = clonePosition(startPosition);
+                    checkerInput.move_history = moveHistory.slice();
+                    checkerInput.halfmove_clock = halfmoveClock;
+                    checkerInput.fullmove_number = fullmoveNumber;
+
+                    const checker = new EngineNew(checkerInput);
                     const inCheck = typeof checker.is_in_check === 'function' && checker.is_in_check();
                     checker.free();
 
@@ -894,10 +861,14 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 return { result: 'draw', log: moveLines.join('\n'), reason: 'fifty_move', samples: texelSamples };
             }
 
-            // Check for insufficient material using the engine's detection
-            // The engine has comprehensive rules for infinite chess including K+B vs K, K+N vs K, etc.
+            // Check for insufficient material using a fresh game input representing the state AFTER the move
             try {
-                const checker = new EngineNew(gameInput);
+                const afterMoveInput = clonePosition(startPosition);
+                afterMoveInput.move_history = moveHistory.slice();
+                afterMoveInput.halfmove_clock = halfmoveClock;
+                afterMoveInput.fullmove_number = fullmoveNumber;
+
+                const checker = new EngineNew(afterMoveInput);
                 const hasSufficientMaterial = typeof checker.is_sufficient_material === 'function'
                     ? checker.is_sufficient_material()
                     : true; // Default to true if function doesn't exist (old engine builds)
@@ -915,6 +886,47 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 }
             } catch (e) {
                 // If the check fails, continue the game
+            }
+
+            // winner, stop early and award the game. Only start checking after at
+            // least 20 plies, and only if both engines have provided evals.
+            // Moved to the end of the loop so it only triggers if rule-based terminal states didn't match.
+            if (moveHistory.length >= 20 && lastEvalNew !== null && lastEvalOld !== null) {
+                const threshold = typeof materialThreshold === 'number' ? materialThreshold : 0;
+
+                if (threshold > 0) {
+                    const winnerFromWhiteEval = (score) => {
+                        if (score >= threshold) return 'w';
+                        if (score <= -threshold) return 'b';
+                        return null;
+                    };
+
+                    const newWinner = winnerFromWhiteEval(lastEvalNew);
+                    const oldWinner = winnerFromWhiteEval(lastEvalOld);
+
+                    let winningColor = null;
+                    if (newWinner && oldWinner && newWinner === oldWinner) {
+                        winningColor = newWinner;
+                    }
+
+                    if (winningColor) {
+                        const terminal = getTerminalResult(' (terminal state detected during adjudication)');
+                        if (terminal) return terminal;
+
+                        const evalCp = winningColor === 'w'
+                            ? Math.min(lastEvalNew, lastEvalOld)
+                            : Math.max(lastEvalNew, lastEvalOld);
+                        const result = winningColor === newColor ? 'win' : 'loss';
+                        const winnerStr = winningColor === 'w' ? 'White' : 'Black';
+                        moveLines.push('# Game adjudicated by material: ~' + (evalCp > 0 ? '+' : '') + evalCp + ' cp for ' + winnerStr + ' (threshold ' + threshold + ' cp, both engines agree; search eval from main search)');
+                        moveLines.push('# Engines: new=' + (newColor === 'w' ? 'White' : 'Black') + ', old=' + (newColor === 'w' ? 'Black' : 'White'));
+                        const result_token = winningColor === 'w' ? '1-0' : '0-1';
+                        for (const s of texelSamples) {
+                            s.result_token = result_token;
+                        }
+                        return { result, log: moveLines.join('\n'), reason: 'material_adjudication', materialThreshold: threshold, samples: texelSamples };
+                    }
+                }
             }
         }
     } catch (e) {
