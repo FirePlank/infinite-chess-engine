@@ -1855,9 +1855,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Stockfish's "graph history interaction" workaround:
         // - Don't produce TT cutoffs when rule50 is high (>= 96)
         // - Don't produce TT cutoffs when position has repetition history
+        // - Don't cutoff on mate scores (they need full verification at each depth)
         let rule_limit = searcher.move_rule_limit as u32;
         if !is_pv
             && score != INFINITY + 1
+            && score.abs() < MATE_SCORE
             && game.halfmove_clock < rule_limit.saturating_sub(4)
             && game.repetition == 0
         {

@@ -2445,6 +2445,7 @@ impl GameState {
             // - Non-neutral: was in hash, XOR removes it
             // - Neutral: wasn't in hash, XOR adds "removed obstacle" marker
             self.hash ^= piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+
             // Update spatial indices for captured piece on destination square
             self.spatial_indices.remove(m.to.x, m.to.y);
 
@@ -2829,18 +2830,21 @@ impl GameState {
                     .wrapping_add(material_key(captured.piece_type(), captured.color()));
             }
 
-            let value = get_piece_value(captured.piece_type());
-            if captured.color() == PlayerColor::White {
-                self.material_score += value;
-                self.white_piece_count = self.white_piece_count.saturating_add(1);
-                if captured.piece_type() == PieceType::Pawn {
-                    self.white_pawn_count = self.white_pawn_count.saturating_add(1);
-                }
-            } else {
-                self.material_score -= value;
-                self.black_piece_count = self.black_piece_count.saturating_add(1);
-                if captured.piece_type() == PieceType::Pawn {
-                    self.black_pawn_count = self.black_pawn_count.saturating_add(1);
+            // Only update piece counts and material for non-neutral pieces
+            if captured.color() != PlayerColor::Neutral {
+                let value = get_piece_value(captured.piece_type());
+                if captured.color() == PlayerColor::White {
+                    self.material_score += value;
+                    self.white_piece_count = self.white_piece_count.saturating_add(1);
+                    if captured.piece_type() == PieceType::Pawn {
+                        self.white_pawn_count = self.white_pawn_count.saturating_add(1);
+                    }
+                } else {
+                    self.material_score -= value;
+                    self.black_piece_count = self.black_piece_count.saturating_add(1);
+                    if captured.piece_type() == PieceType::Pawn {
+                        self.black_pawn_count = self.black_pawn_count.saturating_add(1);
+                    }
                 }
             }
             self.board.set_piece(m.to.x, m.to.y, captured);
