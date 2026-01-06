@@ -68,16 +68,17 @@ fn evaluate_inner(game: &GameState) -> i32 {
         && let (Some(_scale), Some(wk)) = (
             crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White),
             &white_king,
-        ) {
-            score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                game,
-                black_king.as_ref(),
-                wk,
-                PlayerColor::Black,
-                PlayerColor::White,
-            );
-            mop_up_applied = true;
-        }
+        )
+    {
+        score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            black_king.as_ref(),
+            wk,
+            PlayerColor::Black,
+            PlayerColor::White,
+        );
+        mop_up_applied = true;
+    }
 
     // If mop-up wasn't applied, use normal Confined Classical evaluation
     if !mop_up_applied {

@@ -1188,8 +1188,8 @@ pub fn evaluate_bishop(
 }
 
 /// Evaluate all pawn-related positional terms in a single pass.
-/// Includes advancement bonuses, centering, promotability checks, and the endgame promotion bonus.
-/// The result is scaled based on game phase (non-pawn piece count).
+/// Includes advancement, doubled, passed, phalanx, connected pawns.
+/// Pawns past promotion rank ONLY get PAWN_PAST_PROMO_PENALTY - no other evaluation.
 #[inline(always)]
 fn evaluate_pawns(game: &GameState) -> (i32, bool, bool) {
     if game.white_pawn_count == 0 && game.black_pawn_count == 0 {
@@ -1765,61 +1765,40 @@ fn compute_pawn_structure(game: &GameState) -> i32 {
     let mut white_pawns: Vec<(i64, i64)> = Vec::new();
     let mut black_pawns: Vec<(i64, i64)> = Vec::new();
 
-    // Column masks for bitwise doubled pawn check
-    const COL_MASKS: [u64; 8] = [
-        0x0101010101010101,
-        0x0202020202020202,
-        0x0404040404040404,
-        0x0808080808080808,
-        0x1010101010101010,
-        0x2020202020202020,
-        0x4040404040404040,
-        0x8080808080808080,
-    ];
+    let w_promo = game.white_promo_rank;
+    let b_promo = game.black_promo_rank;
 
-    // BITBOARD: Use per-tile occ_pawns for faster collection and intra-tile doubled checks
+    // BITBOARD: Use per-tile occ_pawns - skip past-promo pawns for structure eval
     for (cx, cy, tile) in game.board.tiles.iter() {
-        let w_pawns = tile.occ_pawns & tile.occ_white;
-        let b_pawns = tile.occ_pawns & tile.occ_black;
+        let w_pawns_bits = tile.occ_pawns & tile.occ_white;
+        let b_pawns_bits = tile.occ_pawns & tile.occ_black;
+        let base_y = cy * 8;
 
-        if w_pawns != 0 {
-            // Intra-tile doubled pawn check
-            for mask in COL_MASKS {
-                let count = (w_pawns & mask).count_ones();
-                if count > 1 {
-                    score -= (count - 1) as i32 * DOUBLED_PAWN_PENALTY;
-                }
-                if count > 0 {
-                    white_pawn_files.push(cx * 8 + (mask.trailing_zeros() % 8) as i64);
-                }
-            }
-
-            // Collect for passed pawn check
-            let mut bits = w_pawns;
+        if w_pawns_bits != 0 {
+            let mut bits = w_pawns_bits;
             while bits != 0 {
                 let idx = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                white_pawns.push((cx * 8 + (idx % 8) as i64, cy * 8 + (idx / 8) as i64));
+                let x = cx * 8 + (idx % 8) as i64;
+                let y = base_y + (idx / 8) as i64;
+                if y < w_promo {
+                    white_pawns.push((x, y));
+                    white_pawn_files.push(x);
+                }
             }
         }
 
-        if b_pawns != 0 {
-            // Same for black
-            for mask in COL_MASKS {
-                let count = (b_pawns & mask).count_ones();
-                if count > 1 {
-                    score += (count - 1) as i32 * DOUBLED_PAWN_PENALTY;
-                }
-                if count > 0 {
-                    black_pawn_files.push(cx * 8 + (mask.trailing_zeros() % 8) as i64);
-                }
-            }
-
-            let mut bits = b_pawns;
+        if b_pawns_bits != 0 {
+            let mut bits = b_pawns_bits;
             while bits != 0 {
                 let idx = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                black_pawns.push((cx * 8 + (idx % 8) as i64, cy * 8 + (idx / 8) as i64));
+                let x = cx * 8 + (idx % 8) as i64;
+                let y = base_y + (idx / 8) as i64;
+                if y > b_promo {
+                    black_pawns.push((x, y));
+                    black_pawn_files.push(x);
+                }
             }
         }
     }
