@@ -10,7 +10,7 @@ const SEE_MAX_PIECES: usize = 128;
 
 /// Tests if SEE value of move is >= threshold.
 /// Uses early cutoffs to avoid full SEE calculation when possible.
-#[inline]
+#[inline(always)]
 pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     // BITBOARD: Fast piece check
     let captured = match game.board.get_piece(m.to.x, m.to.y) {
@@ -50,7 +50,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         None => return 0,
     };
 
-    // For very large boards (> SEE_MAX_PIECES), use approximate SEE
+    // For very large boards (>SEE_MAX_PIECES), use approximate SEE
     // based on simple MVV-LVA rather than full exchange sequence
     if game.board.len() > SEE_MAX_PIECES {
         let victim_val = get_piece_value(captured.piece_type());
@@ -72,27 +72,122 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         alive: bool,
     }
 
-    // Build piece list using tile bitboards - faster than HashMap iteration
+    // SUPER-OPTIMIZED piece gathering: No tiles, targeted SpatialIndices lookups
     let mut pieces: ArrayVec<PieceInfo, SEE_MAX_PIECES> = ArrayVec::new();
-    for (cx, cy, tile) in game.board.tiles.iter() {
-        let mut bits = tile.occ_all;
-        while bits != 0 {
-            let idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let packed = tile.piece[idx];
-            if packed == 0 {
-                continue;
+    let tx = m.to.x;
+    let ty = m.to.y;
+    let indices = &game.spatial_indices;
+    let d1 = tx - ty;
+    let d2 = tx + ty;
+
+    // Inline helper - direct push
+    macro_rules! add_piece {
+        ($x:expr, $y:expr, $packed:expr) => {
+            if !pieces.is_full() {
+                let p = crate::board::Piece::from_packed($packed);
+                pieces.push(PieceInfo {
+                    x: $x,
+                    y: $y,
+                    piece_type: p.piece_type(),
+                    color: p.color(),
+                    alive: true,
+                });
             }
-            let piece = crate::board::Piece::from_packed(packed);
-            let x = cx * 8 + (idx % 8) as i64;
-            let y = cy * 8 + (idx / 8) as i64;
-            pieces.push(PieceInfo {
-                x,
-                y,
-                piece_type: piece.piece_type(),
-                color: piece.color(),
-                alive: true,
-            });
+        };
+    }
+
+    // 1. Gather sliders from SpatialIndices (only pieces on the 4 lines through target)
+    if let Some(row) = indices.rows.get(&ty) {
+        for &(x, packed) in row.iter() {
+            add_piece!(x, ty, packed);
+        }
+    }
+    if let Some(col) = indices.cols.get(&tx) {
+        for &(y, packed) in col.iter() {
+            if y != ty {
+                add_piece!(tx, y, packed);
+            }
+        }
+    }
+    if let Some(diag) = indices.diag1.get(&d1) {
+        for &(x, packed) in diag.iter() {
+            let y = x - d1;
+            if x != tx && y != ty {
+                add_piece!(x, y, packed);
+            }
+        }
+    }
+    if let Some(diag) = indices.diag2.get(&d2) {
+        for &(x, packed) in diag.iter() {
+            let y = d2 - x;
+            if x != tx && y != ty && (x - y) != d1 {
+                add_piece!(x, y, packed);
+            }
+        }
+    }
+
+    // 2. Gather leapers at fixed offsets (No tiles!)
+    use crate::attacks::*;
+    // Knights and other knight-like leapers
+    for &(dx, dy) in &KNIGHT_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            let pt = p.piece_type();
+            if attacks_like_knight(pt) || pt == PieceType::Rose {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    // Camels, Giraffes, Zebras
+    for &(dx, dy) in &CAMEL_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if p.piece_type() == PieceType::Camel {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    for &(dx, dy) in &GIRAFFE_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if p.piece_type() == PieceType::Giraffe {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    for &(dx, dy) in &ZEBRA_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if p.piece_type() == PieceType::Zebra {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    // Hawks
+    for &(dx, dy) in &HAWK_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if p.piece_type() == PieceType::Hawk {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    // King/Guard
+    for &(dx, dy) in &KING_OFFSETS {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if attacks_like_king(p.piece_type()) {
+                add_piece!(tx + dx, ty + dy, p.packed());
+            }
+        }
+    }
+    // Pawns
+    for &(dx, dy) in &[(1, 1), (-1, 1), (1, -1), (-1, -1)] {
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
+            if p.piece_type() == PieceType::Pawn {
+                let dir = match p.color() {
+                    PlayerColor::White => 1,
+                    PlayerColor::Black => -1,
+                    _ => 0,
+                };
+                if dy == -dir {
+                    add_piece!(tx + dx, ty + dy, p.packed());
+                }
+            }
         }
     }
 
@@ -138,71 +233,33 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         let adx = dx.abs();
         let ady = dy.abs();
 
-        // Helper for sliding moves (rook/bishop/queen-like) over the local
-        // snapshot, checking that the ray to (tx, ty) is not blocked.
-        // IMPORTANT: We don't iterate step-by-step (would be O(distance)),
-        // instead we check if any piece lies strictly between p and the target.
+        #[inline(always)]
         fn is_clear_ray(p: &PieceInfo, dx: i64, dy: i64, pieces: &[PieceInfo]) -> bool {
             let adx = dx.abs();
             let ady = dy.abs();
-
-            // Determine if this is a valid sliding direction
-            let is_ortho = (dx == 0 && dy != 0) || (dy == 0 && dx != 0);
-            let is_diag = adx == ady && adx != 0;
-
-            if !is_ortho && !is_diag {
-                return false;
-            }
-
-            let target_x = p.x + dx;
-            let target_y = p.y + dy;
 
             // Check if any piece lies strictly between p and target
             for other in pieces.iter() {
                 if !other.alive {
                     continue;
                 }
-                // Skip the target square itself
-                if other.x == target_x && other.y == target_y {
-                    continue;
-                }
-                // Skip the piece itself
-                if other.x == p.x && other.y == p.y {
-                    continue;
-                }
 
                 let odx = other.x - p.x;
                 let ody = other.y - p.y;
+                let aodx = odx.abs();
+                let aody = ody.abs();
 
-                // Check if 'other' is on the same ray and strictly between p and target
-                if is_ortho {
-                    if dx == 0 {
-                        // Vertical ray
-                        if odx == 0 {
-                            let ody_abs = ody.abs();
-                            if ody.signum() == dy.signum() && ody_abs < ady {
-                                return false; // Blocker found
-                            }
-                        }
-                    } else {
-                        // Horizontal ray
-                        if ody == 0 {
-                            let odx_abs = odx.abs();
-                            if odx.signum() == dx.signum() && odx_abs < adx {
-                                return false; // Blocker found
-                            }
-                        }
-                    }
-                } else {
-                    // Diagonal ray
-                    if odx.abs() == ody.abs()
-                        && odx.abs() > 0
+                // Blocker must be on the same line and between p and target
+                if (dx == 0 && odx == 0 && ody.signum() == dy.signum() && aody < ady)
+                    || (dy == 0 && ody == 0 && odx.signum() == dx.signum() && aodx < adx)
+                    || (adx == ady
+                        && aodx == aody
+                        && aodx != 0
                         && odx.signum() == dx.signum()
                         && ody.signum() == dy.signum()
-                        && odx.abs() < adx
-                    {
-                        return false; // Blocker found
-                    }
+                        && aodx < adx)
+                {
+                    return false;
                 }
             }
             true

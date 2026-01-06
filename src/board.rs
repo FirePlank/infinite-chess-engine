@@ -87,7 +87,7 @@ impl PlayerColor {
     }
 
     /// Convert from u8
-    #[inline]
+    #[inline(always)]
     pub fn from_u8(v: u8) -> Self {
         unsafe { std::mem::transmute(v) }
     }
@@ -284,7 +284,7 @@ impl PieceType {
     }
 
     /// Convert from u8
-    #[inline]
+    #[inline(always)]
     pub fn from_u8(v: u8) -> Self {
         unsafe { std::mem::transmute(v) }
     }
@@ -353,7 +353,7 @@ impl Piece {
     }
 
     /// Create a piece from a packed u8 value
-    #[inline]
+    #[inline(always)]
     pub fn from_packed(packed: u8) -> Self {
         Piece(packed)
     }
@@ -365,13 +365,13 @@ impl Piece {
     }
 
     /// Decode the piece type
-    #[inline]
+    #[inline(always)]
     pub fn piece_type(&self) -> PieceType {
         PieceType::from_u8(self.0 % NUM_PIECE_TYPES)
     }
 
     /// Decode the color
-    #[inline]
+    #[inline(always)]
     pub fn color(&self) -> PlayerColor {
         PlayerColor::from_u8(self.0 / NUM_PIECE_TYPES)
     }
