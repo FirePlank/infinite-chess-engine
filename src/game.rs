@@ -1310,10 +1310,10 @@ impl GameState {
             enemy_king_pos: self.enemy_king_pos(),
         };
 
-        get_legal_moves_into(&self.board, self.turn, &ctx, out, false);
+        get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
         if out.is_empty() {
-            get_legal_moves_into(&self.board, self.turn, &ctx, out, true);
+            get_legal_moves_into(&self.board, self.turn, &ctx, out);
         }
     }
 
@@ -1396,14 +1396,7 @@ impl GameState {
             indices: &self.spatial_indices,
             enemy_king_pos: self.enemy_king_pos(),
         };
-        get_pseudo_legal_moves_for_piece_into(
-            &self.board,
-            &king_piece,
-            &king_sq,
-            &ctx,
-            true, // Allow check-related filtering
-            out,
-        );
+        get_pseudo_legal_moves_for_piece_into(&self.board, &king_piece, &king_sq, &ctx, out);
 
         if checker_count >= 2 {
             return; // Double check - only king moves can escape
@@ -2107,7 +2100,7 @@ impl GameState {
                 indices: &s.spatial_indices,
                 enemy_king_pos: s.enemy_king_pos(),
             };
-            get_pseudo_legal_moves_for_piece_into(&s.board, piece, &from, &ctx, true, &mut pseudo);
+            get_pseudo_legal_moves_for_piece_into(&s.board, piece, &from, &ctx, &mut pseudo);
 
             // Check if this piece has optimized blocking (already handled above)
             let has_optimized_blocking = can_ortho
