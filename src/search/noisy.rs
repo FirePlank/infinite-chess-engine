@@ -2,11 +2,11 @@
 //! This module largely mirrors search.rs with noise injection.
 //! Coverage exclusion is handled via CI ignore flags.
 
+use super::movegen::StagedMoveGen;
 use super::ordering::*;
-use super::params::*;
 use super::*;
 use crate::board::PlayerColor;
-use crate::evaluation::evaluate;
+use crate::evaluation::{evaluate, get_piece_value};
 use crate::moves::{MoveGenContext, MoveList, get_quiescence_captures};
 use std::cell::RefCell;
 
@@ -19,6 +19,7 @@ pub struct NegamaxNoisyContext<'a> {
     pub beta: i32,
     pub allow_null: bool,
     pub noise_amp: i32,
+    pub node_type: NodeType,
 }
 
 thread_local! {
@@ -30,8 +31,7 @@ pub fn reset_noise_seed(seed: u64) {
 }
 
 #[inline]
-fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
-    let base = evaluate(game);
+fn apply_noise(base: i32, game: &GameState, noise_amp: i32) -> i32 {
     if noise_amp <= 0 {
         return base;
     }
@@ -39,7 +39,6 @@ fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
         return base;
     }
 
-    // Generate a determenistic wiggle to the eval based on the game state
     let hash = TranspositionTable::generate_hash(game);
     let seed = NOISE_SEED.with(|c| *c.borrow());
     let mut x = hash ^ seed;
@@ -52,6 +51,12 @@ fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
     base.saturating_add(noise)
 }
 
+#[inline]
+fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
+    let base = evaluate(game);
+    apply_noise(base, game, noise_amp)
+}
+
 pub fn get_best_move_with_noise(
     game: &mut GameState,
     max_depth: usize,
@@ -60,25 +65,17 @@ pub fn get_best_move_with_noise(
     silent: bool,
 ) -> Option<(Move, i32, SearchStats)> {
     game.recompute_piece_counts();
-    // Initialize correction history hashes
     game.recompute_correction_hashes();
 
     if noise_amp <= 0 {
-        let result = super::get_best_move(game, max_depth, time_limit_ms, silent);
-        return result;
+        return super::get_best_move(game, max_depth, time_limit_ms, silent);
     }
 
-    // Use persistent global searcher (Stockfish pattern)
     super::GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();
-
-        // Get or create the persistent searcher
         let searcher = opt.get_or_insert_with(|| super::Searcher::new(time_limit_ms));
 
-        // Initialize searcher for this search
         searcher.new_search();
-
-        // Update search parameters for this search
         searcher.hot.time_limit_ms = time_limit_ms;
         searcher.silent = silent;
         searcher.hot.timer.reset();
@@ -132,8 +129,6 @@ fn search_with_searcher_noisy(
     for depth in 1..=max_depth {
         searcher.reset_for_iteration();
 
-        // Time check at iteration start - but note that check_time won't stop
-        // during depth 1 due to min_depth_required
         if searcher.hot.min_depth_required == 0
             && searcher.hot.timer.elapsed_ms() >= searcher.hot.time_limit_ms
         {
@@ -141,56 +136,16 @@ fn search_with_searcher_noisy(
             break;
         }
 
-        let score = if depth == 1 {
-            negamax_root_noisy(searcher, game, depth, -INFINITY, INFINITY, noise_amp)
-        } else {
-            let asp_win = aspiration_window();
-            let mut alpha = searcher.prev_score - asp_win;
-            let mut beta = searcher.prev_score + asp_win;
-            let mut window_size = asp_win;
-            let mut result;
-            let mut retries = 0;
+        let score = negamax_root_noisy(searcher, game, depth, -INFINITY, INFINITY, noise_amp);
 
-            loop {
-                result = negamax_root_noisy(searcher, game, depth, alpha, beta, noise_amp);
-                retries += 1;
-
-                if searcher.hot.stopped {
-                    break;
-                }
-
-                if result <= alpha {
-                    window_size *= aspiration_fail_mult();
-                    alpha = searcher.prev_score - window_size;
-                } else if result >= beta {
-                    window_size *= aspiration_fail_mult();
-                    beta = searcher.prev_score + window_size;
-                } else {
-                    break;
-                }
-
-                if window_size > 1000 || retries >= 4 {
-                    result =
-                        negamax_root_noisy(searcher, game, depth, -INFINITY, INFINITY, noise_amp);
-                    break;
-                }
-            }
-            result
-        };
-
-        // After depth 1 completes, allow time stops for subsequent depths
         if depth == 1 {
             searcher.hot.min_depth_required = 0;
         }
 
-        // Update best move from this iteration.
-        // IMPORTANT: Only update best_score if the search wasn't stopped mid-iteration,
-        // because an interrupted search might return garbage values.
         if let Some(pv_move) = searcher.pv_table[0] {
             best_move = Some(pv_move);
             searcher.best_move_root = Some(pv_move);
 
-            // ONLY update score if search was not interrupted
             if !searcher.hot.stopped {
                 best_score = score;
                 searcher.prev_score = score;
@@ -226,11 +181,11 @@ fn search_with_searcher_noisy(
                 if factor < 0.5 {
                     factor = 0.5;
                 }
-
-                if has_prev_iter_score && best_score - prev_iter_score > aspiration_window() {
+                if has_prev_iter_score
+                    && best_score - prev_iter_score > super::params::aspiration_max_window()
+                {
                     factor *= 1.1;
                 }
-
                 if factor > 1.0 {
                     factor = 1.0;
                 }
@@ -274,13 +229,11 @@ fn negamax_root_noisy(
     noise_amp: i32,
 ) -> i32 {
     let alpha_orig = alpha;
-
     searcher.pv_length[0] = 0;
 
     let hash = TranspositionTable::generate_hash(game);
     let mut tt_move: Option<Move> = None;
 
-    // Probe TT for best move from previous search (uses shared TT if configured)
     let rule50_count = game.halfmove_clock;
     if let Some((_, best)) = super::probe_tt_with_shared(
         searcher,
@@ -307,7 +260,6 @@ fn negamax_root_noisy(
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
-    let mut fallback_move: Option<Move> = None;
     let mut legal_moves = 0;
 
     for m in &moves {
@@ -332,12 +284,9 @@ fn negamax_root_noisy(
 
         legal_moves += 1;
 
-        if fallback_move.is_none() {
-            fallback_move = Some(*m);
-        }
-
-        let score = if legal_moves == 1 {
-            -negamax_noisy(&mut NegamaxNoisyContext {
+        let score;
+        if legal_moves == 1 {
+            score = -negamax_noisy(&mut NegamaxNoisyContext {
                 searcher,
                 game,
                 depth: depth - 1,
@@ -346,7 +295,8 @@ fn negamax_root_noisy(
                 beta: -alpha,
                 allow_null: true,
                 noise_amp,
-            })
+                node_type: NodeType::PV,
+            });
         } else {
             let mut s = -negamax_noisy(&mut NegamaxNoisyContext {
                 searcher,
@@ -357,6 +307,7 @@ fn negamax_root_noisy(
                 beta: -alpha,
                 allow_null: true,
                 noise_amp,
+                node_type: NodeType::Cut,
             });
             if s > alpha && s < beta {
                 s = -negamax_noisy(&mut NegamaxNoisyContext {
@@ -368,13 +319,13 @@ fn negamax_root_noisy(
                     beta: -alpha,
                     allow_null: true,
                     noise_amp,
+                    node_type: NodeType::PV,
                 });
             }
-            s
-        };
+            score = s;
+        }
 
         game.undo_move(m, undo);
-
         searcher.prev_move_stack[0] = prev_entry_backup;
 
         if searcher.hot.stopped {
@@ -387,8 +338,6 @@ fn negamax_root_noisy(
 
             if score > alpha {
                 alpha = score;
-
-                // Update PV using triangular indexing (root)
                 searcher.pv_table[0] = Some(*m);
                 let child_len = searcher.pv_length[1];
                 let child_base = MAX_PLY;
@@ -398,22 +347,18 @@ fn negamax_root_noisy(
                 searcher.pv_length[0] = child_len + 1;
             }
         }
-
         if alpha >= beta {
             break;
         }
     }
 
     if legal_moves == 0 {
-        // Determine if this is a loss:
-        // 1. In check AND must escape check (our win condition is checkmate) → checkmate
-        // 2. No pieces left (relevant for allpiecescaptured variants) → loss
         let checkmate = in_check && game.must_escape_check();
         let no_pieces = !game.has_pieces(game.turn);
         return if checkmate || no_pieces {
             -MATE_VALUE
         } else {
-            0 // Stalemate
+            0
         };
     }
 
@@ -448,34 +393,29 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
     let mut beta = ctx.beta;
     let allow_null = ctx.allow_null;
     let noise_amp = ctx.noise_amp;
+    let node_type = ctx.node_type;
 
-    // Re-borrow searcher and game to avoid moving them out of ctx which is borrowed
     let searcher = &mut *ctx.searcher;
     let game = &mut *ctx.game;
-    // Node type classification for search behavior
-    let is_pv = beta > alpha + 1;
-    let cut_node = !is_pv && beta == alpha + 1;
-    let all_node = !is_pv && !cut_node;
+    let is_pv = node_type == NodeType::PV;
+    let cut_node = node_type == NodeType::Cut;
+    let all_node = node_type == NodeType::All;
 
-    // Leaf node: transition to quiescence search
     if depth == 0 {
         return quiescence_noisy(searcher, game, ply, alpha, beta, noise_amp);
     }
 
-    // Cap depth to prevent overflow
     let mut depth = depth.min(MAX_PLY - 1);
-
-    // Safety check
     if ply >= MAX_PLY - 1 {
         return evaluate_with_noise(game, noise_amp);
     }
 
-    // Initialize node state
     let in_check = game.is_in_check();
     searcher.hot.nodes += 1;
     searcher.pv_length[ply] = 0;
+    searcher.killers[ply + 1][0] = None;
+    searcher.killers[ply + 1][1] = None;
 
-    // Time management and selective depth tracking
     if searcher.check_time() {
         return 0;
     }
@@ -483,13 +423,10 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         searcher.hot.seldepth = ply;
     }
 
-    // Non-root node: check for draws and mate distance pruning
     if ply > 0 {
         if game.is_fifty() || game.is_repetition(ply) {
-            return -repetition_penalty();
+            return -super::params::repetition_penalty();
         }
-
-        // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
         if game.has_lost_by_royal_capture() {
             return -MATE_VALUE + ply as i32;
         }
@@ -502,11 +439,8 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         }
     }
 
-    // Save original bounds for TT flag determination
     let alpha_orig = alpha;
-    let beta_orig = beta;
-
-    // Track reduction from parent ply for hindsight adjustment
+    let _beta_orig = beta;
     let prior_reduction = if ply > 0 {
         searcher.reduction_stack[ply - 1]
     } else {
@@ -532,8 +466,7 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
     ) {
         tt_move = best;
         tt_value = Some(score);
-        // Stockfish's "graph history interaction" workaround:
-        // Don't cutoff on mate scores (they need full verification at each depth)
+
         let rule_limit = searcher.move_rule_limit as u32;
         if !is_pv
             && score != super::INFINITY + 1
@@ -545,32 +478,36 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         }
     }
 
-    // Static evaluation for pruning decisions
-    // Only use -MATE_VALUE if we're in check AND must escape (checkmate win condition)
     let must_escape = in_check && game.must_escape_check();
-    let static_eval = if must_escape {
-        -MATE_VALUE + ply as i32
+    let (static_eval, raw_eval) = if must_escape {
+        (-MATE_VALUE + ply as i32, -MATE_VALUE + ply as i32)
     } else {
-        evaluate_with_noise(game, noise_amp)
+        let raw = evaluate(game);
+        let prev_move_hash = if ply > 0 {
+            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+            from_hash ^ to_hash
+        } else {
+            0
+        };
+        let adjusted = searcher.adjusted_eval(game, raw, prev_move_hash);
+        let noisy = apply_noise(adjusted, game, noise_amp);
+        (noisy, raw)
     };
 
     searcher.eval_stack[ply] = static_eval;
 
-    // Position improving heuristic
     let mut improving = if ply >= 2 && !in_check {
         static_eval > searcher.eval_stack[ply - 2]
     } else {
         true
     };
 
-    // Opponent worsening heuristic
     let opponent_worsening = if ply >= 1 && !in_check {
         static_eval > -searcher.eval_stack[ply - 1]
     } else {
         false
     };
 
-    // Hindsight depth adjustment
     if !in_check && ply > 0 {
         let prev_eval = searcher.eval_stack[ply - 1];
         if prior_reduction >= 3 && !opponent_worsening {
@@ -581,14 +518,14 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         }
     }
 
-    // When in check, skip all pruning
     if !in_check {
-        // Razoring: if static eval is very low, drop to qsearch
         if !is_pv && static_eval < alpha - 485 - 281 * (depth * depth) as i32 {
-            return quiescence_noisy(searcher, game, ply, alpha, beta, noise_amp);
+            let v = quiescence_noisy(searcher, game, ply, alpha, beta, noise_amp);
+            if v <= alpha {
+                return v;
+            }
         }
 
-        // Reverse futility pruning
         if !is_pv && depth < 14 {
             let futility_mult = 76;
             let futility_margin = futility_mult * depth as i32
@@ -608,13 +545,11 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
             }
         }
 
-        // Null move pruning
-        if cut_node && allow_null && depth >= nmp_min_depth() {
+        if node_type != NodeType::PV && allow_null && depth >= super::params::nmp_min_depth() {
             let nmp_margin = static_eval - (18 * depth as i32) + 350;
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
                 game.make_null_move();
-
                 let r = 7 + depth / 3;
                 let null_score = -negamax_noisy(&mut NegamaxNoisyContext {
                     searcher,
@@ -625,32 +560,26 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                     beta: -beta + 1,
                     allow_null: false,
                     noise_amp,
+                    node_type: NodeType::Cut,
                 });
-
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
 
                 if searcher.hot.stopped {
                     return 0;
                 }
-
                 if null_score >= beta {
                     return null_score;
                 }
             }
         }
 
-        // Update improving flag
         improving = improving || static_eval >= beta;
-
-        // Internal iterative reductions
         if !all_node && depth >= 6 && tt_move.is_none() && prior_reduction <= 3 {
             depth -= 1;
         }
     }
-    // =========================================================================
-    // ProbCut Pruning
-    // =========================================================================
+
     let prob_cut_beta = beta + 235 - if improving { 63 } else { 0 };
     if !is_pv
         && !in_check
@@ -678,13 +607,10 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
             if super::static_exchange_eval(game, m) < prob_cut_beta - static_eval {
                 continue;
             }
-
-            // Fast legality check (skips is_move_illegal for non-pinned pieces)
             let fast_legal = game.is_legal_fast(m, in_check);
             if let Ok(false) = fast_legal {
                 continue;
             }
-
             let undo = game.make_move(m);
             if fast_legal.is_err() && game.is_move_illegal() {
                 game.undo_move(m, undo);
@@ -699,7 +625,6 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                 -prob_cut_beta + 1,
                 noise_amp,
             );
-
             if val >= prob_cut_beta {
                 val = -negamax_noisy(&mut NegamaxNoisyContext {
                     searcher,
@@ -710,71 +635,77 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                     beta: -prob_cut_beta + 1,
                     allow_null: true,
                     noise_amp,
+                    node_type: NodeType::Cut,
                 });
             }
-
             game.undo_move(m, undo);
-
             if searcher.hot.stopped {
                 return 0;
             }
-
             if val >= prob_cut_beta {
-                searcher.tt.store(&crate::search::tt::TTStoreParams {
-                    hash,
-                    depth: prob_cut_depth + 1,
-                    flag: crate::search::tt::TTFlag::LowerBound,
-                    score: val,
-                    best_move: Some(*m),
-                    ply,
-                });
-
+                super::store_tt_with_shared(
+                    searcher,
+                    &super::StoreContext {
+                        hash,
+                        depth: prob_cut_depth + 1,
+                        flag: TTFlag::LowerBound,
+                        score: val,
+                        best_move: Some(*m),
+                        ply,
+                    },
+                );
                 return val;
             }
         }
     }
 
-    let mut moves: MoveList = MoveList::new();
-    std::mem::swap(&mut moves, &mut searcher.move_buffers[ply]);
-    game.get_legal_moves_into(&mut moves);
+    let se_conditions = if depth >= 6 && !in_check {
+        tt_move.as_ref().and_then(|_| {
+            searcher.tt.probe_for_singular(hash, ply).and_then(
+                |(tt_flag, tt_depth, tt_score, _)| {
+                    let depth_val = tt_depth as usize;
+                    if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
+                        && depth_val >= depth.saturating_sub(3)
+                        && tt_score.abs() < MATE_SCORE
+                    {
+                        Some((tt_score, (depth - 1) / 2))
+                    } else {
+                        None
+                    }
+                },
+            )
+        })
+    } else {
+        None
+    };
 
-    sort_moves(searcher, game, &mut moves, ply, &tt_move);
+    let mut movegen = StagedMoveGen::new(tt_move, ply, searcher, game);
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
+    let mut moves_searched = 0;
 
-    // New depth for child nodes
     let new_depth = depth.saturating_sub(1);
 
-    for m in &moves {
-        let captured_piece = game.board.get_piece(m.to.x, m.to.y);
-        let is_capture = captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
-        let captured_type = captured_piece.map(|p| p.piece_type());
-        let is_promotion = m.promotion.is_some();
+    while let Some(m) = movegen.next(game, searcher) {
+        let p_type = m.piece.piece_type();
+        let is_strict_capture = game.board.is_occupied(m.to.x, m.to.y);
+        let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
 
-        // Check if this move gives check (O(1) for knights/pawns)
-        let gives_check = super::movegen::StagedMoveGen::move_gives_check_fast(game, m);
-
-        // In-move pruning at shallow depths
         if !is_pv && game.has_non_pawn_material(game.turn) && best_score > -MATE_SCORE {
-            // LMP: (3+d²) / (2 if not improving)
             let improving_div = if improving { 1 } else { 2 };
             let lmp_count = (3 + depth * depth) / improving_div;
-            if legal_moves >= lmp_count && !is_capture && !is_promotion && !gives_check {
-                continue;
+            if legal_moves >= lmp_count {
+                movegen.skip_quiet_moves();
             }
 
             let lmr_depth = new_depth as i32;
-
-            if is_capture || gives_check {
-                // Capture/check pruning
-                if let Some(cap_type) = captured_type {
-                    let capt_hist =
-                        searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
-
-                    // Capture futility
+            if is_strict_capture || gives_check {
+                if let Some(cap_type) = game.board.get_piece(m.to.x, m.to.y).map(|p| p.piece_type())
+                {
+                    let capt_hist = searcher.capture_history[p_type as usize][cap_type as usize];
                     if !gives_check && lmr_depth < 7 {
                         let cap_value = get_piece_value(cap_type);
                         let futility_value = static_eval
@@ -786,28 +717,19 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                             continue;
                         }
                     }
-
-                    // SEE pruning for captures
                     let see_margin = (166 * depth as i32 + capt_hist / 29).max(0);
-                    let see_value = static_exchange_eval(game, m);
-                    if see_value < -see_margin {
+                    if static_exchange_eval(game, &m) < -see_margin {
                         continue;
                     }
                 }
             } else {
-                // Quiet move pruning
-                let hist_idx = hash_move_dest(m);
-                let history = searcher.history[m.piece.piece_type() as usize][hist_idx];
-
-                // History-based pruning
+                let hist_idx = hash_move_dest(&m);
+                let history = searcher.history[p_type as usize][hist_idx];
                 if history < -4083 * depth as i32 {
                     continue;
                 }
 
-                // Adjust LMR depth based on history
                 let adj_lmr_depth = (lmr_depth + history / 3208).max(0);
-
-                // Quiet futility
                 if !in_check && adj_lmr_depth < 13 {
                     let no_best = if best_move.is_none() { 161 } else { 0 };
                     let futility_value = static_eval + 42 + no_best + 127 * adj_lmr_depth;
@@ -819,108 +741,177 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                     }
                 }
 
-                // SEE pruning for quiets
                 let see_threshold = -25 * adj_lmr_depth * adj_lmr_depth;
-                let see_value = static_exchange_eval(game, m);
-                if see_value < see_threshold {
+                if static_exchange_eval(game, &m) < see_threshold {
                     continue;
                 }
             }
         }
 
-        // Check legality BEFORE make_move (Pin Detection)
-        // returns Ok(true) if legal, Ok(false) if illegal, Err if unsure
-        let fast_legal = game.is_legal_fast(m, in_check);
+        let fast_legal = game.is_legal_fast(&m, in_check);
         if let Ok(false) = fast_legal {
-            continue; // Definitely illegal (pinned piece moving off ray)
-        }
-
-        let undo = game.make_move(m);
-
-        // Only check is_move_illegal if fast check was inconclusive (Err)
-        if fast_legal.is_err() && game.is_move_illegal() {
-            game.undo_move(m, undo);
             continue;
         }
 
-        if !is_capture && !is_promotion {
-            quiets_searched.push(*m);
+        let mut undo = game.make_move(&m);
+        if fast_legal.is_err() && game.is_move_illegal() {
+            game.undo_move(&m, undo);
+            continue;
+        }
+
+        if !is_strict_capture && m.promotion.is_none() {
+            quiets_searched.push(m);
         }
 
         let prev_entry_backup = searcher.prev_move_stack[ply];
-        let from_hash = hash_move_from(m);
-        let to_hash = hash_move_dest(m);
-        searcher.prev_move_stack[ply] = (from_hash, to_hash);
+        searcher.prev_move_stack[ply] = (hash_move_from(&m), hash_move_dest(&m));
 
         let move_history_backup = searcher.move_history[ply].take();
         let piece_history_backup = searcher.moved_piece_history[ply];
-        searcher.move_history[ply] = Some(*m);
-        searcher.moved_piece_history[ply] = m.piece.piece_type() as u8;
+        searcher.move_history[ply] = Some(m);
+        searcher.moved_piece_history[ply] = p_type as u8;
 
         legal_moves += 1;
+        moves_searched += 1;
 
-        let score;
-        if legal_moves == 1 {
+        // Singular Extension
+        let mut extension: usize = 0;
+        let is_tt_move = tt_move
+            .filter(|tt_m| m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion)
+            .is_some();
+        if let Some((tt_score, singular_depth)) = se_conditions.filter(|_| is_tt_move && !is_pv) {
+            let tt_history_adj = searcher.tt_move_history / 150;
+            let singular_beta = tt_score - (depth as i32) * 3 + tt_history_adj;
+
+            game.undo_move(&m, undo);
+            let mut se_gen = StagedMoveGen::with_exclusion(None, ply, searcher, game, m);
+            let mut se_moves_checked = 0;
+            const SE_MAX_MOVES: usize = 6;
+            let mut se_extension_found = true;
+
+            while let Some(se_m) = se_gen.next(game, searcher) {
+                if se_moves_checked >= SE_MAX_MOVES {
+                    break;
+                }
+
+                let fast_legal = game.is_legal_fast(&se_m, in_check);
+                if let Ok(false) = fast_legal {
+                    continue;
+                }
+                let se_undo = game.make_move(&se_m);
+                if fast_legal.is_err() && game.is_move_illegal() {
+                    game.undo_move(&se_m, se_undo);
+                    continue;
+                }
+
+                se_moves_checked += 1;
+                let se_score = -negamax_noisy(&mut NegamaxNoisyContext {
+                    searcher,
+                    game,
+                    depth: singular_depth,
+                    ply: ply + 1,
+                    alpha: -singular_beta,
+                    beta: -singular_beta + 1,
+                    allow_null: false,
+                    noise_amp,
+                    node_type: NodeType::Cut,
+                });
+                game.undo_move(&se_m, se_undo);
+                if searcher.hot.stopped {
+                    return best_score;
+                }
+
+                if se_score >= singular_beta {
+                    se_extension_found = false;
+                    break;
+                }
+            }
+            if se_extension_found {
+                extension = 1;
+            }
+            undo = game.make_move(&m);
+        }
+
+        let mut reduction = 0;
+        if depth >= super::params::lmr_min_depth()
+            && moves_searched >= super::params::lmr_min_moves()
+            && !in_check
+            && !is_strict_capture
+            && !(m.promotion.is_some())
+        {
+            reduction = 1
+                + ((moves_searched as f32).ln() * (depth as f32).ln()
+                    / super::params::lmr_divisor() as f32) as i32;
+            if !improving {
+                reduction += 1;
+            }
+            let h_idx = hash_move_dest(&m);
+            let h_score = searcher.history[p_type as usize][h_idx];
+            if h_score > 2000 && reduction > 0 {
+                reduction -= 1;
+            }
+            if searcher.tt_move_history < -1000 && reduction > 0 {
+                reduction -= 1;
+            }
+            reduction = reduction.clamp(0, depth as i32 - 2);
+        }
+
+        let mut next_depth = depth as i32 - 1 + extension as i32 - reduction;
+
+        if !in_check
+            && !is_pv
+            && !is_strict_capture
+            && m.promotion.is_none()
+            && !gives_check
+            && depth <= super::params::hlp_max_depth()
+            && moves_searched >= super::params::hlp_min_moves()
+            && best_score > -MATE_SCORE
+        {
+            let idx = hash_move_dest(&m);
+            let value = searcher.history[p_type as usize][idx];
+            if value < super::params::hlp_history_reduce() {
+                next_depth -= 1;
+                if next_depth <= 0 && value < super::params::hlp_history_leaf() {
+                    game.undo_move(&m, undo);
+                    searcher.prev_move_stack[ply] = prev_entry_backup;
+                    searcher.move_history[ply] = move_history_backup;
+                    searcher.moved_piece_history[ply] = piece_history_backup;
+                    continue;
+                }
+            }
+        }
+
+        let search_depth = if next_depth <= 0 {
+            0
+        } else {
+            next_depth as usize
+        };
+
+        let mut score;
+        if moves_searched == 1 {
             score = -negamax_noisy(&mut NegamaxNoisyContext {
                 searcher,
                 game,
-                depth: depth - 1,
+                depth: (depth as i32 - 1 + extension as i32) as usize,
                 ply: ply + 1,
                 alpha: -beta,
                 beta: -alpha,
                 allow_null: true,
                 noise_amp,
+                node_type: if cut_node {
+                    NodeType::All
+                } else {
+                    NodeType::PV
+                },
             });
         } else {
-            let mut reduction = 0;
-            if depth >= lmr_min_depth()
-                && legal_moves >= lmr_min_moves()
-                && !in_check
-                && !is_capture
-            {
-                reduction = 1
-                    + (legal_moves as f32).ln() as usize * (depth as f32).ln() as usize
-                        / lmr_divisor();
-
-                if !improving {
-                    reduction += 1;
-                }
-
-                reduction = reduction.min(depth - 2);
-            }
-
-            let mut new_depth = depth as i32 - 1 - reduction as i32;
-
-            if !in_check
-                && !is_pv
-                && !is_capture
-                && !is_promotion
-                && depth <= hlp_max_depth()
-                && legal_moves >= hlp_min_moves()
-                && best_score > -MATE_SCORE
-            {
-                let idx = hash_move_dest(m);
-                let value = searcher.history[m.piece.piece_type() as usize][idx];
-                if value < hlp_history_reduce() {
-                    new_depth -= 1;
-
-                    if new_depth <= 0 && value < hlp_history_leaf() {
-                        game.undo_move(m, undo);
-                        searcher.prev_move_stack[ply] = prev_entry_backup;
-                        searcher.move_history[ply] = move_history_backup;
-                        searcher.moved_piece_history[ply] = piece_history_backup;
-                        continue;
-                    }
-                }
-            }
-
-            let search_depth = if new_depth <= 0 {
-                0
+            let child_type = if cut_node {
+                NodeType::All
             } else {
-                new_depth as usize
+                NodeType::Cut
             };
-
-            let mut s = -negamax_noisy(&mut NegamaxNoisyContext {
+            searcher.reduction_stack[ply] = reduction;
+            score = -negamax_noisy(&mut NegamaxNoisyContext {
                 searcher,
                 game,
                 depth: search_depth,
@@ -929,46 +920,41 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                 beta: -alpha,
                 allow_null: true,
                 noise_amp,
+                node_type: child_type,
             });
-
-            if s > alpha && (reduction > 0 || s < beta) {
-                s = -negamax_noisy(&mut NegamaxNoisyContext {
+            if score > alpha && (reduction > 0 || score < beta) {
+                let research_type = if is_pv { NodeType::PV } else { child_type };
+                score = -negamax_noisy(&mut NegamaxNoisyContext {
                     searcher,
                     game,
-                    depth: depth - 1,
+                    depth: (depth as i32 - 1 + extension as i32) as usize,
                     ply: ply + 1,
                     alpha: -beta,
                     beta: -alpha,
                     allow_null: true,
                     noise_amp,
+                    node_type: research_type,
                 });
             }
-            score = s;
         }
 
-        game.undo_move(m, undo);
-
+        game.undo_move(&m, undo);
         searcher.prev_move_stack[ply] = prev_entry_backup;
         searcher.move_history[ply] = move_history_backup;
         searcher.moved_piece_history[ply] = piece_history_backup;
 
         if searcher.hot.stopped {
-            std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
-            return 0;
+            return best_score;
         }
 
         if score > best_score {
             best_score = score;
-            best_move = Some(*m);
-
+            best_move = Some(m);
             if score > alpha {
                 alpha = score;
-
-                // Update PV using triangular indexing
                 let ply_base = ply * MAX_PLY;
                 let child_base = (ply + 1) * MAX_PLY;
-
-                searcher.pv_table[ply_base] = Some(*m);
+                searcher.pv_table[ply_base] = Some(m);
                 let child_len = searcher.pv_length[ply + 1];
                 for j in 0..child_len {
                     searcher.pv_table[ply_base + 1 + j] = searcher.pv_table[child_base + j];
@@ -978,39 +964,39 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         }
 
         if alpha >= beta {
-            if !is_capture {
-                let idx = hash_move_dest(m);
-                let bonus = history_bonus_base() * depth as i32 - history_bonus_sub();
-                let adj = bonus.min(history_bonus_cap());
-                let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
+            if !is_strict_capture {
+                let idx = hash_move_dest(&m);
+                let bonus_base = super::params::history_bonus_base() as i32;
+                let bonus_sub = super::params::history_bonus_sub() as i32;
+                let bonus: i32 = bonus_base * (depth as i32) - bonus_sub;
 
-                searcher.update_history(m.piece.piece_type(), idx, bonus);
+                let cap = super::params::history_bonus_cap() as i32;
+                let adj = bonus.min(cap);
+                let max_history: i32 = super::params::DEFAULT_HISTORY_MAX_GRAVITY;
 
-                // Low Ply History update (Stockfish-style)
+                searcher.update_history(p_type, idx, bonus);
                 searcher.update_low_ply_history(ply, idx, bonus);
 
                 for quiet in &quiets_searched {
                     let qidx = hash_move_dest(quiet);
-                    if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
+                    if qidx != idx && quiet.piece.piece_type() == m.piece.piece_type() {
+                        continue;
+                    }
+                    if qidx == idx {
                         continue;
                     }
                     searcher.update_history(quiet.piece.piece_type(), qidx, -bonus);
-                    // Penalize other quiets in low ply history too
                     searcher.update_low_ply_history(ply, qidx, -bonus);
                 }
-
                 searcher.killers[ply][1] = searcher.killers[ply][0];
-                searcher.killers[ply][0] = Some(*m);
-
+                searcher.killers[ply][0] = Some(m);
                 if ply > 0 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
                         searcher.countermoves[prev_from_hash][prev_to_hash] =
-                            (m.piece.piece_type() as u8, m.to.x as i16, m.to.y as i16);
+                            (p_type as u8, m.to.x as i16, m.to.y as i16);
                     }
                 }
-
-                // Continuation history update (Stockfish indices: 0, 1, 2, 3, 5)
                 for &plies_ago in &[0usize, 1, 2, 3, 5] {
                     if ply > plies_ago
                         && let Some(ref prev_move) = searcher.move_history[ply - plies_ago - 1]
@@ -1018,12 +1004,10 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                         let prev_piece = searcher.moved_piece_history[ply - plies_ago - 1] as usize;
                         if prev_piece < 16 {
                             let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-
                             for quiet in &quiets_searched {
                                 let q_from_hash = hash_coord_32(quiet.from.x, quiet.from.y);
                                 let q_to_hash = hash_coord_32(quiet.to.x, quiet.to.y);
                                 let is_best = quiet.from == m.from && quiet.to == m.to;
-
                                 let entry = &mut searcher.cont_history[prev_piece][prev_to_hash]
                                     [q_from_hash][q_to_hash];
                                 if is_best {
@@ -1035,49 +1019,91 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
                         }
                     }
                 }
-            } else if let Some(cap_type) = captured_type {
-                let bonus = (depth * depth) as i32;
-                searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize] += bonus;
+            } else if let Some(cap_type) =
+                game.board.get_piece(m.to.x, m.to.y).map(|p| p.piece_type())
+            {
+                let bonus = 8 * ((depth * depth) as i32);
+                let e = &mut searcher.capture_history[p_type as usize][cap_type as usize];
+                *e += bonus - *e * bonus / super::params::DEFAULT_HISTORY_MAX_GRAVITY;
             }
             break;
+        } else if let Some(cap_type) = game.board.get_piece(m.to.x, m.to.y).map(|p| p.piece_type())
+        {
+            let malus = 2 * (depth as i32);
+            let e = &mut searcher.capture_history[p_type as usize][cap_type as usize];
+            *e += -malus - *e * malus / super::params::DEFAULT_HISTORY_MAX_GRAVITY;
         }
     }
 
-    std::mem::swap(&mut searcher.move_buffers[ply], &mut moves);
-
-    // Checkmate, stalemate, or loss by capture-based variants
     if legal_moves == 0 {
-        // Determine if this is a loss:
-        // 1. In check AND must escape check (our win condition is checkmate) → checkmate
-        // 2. No pieces left (relevant for allpiecescaptured variants) → loss
         let checkmate = in_check && game.must_escape_check();
         let no_pieces = !game.has_pieces(game.turn);
-        if checkmate || no_pieces {
-            return -MATE_VALUE + ply as i32;
+        return if checkmate || no_pieces {
+            -MATE_VALUE + ply as i32
         } else {
-            return 0; // Stalemate
-        }
+            0
+        };
     }
 
-    let flag = if best_score <= alpha_orig {
+    let tt_flag = if best_score <= alpha_orig {
         TTFlag::UpperBound
-    } else if best_score >= beta_orig {
+    } else if best_score >= beta {
         TTFlag::LowerBound
     } else {
         TTFlag::Exact
     };
-
     super::store_tt_with_shared(
         searcher,
         &super::StoreContext {
             hash,
             depth,
-            flag,
+            flag: tt_flag,
             score: best_score,
             best_move,
-            ply,
+            ply: 0,
         },
     );
+
+    if !in_check && best_move.is_some() {
+        let bm = best_move.unwrap();
+        let is_quiet = !game.board.is_occupied(bm.to.x, bm.to.y) && bm.promotion.is_none();
+
+        let should_update = match tt_flag {
+            TTFlag::LowerBound => best_score >= raw_eval,
+            TTFlag::UpperBound => best_score <= raw_eval,
+            TTFlag::Exact => true,
+            TTFlag::None => false,
+        };
+
+        if is_quiet && should_update {
+            let prev_move_idx = if ply > 0 {
+                let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+                from_hash ^ to_hash
+            } else {
+                0
+            };
+            searcher.update_correction_history(
+                game,
+                depth,
+                raw_eval,
+                best_score,
+                true,
+                false,
+                prev_move_idx,
+            );
+        }
+    }
+
+    if node_type != NodeType::PV
+        && let Some(ref bm) = best_move
+    {
+        let tt_move_matched = tt_move
+            .as_ref()
+            .is_some_and(|tm| tm.from == bm.from && tm.to == bm.to);
+        let delta: i32 = if tt_move_matched { 809 } else { -865 };
+        let max_tt_history = 8192;
+        searcher.tt_move_history += delta - searcher.tt_move_history * delta.abs() / max_tt_history;
+    }
 
     best_score
 }
@@ -1090,31 +1116,23 @@ fn quiescence_noisy(
     beta: i32,
     noise_amp: i32,
 ) -> i32 {
-    // CRITICAL: Check for max ply BEFORE any array accesses to prevent out-of-bounds
-    // This must be the very first check to avoid panics when ply >= MAX_PLY
     if ply >= MAX_PLY - 1 {
         return evaluate_with_noise(game, noise_amp);
     }
 
     searcher.hot.nodes += 1;
     searcher.hot.qnodes += 1;
-
     if ply > searcher.hot.seldepth {
         searcher.hot.seldepth = ply;
     }
-
     if searcher.check_time() {
         return 0;
     }
-
-    // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
-    // Zero overhead: has_lost_by_royal_capture returns false immediately for Checkmate variants
     if game.has_lost_by_royal_capture() {
         return -MATE_VALUE + ply as i32;
     }
 
     let in_check = game.is_in_check();
-    // Only treat check specially if we must escape (checkmate-based win condition)
     let must_escape = in_check && game.must_escape_check();
 
     let stand_pat = if must_escape {
@@ -1127,7 +1145,6 @@ fn quiescence_noisy(
         if stand_pat >= beta {
             return beta;
         }
-
         if alpha < stand_pat {
             alpha = stand_pat;
         }
@@ -1137,10 +1154,8 @@ fn quiescence_noisy(
     std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
 
     if must_escape {
-        // In check and must escape - only generate evasion moves
         game.get_evasion_moves_into(&mut tactical_moves);
     } else {
-        // Normal quiescence: generate captures only
         let enemy_king_pos = match game.turn.opponent() {
             PlayerColor::White => game.white_king_pos,
             PlayerColor::Black => game.black_king_pos,
@@ -1160,39 +1175,31 @@ fn quiescence_noisy(
 
     let mut best_score = stand_pat;
     let mut legal_moves = 0;
-
     const DELTA_MARGIN: i32 = 200;
 
     for m in &tactical_moves {
         if !in_check {
             let see_gain = static_exchange_eval(game, m);
-
             if see_gain < 0 {
                 continue;
             }
-
             if stand_pat + see_gain + DELTA_MARGIN < alpha {
                 continue;
             }
         }
 
-        // Fast legality check (skips is_move_illegal for non-pinned pieces)
         let fast_legal = game.is_legal_fast(m, in_check);
         if let Ok(false) = fast_legal {
             continue;
         }
-
         let undo = game.make_move(m);
-
         if fast_legal.is_err() && game.is_move_illegal() {
             game.undo_move(m, undo);
             continue;
         }
 
         legal_moves += 1;
-
         let score = -quiescence_noisy(searcher, game, ply + 1, -beta, -alpha, noise_amp);
-
         game.undo_move(m, undo);
 
         if searcher.hot.stopped {
@@ -1202,21 +1209,16 @@ fn quiescence_noisy(
 
         if score > best_score {
             best_score = score;
-
             if score > alpha {
                 alpha = score;
             }
         }
-
         if alpha >= beta {
             break;
         }
     }
 
     if legal_moves == 0 {
-        // Determine if this is a loss:
-        // 1. In check AND must escape check (our win condition is checkmate) → checkmate
-        // 2. No pieces left (relevant for allpiecescaptured variants) → loss
         let checkmate = in_check && game.must_escape_check();
         let no_pieces = !game.has_pieces(game.turn);
         if checkmate || no_pieces {
@@ -1226,6 +1228,46 @@ fn quiescence_noisy(
     }
 
     std::mem::swap(&mut searcher.move_buffers[ply], &mut tactical_moves);
-
     best_score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::GameState;
+
+    #[test]
+    fn test_noisy_search_smoke() {
+        use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
+        let mut game = GameState::default();
+
+        // Setup minimal board: White King at e1 (4,0), Black King at e8 (4,7), White Pawn at e2 (4,1)
+        game.board
+            .set_piece(4, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(4, 7, Piece::new(PieceType::King, PlayerColor::Black));
+        game.board
+            .set_piece(4, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
+
+        game.white_king_pos = Some(Coordinate::new(4, 0));
+        game.black_king_pos = Some(Coordinate::new(4, 7));
+        game.turn = PlayerColor::White;
+
+        game.recompute_piece_counts();
+        game.recompute_check_squares();
+        game.recompute_hash();
+
+        let moves = game.get_legal_moves();
+        println!("Legal moves available: {}", moves.len());
+        assert!(!moves.is_empty(), "Should have legal moves");
+
+        // Depth 2, sufficient time, some noise
+        let res = get_best_move_with_noise(&mut game, 2, 5000, 10, true);
+        if res.is_none() {
+            println!("Search returned None!");
+        }
+        assert!(res.is_some(), "Search should return a result");
+        let (m, score, _stats) = res.unwrap();
+        println!("Best move: {:?}, score: {}", m, score);
+    }
 }
