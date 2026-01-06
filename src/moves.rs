@@ -4,6 +4,13 @@ use crate::utils::{PRIMES_UNDER_128, is_prime_fast, is_prime_i64};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveGenType {
+    All,
+    Quiets,
+    Captures,
+}
+
 /// Stack-allocated move list with inline capacity of 128 moves.
 /// Spills to heap if this limit is exceeded, preventing panics.
 pub type MoveList = Vec<Move>;
@@ -829,16 +836,16 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                 out,
             );
         }
-        PieceType::Knight => generate_leaper_moves_into(board, from, piece, 1, 2, out),
+        PieceType::Knight => generate_leaper_moves_into(board, from, piece, 1, 2, false, out),
         PieceType::Hawk => {
-            generate_compass_moves_into(board, from, piece, 2, out);
-            generate_compass_moves_into(board, from, piece, 3, out);
+            generate_compass_moves_into(board, from, piece, 2, false, out);
+            generate_compass_moves_into(board, from, piece, 3, false, out);
         }
         PieceType::King => {
-            generate_compass_moves_into(board, from, piece, 1, out);
+            generate_compass_moves_into(board, from, piece, 1, false, out);
             generate_castling_moves_into(board, from, piece, special_rights, indices, out);
         }
-        PieceType::Guard => generate_compass_moves_into(board, from, piece, 1, out),
+        PieceType::Guard => generate_compass_moves_into(board, from, piece, 1, false, out),
         PieceType::Rook => {
             generate_sliding_moves_into(
                 &SlidingMoveContext {
@@ -894,7 +901,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
         }
         PieceType::Chancellor => {
-            generate_leaper_moves_into(board, from, piece, 1, 2, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, false, out);
             generate_sliding_moves_into(
                 &SlidingMoveContext {
                     board,
@@ -909,7 +916,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
         }
         PieceType::Archbishop => {
-            generate_leaper_moves_into(board, from, piece, 1, 2, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, false, out);
             generate_sliding_moves_into(
                 &SlidingMoveContext {
                     board,
@@ -924,7 +931,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
         }
         PieceType::Amazon => {
-            generate_leaper_moves_into(board, from, piece, 1, 2, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, false, out);
             generate_sliding_moves_into(
                 &SlidingMoveContext {
                     board,
@@ -950,22 +957,22 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                 out,
             );
         }
-        PieceType::Camel => generate_leaper_moves_into(board, from, piece, 1, 3, out),
-        PieceType::Giraffe => generate_leaper_moves_into(board, from, piece, 1, 4, out),
-        PieceType::Zebra => generate_leaper_moves_into(board, from, piece, 2, 3, out),
+        PieceType::Camel => generate_leaper_moves_into(board, from, piece, 1, 3, false, out),
+        PieceType::Giraffe => generate_leaper_moves_into(board, from, piece, 1, 4, false, out),
+        PieceType::Zebra => generate_leaper_moves_into(board, from, piece, 2, 3, false, out),
         // Knightrider: slide along all 8 knight directions until blocked
-        PieceType::Knightrider => generate_knightrider_moves_into(board, from, piece, out),
+        PieceType::Knightrider => generate_knightrider_moves_into(board, from, piece, false, out),
         PieceType::Centaur => {
-            generate_compass_moves_into(board, from, piece, 1, out);
-            generate_leaper_moves_into(board, from, piece, 1, 2, out);
+            generate_compass_moves_into(board, from, piece, 1, false, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, false, out);
         }
         PieceType::RoyalCentaur => {
-            generate_compass_moves_into(board, from, piece, 1, out);
-            generate_leaper_moves_into(board, from, piece, 1, 2, out);
+            generate_compass_moves_into(board, from, piece, 1, false, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, false, out);
             generate_castling_moves_into(board, from, piece, special_rights, indices, out);
         }
         PieceType::Huygen => generate_huygen_moves_into(board, from, piece, indices, fallback, out),
-        PieceType::Rose => generate_rose_moves_into(board, from, piece, out),
+        PieceType::Rose => generate_rose_moves_into(board, from, piece, false, out),
     }
 }
 
@@ -1673,15 +1680,6 @@ fn extend_captures_only(
     }
 }
 
-/// Extend out with only quiet (non-capturing) moves from a pre-generated move list.
-fn extend_quiets_only(board: &Board, moves_in: MoveList, out: &mut MoveList) {
-    for m in moves_in {
-        if board.get_piece(m.to.x, m.to.y).is_none() {
-            out.push(m);
-        }
-    }
-}
-
 /// Generate only quiet (non-capturing) moves for staged move generation.
 /// This is the complement of get_quiescence_captures.
 pub fn get_quiet_moves_into(
@@ -1726,163 +1724,164 @@ fn generate_quiets_for_piece(
 
         // Knight-like leapers: filter to empty squares
         PieceType::Knight => {
-            let m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
         }
         PieceType::Camel => {
-            let m = generate_leaper_moves(board, from, piece, 1, 3);
-            extend_quiets_only(board, m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 3, true, out);
         }
         PieceType::Giraffe => {
-            let m = generate_leaper_moves(board, from, piece, 1, 4);
-            extend_quiets_only(board, m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 4, true, out);
         }
         PieceType::Zebra => {
-            let m = generate_leaper_moves(board, from, piece, 2, 3);
-            extend_quiets_only(board, m, out);
+            generate_leaper_moves_into(board, from, piece, 2, 3, true, out);
         }
 
         // King: compass + castling
         PieceType::King => {
-            let m = generate_compass_moves(board, from, piece, 1);
-            extend_quiets_only(board, m, out);
+            generate_compass_moves_into(board, from, piece, 1, true, out);
             // Castling is always a quiet move
             let castling = generate_castling_moves(board, from, piece, special_rights, indices);
             out.extend(castling);
         }
         PieceType::Guard => {
-            let m = generate_compass_moves(board, from, piece, 1);
-            extend_quiets_only(board, m, out);
+            generate_compass_moves_into(board, from, piece, 1, true, out);
         }
         PieceType::Centaur => {
-            let m = generate_compass_moves(board, from, piece, 1);
-            extend_quiets_only(board, m, out);
-            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, knight_m, out);
+            generate_compass_moves_into(board, from, piece, 1, true, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
         }
         PieceType::RoyalCentaur => {
-            let m = generate_compass_moves(board, from, piece, 1);
-            extend_quiets_only(board, m, out);
-            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, knight_m, out);
+            generate_compass_moves_into(board, from, piece, 1, true, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
             let castling = generate_castling_moves(board, from, piece, special_rights, indices);
             out.extend(castling);
         }
         PieceType::Hawk => {
-            let mut m = generate_compass_moves(board, from, piece, 2);
-            m.extend(generate_compass_moves(board, from, piece, 3));
-            extend_quiets_only(board, m, out);
+            generate_compass_moves_into(board, from, piece, 2, true, out);
+            generate_compass_moves_into(board, from, piece, 3, true, out);
         }
 
         // Sliders
         PieceType::Rook => {
-            let m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 0), (0, 1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            extend_quiets_only(board, m, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 0), (0, 1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
         PieceType::Bishop => {
-            let m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 1), (1, -1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            extend_quiets_only(board, m, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 1), (1, -1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
         PieceType::Queen | PieceType::RoyalQueen => {
-            let mut m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 0), (0, 1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            m.extend(generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 1), (1, -1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            }));
-            extend_quiets_only(board, m, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 0), (0, 1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 1), (1, -1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
         PieceType::Chancellor => {
-            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, knight_m, out);
-            let rook_m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 0), (0, 1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            extend_quiets_only(board, rook_m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 0), (0, 1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
         PieceType::Archbishop => {
-            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, knight_m, out);
-            let bishop_m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 1), (1, -1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            extend_quiets_only(board, bishop_m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 1), (1, -1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
         PieceType::Amazon => {
-            let knight_m = generate_leaper_moves(board, from, piece, 1, 2);
-            extend_quiets_only(board, knight_m, out);
-            let mut queen_m = generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 0), (0, 1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            });
-            queen_m.extend(generate_sliding_moves(&SlidingMoveContext {
-                board,
-                from,
-                piece,
-                directions: &[(1, 1), (1, -1)],
-                indices,
-                fallback: false,
-                enemy_king_pos,
-            }));
-            extend_quiets_only(board, queen_m, out);
+            generate_leaper_moves_into(board, from, piece, 1, 2, true, out);
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 0), (0, 1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
+            generate_sliding_quiets_into(
+                &SlidingMoveContext {
+                    board,
+                    from,
+                    piece,
+                    directions: &[(1, 1), (1, -1)],
+                    indices,
+                    fallback: false,
+                    enemy_king_pos,
+                },
+                out,
+            );
         }
 
         PieceType::Knightrider => {
-            let m = generate_knightrider_moves(board, from, piece);
-            extend_quiets_only(board, m, out);
+            generate_knightrider_moves_into(board, from, piece, true, out);
         }
         PieceType::Huygen => {
-            let m = generate_huygen_moves(board, from, piece, indices, false);
-            extend_quiets_only(board, m, out);
+            generate_huygen_moves_into(board, from, piece, indices, true, out);
         }
         PieceType::Rose => {
-            let m = generate_rose_moves(board, from, piece);
-            extend_quiets_only(board, m, out);
+            generate_rose_moves_into(board, from, piece, true, out);
         }
     }
 }
@@ -2002,11 +2001,12 @@ fn generate_leaper_moves(
     n: i64,
 ) -> MoveList {
     let mut moves = MoveList::new();
-    generate_leaper_moves_into(board, from, piece, m, n, &mut moves);
+    generate_leaper_moves_into(board, from, piece, m, n, false, &mut moves);
     moves
 }
 
 /// Generate leaper moves directly into an output buffer
+/// When quiets_only is true, only generate moves to empty squares (no captures)
 #[inline]
 fn generate_leaper_moves_into(
     board: &Board,
@@ -2014,6 +2014,7 @@ fn generate_leaper_moves_into(
     piece: &Piece,
     m: i64,
     n: i64,
+    quiets_only: bool,
     out: &mut MoveList,
 ) {
     let offsets = [
@@ -2037,7 +2038,8 @@ fn generate_leaper_moves_into(
         }
 
         if let Some(target) = board.get_piece(to_x, to_y) {
-            if is_enemy_piece(target, piece.color()) {
+            // Only generate capture if not quiets_only mode
+            if !quiets_only && is_enemy_piece(target, piece.color()) {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
@@ -2047,12 +2049,14 @@ fn generate_leaper_moves_into(
 }
 
 /// Generate compass moves directly into an output buffer
+/// When quiets_only is true, only generate moves to empty squares (no captures)
 #[inline]
 fn generate_compass_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
     distance: i64,
+    quiets_only: bool,
     out: &mut MoveList,
 ) {
     let dist = distance;
@@ -2077,7 +2081,8 @@ fn generate_compass_moves_into(
         }
 
         if let Some(target) = board.get_piece(to_x, to_y) {
-            if is_enemy_piece(target, piece.color()) {
+            // Only generate capture if not quiets_only mode
+            if !quiets_only && is_enemy_piece(target, piece.color()) {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
@@ -2331,7 +2336,11 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
     }
 }
 
-pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
+fn generate_sliding_moves_impl(
+    ctx: &SlidingMoveContext,
+    out: &mut MoveList,
+    gen_type: MoveGenType,
+) {
     let board = ctx.board;
     let from = ctx.from;
     let piece = ctx.piece;
@@ -2356,7 +2365,6 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
     // const FAR_MOVE_DISTANCE: i64 = 50;
     // const FAR_MOVE_BORDER_SAFETY: i64 = 100;
 
-    let mut moves = MoveList::new();
     let our_color = piece.color();
 
     // Distance-aware wiggle calculation:
@@ -2400,11 +2408,15 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                         let is_enemy =
                             target.color() != our_color && !target.piece_type().is_uncapturable();
                         if is_enemy {
-                            moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+                            if gen_type != MoveGenType::Quiets {
+                                out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+                            }
                         }
                         break; // blocked
                     } else {
-                        moves.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+                        if gen_type != MoveGenType::Captures {
+                            out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+                        }
                     }
                 }
                 continue;
@@ -2761,12 +2773,17 @@ pub fn generate_sliding_moves(ctx: &SlidingMoveContext) -> MoveList {
                     continue;
                 }
 
-                moves.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                let is_capture = d == closest_dist && closest_is_enemy;
+                if (gen_type == MoveGenType::Captures && !is_capture)
+                    || (gen_type == MoveGenType::Quiets && is_capture)
+                {
+                    continue;
+                }
+
+                out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
             }
         }
     }
-
-    moves
 }
 
 /// Find the closest blocker on a ray using spatial indices (O(log n))
@@ -3020,7 +3037,7 @@ fn find_huygen_blocker(
 
 fn generate_rose_moves(board: &Board, from: &Coordinate, piece: &Piece) -> MoveList {
     let mut moves = MoveList::new();
-    generate_rose_moves_into(board, from, piece, &mut moves);
+    generate_rose_moves_into(board, from, piece, false, &mut moves);
     moves
 }
 
@@ -3086,8 +3103,15 @@ pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
 
 /// Generate rose moves directly into an output buffer.
 /// Uses precomputed spiral paths with proper blocking detection.
+/// When quiets_only is true, only generate moves to empty squares (no captures)
 #[inline(always)]
-fn generate_rose_moves_into(board: &Board, from: &Coordinate, piece: &Piece, out: &mut MoveList) {
+fn generate_rose_moves_into(
+    board: &Board,
+    from: &Coordinate,
+    piece: &Piece,
+    quiets_only: bool,
+    out: &mut MoveList,
+) {
     let my_color = piece.color();
     let fx = from.x;
     let fy = from.y;
@@ -3116,8 +3140,11 @@ fn generate_rose_moves_into(board: &Board, from: &Coordinate, piece: &Piece, out
                 let ty = fy + cum_dy;
 
                 if let Some(target) = board.get_piece(tx, ty) {
-                    // Square occupied - check if capturable
-                    if is_enemy_piece(target, my_color) && !is_seen(&seen, seen_count, tx, ty) {
+                    // Square occupied - check if capturable (only if not quiets_only)
+                    if !quiets_only
+                        && is_enemy_piece(target, my_color)
+                        && !is_seen(&seen, seen_count, tx, ty)
+                    {
                         seen[seen_count] = (tx, ty);
                         seen_count += 1;
                         out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
@@ -3336,21 +3363,33 @@ fn generate_castling_moves_into(
 /// Generate sliding moves directly into an output buffer
 #[inline]
 pub fn generate_sliding_moves_into(ctx: &SlidingMoveContext, out: &mut MoveList) {
-    // Reuse implementation by delegating to existing function and extending
-    let moves = generate_sliding_moves(ctx);
-    out.extend(moves);
+    generate_sliding_moves_impl(ctx, out, MoveGenType::All);
+}
+
+/// Generate only quiet (non-capture) sliding moves directly into output buffer.
+#[inline]
+pub fn generate_sliding_quiets_into(ctx: &SlidingMoveContext, out: &mut MoveList) {
+    generate_sliding_moves_impl(ctx, out, MoveGenType::Quiets);
 }
 
 /// Generate knightrider moves directly into an output buffer
+/// When quiets_only is true, only generate moves to empty squares (no captures)
 #[inline]
 fn generate_knightrider_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
+    quiets_only: bool,
     out: &mut MoveList,
 ) {
     let moves = generate_knightrider_moves(board, from, piece);
-    out.extend(moves);
+    for m in moves {
+        // Filter: if quiets_only, skip captures
+        if quiets_only && board.get_piece(m.to.x, m.to.y).is_some() {
+            continue;
+        }
+        out.push(m);
+    }
 }
 
 /// Generate huygen moves directly into an output buffer
@@ -3578,7 +3617,7 @@ mod tests {
         let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
         let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, &mut moves);
+        generate_leaper_moves_into(&board, &from, &piece, 1, 2, false, &mut moves);
 
         // Knight has 8 possible moves from center
         assert_eq!(moves.len(), 8, "Knight should have 8 moves from (4,4)");
@@ -3613,7 +3652,7 @@ mod tests {
         let piece = Piece::new(PieceType::King, PlayerColor::White);
 
         let mut moves = MoveList::new();
-        generate_compass_moves_into(&board, &from, &piece, 1, &mut moves);
+        generate_compass_moves_into(&board, &from, &piece, 1, false, &mut moves);
 
         // King has 8 possible moves from center
         assert_eq!(moves.len(), 8, "King should have 8 moves from (4,4)");
@@ -3628,7 +3667,7 @@ mod tests {
         let piece = Piece::new(PieceType::Camel, PlayerColor::White);
 
         let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 3, &mut moves);
+        generate_leaper_moves_into(&board, &from, &piece, 1, 3, false, &mut moves);
 
         // Camel leaps (1,3) - 8 squares
         assert_eq!(moves.len(), 8, "Camel should have 8 moves from (4,4)");
@@ -3649,7 +3688,7 @@ mod tests {
         let piece = Piece::new(PieceType::Zebra, PlayerColor::White);
 
         let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 2, 3, &mut moves);
+        generate_leaper_moves_into(&board, &from, &piece, 2, 3, false, &mut moves);
 
         // Zebra leaps (2,3) - 8 squares
         assert_eq!(moves.len(), 8, "Zebra should have 8 moves from (4,4)");
@@ -3669,7 +3708,7 @@ mod tests {
         let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
         let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, &mut moves);
+        generate_leaper_moves_into(&board, &from, &piece, 1, 2, false, &mut moves);
 
         assert_eq!(
             moves.len(),
@@ -3737,15 +3776,19 @@ mod tests {
         let indices = SpatialIndices::new(&board);
 
         let ortho = &[(1, 0), (-1, 0), (0, 1), (0, -1)];
-        let moves = generate_sliding_moves(&SlidingMoveContext {
-            board: &board,
-            from: &from,
-            piece: &piece,
-            directions: ortho,
-            indices: &indices,
-            fallback: true,
-            enemy_king_pos: None,
-        });
+        let mut moves = MoveList::new();
+        generate_sliding_moves_into(
+            &SlidingMoveContext {
+                board: &board,
+                from: &from,
+                piece: &piece,
+                directions: ortho,
+                indices: &indices,
+                fallback: true,
+                enemy_king_pos: None,
+            },
+            &mut moves,
+        );
 
         // Rook on empty board should have many moves (limited by fallback)
         assert!(!moves.is_empty(), "Rook should have some moves");
@@ -3762,15 +3805,19 @@ mod tests {
         let indices = SpatialIndices::new(&board);
 
         let diag = &[(1, 1), (1, -1), (-1, 1), (-1, -1)];
-        let moves = generate_sliding_moves(&SlidingMoveContext {
-            board: &board,
-            from: &from,
-            piece: &piece,
-            directions: diag,
-            indices: &indices,
-            fallback: true,
-            enemy_king_pos: None,
-        });
+        let mut moves = MoveList::new();
+        generate_sliding_moves_into(
+            &SlidingMoveContext {
+                board: &board,
+                from: &from,
+                piece: &piece,
+                directions: diag,
+                indices: &indices,
+                fallback: true,
+                enemy_king_pos: None,
+            },
+            &mut moves,
+        );
 
         assert!(!moves.is_empty(), "Bishop should have some moves");
     }
@@ -3882,31 +3929,13 @@ mod tests {
         let mut all_moves = MoveList::new();
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Knight, PlayerColor::White);
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, &mut all_moves);
+        generate_leaper_moves_into(&board, &from, &piece, 1, 2, false, &mut all_moves);
 
         let mut captures_only = MoveList::new();
         extend_captures_only(&board, PlayerColor::White, all_moves, &mut captures_only);
 
         // Should have exactly 1 capture (the pawn at 5,6)
         assert_eq!(captures_only.len(), 1);
-    }
-
-    #[test]
-    fn test_extend_quiets_only() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        board.set_piece(5, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Capture target
-
-        let mut all_moves = MoveList::new();
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Knight, PlayerColor::White);
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, &mut all_moves);
-
-        let mut quiets_only = MoveList::new();
-        extend_quiets_only(&board, all_moves, &mut quiets_only);
-
-        // Should have 7 quiet moves (8 total - 1 capture)
-        assert_eq!(quiets_only.len(), 7);
     }
 
     #[test]
@@ -4044,7 +4073,7 @@ mod tests {
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Rose, PlayerColor::White);
         let mut moves = MoveList::new();
-        generate_rose_moves_into(&board, &from, &piece, &mut moves);
+        generate_rose_moves_into(&board, &from, &piece, false, &mut moves);
 
         // Should have moves (each of 16 spirals can go up to 7 hops, though many overlap)
         assert!(!moves.is_empty(), "Rose should have moves on empty board");
@@ -4070,7 +4099,7 @@ mod tests {
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Rose, PlayerColor::White);
         let mut moves = MoveList::new();
-        generate_rose_moves_into(&board, &from, &piece, &mut moves);
+        generate_rose_moves_into(&board, &from, &piece, false, &mut moves);
 
         // Should NOT have the blocked square as a move (friendly piece)
         let has_blocked_square = moves.iter().any(|m| m.to.x == 3 && m.to.y == 2);

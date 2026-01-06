@@ -129,7 +129,7 @@ use params::{
 };
 
 mod tt;
-pub use tt::{TTEntry, TTFlag, TranspositionTable};
+pub use tt::{TTEntry, TTFlag, TTProbeParams, TTStoreParams, TranspositionTable};
 
 // Shared TT for Lazy SMP - uses SharedArrayBuffer from JavaScript
 // Shared TT for Lazy SMP - uses SharedArrayBuffer from JavaScript

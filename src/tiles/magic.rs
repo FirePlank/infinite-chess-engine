@@ -48,7 +48,7 @@ pub fn queen_attacks(sq: usize, occ: u64) -> u64 {
     rook_attacks(sq, occ) | bishop_attacks(sq, occ)
 }
 
-/// Initialize magic bitboards (thread-safe, called automatically or at startup)
+/// Initialize magic bitboards (thread-safe, called automatically at startup)
 #[inline]
 pub fn init() {
     INIT.call_once(|| unsafe { init_tables() });
