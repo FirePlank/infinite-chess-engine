@@ -991,22 +991,33 @@ pub fn is_square_attacked(
     let pawn_type_mask = 1u32 << (PieceType::Pawn as u8);
 
     // SINGLE-PASS: Check all tiles once, checking all leaper+pawn types per tile
+    // Combined mask of ALL leaper types that attack via nearby tiles
+    const ALL_LEAPER_MASK: u32 = KNIGHT_MASK
+        | KING_MASK
+        | CAMEL_MASK
+        | GIRAFFE_MASK
+        | ZEBRA_MASK
+        | HAWK_MASK
+        | (1u32 << (PieceType::Pawn as u8));
+
     for n in 0..9 {
         let Some(tile) = neighborhood[n] else {
             continue;
         };
 
-        // Get attacker occupancy for this tile
-        let occ = if is_white {
-            tile.occ_white
+        // Get attacker occupancy and type mask for this tile
+        let (occ, type_mask) = if is_white {
+            (tile.occ_white, tile.type_mask_white)
         } else {
-            tile.occ_black
+            (tile.occ_black, tile.type_mask_black)
         };
-        if occ == 0 {
+
+        // Fast early-exit: no attackers of any leaper type in this tile
+        if occ == 0 || (type_mask & ALL_LEAPER_MASK) == 0 {
             continue;
         }
 
-        // Check each leaper type mask against occupancy
+        // Check each leaper type - only if tile has that type
         let masks_to_check = [
             (masks::KNIGHT_MASKS[local_idx][n], KNIGHT_MASK),
             (masks::KING_MASKS[local_idx][n], KING_MASK),
@@ -1017,7 +1028,12 @@ pub fn is_square_attacked(
             (pawn_masks[local_idx][n], pawn_type_mask),
         ];
 
-        for (attack_mask, type_mask) in masks_to_check {
+        for (attack_mask, req_type_mask) in masks_to_check {
+            // Skip if tile has no pieces of this type (fast O(1) check)
+            if (type_mask & req_type_mask) == 0 {
+                continue;
+            }
+
             let candidates = occ & attack_mask;
             if candidates != 0 {
                 let mut bits = candidates;
@@ -1028,7 +1044,7 @@ pub fn is_square_attacked(
                     let packed = tile.piece[bit_idx];
                     if packed != 0 {
                         let pt = Piece::from_packed(packed).piece_type();
-                        if matches_mask(pt, type_mask) {
+                        if matches_mask(pt, req_type_mask) {
                             return true;
                         }
                     }

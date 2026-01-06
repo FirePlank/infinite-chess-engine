@@ -115,6 +115,12 @@ pub struct Tile {
     /// Bitboard of orthogonal sliders (rooks + queens + chancellor)
     pub occ_ortho_sliders: u64,
 
+    // ===== TYPE MASKS for fast is_square_attacked early-exit =====
+    /// Bitmask of piece types present for white (1 << PieceType as u8)
+    pub type_mask_white: u32,
+    /// Bitmask of piece types present for black (1 << PieceType as u8)
+    pub type_mask_black: u32,
+
     /// Packed piece codes for each square (0 = empty)
     /// Index: y*8 + x (row-major)
     pub piece: [u8; 64],
@@ -135,6 +141,8 @@ impl Default for Tile {
             occ_kings: 0,
             occ_diag_sliders: 0,
             occ_ortho_sliders: 0,
+            type_mask_white: 0,
+            type_mask_black: 0,
             piece: [0; 64],
         }
     }
@@ -160,13 +168,20 @@ impl Tile {
         use crate::board::PieceType;
 
         let bit = 1u64 << idx;
+        let type_bit = 1u32 << (piece.piece_type() as u8);
         self.occ_all |= bit;
         self.piece[idx] = piece.packed();
 
-        // Color bitboards
+        // Color bitboards + type masks
         match piece.color() {
-            PlayerColor::White => self.occ_white |= bit,
-            PlayerColor::Black => self.occ_black |= bit,
+            PlayerColor::White => {
+                self.occ_white |= bit;
+                self.type_mask_white |= type_bit;
+            }
+            PlayerColor::Black => {
+                self.occ_black |= bit;
+                self.type_mask_black |= type_bit;
+            }
             PlayerColor::Neutral => {
                 if piece.piece_type().is_neutral_type() {
                     self.occ_void |= bit;
@@ -214,6 +229,8 @@ impl Tile {
 
     /// Remove a piece at local index. Returns the old packed piece code.
     /// Clears all per-piece-type bitboards for consistency.
+    /// NOTE: Type masks are NOT cleared here - they're rebuilt on next set_piece or clear().
+    /// This is safe because type_mask is only used for early-exit optimization, not correctness.
     #[inline]
     pub fn remove_piece(&mut self, idx: usize) -> u8 {
         let bit = 1u64 << idx;
@@ -234,6 +251,8 @@ impl Tile {
             self.occ_diag_sliders &= !bit;
             self.occ_ortho_sliders &= !bit;
             self.piece[idx] = 0;
+            // Note: type_mask is NOT cleared - stale bits are harmless (just skip early-exit)
+            // This avoids expensive O(popcount) rebuild on every remove
         }
 
         old_packed
@@ -275,6 +294,8 @@ impl Tile {
         self.occ_kings = 0;
         self.occ_diag_sliders = 0;
         self.occ_ortho_sliders = 0;
+        self.type_mask_white = 0;
+        self.type_mask_black = 0;
         self.piece = [0; 64];
     }
 
