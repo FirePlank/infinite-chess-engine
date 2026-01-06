@@ -477,6 +477,7 @@ fn evaluate_inner(game: &GameState) -> i32 {
         score += evaluate_pieces(game, &white_king, &black_king);
         score += evaluate_king_safety(game, &white_king, &black_king);
         score += evaluate_pawn_structure(game);
+        score += evaluate_threats(game);
     }
 
     // Return from current player's perspective
@@ -1889,6 +1890,103 @@ fn compute_pawn_structure(game: &GameState) -> i32 {
         // Connected pawn bonus: check if there's a friendly pawn diagonally behind
         if is_connected_pawn(game, *bx, *by, PlayerColor::Black) {
             score -= CONNECTED_PAWN_BONUS;
+        }
+    }
+
+    score
+}
+
+// ==================== Threat Evaluation ====================
+
+/// Evaluate threats: bonus for attacking higher-value pieces with lower-value pieces.
+/// Efficient on infinite boards - only checks direct attack squares for leapers (pawns, knights).
+fn evaluate_threats(game: &GameState) -> i32 {
+    let mut score: i32 = 0;
+
+    // Threat bonus constants (centipawns)
+    const PAWN_THREATENS_MINOR: i32 = 25;
+    const PAWN_THREATENS_ROOK: i32 = 40;
+    const PAWN_THREATENS_QUEEN: i32 = 60;
+    const MINOR_THREATENS_ROOK: i32 = 20;
+    const MINOR_THREATENS_QUEEN: i32 = 35;
+
+    const KNIGHT_OFFSETS: [(i64, i64); 8] = [
+        (2, 1),
+        (2, -1),
+        (-2, 1),
+        (-2, -1),
+        (1, 2),
+        (1, -2),
+        (-1, 2),
+        (-1, -2),
+    ];
+
+    for (cx, cy, tile) in game.board.tiles.iter() {
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+            continue;
+        }
+
+        let mut bits = tile.occ_all;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+
+            let packed = tile.piece[idx];
+            if packed == 0 {
+                continue;
+            }
+            let piece = crate::board::Piece::from_packed(packed);
+            let pt = piece.piece_type();
+            let color = piece.color();
+            if color == PlayerColor::Neutral {
+                continue;
+            }
+
+            let x = cx * 8 + (idx % 8) as i64;
+            let y = cy * 8 + (idx / 8) as i64;
+
+            let sign = if color == PlayerColor::White { 1 } else { -1 };
+            let enemy = if color == PlayerColor::White {
+                PlayerColor::Black
+            } else {
+                PlayerColor::White
+            };
+
+            match pt {
+                PieceType::Pawn => {
+                    let dy = if color == PlayerColor::White { 1 } else { -1 };
+                    for dx in [-1i64, 1] {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy) {
+                            if target.color() == enemy {
+                                let tv = get_piece_value(target.piece_type());
+                                if tv >= 600 {
+                                    score += sign * PAWN_THREATENS_QUEEN;
+                                } else if tv >= 400 {
+                                    score += sign * PAWN_THREATENS_ROOK;
+                                } else if tv >= 200 {
+                                    score += sign * PAWN_THREATENS_MINOR;
+                                }
+                            }
+                        }
+                    }
+                }
+                PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => {
+                    for &(dx, dy) in &KNIGHT_OFFSETS {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy) {
+                            if target.color() == enemy {
+                                let tv = get_piece_value(target.piece_type());
+                                let mv = get_piece_value(pt);
+                                if tv >= 600 && mv < 600 {
+                                    score += sign * MINOR_THREATENS_QUEEN;
+                                } else if tv >= 400 && mv < 400 {
+                                    score += sign * MINOR_THREATENS_ROOK;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
