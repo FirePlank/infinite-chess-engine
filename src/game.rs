@@ -242,6 +242,21 @@ pub struct GameState {
     pub white_non_pawn_material: bool,
     #[serde(skip)]
     pub black_non_pawn_material: bool,
+    /// Pinned pieces for white: maps (x, y) of a WHITE piece to (dx, dy) pin direction.
+    /// A piece at (x,y) pinned with direction (dx,dy) can only move along that line.
+    /// This is the direction FROM the king TO the pinner (through the pinned piece).
+    /// Updated by recompute_check_squares(). Used for fast legality checks (C1 optimization).
+    #[serde(skip)]
+    pub pinned_white: rustc_hash::FxHashMap<(i64, i64), (i64, i64)>,
+    /// Pinned pieces for black
+    #[serde(skip)]
+    pub pinned_black: rustc_hash::FxHashMap<(i64, i64), (i64, i64)>,
+    /// Number of pieces currently checking the white king.
+    #[serde(skip)]
+    pub checkers_count_white: u8,
+    /// Number of pieces currently checking the black king.
+    #[serde(skip)]
+    pub checkers_count_black: u8,
 }
 
 // For backwards compatibility, keep castling_rights as an alias
@@ -320,6 +335,10 @@ impl GameState {
             black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
+            pinned_white: rustc_hash::FxHashMap::default(),
+            pinned_black: rustc_hash::FxHashMap::default(),
+            checkers_count_white: 0,
+            checkers_count_black: 0,
         }
     }
 
@@ -369,6 +388,10 @@ impl GameState {
             black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
+            pinned_white: rustc_hash::FxHashMap::default(),
+            pinned_black: rustc_hash::FxHashMap::default(),
+            checkers_count_white: 0,
+            checkers_count_black: 0,
         }
     }
 
@@ -570,73 +593,155 @@ impl GameState {
         self.slider_rays_black = [None; 8];
         self.discovered_check_squares_white.clear();
         self.discovered_check_squares_black.clear();
+        self.pinned_white.clear();
+        self.pinned_black.clear();
+        self.checkers_count_white = 0;
+        self.checkers_count_black = 0;
 
-        // White King Rays (squares from which Black can check White)
-        if let Some(ref wk) = self.white_king_pos {
+        use crate::attacks::{is_diag_slider, is_ortho_slider};
+
+        // White King Status (Attacks by Black pieces)
+        if let Some(wk) = self.white_king_pos {
+            // 1. Knight Checkers
             for (dx, dy) in KNIGHT_OFFSETS {
+                let tx = wk.x + dx;
+                let ty = wk.y + dy;
+                if let Some(p) = self.board.get_piece(tx, ty) {
+                    if p.color() == PlayerColor::Black && p.piece_type() == PieceType::Knight {
+                        self.checkers_count_white += 1;
+                    }
+                }
                 self.check_squares_white
-                    .insert((wk.x + dx, wk.y + dy, PieceType::Knight as u8));
+                    .insert((tx, ty, PieceType::Knight as u8));
             }
-            // Black pawns attack downward
-            self.check_squares_white
-                .insert((wk.x - 1, wk.y + 1, PieceType::Pawn as u8));
-            self.check_squares_white
-                .insert((wk.x + 1, wk.y + 1, PieceType::Pawn as u8));
+            // 2. Pawn Checkers (Black pawns attack downward: y+1)
+            for dx in [-1, 1] {
+                let tx = wk.x + dx;
+                let ty = wk.y + 1;
+                if let Some(p) = self.board.get_piece(tx, ty) {
+                    if p.color() == PlayerColor::Black && p.piece_type() == PieceType::Pawn {
+                        self.checkers_count_white += 1;
+                    }
+                }
+                self.check_squares_white
+                    .insert((tx, ty, PieceType::Pawn as u8));
+            }
 
+            // 3. Slider Rays (Sliders & Pinned pieces)
             for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
                 if let Some((bx, by)) = self.find_first_blocker_on_ray(wk.x, wk.y, *dx, *dy) {
                     self.slider_rays_white[dir_idx] = Some((bx, by));
-                    // Discovered check: if bx,by is a BLACK piece, does it block a BLACK slider?
-                    if let Some(p2) = self
-                        .board
-                        .get_piece(bx, by)
-                        .filter(|p| p.color() == PlayerColor::Black)
-                        .and_then(|_| self.find_first_blocker_on_ray(bx, by, *dx, *dy))
-                        .and_then(|(bx2, by2)| self.board.get_piece(bx2, by2))
-                        .filter(|p| p.color() == PlayerColor::Black)
-                    {
-                        let is_ortho = dir_idx < 4;
-                        let pt2 = p2.piece_type();
-                        use crate::attacks::{is_diag_slider, is_ortho_slider};
-                        if (is_ortho && is_ortho_slider(pt2)) || (!is_ortho && is_diag_slider(pt2))
+                    let p1 = self.board.get_piece(bx, by).unwrap();
+                    let is_ortho = dir_idx < 4;
+
+                    if p1.color() == PlayerColor::Black {
+                        // Immediate Checker?
+                        let pt1 = p1.piece_type();
+                        if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
                         {
-                            self.discovered_check_squares_black.insert((bx, by));
+                            self.checkers_count_white += 1;
+                        }
+
+                        // Potential Discovered check for Black (if bx,by moves)
+                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
+                            if let Some(p2) = self.board.get_piece(bx2, by2) {
+                                if p2.color() == PlayerColor::Black {
+                                    let pt2 = p2.piece_type();
+                                    if (is_ortho && is_ortho_slider(pt2))
+                                        || (!is_ortho && is_diag_slider(pt2))
+                                    {
+                                        self.discovered_check_squares_black.insert((bx, by));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Friendly piece - could be pinned?
+                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
+                            if let Some(p2) = self.board.get_piece(bx2, by2) {
+                                if p2.color() == PlayerColor::Black {
+                                    let pt2 = p2.piece_type();
+                                    if (is_ortho && is_ortho_slider(pt2))
+                                        || (!is_ortho && is_diag_slider(pt2))
+                                    {
+                                        self.pinned_white.insert((bx, by), (*dx, *dy));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Black King Rays (squares from which White can check Black)
-        if let Some(ref bk) = self.black_king_pos {
+        // Black King Status (Attacks by White pieces)
+        if let Some(bk) = self.black_king_pos {
+            // 1. Knight Checkers
             for (dx, dy) in KNIGHT_OFFSETS {
+                let tx = bk.x + dx;
+                let ty = bk.y + dy;
+                if let Some(p) = self.board.get_piece(tx, ty) {
+                    if p.color() == PlayerColor::White && p.piece_type() == PieceType::Knight {
+                        self.checkers_count_black += 1;
+                    }
+                }
                 self.check_squares_black
-                    .insert((bk.x + dx, bk.y + dy, PieceType::Knight as u8));
+                    .insert((tx, ty, PieceType::Knight as u8));
             }
-            // White pawns attack upward
-            self.check_squares_black
-                .insert((bk.x - 1, bk.y - 1, PieceType::Pawn as u8));
-            self.check_squares_black
-                .insert((bk.x + 1, bk.y - 1, PieceType::Pawn as u8));
+            // 2. Pawn Checkers (White pawns attack upward: y-1)
+            for dx in [-1, 1] {
+                let tx = bk.x + dx;
+                let ty = bk.y - 1;
+                if let Some(p) = self.board.get_piece(tx, ty) {
+                    if p.color() == PlayerColor::White && p.piece_type() == PieceType::Pawn {
+                        self.checkers_count_black += 1;
+                    }
+                }
+                self.check_squares_black
+                    .insert((tx, ty, PieceType::Pawn as u8));
+            }
 
+            // 3. Slider Rays (Sliders & Pinned pieces)
             for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
                 if let Some((bx, by)) = self.find_first_blocker_on_ray(bk.x, bk.y, *dx, *dy) {
                     self.slider_rays_black[dir_idx] = Some((bx, by));
-                    // Discovered check: if bx,by is a WHITE piece, does it block a WHITE slider?
-                    if let Some(p2) = self
-                        .board
-                        .get_piece(bx, by)
-                        .filter(|p| p.color() == PlayerColor::White)
-                        .and_then(|_| self.find_first_blocker_on_ray(bx, by, *dx, *dy))
-                        .and_then(|(bx2, by2)| self.board.get_piece(bx2, by2))
-                        .filter(|p| p.color() == PlayerColor::White)
-                    {
-                        let is_ortho = dir_idx < 4;
-                        let pt2 = p2.piece_type();
-                        use crate::attacks::{is_diag_slider, is_ortho_slider};
-                        if (is_ortho && is_ortho_slider(pt2)) || (!is_ortho && is_diag_slider(pt2))
+                    let p1 = self.board.get_piece(bx, by).unwrap();
+                    let is_ortho = dir_idx < 4;
+
+                    if p1.color() == PlayerColor::White {
+                        // Immediate Checker?
+                        let pt1 = p1.piece_type();
+                        if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
                         {
-                            self.discovered_check_squares_white.insert((bx, by));
+                            self.checkers_count_black += 1;
+                        }
+
+                        // Potential Discovered check for White (if bx,by moves)
+                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
+                            if let Some(p2) = self.board.get_piece(bx2, by2) {
+                                if p2.color() == PlayerColor::White {
+                                    let pt2 = p2.piece_type();
+                                    if (is_ortho && is_ortho_slider(pt2))
+                                        || (!is_ortho && is_diag_slider(pt2))
+                                    {
+                                        self.discovered_check_squares_white.insert((bx, by));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Friendly piece - could be pinned?
+                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
+                            if let Some(p2) = self.board.get_piece(bx2, by2) {
+                                if p2.color() == PlayerColor::White {
+                                    let pt2 = p2.piece_type();
+                                    if (is_ortho && is_ortho_slider(pt2))
+                                        || (!is_ortho && is_diag_slider(pt2))
+                                    {
+                                        self.pinned_black.insert((bx, by), (*dx, *dy));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2170,6 +2275,70 @@ impl GameState {
             for (&(ax, ay), p) in self.board.iter() {
                 process_piece(self, Coordinate::new(ax, ay), p, out);
             }
+        }
+    }
+
+    /// Ultra-fast legality check (C1 Optimization).
+    /// Only does simple arithmetic - NO spatial index lookups for the common case.
+    /// Returns:
+    /// - Ok(true): Move is DEFINITELY LEGAL (piece not on any slider ray from king AND side not in check)
+    /// - Err(()): Cannot determine fast, must use full is_move_illegal check
+    #[inline(always)]
+    pub fn is_legal_fast(&self, m: &Move, in_check: bool) -> Result<bool, ()> {
+        // 1. If currently in check, any move could be illegal or fail to escape check.
+        if in_check {
+            return Err(());
+        }
+
+        // 2. King moves: always need full check (must check for attacked squares)
+        if m.piece.piece_type().is_royal() {
+            return Err(());
+        }
+
+        // 3. En Passant: always need full check (rank clearing can expose king behind)
+        if m.piece.piece_type() == PieceType::Pawn {
+            let dx = (m.to.x - m.from.x).abs();
+            let dy = (m.to.y - m.from.y).abs();
+            if dx != 0 && dy != 0 && !self.board.is_occupied(m.to.x, m.to.y) {
+                return Err(());
+            }
+        }
+
+        // 4. Get king position (fast - already cached)
+        let king_pos = if self.turn == PlayerColor::White {
+            self.white_king_pos
+        } else {
+            self.black_king_pos
+        };
+
+        let Some(king) = king_pos else {
+            // No king - can't be pinned
+            return Ok(true);
+        };
+
+        // 5. FAST CHECK: Is piece on a slider ray from king?
+        // Only arithmetic - no hash lookups!
+        let dx = m.from.x - king.x;
+        let dy = m.from.y - king.y;
+
+        // Same square as king (shouldn't happen for non-king piece)
+        if dx == 0 && dy == 0 {
+            return Err(());
+        }
+
+        // Check if on a slider ray (vertical, horizontal, or diagonal)
+        let on_slider_ray = dx == 0  // Vertical (same file)
+            || dy == 0               // Horizontal (same rank)  
+            || dx.abs() == dy.abs(); // Diagonal
+
+        if on_slider_ray {
+            // Piece MIGHT be pinned - fall back to full is_move_illegal check
+            Err(())
+        } else {
+            // Piece is NOT on any slider ray from king - CANNOT be pinned!
+            // Side is NOT in check (verified above), and it's NOT a king move/EP.
+            // Therefore, this move is DEFINITELY LEGAL. Skip is_move_illegal entirely.
+            Ok(true)
         }
     }
 

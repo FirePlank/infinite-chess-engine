@@ -2238,7 +2238,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     if see_value < -see_margin {
                         continue;
                     }
-                    // }
                 }
             } else {
                 // Quiet move pruning
@@ -2278,6 +2277,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
+        // Check legality BEFORE make_move (Pin Detection)
+        // returns Ok(true) if legal, Ok(false) if illegal, Err if unsure
+        let fast_legal = game.is_legal_fast(&m, in_check);
+        if let Ok(false) = fast_legal {
+            continue; // Definitely illegal (pinned piece moving off ray)
+        }
+
         // Prefetch TT entry for child position BEFORE making the move.
         // This warms the cache so the TT probe in the recursive call is faster.
         // Compute approximate child hash: toggle side + move piece from->to
@@ -2295,7 +2301,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let mut undo = game.make_move(&m);
 
         // Check if move is illegal (leaves our king in check)
-        if game.is_move_illegal() {
+        // Only check if fast check was inconclusive (Err)
+        if fast_legal.is_err() && game.is_move_illegal() {
             game.undo_move(&m, undo);
             continue;
         }

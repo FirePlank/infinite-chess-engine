@@ -822,9 +822,17 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
             }
         }
 
+        // Check legality BEFORE make_move (Pin Detection)
+        // returns Ok(true) if legal, Ok(false) if illegal, Err if unsure
+        let fast_legal = game.is_legal_fast(m, in_check);
+        if let Ok(false) = fast_legal {
+            continue; // Definitely illegal (pinned piece moving off ray)
+        }
+
         let undo = game.make_move(m);
 
-        if game.is_move_illegal() {
+        // Only check is_move_illegal if fast check was inconclusive (Err)
+        if fast_legal.is_err() && game.is_move_illegal() {
             game.undo_move(m, undo);
             continue;
         }

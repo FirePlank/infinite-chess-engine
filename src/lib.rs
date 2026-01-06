@@ -540,6 +540,10 @@ impl Engine {
             black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
+            pinned_white: rustc_hash::FxHashMap::default(),
+            pinned_black: rustc_hash::FxHashMap::default(),
+            checkers_count_white: 0,
+            checkers_count_black: 0,
         };
 
         game.material_score = calculate_initial_material(&game.board);
