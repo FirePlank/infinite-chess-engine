@@ -15,6 +15,7 @@ const VARIANTS = {
         game_rules: {
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
+        hasCustomEval: true,
     },
     Classical_Plus: {
         position: 'p1,9+|p2,9+|p3,9+|p6,9+|p7,9+|p8,9+|p0,8+|r1,8+|n2,8|b3,8|q4,8|k5,8+|b6,8|n7,8|r8,8+|p9,8+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|p3,5+|p6,5+|P3,4+|P6,4+|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|P0,1+|R1,1+|N2,1|B3,1|Q4,1|K5,1+|B6,1|N7,1|R8,1+|P9,1+|P1,0+|P2,0+|P3,0+|P6,0+|P7,0+|P8,0+',
@@ -97,6 +98,7 @@ const VARIANTS = {
             promotion_ranks: { white: ['2'], black: ['-7'] },
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
+        hasCustomEval: true,
     },
     Knightline: {
         position: 'k5,8|n3,8|n4,8|n6,8|n7,8|p-5,7+|p-4,7+|p-3,7+|p-2,7+|p-1,7+|p0,7+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|p9,7+|p10,7+|p11,7+|p12,7+|p13,7+|p14,7+|p15,7+|K5,1|N3,1|N4,1|N6,1|N7,1|P-5,2+|P-4,2+|P-3,2+|P-2,2+|P-1,2+|P0,2+|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|P9,2+|P10,2+|P11,2+|P12,2+|P13,2+|P14,2+|P15,2+',
@@ -110,6 +112,7 @@ const VARIANTS = {
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
         worldBorder: 0,
+        hasCustomEval: true,
     },
     Chess: {
         position: 'r1,8+|n2,8|b3,8|q4,8|k5,8+|b6,8|n7,8|r8,8+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|R1,1+|N2,1|B3,1|Q4,1|K5,1+|B6,1|N7,1|R8,1+',
@@ -117,6 +120,7 @@ const VARIANTS = {
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
         worldBorder: 0,
+        hasCustomEval: true,
     },
 };
 
@@ -151,4 +155,9 @@ function getAllVariants() {
     return Object.keys(VARIANTS);
 }
 
-export { VARIANTS, getVariantData, getAllVariants };
+// Get variants that have custom evaluation (volatility warning for SPRT)
+function getVariantsWithCustomEval() {
+    return Object.keys(VARIANTS).filter(name => VARIANTS[name].hasCustomEval === true);
+}
+
+export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval };

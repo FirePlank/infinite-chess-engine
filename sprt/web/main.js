@@ -1,6 +1,6 @@
 import initOld, { Engine as EngineOld } from './pkg-old/hydrochess_wasm.js';
 import initNew, { Engine as EngineNew } from './pkg-new/hydrochess_wasm.js';
-import { VARIANTS, getVariantData } from './variants.js';
+import { VARIANTS, getVariantData, getVariantsWithCustomEval } from './variants.js';
 
 // Map internal engine piece letters to infinitechess.org ICN codes (lowercase for ICN)
 function engineLetterToICNCode(letter) {
@@ -147,12 +147,19 @@ function loadVariants() {
 }
 
 function populateVariantDropdown() {
+    // Get variants with custom eval (these will be disabled by default for SPRT stability)
+    const customEvalVariants = new Set(getVariantsWithCustomEval());
+
     sprtVariantsEl.innerHTML = '';
     availableVariants.forEach(variant => {
         const option = document.createElement('option');
         option.value = variant;
-        option.textContent = variant;
-        option.selected = true; // Default all selected
+        // Mark variants with custom eval in the dropdown
+        option.textContent = customEvalVariants.has(variant)
+            ? `${variant} (custom eval)`
+            : variant;
+        // Default: deselect variants with custom eval to reduce SPRT volatility
+        option.selected = !customEvalVariants.has(variant);
         sprtVariantsEl.appendChild(option);
     });
 }

@@ -168,6 +168,11 @@ const SLIDER_AXIS_WIGGLE: i64 = 5; // A slider is "active" if its ray passes wit
 const PIECE_CLOUD_CHEB_MAX_EXCESS: i64 = 64;
 const CLOUD_PENALTY_PER_100_VALUE: i32 = 1;
 
+// Max distance a single piece can skew the cloud center from the reference point.
+// Prevents extreme outliers (e.g., a queen at 1e15) from dominating the weighted average.
+// Pieces beyond this distance have their position clamped for centroid calculation.
+const CLOUD_CENTER_MAX_SKEW_DIST: i64 = 16;
+
 // Connected pawns bonus
 const CONNECTED_PAWN_BONUS: i32 = 8;
 
@@ -514,6 +519,21 @@ pub fn evaluate_pieces(
     let mut finite_count: i64 = 0;
     */
 
+    // Compute reference point for cloud center clamping (kings' midpoint or origin).
+    // This prevents distant pieces from heavily skewing the weighted average.
+    let ref_x: i64 = match (white_king, black_king) {
+        (Some(wk), Some(bk)) => (wk.x + bk.x) / 2,
+        (Some(wk), None) => wk.x,
+        (None, Some(bk)) => bk.x,
+        (None, None) => 0,
+    };
+    let ref_y: i64 = match (white_king, black_king) {
+        (Some(wk), Some(bk)) => (wk.y + bk.y) / 2,
+        (Some(wk), None) => wk.y,
+        (None, Some(bk)) => bk.y,
+        (None, None) => 0,
+    };
+
     for (cx, cy, tile) in game.board.tiles.iter() {
         // SIMD: Fast skip empty tiles using parallel zero check
         if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
@@ -533,8 +553,18 @@ pub fn evaluate_pieces(
             let weight = get_centrality_weight(piece.piece_type());
 
             if weight > 0 {
-                let x = cx * 8 + (idx % 8) as i64;
-                let y = cy * 8 + (idx / 8) as i64;
+                let raw_x = cx * 8 + (idx % 8) as i64;
+                let raw_y = cy * 8 + (idx / 8) as i64;
+
+                // Clamp position to prevent distant outliers from skewing center.
+                // Compute offset from reference, clamp to max distance, then add back.
+                let dx = raw_x - ref_x;
+                let dy = raw_y - ref_y;
+                let clamped_dx = dx.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
+                let clamped_dy = dy.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
+                let x = ref_x + clamped_dx;
+                let y = ref_y + clamped_dy;
+
                 cloud_sum_x += weight * x;
                 cloud_sum_y += weight * y;
                 cloud_count += weight;
