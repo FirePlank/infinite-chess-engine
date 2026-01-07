@@ -342,6 +342,26 @@ pub struct SearcherHot {
     /// Tracks the minimum depth that must be completed before time stops are allowed.
     /// Set to 1 at search start, cleared to 0 after depth 1 completes.
     pub min_depth_required: usize,
+    /// Optimum time to use for this search (soft limit) - Stockfish-style
+    pub optimum_time_ms: u128,
+    /// Maximum time to use for this search (hard limit) - Stockfish-style
+    pub maximum_time_ms: u128,
+    /// Total best move changes (instability) persisted across iterations (Stockfish's totBestMoveChanges)
+    pub tot_best_move_changes: f64,
+    /// Best move changes IN THE CURRENT ITERATION (Stockfish's bestMoveChanges)
+    pub best_move_changes: f64,
+    /// Nodes spent on the current best move (first root move) in the current iteration (Stockfish move effort)
+    pub best_move_nodes: u64,
+    /// Running average score (Stockfish's bestPreviousAverageScore) - smoothed across iterations
+    pub best_previous_average_score: i32,
+    /// Running scores for falling eval (circular buffer of last 4 iterations)
+    pub iter_values: [i32; 4],
+    /// Index into iter_values circular buffer
+    pub iter_idx: usize,
+    /// Previous time reduction factor (for smoothing across iterations)
+    pub prev_time_reduction: f64,
+    /// Depth at which best move was last changed
+    pub last_best_move_depth: usize,
 }
 
 impl Default for Timer {
@@ -353,15 +373,10 @@ impl Default for Timer {
 impl Timer {
     pub fn new() -> Self {
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-        {
-            Self { start: now_ms() }
-        }
+        let start = now_ms();
         #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-        {
-            Self {
-                start: Instant::now(),
-            }
-        }
+        let start = Instant::now();
+        Timer { start }
     }
 
     pub fn reset(&mut self) {
@@ -384,6 +399,38 @@ impl Timer {
         {
             self.start.elapsed().as_millis()
         }
+    }
+}
+
+impl SearcherHot {
+    /// Calculate optimum and maximum time.
+    ///
+    /// The engine typically receives an allocated slice of time (from lib.rs effective_time_limit_ms).
+    /// We treat `time_ms` as our budget for this move:
+    /// - `maximum_time_ms`: The hard limit (budget minus safety buffer)
+    /// - `optimum_time_ms`: Target time (75% of maximum) - extensions can push us toward maximum
+    ///
+    /// The dynamic factors (fallingEval, etc.) can extend optimum by up to ~2x, capped at maximum.
+    pub fn init_time_management(&mut self, time_ms: u128, _ply: usize) {
+        if time_ms == u128::MAX {
+            self.optimum_time_ms = u128::MAX;
+            self.maximum_time_ms = u128::MAX;
+            return;
+        }
+
+        // Safety buffer to prevent communication latency flag falls.
+        // Scale buffer based on time: 2% of time, min 5ms, max 100ms
+        let safety_buffer = ((time_ms as f64 * 0.02) as u128).clamp(5, 100);
+
+        self.maximum_time_ms = time_ms.saturating_sub(safety_buffer).max(1);
+
+        // Optimum time target: aim for 75% of the available slot.
+        // The dynamic scaling factors (fallingEval up to 1.7x, instability up to ~1.5x)
+        // can extend this toward maximum when needed.
+        self.optimum_time_ms = (self.maximum_time_ms as f64 * 0.75) as u128;
+
+        // Ensure optimum is at least something reasonable
+        self.optimum_time_ms = self.optimum_time_ms.max(1).min(self.maximum_time_ms);
     }
 }
 
@@ -585,6 +632,16 @@ impl Searcher {
                 stopped: false,
                 seldepth: 0,
                 min_depth_required: 1, // Must complete at least depth 1
+                optimum_time_ms: 0,
+                maximum_time_ms: 0,
+                tot_best_move_changes: 0.0,
+                best_move_changes: 0.0,
+                best_move_nodes: 0,
+                best_previous_average_score: 0,
+                iter_values: [0; 4],
+                iter_idx: 0,
+                prev_time_reduction: 1.0,
+                last_best_move_depth: 0,
             },
             tt: TranspositionTable::new(16),
             pv_table,
@@ -666,6 +723,16 @@ impl Searcher {
 
         // Reset search control
         self.hot.min_depth_required = 1;
+
+        // Reset time management variables
+        self.hot.tot_best_move_changes = 0.0;
+        self.hot.best_move_changes = 0.0;
+        self.hot.best_move_nodes = 0;
+        self.hot.best_previous_average_score = 0;
+        self.hot.iter_values.fill(0);
+        self.hot.iter_idx = 0;
+        self.hot.prev_time_reduction = 1.0; // Stockfish initializes this to 1.0 effectively
+        self.hot.last_best_move_depth = 0;
 
         // Reset iterative deepening state
         self.prev_score = 0;
@@ -786,8 +853,29 @@ impl Searcher {
             return false;
         }
 
-        if self.hot.nodes & 8191 == 0 && self.hot.timer.elapsed_ms() >= self.hot.time_limit_ms {
-            self.hot.stopped = true;
+        if self.hot.nodes & 8191 == 0 {
+            let elapsed = self.hot.timer.elapsed_ms();
+            let limit = if self.hot.maximum_time_ms > 0 {
+                self.hot.maximum_time_ms
+            } else {
+                self.hot.time_limit_ms
+            };
+
+            if elapsed >= limit {
+                self.hot.stopped = true;
+                return true;
+            }
+
+            // Proactive Safety Stop:
+            // Only trigger if we're very close to the limit and NPS is slow.
+            // This is a last-resort safety, not a regular termination condition.
+            if self.hot.nodes > 8192 {
+                let time_to_next_check = (8192.0 * elapsed as f64) / self.hot.nodes as f64;
+                // Only stop if we literally cannot reach the next check in time.
+                if (elapsed as f64 + time_to_next_check) > limit as f64 {
+                    self.hot.stopped = true;
+                }
+            }
         }
         self.hot.stopped
     }
@@ -1052,14 +1140,21 @@ fn search_with_searcher(
 
     let mut best_move: Option<Move> = fallback_move; // Already cloned above
     let mut best_score = -INFINITY;
-    let mut stability: usize = 0;
-    let mut prev_iter_score: i32 = 0;
-    let mut has_prev_iter_score = false;
     let mut prev_root_move_coords: Option<(i64, i64, i64, i64)> = None;
+
+    // Initialize Stockfish-style time management
+    // For now, use ply=0 as this is the root search
+    searcher
+        .hot
+        .init_time_management(searcher.hot.time_limit_ms, 0);
 
     // Iterative deepening with aspiration windows
     for depth in 1..=max_depth {
         searcher.reset_for_iteration();
+
+        // Age out PV variability metric (Stockfish line 317 - at START of each iteration)
+        // Note: Decay the PERSISTED tot, not the per-iteration changes.
+        searcher.hot.tot_best_move_changes /= 2.0;
 
         // Time check at start of each iteration - but always complete depth 1
         if searcher.hot.min_depth_required == 0
@@ -1136,13 +1231,11 @@ fn search_with_searcher(
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
             if let Some(prev_coords) = prev_root_move_coords {
-                if prev_coords == coords {
-                    stability += 1;
-                } else {
-                    stability = 0;
+                // Track best move changes for instability calculation
+                if prev_coords != coords {
+                    searcher.hot.best_move_changes += 1.0;
+                    searcher.hot.last_best_move_depth = depth;
                 }
-            } else {
-                stability = 0;
             }
             prev_root_move_coords = Some(coords);
         }
@@ -1156,53 +1249,73 @@ fn search_with_searcher(
             break;
         }
 
-        // If we've used more than 50% of time, don't start another iteration
+        // Stockfish-style Time Management Check
         if searcher.hot.time_limit_ms != u128::MAX {
-            let elapsed = searcher.hot.timer.elapsed_ms();
-            let limit = searcher.hot.time_limit_ms;
+            let elapsed = searcher.hot.timer.elapsed_ms() as f64;
 
-            if best_move.is_some() {
-                let mut factor = 1.1_f64 - 0.03_f64 * (stability as f64);
-                if factor < 0.5 {
-                    factor = 0.5;
-                }
+            // Step 1: Effort tracking (Situational awareness of nodes spent on best move)
+            // Stockfish line 477-478: nodesEffort = rootMoves[0].effort * 100000 / nodes
+            let nodes_effort = (searcher.hot.best_move_nodes as f64 * 100000.0)
+                / (searcher.hot.nodes as f64).max(1.0);
+            let high_best_move_effort = if nodes_effort >= 93340.0 { 0.76 } else { 1.0 };
 
-                if has_prev_iter_score && best_score - prev_iter_score > aspiration_window() {
-                    factor *= 1.1;
-                }
+            // Step 2: Instability accumulation
+            // Accumulate current iteration's changes into persisted tot_best_move_changes
+            searcher.hot.tot_best_move_changes += searcher.hot.best_move_changes;
+            searcher.hot.best_move_changes = 0.0;
 
-                if factor > 1.0 {
-                    factor = 1.0;
-                }
+            // fallingEval: increase time when score is dropping
+            let iter_val = searcher.hot.iter_values[searcher.hot.iter_idx];
+            let prev_avg = searcher.hot.best_previous_average_score;
+            let falling_eval = (11.85
+                + 2.24 * (prev_avg - best_score) as f64
+                + 0.93 * (iter_val - best_score) as f64)
+                / 100.0;
+            let falling_eval = falling_eval.clamp(0.57, 1.70);
 
-                let ideal_ms = (limit as f64 * factor) as u128;
-                let soft_limit = std::cmp::min(limit, ideal_ms);
+            // timeReduction: decrease time when best move is stable
+            let k = 0.51;
+            let center = (searcher.hot.last_best_move_depth as f64) + 12.15;
+            let time_reduction = 0.66 + 0.85 / (0.98 + (-k * (depth as f64 - center)).exp());
 
-                if elapsed >= soft_limit {
-                    break;
-                }
+            let reduction = (1.43 + searcher.hot.prev_time_reduction) / (2.28 * time_reduction);
 
-                prev_iter_score = best_score;
-                has_prev_iter_score = true;
-            }
+            // bestMoveInstability: increase time when best move keeps changing
+            // CAP at 2.5 to prevent runaway time extensions
+            let instability = (1.02 + 2.14 * searcher.hot.tot_best_move_changes).min(2.5);
 
-            let cutoff = if limit <= 300 {
-                // Very short thinks: keep ~50% heuristic
-                limit / 2
-            } else if limit <= 2000 {
-                // Short blitz: leave ~250ms safety buffer
-                limit.saturating_sub(250)
-            } else if limit <= 8000 {
-                // Rapid-ish: leave ~500ms safety buffer (e.g. 4s -> 3.5s)
-                limit.saturating_sub(500)
+            // Total time calculation (Matching Stockfish line 497-498)
+            // Clamp the total factors to prevent wild swings
+            let total_factors =
+                (falling_eval * reduction * instability * high_best_move_effort).clamp(0.5, 2.5);
+            let total_time = searcher.hot.optimum_time_ms as f64 * total_factors;
+
+            // Single legal move: cap time for better UX
+            let total_time = if legal_moves.len() == 1 {
+                total_time.min(502.0)
             } else {
-                // Long thinks: use almost all allotted time but keep a small buffer
-                limit.saturating_sub(2000)
+                total_time
             };
 
-            if elapsed >= cutoff {
+            // Soft limit check with maximum time constraint
+            if elapsed > total_time.min(searcher.hot.maximum_time_ms as f64) {
+                searcher.hot.stopped = true;
                 break;
             }
+
+            // Update iter_values circular buffer AFTER the time check (Stockfish line 520)
+            searcher.hot.iter_values[searcher.hot.iter_idx] = best_score;
+            searcher.hot.iter_idx = (searcher.hot.iter_idx + 1) & 3;
+
+            // Update running average score (Stockfish: bestPreviousAverageScore)
+            if searcher.hot.best_previous_average_score == 0 {
+                searcher.hot.best_previous_average_score = best_score;
+            } else {
+                searcher.hot.best_previous_average_score =
+                    (best_score + searcher.hot.best_previous_average_score) / 2;
+            }
+
+            searcher.hot.prev_time_reduction = time_reduction;
         }
     }
 
@@ -1696,7 +1809,7 @@ fn negamax_root(
     let mut best_move: Option<Move> = None;
     let mut legal_moves = 0;
 
-    for m in moves {
+    for (move_idx, m) in moves.iter().enumerate() {
         // Skip excluded moves (for MultiPV subsequent passes)
         if !searcher.excluded_moves.is_empty() {
             let coords = (m.from.x, m.from.y, m.to.x, m.to.y);
@@ -1704,6 +1817,8 @@ fn negamax_root(
                 continue;
             }
         }
+
+        let nodes_before_move = searcher.hot.nodes;
 
         // Note: All threads search all moves. Thread variation comes from:
         // 1. Shared TT - threads benefit from each other's entries
@@ -1773,6 +1888,11 @@ fn negamax_root(
             best_score = score;
             best_move = Some(*m);
 
+            // If a new best move is found after the first move, it's instability
+            if legal_moves > 1 {
+                searcher.hot.best_move_changes += 1.0;
+            }
+
             if score > alpha {
                 alpha = score;
 
@@ -1790,6 +1910,13 @@ fn negamax_root(
 
         if alpha >= beta {
             break;
+        }
+
+        // Track nodes spent on this move (effort)
+        // If this is the current first move in the list (most likely the best move),
+        // track its effort for time management.
+        if move_idx == 0 {
+            searcher.hot.best_move_nodes = searcher.hot.nodes - nodes_before_move;
         }
     }
 
