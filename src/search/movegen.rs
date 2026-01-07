@@ -76,9 +76,6 @@ pub struct StagedMoveGen {
 
     // Excluded move (for singular extension)
     excluded_move: Option<Move>,
-
-    // Cached enemy king position for fast check detection
-    enemy_king_pos: Option<(i64, i64)>,
 }
 
 /// Sort scored moves by score descending (highest first).
@@ -89,7 +86,7 @@ fn sort_moves_by_score(moves: &mut [ScoredMove]) {
 }
 
 impl StagedMoveGen {
-    pub fn new(tt_move: Option<Move>, ply: usize, searcher: &Searcher, game: &GameState) -> Self {
+    pub fn new(tt_move: Option<Move>, ply: usize, searcher: &Searcher, _game: &GameState) -> Self {
         // Get previous move info for countermove lookup
         let (prev_from_hash, prev_to_hash) = if ply > 0 {
             searcher.prev_move_stack[ply - 1]
@@ -100,13 +97,6 @@ impl StagedMoveGen {
         // Get killers
         let killer1 = searcher.killers[ply][0];
         let killer2 = searcher.killers[ply][1];
-
-        // Cache enemy king position once
-        let enemy_king_pos = if game.turn == PlayerColor::White {
-            game.black_king_pos.as_ref().map(|k| (k.x, k.y))
-        } else {
-            game.white_king_pos.as_ref().map(|k| (k.x, k.y))
-        };
 
         Self {
             stage: MoveStage::TTMove,
@@ -124,7 +114,6 @@ impl StagedMoveGen {
             killer2,
             skip_quiets: false,
             excluded_move: None,
-            enemy_king_pos,
         }
     }
 
@@ -284,8 +273,8 @@ impl StagedMoveGen {
 
         // Check bonus: Stockfish gives 16384 for moves that give check
         // if SEE >= -75 (to avoid giving bonus to bad checks)
-        // Use cached enemy king position for O(1) access
-        let gives_check = self.move_gives_check_cached(game, m);
+        // Use O(1) hash lookup for knights/pawns, inline check for sliders
+        let gives_check = Self::move_gives_check_fast(game, m);
         if gives_check {
             // Verify the check isn't losing material with SEE
             if super::see_ge(game, m, -75) {
@@ -305,59 +294,8 @@ impl StagedMoveGen {
     }
 
     /// Ultra-fast check detection using precomputed data and bit operations.
-    /// Uses cached enemy king position for O(1) access.
+    /// Ultra-fast check detection using precomputed data and bit operations.
     /// Handles core piece types: Knights, Pawns, and Sliders/Compounds.
-    #[inline(always)]
-    fn move_gives_check_cached(&self, game: &GameState, m: &Move) -> bool {
-        let pt = m.piece.piece_type();
-        let color = m.piece.color();
-        let tx = m.to.x;
-        let ty = m.to.y;
-
-        // Fast path: Knights and Pawns use O(1) precomputed hash lookup
-        if pt == PieceType::Knight || pt == PieceType::Pawn {
-            let check_squares = if color == PlayerColor::White {
-                &game.check_squares_black
-            } else {
-                &game.check_squares_white
-            };
-            return check_squares.contains(&(tx, ty, pt as u8));
-        }
-
-        // Use cached enemy king position
-        let (king_x, king_y) = match self.enemy_king_pos {
-            Some(pos) => pos,
-            None => return false,
-        };
-
-        let dx = tx - king_x;
-        let dy = ty - king_y;
-        let adx = dx.abs();
-        let ady = dy.abs();
-
-        // Compute piece type bit for O(1) mask checks
-        use crate::attacks::{DIAG_MASK, KNIGHT_MASK, ORTHO_MASK};
-        let pt_bit = 1u32 << (pt as u8);
-
-        // 1. Knight-like check (including compounds like Amazon, Chancellor, etc.)
-        if (pt_bit & KNIGHT_MASK) != 0 && ((adx == 1 && ady == 2) || (adx == 2 && ady == 1)) {
-            return true;
-        }
-
-        // 2. Orthogonal slider check (including Queen, Rook, Chancellor, etc.)
-        if (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) {
-            return true;
-        }
-
-        // 3. Diagonal slider check (including Queen, Bishop, Archbishop, etc.)
-        if (pt_bit & DIAG_MASK) != 0 && (adx == ady && adx > 0) {
-            return true;
-        }
-
-        false
-    }
-
-    /// Static version for use outside StagedMoveGen (e.g., noisy.rs)
     #[inline(always)]
     pub fn move_gives_check_fast(game: &GameState, m: &Move) -> bool {
         let pt = m.piece.piece_type();
