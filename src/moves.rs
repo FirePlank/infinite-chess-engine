@@ -2035,11 +2035,7 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
             || (is_enemy && p.piece_type() == PieceType::King); // Fallback check if pos not passed
 
         // For enemy KING, we ignore max_dist to ensure we find check moves
-        let current_max_dist = if is_king {
-            2_000_000_000
-        } else {
-            max_dist
-        };
+        let current_max_dist = if is_king { 2_000_000_000 } else { max_dist };
 
         let wiggle = if is_enemy {
             enemy_wiggle
@@ -2850,7 +2846,6 @@ pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
 };
 
 /// Generate rose moves directly into an output buffer.
-/// Uses precomputed spiral paths with proper blocking detection.
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 #[inline(always)]
 fn generate_rose_moves_into(
@@ -2864,50 +2859,49 @@ fn generate_rose_moves_into(
     let fx = from.x;
     let fy = from.y;
 
-    // Use a simple seen-set to avoid duplicate moves (same square reachable via CW and CCW)
-    // Max unique squares is ~32 (well under 64), use inline array
+    // Dedup seen squares (same square reachable via CW and CCW spirals)
     let mut seen: [(i64, i64); 64] = [(i64::MAX, i64::MAX); 64];
     let mut seen_count = 0usize;
 
-    // Inline check for seen
     #[inline(always)]
-    fn is_seen(seen: &[(i64, i64); 64], count: usize, x: i64, y: i64) -> bool {
-        for &s in seen.iter().take(count) {
+    fn is_seen_or_mark(seen: &mut [(i64, i64); 64], count: &mut usize, x: i64, y: i64) -> bool {
+        for &s in seen.iter().take(*count) {
             if s == (x, y) {
                 return true;
             }
         }
+        if *count < 64 {
+            seen[*count] = (x, y);
+            *count += 1;
+        }
         false
     }
 
-    for spiral in ROSE_SPIRALS {
-        for &spiral_path in &spiral {
-            // Walk along the spiral, checking each square
-            for &(cum_dx, cum_dy) in &spiral_path {
+    // Process all 16 spirals (8 start directions × 2 rotations)
+    for spirals_for_dir in &ROSE_SPIRALS {
+        for spiral_path in spirals_for_dir {
+            // Single pass: walk spiral, generate moves, stop at blocker
+            for &(cum_dx, cum_dy) in spiral_path.iter() {
                 let tx = fx + cum_dx;
                 let ty = fy + cum_dy;
 
+                // Skip if already seen (dedup across spirals)
+                if is_seen_or_mark(&mut seen, &mut seen_count, tx, ty) {
+                    continue;
+                }
+
                 if let Some(target) = board.get_piece(tx, ty) {
-                    // Square occupied - this would be a capture
-                    let dominated = is_enemy_piece(target, my_color);
-                    if dominated
-                        && gen_type != MoveGenType::Quiets
-                        && !is_seen(&seen, seen_count, tx, ty)
-                    {
-                        seen[seen_count] = (tx, ty);
-                        seen_count += 1;
+                    // Capture opportunity - blocked after this
+                    if is_enemy_piece(target, my_color) && gen_type != MoveGenType::Quiets {
                         out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                     }
-                    // Blocked - cannot continue this spiral
-                    break;
+                    break; // Blocked - can't continue spiral
                 } else {
                     // Empty square - quiet move
-                    if gen_type != MoveGenType::Captures && !is_seen(&seen, seen_count, tx, ty) {
-                        seen[seen_count] = (tx, ty);
-                        seen_count += 1;
+                    if gen_type != MoveGenType::Captures {
                         out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                     }
-                    // Continue spiraling (not blocked)
+                    // Continue spiraling
                 }
             }
         }
