@@ -2886,24 +2886,30 @@ fn generate_rose_moves_into(
                 let tx = fx + cum_dx;
                 let ty = fy + cum_dy;
 
-                // Skip if already seen (dedup across spirals)
-                if is_seen_or_mark(&mut seen, &mut seen_count, tx, ty) {
-                    continue;
+                // Check if this square is occupied
+                let occupant = board.get_piece(tx, ty);
+                let is_blocked = occupant.is_some();
+
+                // Dedup: skip generating a move if already seen, but still respect blocking
+                let already_seen = is_seen_or_mark(&mut seen, &mut seen_count, tx, ty);
+
+                if is_blocked {
+                    // Generate capture if enemy and not already seen
+                    if !already_seen {
+                        if let Some(target) = occupant {
+                            if is_enemy_piece(target, my_color) && gen_type != MoveGenType::Quiets {
+                                out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+                            }
+                        }
+                    }
+                    break; // Blocked - can't continue spiral (regardless of seen status)
                 }
 
-                if let Some(target) = board.get_piece(tx, ty) {
-                    // Capture opportunity - blocked after this
-                    if is_enemy_piece(target, my_color) && gen_type != MoveGenType::Quiets {
-                        out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
-                    }
-                    break; // Blocked - can't continue spiral
-                } else {
-                    // Empty square - quiet move
-                    if gen_type != MoveGenType::Captures {
-                        out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
-                    }
-                    // Continue spiraling
+                // Empty square - quiet move (only if not already seen)
+                if !already_seen && gen_type != MoveGenType::Captures {
+                    out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                 }
+                // Continue spiraling
             }
         }
     }
