@@ -40,7 +40,6 @@ struct CrossRayContext<'a> {
     piece_type: PieceType,
     enemy_wiggle: i64,
     friend_wiggle: i64,
-    enemy_king_pos: Option<Coordinate>,
 }
 
 pub struct SlidingMoveContext<'a> {
@@ -1957,14 +1956,23 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     }
 }
 
-/// Find cross-ray attack targets for sliders (ULTRA-FAST).
+/// Find cross-ray attack targets for sliders - optimized for infinite chess.
 ///
-/// Mathematical Intersection Approach:
+/// Smart Filtering Approach:
 /// 1. Iterate over ALL pieces on the board (O(N), usually < 60).
 /// 2. For each piece P, calculate if any of its 8 attack rays intersect our slider's ray.
-/// 3. If an intersection S exists within max_dist, verify reachability.
+/// 3. Count how many pieces are reachable from each intersection distance.
+/// 4. Only output distances where:
+///    - 2+ pieces are reachable (forks/pins/batteries - unlimited distance)
+///    - OR within SHORT_CROSS_RAY_LIMIT (single targets)
 #[inline]
-fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, out: &mut Vec<i64>) {
+fn find_cross_ray_targets_into(
+    ctx: &CrossRayContext,
+    dir_x: i64,
+    dir_y: i64,
+    dist_counts: &mut FxHashMap<i64, u8>,
+    royal_dists: &mut FxHashSet<i64>,
+) {
     let board = ctx.board;
     let from = ctx.from;
     let max_dist = ctx.max_dist;
@@ -1973,7 +1981,6 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
     let piece_type = ctx.piece_type;
     let enemy_wiggle = ctx.enemy_wiggle;
     let friend_wiggle = ctx.friend_wiggle;
-    let enemy_king_pos = ctx.enemy_king_pos;
 
     // Check OUR piece's attack capabilities
     let our_attacks_ortho = matches!(
@@ -2002,19 +2009,17 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
     let ray_diff = dir_x - dir_y;
     let ray_sum = dir_x + dir_y;
 
-    // Early termination: stop after finding enough targets to avoid excessive computation
-    const MAX_CROSS_RAY_TARGETS: usize = 16;
-
-    // Distance limit for friendly piece cross-ray contributions (rarely useful beyond this)
-    const FRIENDLY_CROSS_RAY_LIMIT: i64 = 20;
-
-    // Iterate all pieces on the board once
-    for (px, py, p) in board.tiles.iter_all_pieces() {
-        // Early termination if we have enough targets
-        if out.len() >= MAX_CROSS_RAY_TARGETS {
-            return;
+    // Helper to increment piece count for a distance
+    #[inline(always)]
+    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+        if d > 0 && d <= max_d {
+            let entry = map.entry(d).or_insert(0);
+            *entry = entry.saturating_add(1);
         }
+    }
 
+    // Iterate all pieces on the board once - count pieces reachable from each distance
+    for (px, py, p) in board.tiles.iter_all_pieces() {
         // Skip only the piece at our exact position (can't target ourselves)
         if px == from.x && py == from.y {
             continue;
@@ -2022,36 +2027,21 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
 
         let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
 
-        // Skip friendly pieces that are too far for useful cross-ray contributions
-        if !is_enemy {
-            let dist_x = (px - from.x).abs();
-            let dist_y = (py - from.y).abs();
-            if dist_x > FRIENDLY_CROSS_RAY_LIMIT && dist_y > FRIENDLY_CROSS_RAY_LIMIT {
-                continue;
-            }
-        }
-
-        let is_king = is_enemy && enemy_king_pos.is_some_and(|k| k.x == px && k.y == py)
-            || (is_enemy && p.piece_type() == PieceType::King); // Fallback check if pos not passed
-
-        // For enemy KING, we ignore max_dist to ensure we find check moves
-        let current_max_dist = if is_king { 2_000_000_000 } else { max_dist };
-
         let wiggle = if is_enemy {
             enemy_wiggle
         } else {
             friend_wiggle
         };
+        let is_royal = is_enemy && p.piece_type().is_royal();
 
         // 1. Orthogonal Cross-Rays (if OUR piece can attack orthogonally)
-        // From an intersection point on our ray, can we attack this piece orthogonally?
         if our_attacks_ortho {
-            // Vertical cross: S.x = px (piece is on same column as intersection)
+            // Vertical cross: S.x = px
             if dir_x != 0 {
                 let num = px - from.x;
                 if num.signum() == dir_x.signum() && num % dir_x == 0 {
                     let d = num / dir_x;
-                    if d > 0 && d <= current_max_dist {
+                    if d > 0 && d <= max_dist {
                         let sy = from.y + d * dir_y;
                         if py != sy
                             && let Some((_nearest_y, _)) = indices
@@ -2062,11 +2052,18 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
                                 })
                                 .filter(|&(ny, _)| ny == py)
                         {
-                            // Wiggle allowed for orthogonal
-                            for w in -wiggle..=wiggle {
-                                let wd = d + w;
-                                if wd > 0 && wd <= current_max_dist {
-                                    out.push(wd);
+                            // Count this piece at distance d and wiggle distances
+                            add_dist(dist_counts, d, max_dist);
+                            if is_royal {
+                                royal_dists.insert(d);
+                            }
+
+                            for w in 1..=wiggle {
+                                add_dist(dist_counts, d + w, max_dist);
+                                add_dist(dist_counts, d - w, max_dist);
+                                if is_royal {
+                                    royal_dists.insert(d + w);
+                                    royal_dists.insert(d - w);
                                 }
                             }
                         }
@@ -2079,7 +2076,7 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
                 let num = py - from.y;
                 if num.signum() == dir_y.signum() && num % dir_y == 0 {
                     let d = num / dir_y;
-                    if d > 0 && d <= current_max_dist {
+                    if d > 0 && d <= max_dist {
                         let sx = from.x + d * dir_x;
                         if px != sx
                             && let Some((_nearest_x, _)) = indices
@@ -2090,11 +2087,17 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
                                 })
                                 .filter(|&(nx, _)| nx == px)
                         {
-                            // Wiggle allowed for orthogonal
-                            for w in -wiggle..=wiggle {
-                                let wd = d + w;
-                                if wd > 0 && wd <= current_max_dist {
-                                    out.push(wd);
+                            add_dist(dist_counts, d, max_dist);
+                            if is_royal {
+                                royal_dists.insert(d);
+                            }
+
+                            for w in 1..=wiggle {
+                                add_dist(dist_counts, d + w, max_dist);
+                                add_dist(dist_counts, d - w, max_dist);
+                                if is_royal {
+                                    royal_dists.insert(d + w);
+                                    royal_dists.insert(d - w);
                                 }
                             }
                         }
@@ -2104,49 +2107,80 @@ fn find_cross_ray_targets_into(ctx: &CrossRayContext, dir_x: i64, dir_y: i64, ou
         }
 
         // 2. Diagonal Cross-Rays (if OUR piece can attack diagonally)
-        // From an intersection point on our ray, can we attack this piece diagonally?
         if our_attacks_diag {
-            // Diag1: S.x - S.y = px - py
+            // Diagonal 1: x-y constant. S.x - S.y = px - py
+            // (from.x + d*dir_x) - (from.y + d*dir_y) = px - py
+            // d*(dir_x - dir_y) = (px - py) - (from.x - from.y)
             if ray_diff != 0 {
                 let num = (px - py) - (from.x - from.y);
                 if num.signum() == ray_diff.signum() && num % ray_diff == 0 {
                     let d = num / ray_diff;
-                    if d > 0 && d <= current_max_dist {
+                    if d > 0 && d <= max_dist {
                         let sx = from.x + d * dir_x;
-                        if px != sx
+                        let sy = from.y + d * dir_y;
+                        let s_diag_diff = sx - sy;
+
+                        if sx != px
                             && let Some((_nearest_x, _)) = indices
                                 .diag1
-                                .get(&(px - py))
+                                .get(&s_diag_diff)
                                 .and_then(|pieces| {
                                     SpatialIndices::find_nearest(pieces, sx, (px - sx).signum())
                                 })
                                 .filter(|&(nx, _)| nx == px)
                         {
-                            // NO wiggle for diagonal
-                            out.push(d);
+                            add_dist(dist_counts, d, max_dist);
+                            if is_royal {
+                                royal_dists.insert(d);
+                            }
+
+                            for w in 1..=wiggle {
+                                add_dist(dist_counts, d + w, max_dist);
+                                add_dist(dist_counts, d - w, max_dist);
+                                if is_royal {
+                                    royal_dists.insert(d + w);
+                                    royal_dists.insert(d - w);
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // Diag2: S.x + S.y = px + py
+            // Diagonal 2: x+y constant. S.x + S.y = px + py
+            // (from.x + d*dir_x) + (from.y + d*dir_y) = px + py
+            // d*(dir_x + dir_y) = (px + py) - (from.x + from.y)
             if ray_sum != 0 {
                 let num = (px + py) - (from.x + from.y);
                 if num.signum() == ray_sum.signum() && num % ray_sum == 0 {
                     let d = num / ray_sum;
-                    if d > 0 && d <= current_max_dist {
+                    if d > 0 && d <= max_dist {
                         let sx = from.x + d * dir_x;
-                        if px != sx
+                        let sy = from.y + d * dir_y;
+                        let s_diag_sum = sx + sy;
+
+                        if sx != px
                             && let Some((_nearest_x, _)) = indices
                                 .diag2
-                                .get(&(px + py))
+                                .get(&s_diag_sum)
                                 .and_then(|pieces| {
                                     SpatialIndices::find_nearest(pieces, sx, (px - sx).signum())
                                 })
                                 .filter(|&(nx, _)| nx == px)
                         {
-                            // NO wiggle for diagonal
-                            out.push(d);
+                            add_dist(dist_counts, d, max_dist);
+                            if is_royal {
+                                royal_dists.insert(d);
+                            }
+
+                            for w in 1..=wiggle {
+                                add_dist(dist_counts, d + w, max_dist);
+                                add_dist(dist_counts, d - w, max_dist);
+                                if is_royal {
+                                    royal_dists.insert(d + w);
+                                    royal_dists.insert(d - w);
+                                }
+                            }
                         }
                     }
                 }
@@ -2170,10 +2204,8 @@ fn generate_sliding_moves_impl(
     // Original wiggle values - important for tactics
     const ENEMY_WIGGLE: i64 = 2;
     const FRIEND_WIGGLE: i64 = 1;
-    // Reduced interception distance for better performance - still covers practical cases
-    // Full distance only used when enemy king is within range (for check tactics)
-    const BASE_INTERCEPTION_DIST: i64 = 25;
-    const MAX_INTERCEPTION_DIST: i64 = 50;
+    // Unified base limit for short range
+    const BASE_INTERCEPTION_DIST: i64 = 16;
 
     let our_color = piece.color();
 
@@ -2191,6 +2223,19 @@ fn generate_sliding_moves_impl(
 
     let ek_ref = enemy_king_pos;
 
+    // Reuse maps across directions to avoid allocations
+    let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
+    let mut royal_dists: FxHashSet<i64> = FxHashSet::default();
+
+    // Helper to increment piece count for a distance
+    #[inline(always)]
+    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+        if d > 0 && d <= max_d {
+            let entry = map.entry(d).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+    }
+
     for &(dx_raw, dy_raw) in directions {
         for sign in [1i64, -1i64] {
             let dir_x = dx_raw * sign;
@@ -2203,7 +2248,7 @@ fn generate_sliding_moves_impl(
             let is_vertical = dir_x == 0;
             let is_horizontal = dir_y == 0;
 
-            // Use spatial indices for O(log n) blocker finding when available
+            // Use spatial indices for O(log n) blocker finding
             let (closest_dist, closest_is_enemy) =
                 find_blocker_via_indices(board, from, dir_x, dir_y, indices, our_color);
 
@@ -2224,57 +2269,7 @@ fn generate_sliding_moves_impl(
                 continue;
             }
 
-            // Dynamic interception limit: use shorter range normally, extend for king-targeting
-            // If enemy king is along this ray, use full interception distance for check tactics
-            let king_on_ray = ek_ref.is_some_and(|ek| {
-                let kdx = ek.x - from.x;
-                let kdy = ek.y - from.y;
-                // Check if king is in this ray direction
-                if dir_x == 0 && dir_y != 0 {
-                    kdx == 0 && kdy.signum() == dir_y.signum()
-                } else if dir_y == 0 && dir_x != 0 {
-                    kdy == 0 && kdx.signum() == dir_x.signum()
-                } else if dir_x.abs() == dir_y.abs() {
-                    kdx.abs() == kdy.abs()
-                        && kdx.signum() == dir_x.signum()
-                        && kdy.signum() == dir_y.signum()
-                } else {
-                    false
-                }
-            });
-            let effective_interception = if king_on_ray {
-                MAX_INTERCEPTION_DIST
-            } else {
-                BASE_INTERCEPTION_DIST
-            };
-            let interception_limit = max_dist.min(effective_interception);
-
-            // Use Vec for target distances to avoid overflow
-            let mut target_dists: Vec<i64> = Vec::with_capacity(64);
-
-            // Start wiggle room (always add these)
-            for d in 1..=ENEMY_WIGGLE {
-                target_dists.push(d);
-            }
-
-            // ACTIVATION MOVE: Generate one additional "far" move to help activate dormant sliders.
-            // Only if the ray is open beyond the distance and we are safely away from the world border.
-            // if max_dist >= FAR_MOVE_DISTANCE {
-            //     if let Some(border_dist) = ray_border_distance(from, dir_x, dir_y) {
-            //         if border_dist >= FAR_MOVE_BORDER_SAFETY {
-            //             target_dists.push(FAR_MOVE_DISTANCE);
-            //         }
-            //     }
-            // }
-
-            // CRITICAL: Always add direct capture distance if there's an enemy piece
-            // This is O(1) via spatial indices and covers ANY distance
-            if closest_dist < i64::MAX && closest_is_enemy {
-                target_dists.push(closest_dist);
-            }
-
-            // Cache key: (x, y, direction_index) where direction_index encodes (dir_x, dir_y)
-            // Direction encoding: 0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE
+            // Direction encoding for cache: 0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE
             let dir_index: u8 = match (dir_x.signum(), dir_y.signum()) {
                 (1, 0) => 0,   // East
                 (1, 1) => 1,   // NE
@@ -2290,49 +2285,61 @@ fn generate_sliding_moves_impl(
 
             // Check cache first
             let cached = indices.slider_cache.borrow().get(&cache_key).cloned();
-            if let Some(cached_dists) = cached {
-                // Use cached interception distances, but still add blocker wiggle room
-                target_dists.extend(cached_dists.iter().filter(|&&d| d <= interception_limit));
-            } else {
-                // Compute interception distances by iterating PIECES on the ray, not squares
-                // This is O(pieces_on_line) which is typically small
+            let mut target_dists: Vec<i64> = Vec::with_capacity(64);
 
+            if let Some(cached_dists) = cached {
+                target_dists.extend(cached_dists);
+            } else {
+                dist_counts.clear();
+                royal_dists.clear();
+
+                // 1. Direct Ray iteration (O(pieces_on_line))
                 if is_horizontal {
-                    // Horizontal ray: iterate pieces on the same row
                     if let Some(pieces_on_row) = indices.rows.get(&from.y) {
                         for &(px, packed) in pieces_on_row {
                             let dx = px - from.x;
-                            // Skip pieces not in our direction or at origin
                             if dx == 0 || dx.signum() != dir_x.signum() {
                                 continue;
                             }
                             let piece_dist = dx.abs();
-                            // Only interception for pieces within limit (direct capture handled separately)
-                            if piece_dist > interception_limit {
+                            if piece_dist > max_dist && piece_dist != closest_dist {
                                 continue;
                             }
+
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
+                            let is_target_royal = p.piece_type().is_royal();
+
+                            // Friendly pieces only act as "targets" (interceptions) within short range
+                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
+                            {
+                                continue;
+                            }
+
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
-                            let is_royal = piece.piece_type().is_royal();
-                            let wiggle =
-                                distance_wiggle(piece_dist, is_enemy, base_wiggle, is_royal);
+                            let is_our_royal = piece.piece_type().is_royal();
+                            let wiggle = distance_wiggle(
+                                piece_dist,
+                                is_enemy,
+                                base_wiggle,
+                                is_our_royal || is_target_royal,
+                            );
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
-                                if d > 0 && d <= interception_limit {
-                                    target_dists.push(d);
+                                add_dist(&mut dist_counts, d, max_dist);
+                                if is_target_royal {
+                                    royal_dists.insert(d);
                                 }
                             }
                         }
                     }
                 } else if is_vertical {
-                    // Vertical ray: iterate pieces on the same column
                     if let Some(pieces_on_col) = indices.cols.get(&from.x) {
                         for &(py, packed) in pieces_on_col {
                             let dy = py - from.y;
@@ -2340,31 +2347,43 @@ fn generate_sliding_moves_impl(
                                 continue;
                             }
                             let piece_dist = dy.abs();
-                            if piece_dist > interception_limit {
+                            if piece_dist > max_dist && piece_dist != closest_dist {
                                 continue;
                             }
+
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
+                            let is_target_royal = p.piece_type().is_royal();
+
+                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
+                            {
+                                continue;
+                            }
+
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
-                            let is_royal = piece.piece_type().is_royal();
-                            let wiggle =
-                                distance_wiggle(piece_dist, is_enemy, base_wiggle, is_royal);
+                            let is_our_royal = piece.piece_type().is_royal();
+                            let wiggle = distance_wiggle(
+                                piece_dist,
+                                is_enemy,
+                                base_wiggle,
+                                is_our_royal || is_target_royal,
+                            );
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
-                                if d > 0 && d <= interception_limit {
-                                    target_dists.push(d);
+                                add_dist(&mut dist_counts, d, max_dist);
+                                if is_target_royal {
+                                    royal_dists.insert(d);
                                 }
                             }
                         }
                     }
                 } else {
-                    // Diagonal ray: iterate pieces on the same diagonal
                     let is_diag1_dir = dir_x == dir_y;
                     let diag_key = if is_diag1_dir {
                         from.x - from.y
@@ -2384,177 +2403,155 @@ fn generate_sliding_moves_impl(
                                 continue;
                             }
                             let piece_dist = dx.abs();
-                            if piece_dist > interception_limit {
+                            if piece_dist > max_dist && piece_dist != closest_dist {
                                 continue;
                             }
+
                             let p = Piece::from_packed(packed);
                             let is_enemy =
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
+                            let is_target_royal = p.piece_type().is_royal();
+
+                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
+                            {
+                                continue;
+                            }
+
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
                             } else {
                                 FRIEND_WIGGLE
                             };
-                            let is_royal = piece.piece_type().is_royal();
-                            let wiggle =
-                                distance_wiggle(piece_dist, is_enemy, base_wiggle, is_royal);
+                            let is_our_royal = piece.piece_type().is_royal();
+                            let wiggle = distance_wiggle(
+                                piece_dist,
+                                is_enemy,
+                                base_wiggle,
+                                is_our_royal || is_target_royal,
+                            );
 
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
-                                if d > 0 && d <= interception_limit {
-                                    target_dists.push(d);
+                                add_dist(&mut dist_counts, d, max_dist);
+                                if is_target_royal {
+                                    royal_dists.insert(d);
                                 }
                             }
                         }
                     }
                 }
 
-                // Add cross-ray attack targets: pieces on perpendicular rays that we could
-                // attack from squares along our current ray direction
-                let mut cross_targets = Vec::with_capacity(8);
+                // 2. Cross-Ray pieces
                 let cr_ctx = CrossRayContext {
                     board,
                     from,
-                    max_dist: interception_limit, // Use interception_limit here
+                    max_dist,
                     indices,
                     our_color,
                     piece_type: piece.piece_type(),
                     enemy_wiggle: ENEMY_WIGGLE,
                     friend_wiggle: FRIEND_WIGGLE,
-                    enemy_king_pos: enemy_king_pos.cloned(),
                 };
-                find_cross_ray_targets_into(&cr_ctx, dir_x, dir_y, &mut cross_targets);
-                target_dists.extend(cross_targets);
+                find_cross_ray_targets_into(
+                    &cr_ctx,
+                    dir_x,
+                    dir_y,
+                    &mut dist_counts,
+                    &mut royal_dists,
+                );
 
-                // Store computed distances in cache
+                // 3. Check targets (O(1))
+                if let Some(ek) = ek_ref {
+                    let kx = ek.x;
+                    let ky = ek.y;
+                    let pt = piece.piece_type();
+                    let can_ortho = matches!(
+                        pt,
+                        PieceType::Queen
+                            | PieceType::Rook
+                            | PieceType::RoyalQueen
+                            | PieceType::Chancellor
+                            | PieceType::Amazon
+                    );
+                    let can_diag = matches!(
+                        pt,
+                        PieceType::Queen
+                            | PieceType::Bishop
+                            | PieceType::RoyalQueen
+                            | PieceType::Archbishop
+                            | PieceType::Amazon
+                    );
+
+                    if is_horizontal {
+                        if can_ortho && kx != from.x && (kx - from.x).signum() == dir_x.signum() {
+                            let d = (kx - from.x).abs();
+                            add_dist(&mut dist_counts, d, max_dist);
+                            royal_dists.insert(d);
+                        }
+                        if can_diag && from.y != ky {
+                            let diff = (from.y - ky).abs();
+                            for tx in [kx + diff, kx - diff] {
+                                if tx != from.x && (tx - from.x).signum() == dir_x.signum() {
+                                    let d = (tx - from.x).abs();
+                                    add_dist(&mut dist_counts, d, max_dist);
+                                    royal_dists.insert(d);
+                                }
+                            }
+                        }
+                    } else if is_vertical {
+                        if can_ortho && ky != from.y && (ky - from.y).signum() == dir_y.signum() {
+                            let d = (ky - from.y).abs();
+                            add_dist(&mut dist_counts, d, max_dist);
+                            royal_dists.insert(d);
+                        }
+                        if can_diag && from.x != kx {
+                            let diff = (from.x - kx).abs();
+                            for ty in [ky + diff, ky - diff] {
+                                if ty != from.y && (ty - from.y).signum() == dir_y.signum() {
+                                    let d = (ty - from.y).abs();
+                                    add_dist(&mut dist_counts, d, max_dist);
+                                    royal_dists.insert(d);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. Final Filtering & Cache Storage
+                let mut shared_targets = Vec::with_capacity(dist_counts.len());
+                // Always add short-range wiggle room targets (up to max_dist)
+                for d in 1..=ENEMY_WIGGLE {
+                    if d <= max_dist {
+                        shared_targets.push(d);
+                    }
+                }
+                // Also always add direct capture distance if it's an enemy
+                if closest_dist < i64::MAX && closest_is_enemy {
+                    shared_targets.push(closest_dist);
+                }
+
+                for (&d, &count) in &dist_counts {
+                    if d <= BASE_INTERCEPTION_DIST || count >= 2 || royal_dists.contains(&d) {
+                        shared_targets.push(d);
+                    }
+                }
+                shared_targets.sort_unstable();
+                shared_targets.dedup();
+
+                target_dists.extend(shared_targets.clone());
                 indices
                     .slider_cache
                     .borrow_mut()
-                    .insert(cache_key, target_dists.clone());
-            } // end else (cache miss)
-
-            // Add blocker wiggle room (up to max_dist)
-            if closest_dist < i64::MAX {
-                let wr = if closest_is_enemy {
-                    ENEMY_WIGGLE
-                } else {
-                    FRIEND_WIGGLE
-                };
-                let start = closest_dist.saturating_sub(wr).max(1);
-                for d in start..=closest_dist {
-                    if d <= max_dist {
-                        target_dists.push(d);
-                    }
-                }
+                    .insert(cache_key, shared_targets);
             }
 
-            // Add check target: if we have enemy king position, compute distance for check
-            // This is O(1) per direction - much simpler and faster than scanning
-            if let Some(ek) = ek_ref {
-                let kx = ek.x;
-                let ky = ek.y;
-                let piece_type = piece.piece_type();
-
-                // Check if piece can attack orthogonally (Rook, Queen, Chancellor, Amazon)
-                let can_ortho = matches!(
-                    piece_type,
-                    crate::board::PieceType::Queen
-                        | crate::board::PieceType::Rook
-                        | crate::board::PieceType::RoyalQueen
-                        | crate::board::PieceType::Chancellor
-                        | crate::board::PieceType::Amazon
-                );
-
-                // Check if piece can attack diagonally (Bishop, Queen, Archbishop, Amazon)
-                let can_diag = matches!(
-                    piece_type,
-                    crate::board::PieceType::Queen
-                        | crate::board::PieceType::Bishop
-                        | crate::board::PieceType::RoyalQueen
-                        | crate::board::PieceType::Archbishop
-                        | crate::board::PieceType::Amazon
-                );
-
-                if is_horizontal {
-                    // Horizontal ray: moving along y=from.y with varying x
-
-                    // 1. ORTHOGONAL CHECK: If king.x is reachable, we can attack vertically
-                    // Distance to reach x=kx is |kx - from.x| in our direction
-                    if can_ortho && kx != from.x {
-                        let dx = kx - from.x;
-                        if dx.signum() == dir_x.signum() {
-                            let d = dx.abs();
-                            if d <= max_dist && d <= MAX_INTERCEPTION_DIST {
-                                target_dists.push(d);
-                            }
-                        }
-                    }
-
-                    // 2. DIAGONAL CHECK: Find column where diagonal check is possible
-                    // From (tx, from.y), can attack (kx, ky) diagonally if |tx - kx| == |from.y - ky|
-                    if can_diag && from.y != ky {
-                        let diff = (from.y - ky).abs();
-                        for target_x in [kx + diff, kx - diff] {
-                            let dx = target_x - from.x;
-                            if dx != 0 && dx.signum() == dir_x.signum() {
-                                let d = dx.abs();
-                                if d <= max_dist && d <= MAX_INTERCEPTION_DIST {
-                                    target_dists.push(d);
-                                }
-                            }
-                        }
-                    }
-                } else if is_vertical {
-                    // Vertical ray: moving along x=from.x with varying y
-
-                    // 1. ORTHOGONAL CHECK: If king.y is reachable, we can attack horizontally
-                    if can_ortho && ky != from.y {
-                        let dy = ky - from.y;
-                        if dy.signum() == dir_y.signum() {
-                            let d = dy.abs();
-                            if d <= max_dist && d <= MAX_INTERCEPTION_DIST {
-                                target_dists.push(d);
-                            }
-                        }
-                    }
-
-                    // 2. DIAGONAL CHECK: Find row where diagonal check is possible
-                    // From (from.x, ty), can attack (kx, ky) diagonally if |from.x - kx| == |ty - ky|
-                    if can_diag && from.x != kx {
-                        let diff = (from.x - kx).abs();
-                        for target_y in [ky + diff, ky - diff] {
-                            let dy = target_y - from.y;
-                            if dy != 0 && dy.signum() == dir_y.signum() {
-                                let d = dy.abs();
-                                if d <= max_dist && d <= MAX_INTERCEPTION_DIST {
-                                    target_dists.push(d);
-                                }
-                            }
-                        }
-                    }
-                }
-                // TODO: diagonal rays could check for orthogonal attacks if needed
-            }
-
-            // Sort and deduplicate
-            target_dists.sort_unstable();
-            target_dists.dedup();
-
-            // Generate moves
+            // Generate moves from target_dists
             for d in target_dists {
                 if d <= 0 || d > max_dist {
                     continue;
                 }
-
-                // Skip if this is a friendly blocker square
+                // Skip friendly blocker
                 if d == closest_dist && !closest_is_enemy {
-                    continue;
-                }
-
-                let sq_x = from.x + dir_x * d;
-                let sq_y = from.y + dir_y * d;
-
-                if !in_bounds(sq_x, sq_y) {
                     continue;
                 }
 
@@ -2565,7 +2562,11 @@ fn generate_sliding_moves_impl(
                     continue;
                 }
 
-                out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                let sq_x = from.x + dir_x * d;
+                let sq_y = from.y + dir_y * d;
+                if in_bounds(sq_x, sq_y) {
+                    out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                }
             }
         }
     }
@@ -3834,5 +3835,42 @@ mod tests {
         // Cumulative: hop 0 = (-2, -1), hop 1 = (-3, -3)
         assert_eq!(ROSE_SPIRALS[0][0][0], (-2, -1), "First CCW hop from dir 0");
         assert_eq!(ROSE_SPIRALS[0][0][1], (-3, -3), "Second CCW hop from dir 0");
+    }
+    #[test]
+    fn test_long_distance_royal_targeting() {
+        use crate::game::GameState;
+
+        let mut game = GameState::new();
+        // White Queen at (10, -30)
+        game.board
+            .set_piece(10, -30, Piece::new(PieceType::Queen, PlayerColor::White));
+        // Black King at (77, -41)
+        game.board
+            .set_piece(77, -41, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // Recompute indices and king positions
+        game.recompute_piece_counts();
+
+        let ctx = MoveGenContext {
+            special_rights: &game.special_rights,
+            en_passant: &game.en_passant,
+            game_rules: &game.game_rules,
+            indices: &game.spatial_indices,
+            enemy_king_pos: game.black_king_pos.as_ref(),
+        };
+
+        let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
+
+        let target_from = Coordinate::new(10, -30);
+        let target_to = Coordinate::new(77, -30);
+
+        let found = moves
+            .iter()
+            .any(|m| m.from == target_from && m.to == target_to);
+
+        assert!(
+            found,
+            "Move (10,-30) -> (77,-30) should be generated to target King at (77,-41)"
+        );
     }
 }
