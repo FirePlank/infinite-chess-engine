@@ -2463,7 +2463,7 @@ mod tests {
         game.black_promo_rank = 1;
         game
     }
-    
+
     #[test]
     fn test_is_between() {
         assert!(is_between(5, 3, 7));

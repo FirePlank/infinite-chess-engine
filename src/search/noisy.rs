@@ -60,23 +60,27 @@ fn evaluate_with_noise(game: &GameState, noise_amp: i32) -> i32 {
 pub fn get_best_move_with_noise(
     game: &mut GameState,
     max_depth: usize,
-    time_limit_ms: u128,
+    opt_time_ms: u128,
+    max_time_ms: u128,
     noise_amp: i32,
     silent: bool,
+    is_soft_limit: bool,
 ) -> Option<(Move, i32, SearchStats)> {
     game.recompute_piece_counts();
     game.recompute_correction_hashes();
 
     if noise_amp <= 0 {
-        return super::get_best_move(game, max_depth, time_limit_ms, silent);
+        return super::get_best_move(game, max_depth, opt_time_ms, silent, is_soft_limit);
     }
 
     super::GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();
-        let searcher = opt.get_or_insert_with(|| super::Searcher::new(time_limit_ms));
+        let searcher = opt.get_or_insert_with(|| super::Searcher::new(max_time_ms));
 
         searcher.new_search();
-        searcher.hot.time_limit_ms = time_limit_ms;
+        searcher
+            .hot
+            .set_time_limits(opt_time_ms, max_time_ms, is_soft_limit);
         searcher.silent = silent;
         searcher.hot.timer.reset();
 
@@ -172,48 +176,35 @@ fn search_with_searcher_noisy(
             break;
         }
 
+        // Dynamic Time Management - same as search.rs
         if searcher.hot.time_limit_ms != u128::MAX {
-            let elapsed = searcher.hot.timer.elapsed_ms();
-            let limit = searcher.hot.time_limit_ms;
+            let elapsed = searcher.hot.timer.elapsed_ms() as f64;
+            let hard_limit = searcher.hot.maximum_time_ms as f64;
 
-            if best_move.is_some() {
-                let mut factor = 1.1_f64 - 0.03_f64 * (stability as f64);
-                if factor < 0.5 {
-                    factor = 0.5;
-                }
-                if has_prev_iter_score
-                    && best_score - prev_iter_score > super::params::aspiration_max_window()
-                {
-                    factor *= 1.1;
-                }
-                if factor > 1.0 {
-                    factor = 1.0;
-                }
+            // Simple stopping: use optimum time with a small stability factor
+            let mut total_time = searcher.hot.optimum_time_ms as f64;
 
-                let ideal_ms = (limit as f64 * factor) as u128;
-                let soft_limit = std::cmp::min(limit, ideal_ms);
-
-                if elapsed >= soft_limit {
-                    break;
-                }
-
-                prev_iter_score = best_score;
-                has_prev_iter_score = true;
+            // Reduce time if best move is stable
+            if stability >= 3 {
+                total_time *= 0.7;
+            } else if stability >= 1 {
+                total_time *= 0.85;
             }
 
-            let cutoff = if limit <= 300 {
-                limit / 2
-            } else if limit <= 2000 {
-                limit.saturating_sub(250)
-            } else if limit <= 8000 {
-                limit.saturating_sub(500)
-            } else {
-                limit.saturating_sub(2000)
-            };
+            // Increase time if score is dropping
+            if has_prev_iter_score && best_score < prev_iter_score - 50 {
+                total_time *= 1.3;
+            }
 
-            if elapsed >= cutoff {
+            // Cap at maximum
+            let effective_limit = total_time.min(hard_limit);
+
+            if elapsed > effective_limit {
                 break;
             }
+
+            prev_iter_score = best_score;
+            has_prev_iter_score = true;
         }
     }
 
@@ -1262,7 +1253,7 @@ mod tests {
         assert!(!moves.is_empty(), "Should have legal moves");
 
         // Depth 2, sufficient time, some noise
-        let res = get_best_move_with_noise(&mut game, 2, 5000, 10, true);
+        let res = get_best_move_with_noise(&mut game, 2, 5000, 5000, 10, true, false);
         if res.is_none() {
             println!("Search returned None!");
         }

@@ -4,7 +4,7 @@ use crate::moves::Move;
 
 use super::{INFINITY, MATE_SCORE, MATE_VALUE};
 
-/// Stockfish: value_to_tt
+/// Value adjustment for storage:
 /// Adjusts a mate score from "plies to mate from the root" to
 /// "plies to mate from the current position" for storage in TT.
 /// Standard scores are unchanged.
@@ -41,7 +41,7 @@ pub struct TTStoreParams {
     pub ply: usize,
 }
 
-/// Stockfish: value_from_tt
+/// Value adjustment for retrieval:
 /// Inverse of value_to_tt: adjusts TT score back to root-relative.
 /// Downgrades mate scores that are unreachable due to the 50-move rule.
 ///
@@ -519,7 +519,7 @@ impl TranspositionTable {
         for (i, entry) in bucket.entries.iter_mut().enumerate() {
             // If we find our own position
             if entry.key == hash {
-                // Stockfish: Preserve the old ttmove if we don't have a new one
+                // Preserve the existing move if no new move is provided:
                 let move_to_store = if best_move.is_some() {
                     best_move.as_ref().map_or(TTMove::none(), TTMove::from_move)
                 } else {
@@ -527,8 +527,7 @@ impl TranspositionTable {
                     entry.tt_move
                 };
 
-                // Stockfish replacement condition (line 101):
-                // b == BOUND_EXACT || d - OFFSET + 2*pv > depth8 - 4 || relative_age != 0
+                // Replacement condition for existing entries:
                 // PV bonus = +2 for exact bounds, threshold = old_depth - 4
                 let pv_bonus = if flag == TTFlag::Exact { 2 } else { 0 };
                 let new_adjusted_depth = depth as i32 + pv_bonus;
@@ -550,8 +549,8 @@ impl TranspositionTable {
                         tt_move: move_to_store,
                     };
                 } else if entry.depth >= 5 && entry.flag() != TTFlag::Exact {
-                    // Stockfish (line 113-114): Soft aging - decrement depth
-                    // for deep non-exact entries to make them easier to replace later
+                    // Apply soft aging to deep non-exact entries:
+                    // Makes them easier to replace in future iterations
                     entry.depth = entry.depth.saturating_sub(1);
                 }
                 return;

@@ -189,3 +189,4 @@ This project is licensed under the GNU General Public License v3.0 - see [LICENS
 
 - [Infinite Chess](https://www.infinitechess.org/) - Play infinite chess online
 - [Chess Programming Wiki](https://www.chessprogramming.org/) - Engine development resources
+- [Stockfish](https://stockfishchess.org/) - The world's strongest open-source chess engine

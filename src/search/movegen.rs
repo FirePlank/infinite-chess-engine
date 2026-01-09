@@ -1,13 +1,13 @@
-//! Stockfish-style staged move generation for efficient alpha-beta search.
+//! Staged move generation for efficient alpha-beta search.
 //!
-//! Implements exact Stockfish movepick.cpp pattern:
+//! Implements a staged move generation pattern:
 //! 1. TT move (hash move) - highest priority
-//! 2. CAPTURE_INIT: Generate + score + sort_unstable_by
+//! 2. CAPTURE_INIT: Generate + score + sort
 //! 3. GOOD_CAPTURE: Select with SEE filter, bad captures collected
-//! 4. QUIET_INIT: Generate + score + sort_unstable_by (skip if skipQuiets)
-//! 5. GOOD_QUIET: Select with score > goodQuietThreshold
+//! 4. QUIET_INIT: Generate + score + sort (skip if skip_quiets)
+//! 5. GOOD_QUIET: Select with score > boundary
 //! 6. BAD_CAPTURE: Iterate collected bad captures
-//! 7. BAD_QUIET: Select with score <= goodQuietThreshold
+//! 7. BAD_QUIET: Select with score <= boundary
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
 use super::{
@@ -19,10 +19,10 @@ use crate::evaluation::get_piece_value;
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_quiet_moves_into};
 
-/// Good quiet threshold - matches Stockfish exactly
+/// Good quiet threshold - controls the boundary between good and bad quiet moves.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
-/// Stages of move generation (hybrid: Stockfish optimizations + trusted killer stages).
+/// Stages of move generation (includes captures, killers, and quiet moves).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveStage {
     TTMove,
@@ -53,7 +53,7 @@ pub struct StagedMoveGen {
     // TT move
     tt_move: Option<Move>,
 
-    // Unified move buffer (like Stockfish's moves[])
+    // Unified move buffer
     moves: Vec<ScoredMove>,
     cur: usize,              // Current position in buffer
     end_bad_captures: usize, // End of bad captures section
@@ -71,7 +71,7 @@ pub struct StagedMoveGen {
     killer1: Option<Move>,
     killer2: Option<Move>,
 
-    // Skip quiets flag (Stockfish-style LMP)
+    // Skip quiets flag (for LMP)
     skip_quiets: bool,
 
     // Excluded move (for singular extension)
@@ -135,7 +135,7 @@ impl StagedMoveGen {
         r#gen
     }
 
-    /// Signal to skip quiet moves entirely (Stockfish-style LMP).
+    /// Signal to skip quiet moves entirely (LMP).
     #[inline]
     pub fn skip_quiet_moves(&mut self) {
         self.skip_quiets = true;
@@ -206,24 +206,22 @@ impl StagedMoveGen {
         }
     }
 
-    /// Score capture move (Stockfish formula: captureHistory + 7 * PieceValue)
+    /// Score capture move (combines capture history and piece values)
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             let victim_val = get_piece_value(target.piece_type());
             let cap_hist = searcher.capture_history[m.piece.piece_type() as usize]
                 [target.piece_type() as usize];
-            // Stockfish: (*captureHistory)[pc][to][type_of(capturedPiece)] + 7 * int(PieceValue[capturedPiece])
             cap_hist + 7 * victim_val
         } else {
             0
         }
     }
 
-    /// Score quiet move (Stockfish formula with histories)
-    /// Stockfish scoring:
-    /// - 2 * mainHistory
-    /// - continuationHistory at indices 0, 1, 2, 3, 5
-    /// - check bonus: 16384 if move gives check and SEE >= -75
+    /// Score quiet move using multiple history heuristics:
+    /// - main history
+    /// - continuation history
+    /// - check bonus if move gives check and SEE >= -75
     fn score_quiet(&self, game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         let mut score: i32 = DEFAULT_SORT_QUIET;
         let ply = self.ply;
@@ -249,11 +247,11 @@ impl StagedMoveGen {
             }
         }
 
-        // Main history (2x weight - Stockfish: 2 * (*mainHistory)[us][m.raw()])
+        // Main history
         let idx = hash_move_dest(m);
         score += 2 * searcher.history[m.piece.piece_type() as usize][idx];
 
-        // Continuation history - Stockfish uses indices 0, 1, 2, 3, 5
+        // Continuation history using multiple plies of history
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
 
@@ -271,7 +269,7 @@ impl StagedMoveGen {
             }
         }
 
-        // Check bonus: Stockfish gives 16384 for moves that give check
+        // Give a bonus for moves that place the king in check
         // if SEE >= -75 (to avoid giving bonus to bad checks)
         // Use O(1) hash lookup for knights/pawns, inline check for sliders
         let gives_check = Self::move_gives_check_fast(game, m);
@@ -282,9 +280,7 @@ impl StagedMoveGen {
             }
         }
 
-        // Low Ply History: Stockfish:
-        // if (ply < LOW_PLY_HISTORY_SIZE)
-        //     m.value += 8 * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
+        // Low Ply History:
         if ply < LOW_PLY_HISTORY_SIZE {
             let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
             score += 8 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
@@ -364,7 +360,7 @@ impl StagedMoveGen {
         }
     }
 
-    /// Get next move (Stockfish-style next_move())
+    /// Get next move from the current stage.
     pub fn next(&mut self, game: &GameState, searcher: &Searcher) -> Option<Move> {
         loop {
             match self.stage {
@@ -448,8 +444,7 @@ impl StagedMoveGen {
 
                 MoveStage::GoodCapture => {
                     // Select captures with SEE filter
-                    // Stockfish: pos.see_ge(*cur, -cur->value / 18)
-                    // Bad captures are swapped to endBadCaptures region at the front
+                    // Bad captures are swapped to end_bad_captures region at the front
                     while self.cur < self.end_captures {
                         let see_threshold = -self.moves[self.cur].score / 18;
                         if static_exchange_eval(game, &self.moves[self.cur].m) >= see_threshold {
@@ -457,8 +452,7 @@ impl StagedMoveGen {
                             self.cur += 1;
                             return Some(m);
                         } else {
-                            // Stockfish: std::swap(*endBadCaptures++, *cur)
-                            // Swap this bad capture to the endBadCaptures position
+                            // Swap this bad capture to the end_bad_captures position
                             self.moves.swap(self.end_bad_captures, self.cur);
                             self.end_bad_captures += 1;
                         }
@@ -561,7 +555,7 @@ impl StagedMoveGen {
                 }
 
                 MoveStage::BadCapture => {
-                    // Stockfish: iterate bad captures (swapped to front during GOOD_CAPTURE)
+                    // Iterate bad captures (swapped to front during GOOD_CAPTURE)
                     if self.cur < self.end_bad_captures {
                         let m = self.moves[self.cur].m;
                         self.cur += 1;

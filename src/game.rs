@@ -223,7 +223,7 @@ pub struct GameState {
     /// Material configuration hash for correction history.
     #[serde(skip)]
     pub material_hash: u64,
-    /// Stockfish-style repetition info: distance to previous occurrence of same position.
+    /// Repetition information: distance to previous occurrence of same position.
     /// 0 = no repetition, positive = distance to first occurrence, negative = threefold.
     /// Computed during make_move for O(1) is_repetition check.
     #[serde(skip)]
@@ -1192,10 +1192,10 @@ impl GameState {
         !has_king
     }
 
-    /// Stockfish-style repetition detection for search.
+    /// Repetition detection for search.
     /// Returns true if the current position should be treated as a draw due to repetition.
     ///
-    /// Matches Stockfish's logic exactly: `repetition != 0 && repetition < ply`
+    /// Logic for draw detection: `repetition != 0 && repetition < ply`
     ///
     /// For twofold (repetition > 0): Only a draw if the repetition distance is less than ply,
     /// meaning the first occurrence is within the search tree.
@@ -1208,7 +1208,7 @@ impl GameState {
         if self.null_moves > 0 {
             return false;
         }
-        // Stockfish: return st->repetition && st->repetition < ply;
+        // Result is true if a repetition occurred within the current search tree.
         // This works for both positive (twofold) and negative (threefold) values.
         // Negative values are always < positive ply, so threefold always returns true for ply > 0.
         self.repetition != 0 && self.repetition < (ply as i32)
@@ -2972,7 +2972,7 @@ impl GameState {
         self.hash ^= SIDE_KEY;
         self.turn = self.turn.opponent();
 
-        // Stockfish-style repetition detection: compute distance to previous occurrence
+        // Compute distance to previous occurrence for repetition detection:
         // of same position. 0 = no repetition, positive = distance to twofold, negative = threefold.
         self.repetition = 0;
         let end = (self.halfmove_clock as usize).min(self.hash_stack.len());

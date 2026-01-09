@@ -108,7 +108,7 @@ pub fn score_move(
                 }
             }
 
-            // Low-ply history bonus (Stockfish technique)
+            // Low-ply history bonus:
             if ply < LOW_PLY_HISTORY_SIZE {
                 let move_hash = hash_move_for_lowply(m);
                 score += searcher.low_ply_history[ply][move_hash] / 4;

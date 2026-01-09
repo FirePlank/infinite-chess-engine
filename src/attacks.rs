@@ -1,8 +1,8 @@
 //! Precomputed attack patterns for fast attack detection.
 //!
 //! This module provides static offset arrays for leaper pieces and helpers
-//! for determining piece movement capabilities. Analogous to Stockfish's
-//! PseudoAttacks tables but adapted for an infinite board.
+//! for determining piece movement capabilities. Analogous to bitboard-based
+//! attack tables but adapted for an infinite board.
 
 use crate::board::PieceType;
 

@@ -83,7 +83,7 @@ pub fn neighbor_index(dx: i64, dy: i64) -> usize {
 /// An 8×8 tile containing occupancy bitboards and packed piece data.
 /// Aligned to 64 bytes for cache efficiency.
 ///
-/// BITBOARD ARCHITECTURE: Per-piece-type occupancy for Stockfish-style move gen.
+/// BITBOARD ARCHITECTURE: Per-piece-type occupancy for optimized move generation.
 /// This allows O(popcount) iteration over specific piece types without scanning.
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
@@ -97,7 +97,7 @@ pub struct Tile {
     /// Bitboard of void/obstacle squares (non-capturable blockers)
     pub occ_void: u64,
 
-    // ===== PER-PIECE-TYPE BITBOARDS (Stockfish pattern) =====
+    // ===== PER-PIECE-TYPE BITBOARDS =====
     /// Bitboard of pawns
     pub occ_pawns: u64,
     /// Bitboard of knights (including fairy leapers that move like knights)
@@ -162,7 +162,7 @@ impl Tile {
     }
 
     /// Set a piece at local index.
-    /// Updates all piece-type specific bitboards for Stockfish-style move gen.
+    /// Updates all piece-type specific bitboards for efficient move generation.
     #[inline]
     pub fn set_piece(&mut self, idx: usize, piece: Piece) {
         use crate::board::PieceType;
@@ -189,7 +189,7 @@ impl Tile {
             }
         }
 
-        // Per-piece-type bitboards (Stockfish pattern)
+        // Per-piece-type bitboards
         match piece.piece_type() {
             PieceType::Pawn => self.occ_pawns |= bit,
             PieceType::Knight => self.occ_knights |= bit,

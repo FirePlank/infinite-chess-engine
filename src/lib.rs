@@ -598,7 +598,7 @@ impl Engine {
 
     pub fn get_best_move(&mut self) -> JsValue {
         if let Some((best_move, _eval, _stats)) =
-            search::get_best_move(&mut self.game, 50, u128::MAX, false)
+            search::get_best_move(&mut self.game, 50, u128::MAX, false, true)
         {
             let js_move = JsMove {
                 from: format!("{},{}", best_move.from.x, best_move.from.y),
@@ -644,96 +644,134 @@ impl Engine {
     }
 
     /// Derive an effective time limit for this move from the current clock and
-    /// game state. When a clock is present (timed game), we ignore the
-    /// caller-provided fixed per-move limit and instead base the allocation on
-    /// remaining time, increment, and a simple game-phase heuristic.
+    /// game state. Returns `(time_ms, is_soft_limit)`.
     ///
-    /// When no clock is present (infinite/untimed), we fall back to the
-    /// requested per-move limit.
-    fn effective_time_limit_ms(&self, requested_limit_ms: u32) -> u128 {
+    /// **is_soft_limit** indicates whether the returned time is a suggestion
+    /// (where exceeding it slightly is acceptable) vs a hard constraint.
+    /// - Soft limit: untimed/infinite games with a suggested per-move limit
+    /// - Hard limit: timed games where exceeding the budget risks flagging
+    ///
+    /// Uses logarithmic time formulas for proper scaling across
+    /// different time controls (blitz, rapid, classical).
+    fn effective_time_limit_ms(&self, requested_limit_ms: u32) -> (u128, u128, bool) {
         let Some(clock) = self.clock else {
-            // No clock info: respect the fixed per-move limit.
-            return requested_limit_ms as u128;
+            // No clock info: use the fixed per-move limit as a soft limit.
+            // The search can use up to this time freely without flagging risk.
+            let limit = requested_limit_ms as u128;
+            return (limit, limit, true);
         };
 
         // Decide which side's clock to use.
         let (remaining_ms_raw, inc_ms_raw) = match self.game.turn {
             PlayerColor::White => (clock.wtime, clock.winc),
             PlayerColor::Black => (clock.btime, clock.binc),
-            // Neutral side-to-move should not normally happen; fall back to
-            // the requested limit in that case.
-            PlayerColor::Neutral => return requested_limit_ms as u128,
+            // Neutral side-to-move should not happen; fall back to
+            // the requested limit as soft.
+            PlayerColor::Neutral => {
+                let limit = requested_limit_ms as u128;
+                return (limit, limit, true);
+            }
         };
 
-        // If there is no usable clock information, fall back to the
-        // requested fixed limit.
+        // If there is no usable clock information, use requested limit as soft.
         if remaining_ms_raw == 0 && inc_ms_raw == 0 {
-            return requested_limit_ms as u128;
+            let limit = requested_limit_ms as u128;
+            return (limit, limit, true);
         }
 
-        // Treat a zero remaining time but positive increment as a very short
-        // remaining time budget based mostly on the increment.
+        // Handle zero remaining time with positive increment (increment-only)
         let remaining_ms = if remaining_ms_raw > 0 {
             remaining_ms_raw
         } else {
-            // At least give ourselves a small buffer.
+            // At least give ourselves a small buffer based on increment.
             inc_ms_raw.max(500)
         };
 
         let inc_ms = inc_ms_raw;
 
-        // Crude game phase estimation based on total material count. This
-        // does not need to be exact; it only guides relative time allocation.
-        let total_pieces: u32 =
-            (self.game.white_piece_count as u32).saturating_add(self.game.black_piece_count as u32);
+        // =========================================================================
+        // Dynamic Time Allocation
+        // Calculates optimal and maximum thinking time based on remaining budget.
+        // =========================================================================
 
-        // Opening: many pieces on the board -> be conservative.
-        // Middlegame: spend more.
-        // Endgame: spend the most per move (within reason).
-        let (moves_to_go, phase_factor): (u64, f64) = if total_pieces > 20 {
-            (30, 0.7)
-        } else if total_pieces > 10 {
-            (20, 1.0)
+        // Move overhead for communication latency
+        let move_overhead: u64 = 50;
+
+        // Calculate scaled time (remaining time minus one move overhead)
+        let scaled_time = remaining_ms.saturating_sub(move_overhead);
+
+        // Maximum move horizon (centiMTG = moves to go * 100)
+        // For games without movestogo, assume ~50 moves remaining
+        // If less than 1 second, gradually reduce moves to go estimate
+        let centi_mtg: i64 = if scaled_time >= 1000 {
+            5051 // 50.51 moves * 100
         } else {
-            (10, 1.2)
+            ((scaled_time as f64) * 5.051) as i64
         };
+        let centi_mtg = centi_mtg.max(100); // At least 1 move expected
 
-        let moves_to_go = moves_to_go.max(5);
-        let base_per_move = (remaining_ms / moves_to_go).max(10);
-        let phase_scaled = (base_per_move as f64 * phase_factor) as u64;
-        let inc_contrib = inc_ms / 2;
+        // timeLeft: total time we can use considering increment and overhead
+        // Formula: remaining + inc * (MTG - 1) - overhead * (2 + MTG)
+        // Division by 100 because centiMTG is in centimoves
+        let time_left = (remaining_ms as i64
+            + (inc_ms as i64 * (centi_mtg - 100) - move_overhead as i64 * (200 + centi_mtg)) / 100)
+            .max(1) as f64;
 
-        let mut alloc = phase_scaled.saturating_add(inc_contrib);
+        // original_time_adjust: logarithmic scaling factor based on available time
+        // This factor prevents overspending at longer time controls by adjusting the
+        // base allocation according to the total time budget.
+        // For 10s games: log10(10000) = 4, adjust = 0.3128*4 - 0.4354 = 0.816
+        // For 40m games: log10(2400000) = 6.38, adjust = 1.56
+        let original_time_adjust = (0.3128 * time_left.max(1.0).log10() - 0.4354).max(0.1);
 
-        // Hard caps:
-        //  - never spend more than half of the remaining time on a single move
-        //  - global cap to keep engine thinking time reasonable in the browser
-        let hard_cap_by_remaining = remaining_ms / 2;
-        let global_cap_ms: u64 = 15_000; // 15 seconds
-        let mut hard_cap = hard_cap_by_remaining.min(global_cap_ms);
+        // Log-based time constants for adaptive scaling
+        let log_time_sec = (scaled_time as f64 / 1000.0).max(0.001).log10();
 
-        // Ensure the cap is not unreasonably tiny when we still have some time.
-        if hard_cap < 250 {
-            hard_cap = 250;
-        }
+        // Optimum and maximum time constants
+        let opt_constant = (0.0032116 + 0.000321123 * log_time_sec).min(0.00508017);
+        let max_constant = (3.3977 + 3.0395 * log_time_sec).max(2.94761);
 
-        if alloc > hard_cap {
-            alloc = hard_cap;
-        }
+        // Game ply estimation based on fullmove number
+        // In chess, typically ply = (fullmove_number - 1) * 2 + (is_black ? 1 : 0)
+        let ply = self
+            .game
+            .fullmove_number
+            .saturating_sub(1)
+            .saturating_mul(2) as f64
+            + if self.game.turn == PlayerColor::Black {
+                1.0
+            } else {
+                0.0
+            };
 
-        // Do not go below a tiny minimum, but also don't exceed the sum of
-        // remaining time and one increment.
-        let min_think_ms: u64 = 50;
-        if alloc < min_think_ms {
-            alloc = min_think_ms;
-        }
+        // optScale: percentage of timeLeft to use for this move
+        // Multiply by originalTimeAdjust to prevent overspending
+        let opt_scale = ((0.0121431 + (ply + 2.94693_f64).powf(0.461073) * opt_constant)
+            .min(0.213035 * remaining_ms as f64 / time_left))
+            * original_time_adjust;
 
-        let max_reasonable = remaining_ms.saturating_add(inc_ms);
-        if alloc > max_reasonable {
-            alloc = max_reasonable.max(min_think_ms);
-        }
+        // maxScale: multiplier from optimum to maximum
+        let max_scale = max_constant.min(6.67704) + ply / 11.9847;
 
-        alloc as u128
+        // Calculate optimum and maximum allocations
+        let optimum = (opt_scale * time_left) as u64;
+        let maximum = ((max_scale * optimum as f64)
+            .min(0.825179 * remaining_ms as f64 - move_overhead as f64)
+            - 10.0)
+            .max(0.0) as u64;
+
+        // Apply sensible bounds
+        let min_think_ms: u64 = 10;
+        let optimum = optimum.max(min_think_ms);
+        let maximum = maximum.max(optimum); // Maximum should never be less than optimum
+
+        // Final safety cap: never exceed 82.5% of remaining time
+        let absolute_cap = ((remaining_ms as f64) * 0.825 - move_overhead as f64) as u64;
+        let optimum = optimum.min(absolute_cap.max(min_think_ms));
+        let maximum = maximum.min(absolute_cap.max(min_think_ms));
+
+        // Timed games are hard limits (risk of flagging).
+        (optimum as u128, maximum as u128, false)
     }
 
     /// Timed search. This also exposes the search evaluation as an `eval` field alongside the move,
@@ -751,9 +789,9 @@ impl Engine {
         // let legal_moves = self.game.get_legal_moves();
         // web_sys::console::log_1(&format!("Legal moves: {:?}", legal_moves).into());
 
-        let effective_limit = if time_limit_ms == 0 && max_depth.is_some() {
+        let (opt_time, max_time, is_soft_limit) = if time_limit_ms == 0 && max_depth.is_some() {
             // If explicit depth is requested with 0 time, treat as infinite time (fixed depth search)
-            u128::MAX
+            (u128::MAX, u128::MAX, true)
         } else {
             self.effective_time_limit_ms(time_limit_ms)
         };
@@ -797,13 +835,14 @@ impl Engine {
                         PlayerColor::Neutral => "n",
                     };
                     log(&format!(
-                        "info timealloc side {} wtime {} btime {} winc {} binc {} limit {} variant {} tt_cap {} tt_used {} tt_fill {}",
+                        "info timealloc side {} wtime {} btime {} winc {} binc {} limit {} soft {} variant {} tt_cap {} tt_used {} tt_fill {}",
                         side,
                         clock.wtime,
                         clock.btime,
                         clock.winc,
                         clock.binc,
-                        effective_limit,
+                        opt_time,
+                        is_soft_limit,
                         variant,
                         tt_cap,
                         tt_used,
@@ -812,13 +851,7 @@ impl Engine {
                 } else {
                     log(&format!(
                         "info timealloc no_clock requested_limit {} effective_limit {} max_depth {:?} variant {} tt_cap {} tt_used {} tt_fill {}",
-                        time_limit_ms,
-                        effective_limit,
-                        max_depth,
-                        variant,
-                        tt_cap,
-                        tt_used,
-                        tt_fill,
+                        time_limit_ms, opt_time, max_depth, variant, tt_cap, tt_used, tt_fill,
                     ));
                 }
             }
@@ -831,9 +864,11 @@ impl Engine {
             if let Some((bm, ev, _stats)) = search::get_best_move_with_noise(
                 &mut self.game,
                 depth,
-                effective_limit,
+                opt_time,
+                max_time,
                 effective_noise,
                 silent,
+                is_soft_limit,
             ) {
                 (bm, ev)
             } else {
@@ -841,9 +876,15 @@ impl Engine {
             }
         } else {
             // Normal search with thread_id for Lazy SMP
-            if let Some((bm, ev, _stats)) =
-                search::get_best_move_threaded(&mut self.game, depth, effective_limit, silent, tid)
-            {
+            if let Some((bm, ev, _stats)) = search::get_best_move_threaded(
+                &mut self.game,
+                depth,
+                opt_time,
+                max_time,
+                silent,
+                tid,
+                is_soft_limit,
+            ) {
                 (bm, ev)
             } else {
                 return JsValue::NULL;
@@ -878,12 +919,19 @@ impl Engine {
         multi_pv: Option<usize>,
         silent: Option<bool>,
     ) -> JsValue {
-        let effective_limit = self.effective_time_limit_ms(time_limit_ms);
+        let (opt_time, max_time, is_soft_limit) = self.effective_time_limit_ms(time_limit_ms);
         let silent = silent.unwrap_or(false);
         let multi_pv = multi_pv.unwrap_or(1).max(1);
 
-        let result =
-            search::get_best_moves_multipv(&mut self.game, 50, effective_limit, multi_pv, silent);
+        let result = search::get_best_moves_multipv(
+            &mut self.game,
+            50,
+            opt_time,
+            max_time,
+            multi_pv,
+            silent,
+            is_soft_limit,
+        );
 
         // Convert to JS-friendly format
         let js_lines: Vec<JsPVLine> = result

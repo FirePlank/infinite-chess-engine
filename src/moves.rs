@@ -585,7 +585,7 @@ pub fn get_legal_moves_into(
     out.clear();
 
     // BITBOARD: Use tile-based CTZ iteration for O(popcount) piece enumeration
-    // This is the Stockfish pattern: iterate occupied tiles, CTZ through occupancy bits
+    // Use tile-based CTZ iteration for O(popcount) piece enumeration:
     let is_white = turn == PlayerColor::White;
 
     for (cx, cy, tile) in board.tiles.iter() {

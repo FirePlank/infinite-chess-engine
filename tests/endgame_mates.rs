@@ -91,7 +91,7 @@ fn verify_can_mate(mut game: GameState, max_ply: u32, description: &str) {
         }
 
         // Get best move with reasonable think time
-        let result = get_best_move(&mut game, 20, 2000, true);
+        let result = get_best_move(&mut game, 20, 2000, true, true);
 
         let best_move = match result {
             Some((m, _eval, _stats)) => m,
@@ -150,7 +150,11 @@ fn test_mate_queen_rook_vs_king() {
 #[test]
 fn test_mate_2rook_vs_king() {
     let game = create_endgame(
-        &[(5, 1, PieceType::King), (4, 4, PieceType::Rook), (6, 4, PieceType::Rook)],
+        &[
+            (5, 1, PieceType::King),
+            (4, 4, PieceType::Rook),
+            (6, 4, PieceType::Rook),
+        ],
         &[(5, 8, PieceType::King)],
     );
     verify_can_mate(game, 100, "2R + K vs K");

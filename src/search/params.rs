@@ -24,7 +24,7 @@ pub const DEFAULT_LMR_MIN_DEPTH: usize = 3;
 pub const DEFAULT_LMR_MIN_MOVES: usize = 4;
 pub const DEFAULT_LMR_DIVISOR: usize = 3; // ln(moves) * ln(depth) / divisor
 
-// History Leaf Pruning (Fruit-style)
+// History Leaf Pruning:
 pub const DEFAULT_HLP_MAX_DEPTH: usize = 3;
 pub const DEFAULT_HLP_MIN_MOVES: usize = 4;
 pub const DEFAULT_HLP_HISTORY_REDUCE: i32 = 300;
