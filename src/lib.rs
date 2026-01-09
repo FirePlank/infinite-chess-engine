@@ -760,6 +760,14 @@ impl Engine {
             - 10.0)
             .max(0.0) as u64;
 
+        // Special case: opening (first move) - limit to 5 seconds
+        let mut maximum = maximum;
+        let mut optimum = optimum;
+        if self.game.fullmove_number == 1 && self.game.variant.is_some() {
+            maximum = maximum.min(5000);
+            optimum = optimum.min(5000);
+        }
+
         // Apply sensible bounds
         let min_think_ms: u64 = 10;
         let optimum = optimum.max(min_think_ms);

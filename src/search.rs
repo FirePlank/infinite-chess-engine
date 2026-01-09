@@ -366,6 +366,11 @@ pub struct SearcherHot {
     /// vs a hard limit (must stop at maximum time). For untimed games with a
     /// suggested per-move limit, this allows the engine to use more time when beneficial.
     pub is_soft_limit: bool,
+    /// Calculated total time budget for this move, including dynamic factors.
+    /// Used by check_time for mid-depth stops.
+    pub total_time_ms: f64,
+    /// Time (ms) when the current iterative deepening depth started.
+    pub iter_start_ms: f64,
 }
 
 impl Default for Timer {
@@ -641,6 +646,8 @@ impl Searcher {
                 prev_time_reduction: 1.0,
                 last_best_move_depth: 0,
                 is_soft_limit: false,
+                total_time_ms: 0.0,
+                iter_start_ms: 0.0,
             },
             tt: TranspositionTable::new(16),
             pv_table,
@@ -733,6 +740,8 @@ impl Searcher {
         self.hot.iter_idx = 0;
         self.hot.prev_time_reduction = 1.0;
         self.hot.last_best_move_depth = 0;
+        self.hot.total_time_ms = 0.0;
+        self.hot.iter_start_ms = 0.0;
 
         // Reset iterative deepening state
         self.prev_score = 0;
@@ -854,14 +863,15 @@ impl Searcher {
         }
 
         if self.hot.nodes & 8191 == 0 {
-            let elapsed = self.hot.timer.elapsed_ms();
-            let limit = if self.hot.maximum_time_ms > 0 {
-                self.hot.maximum_time_ms
+            let elapsed = self.hot.timer.elapsed_ms() as f64;
+            let hard_limit = if self.hot.maximum_time_ms > 0 {
+                self.hot.maximum_time_ms as f64
             } else {
-                self.hot.time_limit_ms
+                self.hot.time_limit_ms as f64
             };
 
-            if elapsed >= limit {
+            // 1. Hard stop at maximum time - this is absolute safety.
+            if elapsed >= hard_limit {
                 self.hot.stopped = true;
                 return true;
             }
@@ -872,9 +882,20 @@ impl Searcher {
             if self.hot.nodes > 8192 {
                 let time_to_next_check = (8192.0 * elapsed as f64) / self.hot.nodes as f64;
                 // Only stop if we literally cannot reach the next check in time.
-                if (elapsed as f64 + time_to_next_check) > limit as f64 {
+                if (elapsed as f64 + time_to_next_check) > hard_limit {
                     self.hot.stopped = true;
+                    return true;
                 }
+            }
+
+            // 3. Marginal Depth Creep Safety:
+            // If the current depth ALONE has consumed > 30% of the move budget, return.
+            // This prevents "marginal depth creep" where one depth takes significantly longer than others.
+            if self.hot.total_time_ms > 0.0
+                && elapsed - self.hot.iter_start_ms > self.hot.total_time_ms * 0.30
+            {
+                self.hot.stopped = true;
+                return true;
             }
         }
         self.hot.stopped
@@ -1145,18 +1166,25 @@ fn search_with_searcher(
     // Iterative deepening with aspiration windows
     for depth in 1..=max_depth {
         searcher.reset_for_iteration();
+        searcher.hot.iter_start_ms = searcher.hot.timer.elapsed_ms() as f64;
 
         // Age out PV variability metric at START of each iteration
         // Note: Decay the PERSISTED tot, not the per-iteration changes.
         searcher.hot.tot_best_move_changes /= 2.0;
 
         // Time check at start of each iteration - but always complete depth 1.
-        // Only check against maximum time (hard limit) here. The dynamic time management
-        // at the end of each iteration handles optimum time with extensions.
-        if searcher.hot.min_depth_required == 0 {
-            let elapsed = searcher.hot.timer.elapsed_ms();
-            if elapsed >= searcher.hot.maximum_time_ms {
+        if searcher.hot.min_depth_required == 0 && searcher.hot.time_limit_ms != u128::MAX {
+            let elapsed = searcher.hot.timer.elapsed_ms() as f64;
+
+            // 1. Hard stop if we've exceeded the maximum time.
+            if elapsed >= searcher.hot.maximum_time_ms as f64 {
                 searcher.hot.stopped = true;
+                break;
+            }
+
+            // Proactive stop: if we've already spent > 50% of our
+            // total budgeted time, don't start the next depth, as it's unlikely to finish.
+            if searcher.hot.total_time_ms > 0.0 && elapsed > searcher.hot.total_time_ms * 0.50 {
                 break;
             }
         }
@@ -1297,6 +1325,8 @@ fn search_with_searcher(
             // limit (calculated from optimum time and stability factors) or the
             // hard maximum limit.
             let effective_limit = total_time.min(hard_limit);
+            searcher.hot.total_time_ms = effective_limit; // Store for proactive checks
+
             if elapsed > effective_limit {
                 searcher.hot.stopped = true;
                 break;
