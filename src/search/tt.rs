@@ -37,6 +37,7 @@ pub struct TTStoreParams {
     pub depth: usize,
     pub flag: TTFlag,
     pub score: i32,
+    pub is_pv: bool,
     pub best_move: Option<Move>,
     pub ply: usize,
 }
@@ -86,9 +87,8 @@ pub fn value_from_tt(value: i32, ply: usize, rule50_count: u32, rule_limit: i32)
 // Constants
 // ============================================================================
 
-/// Number of entries per bucket (cluster). 3 entries × 64 bytes = 192 bytes.
-/// We use 3 entries to allow for larger 64-byte entries (storing full 64-bit hash).
-const ENTRIES_PER_BUCKET: usize = 3;
+/// Number of entries per bucket (cluster). 4 entries × 64 bytes = 256 bytes.
+const ENTRIES_PER_BUCKET: usize = 4;
 
 /// Sentinel value indicating no move is stored
 const NO_MOVE_SENTINEL: i64 = i64::MIN;
@@ -101,10 +101,10 @@ const NO_MOVE_SENTINEL: i64 = i64::MIN;
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[repr(u8)]
 pub enum TTFlag {
-    None = 0,       // Invalid/empty entry
-    Exact = 1,      // Exact score (PV node)
+    None = 0,
+    UpperBound = 1, // Score <= alpha (all node, failed low)
     LowerBound = 2, // Score >= beta (cut node, failed high)
-    UpperBound = 3, // Score <= alpha (all node, failed low)
+    Exact = 3,      // Exact score (PV node)
 }
 
 impl TTFlag {
@@ -272,16 +272,22 @@ impl TTEntry {
         TTFlag::from_u8(self.gen_bound)
     }
 
+    /// Extract the is_pv flag
+    #[inline]
+    pub fn is_pv(&self) -> bool {
+        (self.gen_bound & 0x04) != 0
+    }
+
     /// Extract the generation from gen_bound
     #[inline]
     pub fn generation(&self) -> u8 {
-        self.gen_bound >> 2
+        self.gen_bound >> 3
     }
 
-    /// Create packed gen_bound from generation and flag
+    /// Create packed gen_bound from generation, is_pv and flag
     #[inline]
-    fn pack_gen_bound(generation: u8, flag: TTFlag) -> u8 {
-        (generation << 2) | (flag as u8)
+    fn pack_gen_bound(generation: u8, is_pv: bool, flag: TTFlag) -> u8 {
+        (generation << 3) | (if is_pv { 0x04 } else { 0 }) | (flag as u8)
     }
 
     /// Get the best move as Option<Move>
@@ -502,6 +508,7 @@ impl TranspositionTable {
         let depth = params.depth;
         let flag = params.flag;
         let score = params.score;
+        let is_pv = params.is_pv;
         let best_move = params.best_move;
         let ply = params.ply;
 
@@ -529,12 +536,13 @@ impl TranspositionTable {
 
                 // Replacement condition for existing entries:
                 // PV bonus = +2 for exact bounds, threshold = old_depth - 4
-                let pv_bonus = if flag == TTFlag::Exact { 2 } else { 0 };
+                let pv_bonus = if flag == TTFlag::Exact || is_pv { 2 } else { 0 };
                 let new_adjusted_depth = depth as i32 + pv_bonus;
                 let old_threshold = entry.depth as i32 - 4;
 
                 // Replace if: exact bound, or new depth high enough, or entry is aged
-                let relative_age = (generation.wrapping_sub(entry.generation())) & 0x3F;
+                // 5-bit generation wrap check
+                let relative_age = (generation.wrapping_sub(entry.generation())) & 0x1F;
                 if flag == TTFlag::Exact || new_adjusted_depth > old_threshold || relative_age != 0
                 {
                     if entry.is_empty() {
@@ -543,14 +551,13 @@ impl TranspositionTable {
                     *entry = TTEntry {
                         key: hash,
                         depth: depth as u8,
-                        gen_bound: TTEntry::pack_gen_bound(generation, flag),
+                        gen_bound: TTEntry::pack_gen_bound(generation, is_pv, flag),
                         score: adjusted_score,
                         _padding: [0; 10],
                         tt_move: move_to_store,
                     };
                 } else if entry.depth >= 5 && entry.flag() != TTFlag::Exact {
                     // Apply soft aging to deep non-exact entries:
-                    // Makes them easier to replace in future iterations
                     entry.depth = entry.depth.saturating_sub(1);
                 }
                 return;
@@ -569,7 +576,7 @@ impl TranspositionTable {
         let new_entry = TTEntry {
             key: hash,
             depth: depth as u8,
-            gen_bound: TTEntry::pack_gen_bound(generation, flag),
+            gen_bound: TTEntry::pack_gen_bound(generation, is_pv, flag),
             score: adjusted_score,
             _padding: [0; 10],
             tt_move: best_move.as_ref().map_or(TTMove::none(), TTMove::from_move),
@@ -603,12 +610,12 @@ impl TranspositionTable {
         let mut score = entry.depth as i32;
 
         // Age penalty: penalize 2 points per generation old
-        // Use 6-bit generation difference (wrapping)
-        let age_diff = (current_generation.wrapping_sub(entry.generation())) & 0x3F;
+        // Use 5-bit generation difference (wrapping)
+        let age_diff = (current_generation.wrapping_sub(entry.generation())) & 0x1F;
         score -= (age_diff as i32) * 2;
 
-        // Bound type bonus: slightly favor exact/PV nodes
-        if entry.flag() == TTFlag::Exact {
+        // PV/Exact bonus: favor keeping entries from interesting nodes
+        if entry.flag() == TTFlag::Exact || entry.is_pv() {
             score += 2;
         }
 
@@ -617,8 +624,8 @@ impl TranspositionTable {
 
     /// Increment the generation counter (call at the start of each search from root)
     pub fn increment_age(&mut self) {
-        // Wrap at 63 (6 bits)
-        self.generation = (self.generation + 1) & 0x3F;
+        // Wrap at 31 (5 bits)
+        self.generation = (self.generation + 1) & 0x1F;
         if self.generation == 0 {
             self.generation = 1; // Keep 0 reserved for empty
         }
@@ -664,7 +671,7 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<TTBucket>(),
             64 * ENTRIES_PER_BUCKET,
-            "TTBucket should be 192 bytes (3 x 64)"
+            "TTBucket should be 256 bytes (4 x 64)"
         );
     }
 
@@ -679,6 +686,7 @@ mod tests {
             depth: 5,
             flag: TTFlag::Exact,
             score: 100,
+            is_pv: true,
             best_move: None,
             ply: 0,
         });
@@ -700,24 +708,40 @@ mod tests {
     #[test]
     fn test_tt_gen_bound_packing() {
         // Test that generation and bound are packed correctly
-        for r#gen in [0u8, 1, 31, 63] {
+        for r#gen in [0u8, 1, 31] {
             for flag in [
                 TTFlag::None,
                 TTFlag::Exact,
                 TTFlag::LowerBound,
                 TTFlag::UpperBound,
             ] {
-                let packed = TTEntry::pack_gen_bound(r#gen, flag);
-                let entry = TTEntry {
+                // Testing with is_pv = true
+                let packed_pv = TTEntry::pack_gen_bound(r#gen, true, flag);
+                let entry_pv = TTEntry {
                     key: 0,
                     score: 0,
                     depth: 0,
-                    gen_bound: packed,
+                    gen_bound: packed_pv,
                     _padding: [0; 10],
                     tt_move: TTMove::none(),
                 };
-                assert_eq!(entry.generation(), r#gen & 0x3F);
-                assert_eq!(entry.flag(), flag);
+                assert_eq!(entry_pv.generation(), r#gen & 0x1F);
+                assert_eq!(entry_pv.flag(), flag);
+                assert!(entry_pv.is_pv());
+
+                // Testing with is_pv = false
+                let packed_nopv = TTEntry::pack_gen_bound(r#gen, false, flag);
+                let entry_nopv = TTEntry {
+                    key: 0,
+                    score: 0,
+                    depth: 0,
+                    gen_bound: packed_nopv,
+                    _padding: [0; 10],
+                    tt_move: TTMove::none(),
+                };
+                assert_eq!(entry_nopv.generation(), r#gen & 0x1F);
+                assert_eq!(entry_nopv.flag(), flag);
+                assert!(!entry_nopv.is_pv());
             }
         }
     }

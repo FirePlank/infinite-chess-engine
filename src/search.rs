@@ -29,6 +29,7 @@ pub struct StoreContext {
     pub depth: usize,
     pub flag: crate::search::tt::TTFlag,
     pub score: i32,
+    pub is_pv: bool,
     pub best_move: Option<Move>,
     pub ply: usize,
 }
@@ -334,6 +335,7 @@ pub fn store_tt_with_shared(searcher: &mut Searcher, ctx: &StoreContext) {
         depth,
         flag,
         score,
+        is_pv: ctx.is_pv,
         best_move,
         ply,
     });
@@ -2027,6 +2029,7 @@ fn negamax_root(
             depth,
             flag: tt_flag,
             score: best_score,
+            is_pv: true,
             best_move,
             ply: 0,
         },
@@ -2384,6 +2387,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     depth: prob_cut_depth + 1,
                     flag: TTFlag::LowerBound,
                     score: val,
+                    is_pv: false,
                     best_move: Some(*m),
                     ply,
                 });
@@ -3098,6 +3102,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             depth,
             flag: tt_flag,
             score: best_score,
+            is_pv,
             best_move,
             ply,
         },
@@ -3911,6 +3916,7 @@ mod tests {
             depth,
             flag: crate::search::tt::TTFlag::Exact,
             score,
+            is_pv: true,
             best_move: Some(best_move),
             ply: 0,
         });
