@@ -2,7 +2,17 @@ use crate::board::PieceType;
 use crate::evaluation::{evaluate, get_piece_value};
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
-use crate::search::params::aspiration_max_window;
+use crate::search::params::{
+    aspiration_fail_mult, aspiration_max_window, aspiration_window, delta_margin,
+    history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf, hlp_history_reduce,
+    hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult, lmr_cutoff_thresh,
+    lmr_divisor, lmr_history_thresh, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh,
+    low_depth_probcut_margin, max_history, nmp_base, nmp_depth_mult, nmp_min_depth,
+    nmp_reduction_base, nmp_reduction_div, probcut_depth_sub, probcut_divisor, probcut_improving,
+    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, repetition_penalty,
+    rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
+    see_capture_hist_div, see_capture_linear, see_quiet_quad, see_winning_threshold,
+};
 use std::cell::RefCell;
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 use wasm_bindgen::prelude::*;
@@ -141,11 +151,6 @@ pub enum NodeType {
 // Tunable search parameters - accessed via param accessor functions
 // ============================================================================
 pub mod params;
-use params::{
-    aspiration_fail_mult, aspiration_window, history_bonus_base, history_bonus_cap,
-    history_bonus_sub, hlp_history_leaf, hlp_history_reduce, hlp_max_depth, hlp_min_moves,
-    lmr_divisor, lmr_min_depth, lmr_min_moves, max_history, nmp_min_depth, repetition_penalty,
-};
 
 mod tt;
 pub use tt::{TTEntry, TTFlag, TTProbeParams, TTStoreParams, TranspositionTable};
@@ -455,6 +460,7 @@ impl SearcherHot {
 /// Lightweight statistics about the transposition table after a search.
 #[derive(Clone, Debug)]
 pub struct SearchStats {
+    pub nodes: u64,
     pub tt_capacity: usize,
     pub tt_used: usize,
     pub tt_fill_permille: u32,
@@ -489,6 +495,7 @@ fn build_search_stats(searcher: &Searcher) -> SearchStats {
         let used = ((cap as u64 * fill as u64) / 1000) as usize;
 
         return SearchStats {
+            nodes: searcher.hot.nodes,
             tt_capacity: cap,
             tt_used: used,
             tt_fill_permille: fill,
@@ -496,6 +503,7 @@ fn build_search_stats(searcher: &Searcher) -> SearchStats {
     }
 
     SearchStats {
+        nodes: searcher.hot.nodes,
         tt_capacity: searcher.tt.capacity(),
         tt_used: searcher.tt.used_entries(),
         tt_fill_permille: searcher.tt.fill_permille(),
@@ -2236,7 +2244,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Razoring: if static eval is very low, drop to qsearch
         // Formula: eval < alpha - 485 - 281 * depth²
-        if !is_pv && static_eval < alpha - 485 - 281 * (depth * depth) as i32 {
+        if !is_pv
+            && static_eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
+        {
             return quiescence(searcher, game, ply, alpha, beta);
         }
 
@@ -2259,19 +2269,23 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Reverse Futility Pruning (RFP)
         if !tt_pv
-            && depth < 14
+            && depth < rfp_max_depth()
             && (tt_move.is_none() || tt_capture)
             && !is_loss(beta)
             && !is_win(static_eval)
         {
-            let futility_mult = if tt_hit { 76 } else { 53 };
+            let futility_mult = if tt_hit {
+                rfp_mult_tt()
+            } else {
+                rfp_mult_no_tt()
+            };
 
             let mut bonus = 0;
             if improving {
-                bonus += 2474 * futility_mult / 1024;
+                bonus += rfp_improving_mult() * futility_mult / 1024;
             }
             if opponent_worsening {
-                bonus += 331 * futility_mult / 1024;
+                bonus += rfp_worsening_mult() * futility_mult / 1024;
             }
 
             let futility_margin = futility_mult * depth as i32 - bonus;
@@ -2285,13 +2299,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Only in cut nodes with non-pawn material (avoid zugzwang)
         // Guard: don't prune when beta is a losing mate score (preserve mate finding)
         if cut_node && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
-            let nmp_margin = static_eval - (18 * depth as i32) + 350;
+            let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
                 game.make_null_move();
 
                 // Reduction: R = 7 + depth / 3
-                let r = 7 + depth / 3;
+                let r = nmp_reduction_base() + depth / nmp_reduction_div();
                 let null_score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
@@ -2323,7 +2337,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Internal iterative reductions (IIR)
         // Without TT move, reduce depth to find one faster
-        if !all_node && depth >= 6 && tt_move.is_none() && prior_reduction <= 3 {
+        if !all_node && depth >= iir_min_depth() && tt_move.is_none() && prior_reduction <= 3 {
             depth -= 1;
         }
     }
@@ -2333,15 +2347,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // =========================================================================
     // If we have a good enough capture and a reduced search returns a value
     // much above beta, we can prune.
-    let prob_cut_beta = beta + 235 - if improving { 63 } else { 0 };
+    let prob_cut_beta = beta + probcut_margin() - if improving { probcut_improving() } else { 0 };
     // Guard: don't ProbCut when beta is a mate score
     if !is_pv
         && !in_check
-        && depth >= 5
+        && depth >= probcut_min_depth()
         && !is_decisive(beta)
         && !tt_value.is_some_and(|v| v < prob_cut_beta)
     {
-        let mut prob_cut_depth = (depth as i32 - 4 - (static_eval - beta) / 315).max(0) as usize;
+        let mut prob_cut_depth =
+            (depth as i32 - probcut_depth_sub() as i32 - (static_eval - beta) / probcut_divisor())
+                .max(0) as usize;
         if prob_cut_depth > depth {
             prob_cut_depth = depth;
         }
@@ -2425,7 +2441,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Small ProbCut: if TT entry has a lower bound >= beta + margin, return early
     // This avoids searching positions where we already know there's a good move
     {
-        let small_prob_cut_beta = beta + 800;
+        let small_prob_cut_beta = beta + low_depth_probcut_margin();
         if let Some((tt_flag, tt_depth, tt_score, _, _)) = searcher.tt.probe_for_singular(hash, ply)
         {
             if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
@@ -2491,7 +2507,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // Late move pruning: skip quiet moves after seeing enough
             // Threshold: (3 + depth²) / (2 if not improving, else 1)
             let improving_div = if improving { 1 } else { 2 };
-            let lmp_count = (3 + depth * depth) / improving_div;
+            let lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
             // Signal movegen to skip quiet generation entirely (truly lazy)
             if legal_moves >= lmp_count {
                 movegen.skip_quiet_moves();
@@ -2523,7 +2539,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // Exempt moves that give check (they have tactical significance)
                     // Threshold: -max(166*d + captHist/29, 0)
                     // if !gives_check {
-                    let see_margin = (166 * depth as i32 + capt_hist / 29).max(0);
+                    let see_margin = (see_capture_linear() * depth as i32
+                        + capt_hist / see_capture_hist_div())
+                    .max(0);
                     let see_value = static_exchange_eval(game, &m);
                     if see_value < -see_margin {
                         continue;
@@ -2560,7 +2578,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // SEE pruning for quiets: skip moves with bad SEE
                 // Threshold: -25 * adj_lmr_depth²
-                let see_threshold = -25 * adj_lmr_depth * adj_lmr_depth;
+                let see_threshold = -see_quiet_quad() * adj_lmr_depth * adj_lmr_depth;
                 let see_value = static_exchange_eval(game, &m);
                 if see_value < see_threshold {
                     continue;
@@ -2788,13 +2806,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_score = searcher.history[p_type as usize][hist_idx];
 
                 // Reduce less for moves with good history (threshold: ~50% of max)
-                if hist_score > 2000 && reduction > 0 {
+                if hist_score > lmr_history_thresh() && reduction > 0 {
                     reduction -= 1;
                 }
 
                 // Increase reduction if next ply has a lot of fail highs
                 // We use a simpler version: add 1 to reduction when many cutoffs
-                if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > 2 {
+                if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > lmr_cutoff_thresh() {
                     reduction += 1;
                     if all_node {
                         reduction += 1;
@@ -2805,7 +2823,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // If TT moves have been unreliable (low tt_move_history), reduce less
                 // since the move ordering from TT may not be trustworthy.
                 // Only adjust for significant negative values to avoid overhead.
-                if searcher.tt_move_history < -1000 && reduction > 0 {
+                if searcher.tt_move_history < lmr_tt_history_thresh() && reduction > 0 {
                     reduction -= 1;
                 }
 
@@ -3279,7 +3297,7 @@ fn quiescence(
     let mut legal_moves = 0;
 
     // Delta pruning margin (safety buffer for positional factors)
-    const DELTA_MARGIN: i32 = 200;
+    let delta_margin = delta_margin();
 
     for m in &tactical_moves {
         // Don't prune when we're getting mated - need to search all moves
@@ -3294,7 +3312,7 @@ fn quiescence(
 
             // Delta pruning: if stand_pat + best possible material swing from this
             // capture (SEE gain) plus a small margin cannot beat alpha, skip.
-            if stand_pat + see_gain + DELTA_MARGIN < alpha {
+            if stand_pat + see_gain + delta_margin < alpha {
                 continue;
             }
         }
@@ -3485,6 +3503,7 @@ mod tests {
     #[test]
     fn test_search_stats_default() {
         let stats = SearchStats {
+            nodes: 0,
             tt_capacity: 1000,
             tt_used: 500,
             tt_fill_permille: 500,
@@ -3669,6 +3688,7 @@ mod tests {
     #[test]
     fn test_search_stats_structure() {
         let stats = SearchStats {
+            nodes: 0,
             tt_capacity: 1000,
             tt_used: 100,
             tt_fill_permille: 100,
@@ -4100,6 +4120,7 @@ mod tests {
         let result = MultiPVResult {
             lines: vec![],
             stats: SearchStats {
+                nodes: 0,
                 tt_capacity: 1000,
                 tt_used: 100,
                 tt_fill_permille: 100,
