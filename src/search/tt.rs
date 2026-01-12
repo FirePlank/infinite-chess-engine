@@ -418,10 +418,10 @@ impl TranspositionTable {
 
     /// Probe the TT for a position.
     ///
-    /// Returns `Some((score, best_move))` where:
+    /// Returns `Some((score, best_move, is_pv))` where:
     /// - If `score` is usable for cutoff (not `INFINITY + 1`), use it directly.
-    /// - If `score == INFINITY + 1`, only the move is usable (for ordering).
-    pub fn probe(&self, params: &TTProbeParams) -> Option<(i32, Option<Move>)> {
+    /// - If `score == INFINITY + 1`, only the move and is_pv are usable (for ordering and search context).
+    pub fn probe(&self, params: &TTProbeParams) -> Option<(i32, Option<Move>, bool)> {
         let hash = params.hash;
         let alpha = params.alpha;
         let beta = params.beta;
@@ -457,12 +457,12 @@ impl TranspositionTable {
                 };
 
                 if let Some(s) = usable_score {
-                    return Some((s, best_move));
+                    return Some((s, best_move, entry.is_pv()));
                 }
             }
 
             // Depth insufficient or bounds don't allow cutoff, but move is still useful
-            return Some((INFINITY + 1, best_move));
+            return Some((INFINITY + 1, best_move, entry.is_pv()));
         }
 
         None
@@ -475,7 +475,7 @@ impl TranspositionTable {
         &self,
         hash: u64,
         ply: usize,
-    ) -> Option<(TTFlag, u8, i32, Option<Move>)> {
+    ) -> Option<(TTFlag, u8, i32, Option<Move>, bool)> {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
 
@@ -492,7 +492,13 @@ impl TranspositionTable {
                 score += ply as i32;
             }
 
-            return Some((entry.flag(), entry.depth, score, entry.best_move()));
+            return Some((
+                entry.flag(),
+                entry.depth,
+                score,
+                entry.best_move(),
+                entry.is_pv(),
+            ));
         }
 
         None
@@ -701,7 +707,7 @@ mod tests {
             rule_limit: 100,
         });
         assert!(result.is_some());
-        let (score, _) = result.unwrap();
+        let (score, _, _) = result.unwrap();
         assert_eq!(score, 100);
     }
 

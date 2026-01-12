@@ -262,7 +262,7 @@ pub fn create_work_queue_view() -> Option<SharedWorkQueue> {
 pub fn probe_tt_with_shared(
     searcher: &Searcher,
     ctx: &ProbeContext,
-) -> Option<(i32, Option<Move>)> {
+) -> Option<(i32, Option<Move>, bool)> {
     let hash = ctx.hash;
     let alpha = ctx.alpha;
     let beta = ctx.beta;
@@ -738,9 +738,7 @@ impl Searcher {
 
     /// Start a new search: reset per-search state and increment TT age (or clear if requested).
     pub fn new_search(&mut self) {
-        // Temporarily disable persistent TT: clear it instead of incrementing age
-        self.tt.clear();
-        // self.tt.increment_age();
+        self.tt.increment_age();
 
         // Reset cumulative counters
         self.hot.nodes = 0;
@@ -1864,7 +1862,7 @@ fn negamax_root(
     // Probe TT for best move from previous search (uses shared TT if configured)
     // Pass half-move clock directly for score adjustment:
     let rule50_count = game.halfmove_clock;
-    if let Some((_, best)) = probe_tt_with_shared(
+    if let Some((_, best, _)) = probe_tt_with_shared(
         searcher,
         &ProbeContext {
             hash,
@@ -2125,7 +2123,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Pass half-move clock directly for score adjustment:
     let rule50_count = game.halfmove_clock;
-    if let Some((score, best)) = probe_tt_with_shared(
+    // Capture tt_is_pv from probe
+    let mut tt_is_pv = false;
+    if let Some((score, best, is_pv_ret)) = probe_tt_with_shared(
         searcher,
         &ProbeContext {
             hash,
@@ -2139,8 +2139,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     ) {
         tt_move = best;
         tt_value = Some(score);
+        tt_is_pv = is_pv_ret;
+
         // Get TT depth for qsearch extension decision
-        if let Some((_, d, _, _)) = searcher.tt.probe_for_singular(hash, ply) {
+        if let Some((_, d, _, _, _)) = searcher.tt.probe_for_singular(hash, ply) {
             tt_depth = d;
         }
         // In non-PV nodes, use TT cutoff if valid score returned
@@ -2238,22 +2240,41 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             return quiescence(searcher, game, ply, alpha, beta);
         }
 
-        // Reverse futility pruning (static null move)
-        // If static eval is much higher than beta, return early
-        // Guard: don't prune when beta is a losing mate score or eval is a winning mate score
-        if !is_pv && depth < 14 && !is_loss(beta) && !is_win(static_eval) {
-            let futility_mult = 76;
-            let futility_margin = futility_mult * depth as i32
-                - if improving {
-                    2474 * futility_mult / 1024
-                } else {
-                    0
-                }
-                - if opponent_worsening {
-                    331 * futility_mult / 1024
-                } else {
-                    0
-                };
+        // Determine if this node is a TT PV node
+        let tt_hit = tt_value.is_some();
+        let tt_pv = is_pv || (tt_hit && tt_is_pv);
+
+        // Check if TT move is a capture (for RFP condition)
+        let tt_capture = if let Some(m) = tt_move {
+            if game.board.get_piece(m.to.x, m.to.y).is_some() {
+                true
+            } else if let Some(ep) = game.en_passant {
+                ep.square == m.to && m.piece.piece_type() == PieceType::Pawn
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Reverse Futility Pruning (RFP)
+        if !tt_pv
+            && depth < 14
+            && (tt_move.is_none() || tt_capture)
+            && !is_loss(beta)
+            && !is_win(static_eval)
+        {
+            let futility_mult = if tt_hit { 76 } else { 53 };
+
+            let mut bonus = 0;
+            if improving {
+                bonus += 2474 * futility_mult / 1024;
+            }
+            if opponent_worsening {
+                bonus += 331 * futility_mult / 1024;
+            }
+
+            let futility_margin = futility_mult * depth as i32 - bonus;
 
             if static_eval - futility_margin >= beta && static_eval >= beta {
                 return (2 * beta + static_eval) / 3;
@@ -2306,6 +2327,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             depth -= 1;
         }
     }
+
     // =========================================================================
     // ProbCut
     // =========================================================================
@@ -2404,7 +2426,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // This avoids searching positions where we already know there's a good move
     {
         let small_prob_cut_beta = beta + 800;
-        if let Some((tt_flag, tt_depth, tt_score, _)) = searcher.tt.probe_for_singular(hash, ply) {
+        if let Some((tt_flag, tt_depth, tt_score, _, _)) = searcher.tt.probe_for_singular(hash, ply)
+        {
             if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
                 && tt_depth as usize >= depth.saturating_sub(4)
                 && tt_score >= small_prob_cut_beta
@@ -2431,7 +2454,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let se_conditions = if depth >= 6 && !in_check {
         tt_move.as_ref().and_then(|_| {
             searcher.tt.probe_for_singular(hash, ply).and_then(
-                |(tt_flag, tt_depth, tt_score, _)| {
+                |(tt_flag, tt_depth, tt_score, _, _)| {
                     if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
                         && tt_depth as usize >= depth.saturating_sub(3)
                         && !is_decisive(tt_score)
@@ -3593,7 +3616,7 @@ mod tests {
 
     #[test]
     fn test_tt_basic_operations() {
-        let tt = TranspositionTable::new(16);
+        let tt = TranspositionTable::new(1);
 
         assert!(tt.capacity() > 0);
         assert_eq!(tt.used_entries(), 0);
@@ -3933,7 +3956,7 @@ mod tests {
             rule_limit: 100,
         });
         assert!(result.is_some());
-        let (probed_score, probed_move) = result.unwrap();
+        let (probed_score, probed_move, _) = result.unwrap();
         assert_eq!(probed_score, score);
         assert!(probed_move.is_some());
         assert_eq!(probed_move.unwrap().from.x, 0);

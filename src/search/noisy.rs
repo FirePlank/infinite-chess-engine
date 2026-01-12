@@ -279,7 +279,7 @@ fn negamax_root_noisy(
     let mut tt_move: Option<Move> = None;
 
     let rule50_count = game.halfmove_clock;
-    if let Some((_, best)) = super::probe_tt_with_shared(
+    if let Some((_, best, _)) = super::probe_tt_with_shared(
         searcher,
         &super::ProbeContext {
             hash,
@@ -506,7 +506,9 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
     let mut tt_value: Option<i32> = None;
 
     let rule50_count = game.halfmove_clock;
-    if let Some((score, best)) = super::probe_tt_with_shared(
+    // Capture tt_is_pv
+    let mut tt_is_pv = false;
+    if let Some((score, best, is_pv_ret)) = super::probe_tt_with_shared(
         searcher,
         &super::ProbeContext {
             hash,
@@ -520,6 +522,7 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
     ) {
         tt_move = best;
         tt_value = Some(score);
+        tt_is_pv = is_pv_ret;
 
         let rule_limit = searcher.move_rule_limit as u32;
         if !is_pv
@@ -572,6 +575,22 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
         }
     }
 
+    let tt_hit = tt_value.is_some();
+    let tt_pv = is_pv || (tt_hit && tt_is_pv);
+
+    // Check if TT move is a capture (for RFP condition)
+    let tt_capture = if let Some(m) = tt_move {
+        if game.board.get_piece(m.to.x, m.to.y).is_some() {
+            true
+        } else if let Some(ep) = game.en_passant {
+            ep.square == m.to && m.piece.piece_type() == PieceType::Pawn
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     if !in_check {
         if !is_pv && static_eval < alpha - 485 - 281 * (depth * depth) as i32 {
             let v = quiescence_noisy(searcher, game, ply, alpha, beta, noise_amp);
@@ -580,8 +599,13 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
             }
         }
 
-        if !is_pv && depth < 14 {
-            let futility_mult = 76;
+        if !tt_pv
+            && depth < 14
+            && (tt_move.is_none() || tt_capture)
+            && !super::is_loss(beta)
+            && !super::is_win(static_eval)
+        {
+            let futility_mult = if tt_hit { 76 } else { 53 };
             let futility_margin = futility_mult * depth as i32
                 - if improving {
                     2474 * futility_mult / 1024
@@ -717,7 +741,7 @@ fn negamax_noisy(ctx: &mut NegamaxNoisyContext) -> i32 {
     let se_conditions = if depth >= 6 && !in_check {
         tt_move.as_ref().and_then(|_| {
             searcher.tt.probe_for_singular(hash, ply).and_then(
-                |(tt_flag, tt_depth, tt_score, _)| {
+                |(tt_flag, tt_depth, tt_score, _, _)| {
                     let depth_val = tt_depth as usize;
                     if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
                         && depth_val >= depth.saturating_sub(3)

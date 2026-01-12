@@ -245,7 +245,7 @@ impl SharedTT {
         ply: usize,
         rule50_count: u32,
         rule_limit: i32,
-    ) -> Option<(i32, Option<Move>)> {
+    ) -> Option<(i32, Option<Move>, bool)> {
         let bucket_idx = self.bucket_index(hash);
         let offset = self.bucket_offset(bucket_idx);
         let key16 = Self::key16(hash);
@@ -285,12 +285,14 @@ impl SharedTT {
                 };
 
                 if let Some(s) = usable_score {
-                    return Some((s, best_move));
+                    let is_pv = (gen_bound & 0b100) != 0;
+                    return Some((s, best_move, is_pv));
                 }
             }
 
             // Return move for ordering even if score not usable
-            return Some((INFINITY + 1, best_move));
+            let is_pv = (gen_bound & 0b100) != 0;
+            return Some((INFINITY + 1, best_move, is_pv));
         }
 
         None
@@ -306,6 +308,7 @@ impl SharedTT {
         best_move: Option<&Move>,
         ply: usize,
         generation: u8,
+        is_pv: bool,
     ) {
         // Adjust mate scores
         let mut adjusted_score = score;
@@ -318,7 +321,7 @@ impl SharedTT {
         let bucket_idx = self.bucket_index(hash);
         let offset = self.bucket_offset(bucket_idx);
         let key16 = Self::key16(hash);
-        let gen_bound = (generation << 2) | (flag as u8);
+        let gen_bound = (generation << 3) | ((is_pv as u8) << 2) | (flag as u8);
 
         let w0 = Self::pack_word0(key16, depth as u8, gen_bound, adjusted_score);
         let (w1, w2) = best_move.map_or_else(Self::pack_no_move, Self::pack_move);
@@ -349,8 +352,8 @@ impl SharedTT {
             }
 
             // Calculate replacement priority
-            let stored_gen = stored_gen_bound >> 2;
-            let age_diff = generation.wrapping_sub(stored_gen) & 0x3F;
+            let stored_gen = stored_gen_bound >> 3;
+            let age_diff = generation.wrapping_sub(stored_gen) & 0x1F;
             let priority = stored_depth as i32 * 8 - age_diff as i32 * 4;
 
             if priority < worst_priority {
@@ -471,7 +474,7 @@ impl SharedTTView {
         ply: usize,
         rule50_count: u32,
         rule_limit: i32,
-    ) -> Option<(i32, Option<Move>)> {
+    ) -> Option<(i32, Option<Move>, bool)> {
         let bucket_idx = self.bucket_index(hash);
         let base_offset = self.bucket_offset(bucket_idx);
         let key16 = SharedTT::key16(hash);
@@ -505,11 +508,13 @@ impl SharedTTView {
                     _ => None,
                 };
                 if let Some(s) = usable {
-                    return Some((s, best_move));
+                    let is_pv = (gen_bound & 0b100) != 0;
+                    return Some((s, best_move, is_pv));
                 }
             }
 
-            return Some((INFINITY + 1, best_move));
+            let is_pv = (gen_bound & 0b100) != 0;
+            return Some((INFINITY + 1, best_move, is_pv));
         }
 
         None
@@ -525,6 +530,7 @@ impl SharedTTView {
         best_move: Option<&Move>,
         ply: usize,
         generation: u8,
+        is_pv: bool,
     ) {
         let mut adjusted_score = score;
         if score > MATE_SCORE {
@@ -536,7 +542,7 @@ impl SharedTTView {
         let bucket_idx = self.bucket_index(hash);
         let base_offset = self.bucket_offset(bucket_idx);
         let key16 = SharedTT::key16(hash);
-        let gen_bound = (generation << 2) | (flag as u8);
+        let gen_bound = (generation << 3) | ((is_pv as u8) << 2) | (flag as u8);
 
         let w0 = SharedTT::pack_word0(key16, depth as u8, gen_bound, adjusted_score);
         let (w1, w2) = best_move.map_or_else(SharedTT::pack_no_move, SharedTT::pack_move);
@@ -565,8 +571,9 @@ impl SharedTTView {
                 return;
             }
 
-            let stored_gen = stored_gen_bound >> 2;
-            let age_diff = generation.wrapping_sub(stored_gen) & 0x3F;
+            // Calculate replacement priority
+            let stored_gen = stored_gen_bound >> 3;
+            let age_diff = generation.wrapping_sub(stored_gen) & 0x1F;
             let priority = stored_depth as i32 * 8 - age_diff as i32 * 4;
 
             if priority < worst_priority {
