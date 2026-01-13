@@ -9,7 +9,7 @@ thread_local! {
     static PAWN_CACHE: RefCell<FxHashMap<u64, i32>> = RefCell::new(FxHashMap::default());
 }
 
-/// Clear the pawn structure cache. Call at the start of a new game.
+/// Clear the pawn structure cache.
 pub fn clear_pawn_cache() {
     PAWN_CACHE.with(|cache| cache.borrow_mut().clear());
 }
@@ -76,7 +76,7 @@ macro_rules! bump_feat {
     ($($tt:tt)*) => {};
 }
 
-// ==================== Piece Values ====================
+// Piece Values
 const KNIGHT: i32 = 250;
 const BISHOP: i32 = KNIGHT + 200;
 const ROOK: i32 = KNIGHT + BISHOP - 50;
@@ -185,7 +185,7 @@ const DOUBLED_PAWN_PENALTY: i32 = 8;
 const BISHOP_PAIR_BONUS: i32 = 60;
 const QUEEN_IDEAL_LINE_DIST: i32 = 4;
 
-// ==================== Fairy Piece Evaluation ====================
+// Fairy Piece Evaluation
 
 // Leaper positioning (tropism to kings and piece cloud)
 const LEAPER_TROPISM_DIVISOR: i32 = 400; // piece_value / 400 = tropism multiplier
@@ -327,7 +327,7 @@ fn is_connected_pawn(game: &GameState, x: i64, y: i64, color: PlayerColor) -> bo
             .is_some_and(|p| p.piece_type() == PieceType::Pawn && p.color() == color)
 }
 
-// ==================== Main Evaluation ====================
+// Main Evaluation
 
 /// Lazy evaluation: Material + Simple Position (PST)
 /// Used for Null Move Pruning and other heuristics where speed is critical.

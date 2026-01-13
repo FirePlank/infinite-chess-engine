@@ -11,9 +11,7 @@ pub mod masks;
 
 use crate::board::{Piece, PlayerColor};
 
-// ============================================================================
 // Tile Constants
-// ============================================================================
 
 /// Tile size is 8×8 (fits in u64 bitboard)
 pub const TILE_SHIFT: i32 = 3;
@@ -24,9 +22,7 @@ pub const TILE_MASK: i64 = TILE_SIZE - 1; // 0b111 = 7
 pub const TILE_TABLE_CAPACITY: usize = 512;
 const TILE_TABLE_MASK: usize = TILE_TABLE_CAPACITY - 1;
 
-// ============================================================================
 // Tile Coordinate Math
-// ============================================================================
 
 /// Convert world coordinate to tile coordinate using arithmetic shift.
 /// Works correctly for negative coordinates.
@@ -76,9 +72,7 @@ pub fn neighbor_index(dx: i64, dy: i64) -> usize {
     ((dy + 1) * 3 + (dx + 1)) as usize
 }
 
-// ============================================================================
 // Tile Structure
-// ============================================================================
 
 /// An 8×8 tile containing occupancy bitboards and packed piece data.
 /// Aligned to 64 bytes for cache efficiency.
@@ -97,7 +91,7 @@ pub struct Tile {
     /// Bitboard of void/obstacle squares (non-capturable blockers)
     pub occ_void: u64,
 
-    // ===== PER-PIECE-TYPE BITBOARDS =====
+    // Piece-type bitboards
     /// Bitboard of pawns
     pub occ_pawns: u64,
     /// Bitboard of knights (including fairy leapers that move like knights)
@@ -344,9 +338,7 @@ impl Tile {
     }
 }
 
-// ============================================================================
 // TileTable Bucket
-// ============================================================================
 
 /// Bucket states for open-addressing hash table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -377,9 +369,7 @@ impl Default for Bucket {
     }
 }
 
-// ============================================================================
 // TileTable
-// ============================================================================
 
 /// Fixed-size open-addressing hash table for tiles.
 /// Uses linear probing. Never grows (128 buckets is plenty for ~70 pieces).

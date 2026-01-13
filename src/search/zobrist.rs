@@ -1,8 +1,3 @@
-//! Zobrist hashing for infinite chess.
-//!
-//! Uses computed hashes based on coordinates since we can't pre-compute a table
-//! for an infinite board. The hash is maintained incrementally in GameState.
-
 use crate::board::{PieceType, PlayerColor};
 
 /// Number of piece types (used for indexing into piece keys)

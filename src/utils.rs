@@ -1,6 +1,4 @@
-// ============================================================================
 // Precomputed Prime Lookup Tables for O(1) Huygens distance checks
-// ============================================================================
 
 /// All primes under 128 - used for Huygens move generation iteration
 pub static PRIMES_UNDER_128: [i64; 31] = [

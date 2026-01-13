@@ -18,36 +18,6 @@ use crate::moves::Move;
 
 use super::{INFINITY, MATE_SCORE};
 
-// ============================================================================
-// Packed Entry Format
-// ============================================================================
-//
-// We pack TT data into two 64-bit atomics per entry:
-//
-// Word 0 (data):
-//   - Bits 63-48: key16 (16 bits) - Hash verification
-//   - Bits 47-40: depth (8 bits) - Search depth
-//   - Bits 39-32: gen_bound (8 bits) - Generation + bound type
-//   - Bits 31-0:  score (32 bits) - Evaluation score (as i32)
-//
-// Word 1 (move):
-//   - Bits 63-48: from_x low 16 bits
-//   - Bits 47-32: from_y low 16 bits
-//   - Bits 31-16: to_x low 16 bits
-//   - Bits 15-0:  to_y low 16 bits
-//
-// Word 2 (move high bits + piece info):
-//   - Bits 63-48: from_x high 16 bits
-//   - Bits 47-32: from_y high 16 bits
-//   - Bits 31-16: to_x high 16 bits
-//   - Bits 15-8:  to_y high 8 bits (remaining high bits)
-//   - Bits 7-5:   piece_type (3 bits - up to 8 types, may need adjustment)
-//   - Bits 4-3:   piece_color (2 bits)
-//   - Bits 2-0:   promotion (3 bits - 0=none, else piece type)
-//
-// Actually, for simplicity and infinite chess i64 coords, let's use a simpler approach:
-// 3 atomic u64s per entry (24 bytes per entry, simpler to handle)
-
 /// Number of atomic u64s per entry
 const WORDS_PER_ENTRY: usize = 3;
 
@@ -79,9 +49,7 @@ impl SharedTTFlag {
     }
 }
 
-// ============================================================================
 // Shared Transposition Table (Owned Version)
-// ============================================================================
 
 /// Lock-free transposition table for Lazy SMP.
 ///
@@ -387,9 +355,7 @@ impl SharedTT {
     }
 }
 
-// ============================================================================
 // Shared TT View (for true cross-WASM instance sharing)
-// ============================================================================
 
 /// A view into a SharedArrayBuffer for cross-worker TT sharing.
 ///

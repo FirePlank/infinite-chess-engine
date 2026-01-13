@@ -206,11 +206,7 @@ fn has_sufficient_mating_material(
         return false;
     }
 
-    // ==========================================================================
     // BOUNDED BOARD LOGIC (standard chess rules, world_size < 100)
-    // On a bounded board, king can be cornered, so standard mating patterns apply.
-    // We check BOTH sufficient AND insufficient cases, then exit early.
-    // ==========================================================================
     if is_bounded && has_our_king {
         let minors = bishops + knights + guards + hawks;
 
@@ -312,10 +308,7 @@ fn has_sufficient_mating_material(
         return true;
     }
 
-    // =====================================================================
     // 1K vs 1k scenarios (with our king helping)
-    // These are INSUFFICIENT scenarios from insuffmatScenarios_1K1k
-    // =====================================================================
     if has_our_king {
         // Amazon + anything can mate
         if amazons >= 1 {
@@ -440,11 +433,7 @@ fn has_sufficient_mating_material(
         return true;
     }
 
-    // =====================================================================
     // 0K vs 1k scenarios (without our king)
-    // These are INSUFFICIENT scenarios from insuffmatScenarios_0K1k
-    // Anything NOT in this list is sufficient
-    // =====================================================================
 
     // {amazonsW: 1} - Amazon alone cannot force mate alone
     if amazons == 1 && has_only!(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1) {

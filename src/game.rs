@@ -31,7 +31,7 @@ pub enum WinCondition {
 impl std::str::FromStr for WinCondition {
     type Err = ();
 
-    /// Parse a win condition from a string (as received from JS).
+    /// Parse a win condition from a string.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "checkmate" => Ok(WinCondition::Checkmate),
@@ -422,7 +422,6 @@ impl GameState {
     }
 
     /// Recompute piece counts, rebuild piece lists, and find king positions from the board
-    /// Recompute piece counts, rebuild piece lists, and find king positions from the board
     pub fn recompute_piece_counts(&mut self) {
         let mut white: u16 = 0;
         let mut black: u16 = 0;
@@ -794,7 +793,6 @@ impl GameState {
         if dx == 0 {
             // Vertical ray (N or S) - use cols[start_x] to get all y coords
             if let Some(col_vec) = self.spatial_indices.cols.get(&start_x) {
-                // Use find_nearest with direction (+1 or -1)
                 if let Some((found_y, _packed)) = SpatialIndices::find_nearest(col_vec, start_y, dy)
                 {
                     return Some((start_x, found_y));

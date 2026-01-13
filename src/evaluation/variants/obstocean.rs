@@ -33,15 +33,16 @@ fn evaluate_inner(game: &GameState) -> i32 {
             );
         }
     } else if crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White).is_some()
-        && let Some(w) = &wk {
-            score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                game,
-                bk.as_ref(),
-                w,
-                PlayerColor::Black,
-                PlayerColor::White,
-            );
-        }
+        && let Some(w) = &wk
+    {
+        score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            bk.as_ref(),
+            w,
+            PlayerColor::Black,
+            PlayerColor::White,
+        );
+    }
 
     // Piece evaluation (minimal for non-pawns)
     for ((x, y), p) in game.board.iter() {

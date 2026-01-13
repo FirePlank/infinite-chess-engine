@@ -4,16 +4,6 @@
 //! The neighbor_tile_index encodes (dx, dy) in {-1, 0, 1}^2 as (dy+1)*3 + (dx+1).
 //! Index 4 is the center tile (same tile as the piece).
 //!
-//! This allows checking all possible leaper attacks with:
-//! ```ignore
-//! for n in 0..9 {
-//!     if let Some(tile) = neighborhood[n] {
-//!         let attackers = KNIGHT_MASKS[local_idx][n] & tile.occ_white;
-//!         // ... check piece types
-//!     }
-//! }
-//! ```
-
 use crate::tiles::TILE_SIZE;
 
 // ============================================================================
@@ -201,15 +191,6 @@ pub static BLACK_PAWN_ATTACK_MASKS: [[u64; 9]; 64] = generate_masks(&BLACK_PAWN_
 /// For attack detection: we look for enemy pawns that could capture TO this square.
 #[inline]
 pub fn pawn_attacker_masks(attacker_is_white: bool) -> &'static [[u64; 9]; 64] {
-    // If checking for WHITE attackers, white pawns attack by moving UP,
-    // so we look DOWN from the target square (use black pawn attack pattern in reverse)
-    // Actually: the masks are stored as "from this square, where can I attack?"
-    // For attack detection, we need the inverse: "from target square, which squares have attackers?"
-    //
-    // This is the same pattern! If a white pawn at (x, y-1) attacks (x+1, y), then
-    // from the target's perspective, we look at (x+1, y-1) which is (-1, -1) offset.
-    // So WHITE_PAWN_ATTACK_MASKS gives the squares a white pawn CAN attack,
-    // and BLACK_PAWN_ATTACK_MASKS gives the inverse pattern for detection.
     if attacker_is_white {
         &BLACK_PAWN_ATTACK_MASKS // Look at squares that white pawns attack FROM
     } else {

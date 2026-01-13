@@ -121,7 +121,7 @@ fn find_bitboard_cage(
     (area > 0 && area < 1000, area)
 }
 
-// ==================== Entry Points ====================
+// Entry Points
 
 /// Check if a side only has a king (no other pieces)
 #[inline(always)]
@@ -216,7 +216,7 @@ pub fn evaluate_mop_up_scaled(
     (raw * scale as i32) / 100
 }
 
-// ==================== Core Evaluation ====================
+// Core Evaluation
 
 /// Core mop-up evaluation - no allocations, minimal branching
 /// our_king can be None for checkmate practice positions
@@ -369,7 +369,7 @@ fn evaluate_mop_up_core(
 
         // Short-range pieces proximity bonus (knights, guards, etc.)
         // CRITICAL: Make this strong enough to force leapers to approach enemy king
-        // ========== UNIVERSAL MOP-UP HEURISTICS (Placement & Checking) ==========
+        // UNIVERSAL MOP-UP HEURISTICS (Placement & Checking)
         let pdx = x - enemy_x;
         let pdy = y - enemy_y;
 
@@ -561,7 +561,7 @@ fn evaluate_mop_up_core(
             && leaper_count == 0
             && total_non_pawn_pieces == 2
         {
-            // ========== HARDCODED 2R+K vs K ENDGAME ==========
+            // HARDCODED 2R+K vs K ENDGAME
             // The "Lock and Key" technique:
             // 1. LOCK: Rooks must protect each other on the SAME rank or file. (+2000)
             // 2. TOGETHER: Rooks must be close to each other, not spread out. (-50 per square)

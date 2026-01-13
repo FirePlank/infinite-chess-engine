@@ -2,16 +2,10 @@ use crate::tiles::{Tile, TileTable, local_index, tile_coords};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
-// ============================================================================
-// Number of piece types (for packed piece encoding)
-// ============================================================================
-
-/// Total number of piece types in the game (22 types: Void..Pawn)
+/// Total number of piece types in the game (Void..Pawn)
 pub const NUM_PIECE_TYPES: u8 = 22;
 
-// ============================================================================
 // Coordinate
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Coordinate {
@@ -36,9 +30,7 @@ impl Coordinate {
     }
 }
 
-// ============================================================================
 // PlayerColor
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -86,16 +78,13 @@ impl PlayerColor {
         }
     }
 
-    /// Convert from u8
     #[inline(always)]
     pub fn from_u8(v: u8) -> Self {
         unsafe { std::mem::transmute(v) }
     }
 }
 
-// ============================================================================
 // PieceType
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -183,7 +172,6 @@ impl PieceType {
         }
     }
 
-    /// Convert piece type to single-character string
     pub fn to_str(&self) -> &'static str {
         match self {
             PieceType::Void => "v",
@@ -239,7 +227,6 @@ impl PieceType {
         }
     }
 
-    /// Convert piece type from the site's two-letter code
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn from_site_code(code: &str) -> Self {
         match code {
@@ -269,20 +256,19 @@ impl PieceType {
         }
     }
 
-    /// Check if this piece type is a neutral/blocking type (can't be moved by players)
+    /// Check if this piece type is a neutral/blocking type (cannot be moved by players)
     #[inline]
     pub fn is_neutral_type(&self) -> bool {
         matches!(self, PieceType::Void | PieceType::Obstacle)
     }
 
-    /// Check if this piece type is truly uncapturable (only Void - blocks and cannot be taken).
+    /// Check if this piece type is truly uncapturable (Void blocks and cannot be taken).
     /// Obstacles CAN be captured despite being neutral.
     #[inline]
     pub fn is_uncapturable(&self) -> bool {
         matches!(self, PieceType::Void)
     }
 
-    /// Check if this piece type is a royal (king-like) piece
     #[inline]
     pub fn is_royal(&self) -> bool {
         matches!(
@@ -291,7 +277,7 @@ impl PieceType {
         )
     }
 
-    /// Get all promotable piece types (for dynamic promotion)
+    /// Get all promotable piece types for dynamic promotion
     pub fn promotable_types() -> &'static [PieceType] {
         &[
             PieceType::Queen,
@@ -313,25 +299,18 @@ impl PieceType {
         ]
     }
 
-    /// Convert from u8
     #[inline(always)]
     pub fn from_u8(v: u8) -> Self {
         unsafe { std::mem::transmute(v) }
     }
 }
 
-// ============================================================================
 // Piece - Packed representation (1 byte)
-// ============================================================================
 
 /// Packed piece representation: encodes both piece type and color in a single byte.
 ///
 /// Encoding: `packed = color * NUM_PIECE_TYPES + piece_type`
-/// - This matches the infinitechess.org JS encoding
-/// - Allows 3 colors × 22 types = 66 values (fits in 7 bits)
-///
-/// For compatibility, we provide `piece_type()` and `color()` accessor methods
-/// that decode the packed value.
+/// Matches the infinitechess.org JS encoding.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Piece(u8);
@@ -376,31 +355,26 @@ impl<'de> Deserialize<'de> for Piece {
 }
 
 impl Piece {
-    /// Create a new piece from type and color
     #[inline]
     pub fn new(piece_type: PieceType, color: PlayerColor) -> Self {
         Piece((color as u8) * NUM_PIECE_TYPES + (piece_type as u8))
     }
 
-    /// Create a piece from a packed u8 value
     #[inline(always)]
     pub fn from_packed(packed: u8) -> Self {
         Piece(packed)
     }
 
-    /// Get the raw packed value
     #[inline]
     pub fn packed(&self) -> u8 {
         self.0
     }
 
-    /// Decode the piece type
     #[inline(always)]
     pub fn piece_type(&self) -> PieceType {
         PieceType::from_u8(self.0 % NUM_PIECE_TYPES)
     }
 
-    /// Decode the color
     #[inline(always)]
     pub fn color(&self) -> PlayerColor {
         PlayerColor::from_u8(self.0 / NUM_PIECE_TYPES)

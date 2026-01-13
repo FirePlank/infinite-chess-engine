@@ -11,8 +11,6 @@ pub enum MoveGenType {
     Captures,
 }
 
-/// Stack-allocated move list with inline capacity of 128 moves.
-/// Spills to heap if this limit is exceeded, preventing panics.
 pub type MoveList = Vec<Move>;
 
 #[derive(Debug, Clone)]
@@ -24,8 +22,7 @@ pub struct MoveGenContext<'a> {
     pub enemy_king_pos: Option<&'a Coordinate>,
 }
 
-// World border for infinite chess. These are initialized to a very large box,
-// but can be overridden from JS via the playableRegion values.
+// World border for infinite chess.
 static mut COORD_MIN_X: i64 = -1_000_000_000_000_000; // default -1e15
 static mut COORD_MAX_X: i64 = 1_000_000_000_000_000; // default  1e15
 static mut COORD_MIN_Y: i64 = -1_000_000_000_000_000; // default -1e15

@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "search_tuning")]
 use std::sync::RwLock;
 
-// ============================================================================
 // DEFAULT VALUES - These are the baseline constants used in production
-// ============================================================================
 
 // Razoring
 pub const DEFAULT_RAZORING_LINEAR: i32 = 485;
@@ -99,9 +97,7 @@ pub const DEFAULT_REPETITION_PENALTY: i32 = 8;
 // Quiescence
 pub const DEFAULT_DELTA_MARGIN: i32 = 200;
 
-// ============================================================================
 // FEATURE-GATED RUNTIME CONFIGURATION
-// ============================================================================
 
 #[cfg(feature = "search_tuning")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,9 +268,7 @@ pub fn get_search_params_as_json() -> String {
     }
 }
 
-// ============================================================================
 // ACCESSOR MACROS/FUNCTIONS
-// ============================================================================
 
 #[cfg(feature = "search_tuning")]
 macro_rules! param {

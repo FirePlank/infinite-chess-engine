@@ -12,8 +12,8 @@
 //! without a blocker, you continue into neighbor chunks with the same logic.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,7 +28,9 @@ struct Args {
 
 impl Args {
     fn parse() -> Self {
-        let mut threads = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let mut threads = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         let mut refresh_ms = 100u64;
         let mut improve = true;
 
@@ -338,7 +340,9 @@ fn find_best_magic_for_square(
     // Fallback: brute at min_shift with rising budgets
     let mut attempts = 500_000u64;
     while running.load(Ordering::Relaxed) {
-        if let Some(magic) = find_magic_for_shift_rng(sd, sd.min_shift, attempts, rng, scratch, running) {
+        if let Some(magic) =
+            find_magic_for_shift_rng(sd, sd.min_shift, attempts, rng, scratch, running)
+        {
             return Some((sd.min_shift, magic));
         }
         attempts = attempts.saturating_mul(2).min(50_000_000);
@@ -361,15 +365,26 @@ struct Task {
     sq: usize,
 }
 
-fn run_initial_search(shared: &Arc<Shared>, rook: &Arc<Vec<SquareData>>, bishop: &Arc<Vec<SquareData>>, threads: usize) {
+fn run_initial_search(
+    shared: &Arc<Shared>,
+    rook: &Arc<Vec<SquareData>>,
+    bishop: &Arc<Vec<SquareData>>,
+    threads: usize,
+) {
     shared.phase.store(1, Ordering::Relaxed);
 
     let mut tasks = Vec::with_capacity(128);
     for sq in 0..64 {
-        tasks.push(Task { kind: Kind::Rook, sq });
+        tasks.push(Task {
+            kind: Kind::Rook,
+            sq,
+        });
     }
     for sq in 0..64 {
-        tasks.push(Task { kind: Kind::Bishop, sq });
+        tasks.push(Task {
+            kind: Kind::Bishop,
+            sq,
+        });
     }
     let tasks = Arc::new(tasks);
     let next = Arc::new(AtomicUsize::new(0));
@@ -428,7 +443,12 @@ fn run_initial_search(shared: &Arc<Shared>, rook: &Arc<Vec<SquareData>>, bishop:
     }
 }
 
-fn improve_worker(tid_seed: u64, shared: Arc<Shared>, rook: Arc<Vec<SquareData>>, bishop: Arc<Vec<SquareData>>) {
+fn improve_worker(
+    tid_seed: u64,
+    shared: Arc<Shared>,
+    rook: Arc<Vec<SquareData>>,
+    bishop: Arc<Vec<SquareData>>,
+) {
     let mut rng = SimpleRng::new(mix64(0xC3C3_C3C3_5A5A_5A5Au64 ^ tid_seed));
     let mut scratch = Scratch::new();
 
@@ -451,7 +471,14 @@ fn improve_worker(tid_seed: u64, shared: Arc<Shared>, rook: Arc<Vec<SquareData>>
             }
             let target = cur + 1;
 
-            if let Some(magic) = find_magic_for_shift_rng(&rook[sq], target, ATTEMPTS, &mut rng, &mut scratch, &shared.running) {
+            if let Some(magic) = find_magic_for_shift_rng(
+                &rook[sq],
+                target,
+                ATTEMPTS,
+                &mut rng,
+                &mut scratch,
+                &shared.running,
+            ) {
                 // only commit if nobody changed it since we read cur
                 if shared.rook_shifts[sq]
                     .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
@@ -472,7 +499,14 @@ fn improve_worker(tid_seed: u64, shared: Arc<Shared>, rook: Arc<Vec<SquareData>>
             }
             let target = cur + 1;
 
-            if let Some(magic) = find_magic_for_shift_rng(&bishop[sq], target, ATTEMPTS, &mut rng, &mut scratch, &shared.running) {
+            if let Some(magic) = find_magic_for_shift_rng(
+                &bishop[sq],
+                target,
+                ATTEMPTS,
+                &mut rng,
+                &mut scratch,
+                &shared.running,
+            ) {
                 if shared.bishop_shifts[sq]
                     .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
                     .is_ok()
@@ -562,7 +596,10 @@ fn display_stats(shared: &Shared, rook: &[SquareData], bishop: &[SquareData], st
     println!("\n  \x1b[1;36mRook Magics (edge-inclusive chunk):\x1b[0m");
     println!("    Found: \x1b[32m{} / 64\x1b[0m", r_found);
     if r_found > 0 {
-        println!("    Index bits range: \x1b[33m{}\x1b[0m - \x1b[33m{}\x1b[0m", r_min_bits, r_max_bits);
+        println!(
+            "    Index bits range: \x1b[33m{}\x1b[0m - \x1b[33m{}\x1b[0m",
+            r_min_bits, r_max_bits
+        );
         println!("    Table size: \x1b[32m{:.2} KB\x1b[0m", r_kb);
         println!("    Remaining possible +shift steps (sum): {}", r_cap_steps);
     }
@@ -570,7 +607,10 @@ fn display_stats(shared: &Shared, rook: &[SquareData], bishop: &[SquareData], st
     println!("\n  \x1b[1;36mBishop Magics (edge-inclusive chunk):\x1b[0m");
     println!("    Found: \x1b[32m{} / 64\x1b[0m", b_found);
     if b_found > 0 {
-        println!("    Index bits range: \x1b[33m{}\x1b[0m - \x1b[33m{}\x1b[0m", b_min_bits, b_max_bits);
+        println!(
+            "    Index bits range: \x1b[33m{}\x1b[0m - \x1b[33m{}\x1b[0m",
+            b_min_bits, b_max_bits
+        );
         println!("    Table size: \x1b[32m{:.2} KB\x1b[0m", b_kb);
         println!("    Remaining possible +shift steps (sum): {}", b_cap_steps);
     }
@@ -608,42 +648,72 @@ fn output_rust_code(shared: &Shared) {
     );
 
     println!("// Edge-inclusive chunk magics (8x8)");
-    println!("// Rooks: {} KB ({} entries), Bishops: {} KB ({} entries)", rook_total * 8 / 1024, rook_total, bishop_total * 8 / 1024, bishop_total);
+    println!(
+        "// Rooks: {} KB ({} entries), Bishops: {} KB ({} entries)",
+        rook_total * 8 / 1024,
+        rook_total,
+        bishop_total * 8 / 1024,
+        bishop_total
+    );
     println!();
 
     println!("pub const ROOK_MAGICS: [u64; 64] = [");
     for i in 0..64 {
-        if i % 4 == 0 { print!("    "); }
+        if i % 4 == 0 {
+            print!("    ");
+        }
         let magic = shared.rook_magics[i].load(Ordering::Relaxed);
         print!("0x{:016X},", magic);
-        if (i + 1) % 4 == 0 { println!(); } else { print!(" "); }
+        if (i + 1) % 4 == 0 {
+            println!();
+        } else {
+            print!(" ");
+        }
     }
     println!("];\n");
 
     println!("pub const ROOK_SHIFTS: [u8; 64] = [");
     for i in 0..64 {
-        if i % 8 == 0 { print!("    "); }
+        if i % 8 == 0 {
+            print!("    ");
+        }
         let sh = shared.rook_shifts[i].load(Ordering::Relaxed);
         print!("{:2},", sh);
-        if (i + 1) % 8 == 0 { println!(); } else { print!(" "); }
+        if (i + 1) % 8 == 0 {
+            println!();
+        } else {
+            print!(" ");
+        }
     }
     println!("];\n");
 
     println!("pub const BISHOP_MAGICS: [u64; 64] = [");
     for i in 0..64 {
-        if i % 4 == 0 { print!("    "); }
+        if i % 4 == 0 {
+            print!("    ");
+        }
         let magic = shared.bishop_magics[i].load(Ordering::Relaxed);
         print!("0x{:016X},", magic);
-        if (i + 1) % 4 == 0 { println!(); } else { print!(" "); }
+        if (i + 1) % 4 == 0 {
+            println!();
+        } else {
+            print!(" ");
+        }
     }
     println!("];\n");
 
     println!("pub const BISHOP_SHIFTS: [u8; 64] = [");
     for i in 0..64 {
-        if i % 8 == 0 { print!("    "); }
+        if i % 8 == 0 {
+            print!("    ");
+        }
         let sh = shared.bishop_shifts[i].load(Ordering::Relaxed);
         print!("{:2},", sh);
-        if (i + 1) % 8 == 0 { println!(); } else { print!(" "); }
+        if (i + 1) % 8 == 0 {
+            println!();
+        } else {
+            print!(" ");
+        }
     }
     println!("];");
 
@@ -698,22 +768,30 @@ fn gen_rook_attacks_edge_inclusive(sq: usize, occ: u64) -> u64 {
     for rr in (r + 1)..8 {
         let s = (rr * 8 + f) as usize;
         a |= 1u64 << s;
-        if (occ & (1u64 << s)) != 0 { break; }
+        if (occ & (1u64 << s)) != 0 {
+            break;
+        }
     }
     for rr in (0..r).rev() {
         let s = (rr * 8 + f) as usize;
         a |= 1u64 << s;
-        if (occ & (1u64 << s)) != 0 { break; }
+        if (occ & (1u64 << s)) != 0 {
+            break;
+        }
     }
     for ff in (f + 1)..8 {
         let s = (r * 8 + ff) as usize;
         a |= 1u64 << s;
-        if (occ & (1u64 << s)) != 0 { break; }
+        if (occ & (1u64 << s)) != 0 {
+            break;
+        }
     }
     for ff in (0..f).rev() {
         let s = (r * 8 + ff) as usize;
         a |= 1u64 << s;
-        if (occ & (1u64 << s)) != 0 { break; }
+        if (occ & (1u64 << s)) != 0 {
+            break;
+        }
     }
     a
 }
@@ -730,7 +808,9 @@ fn gen_bishop_attacks_edge_inclusive(sq: usize, occ: u64) -> u64 {
         while rr >= 0 && rr < 8 && ff >= 0 && ff < 8 {
             let s = (rr * 8 + ff) as usize;
             a |= 1u64 << s;
-            if (occ & (1u64 << s)) != 0 { break; }
+            if (occ & (1u64 << s)) != 0 {
+                break;
+            }
             rr += dr;
             ff += df;
         }
@@ -791,7 +871,10 @@ fn main() {
 
     if !shared.running.load(Ordering::Relaxed) {
         let _ = stats_thread.join();
-        println!("\nStopped during Phase 1 after {:.2}s", start.elapsed().as_secs_f64());
+        println!(
+            "\nStopped during Phase 1 after {:.2}s",
+            start.elapsed().as_secs_f64()
+        );
         output_rust_code(&shared);
         return;
     }
@@ -804,7 +887,9 @@ fn main() {
             let sh = Arc::clone(&shared);
             let rd = Arc::clone(&rook_data);
             let bd = Arc::clone(&bishop_data);
-            workers.push(thread::spawn(move || improve_worker(tid as u64, sh, rd, bd)));
+            workers.push(thread::spawn(move || {
+                improve_worker(tid as u64, sh, rd, bd)
+            }));
         }
 
         while shared.running.load(Ordering::Relaxed) {

@@ -531,9 +531,6 @@ impl StagedMoveGen {
     pub fn next(&mut self, game: &GameState, searcher: &Searcher) -> Option<Move> {
         loop {
             match self.stage {
-                // =================================================================
-                // TT MOVE STAGES - return TT move, then advance to next stage
-                // =================================================================
                 MoveStage::MainTT
                 | MoveStage::EvasionTT
                 | MoveStage::QSearchTT
@@ -555,9 +552,6 @@ impl StagedMoveGen {
                     }
                 }
 
-                // =================================================================
-                // CAPTURE INIT - generate and sort captures
-                // =================================================================
                 MoveStage::CaptureInit | MoveStage::QCaptureInit | MoveStage::ProbCutInit => {
                     self.generate_captures(game, searcher);
 
@@ -576,9 +570,6 @@ impl StagedMoveGen {
                     };
                 }
 
-                // =================================================================
-                // GOOD CAPTURE - yield captures with SEE >= -score/18
-                // =================================================================
                 MoveStage::GoodCapture => {
                     while self.cur < self.end_captures {
                         let sm = self.moves[self.cur];
@@ -598,9 +589,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::QuietInit;
                 }
 
-                // =================================================================
-                // QUIET INIT - generate and sort quiets
-                // =================================================================
                 MoveStage::QuietInit => {
                     if self.skip_quiets {
                         // Prepare for bad captures
@@ -621,9 +609,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::GoodQuiet;
                 }
 
-                // =================================================================
-                // GOOD QUIET - yield quiets with score > threshold
-                // =================================================================
                 MoveStage::GoodQuiet => {
                     if self.skip_quiets {
                         self.cur = 0;
@@ -645,9 +630,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::BadCapture;
                 }
 
-                // =================================================================
-                // BAD CAPTURE - yield captures that failed SEE
-                // =================================================================
                 MoveStage::BadCapture => {
                     while self.cur < self.end_bad_captures {
                         let m = self.moves[self.cur].m;
@@ -660,9 +642,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::BadQuiet;
                 }
 
-                // =================================================================
-                // BAD QUIET - yield quiets with score <= threshold
-                // =================================================================
                 MoveStage::BadQuiet => {
                     if self.skip_quiets {
                         self.stage = MoveStage::Done;
@@ -681,9 +660,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::Done;
                 }
 
-                // =================================================================
-                // EVASION INIT - generate and sort evasions
-                // =================================================================
                 MoveStage::EvasionInit => {
                     self.generate_evasions(game, searcher);
                     self.end_generated = self.moves.len();
@@ -694,9 +670,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::Evasion;
                 }
 
-                // =================================================================
-                // EVASION / QCAPTURE - yield all moves
-                // =================================================================
                 MoveStage::Evasion | MoveStage::QCapture => {
                     if self.cur < self.end_generated.max(self.end_captures) {
                         let m = self.moves[self.cur].m;
@@ -706,9 +679,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::Done;
                 }
 
-                // =================================================================
-                // PROBCUT - yield captures with SEE >= threshold
-                // =================================================================
                 MoveStage::ProbCut => {
                     while self.cur < self.end_captures {
                         let sm = self.moves[self.cur];

@@ -83,9 +83,7 @@ pub fn value_from_tt(value: i32, ply: usize, rule50_count: u32, rule_limit: i32)
     value
 }
 
-// ============================================================================
 // Constants
-// ============================================================================
 
 /// Number of entries per bucket (cluster). 4 entries × 64 bytes = 256 bytes.
 const ENTRIES_PER_BUCKET: usize = 4;
@@ -93,9 +91,7 @@ const ENTRIES_PER_BUCKET: usize = 4;
 /// Sentinel value indicating no move is stored
 const NO_MOVE_SENTINEL: i64 = i64::MIN;
 
-// ============================================================================
-// TT Entry Flags (packed into 2 bits)
-// ============================================================================
+// TT Entry Flags
 
 /// TT bound type (2 bits)
 #[derive(Clone, Copy, PartialEq, Debug)]

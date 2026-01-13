@@ -57,8 +57,6 @@ pub struct NegamaxContext<'a> {
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 fn now_ms() -> f64 {
-    // Simple wall-clock timer for wasm; keeps the hot path small and avoids
-    // repeated window()/performance() lookups.
     Date::now()
 }
 
@@ -90,19 +88,16 @@ pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
 
-/// Returns true if the value is a winning mate score (mate for us)
 #[inline(always)]
 pub const fn is_win(value: i32) -> bool {
     value > MATE_SCORE
 }
 
-/// Returns true if the value is a losing mate score (we're getting mated)
 #[inline(always)]
 pub const fn is_loss(value: i32) -> bool {
     value < -MATE_SCORE
 }
 
-/// Returns true if the value is a decisive (mate) score
 #[inline(always)]
 pub const fn is_decisive(value: i32) -> bool {
     value.abs() > MATE_SCORE
@@ -193,17 +188,9 @@ pub use work_queue::{NO_MORE_MOVES, SharedWorkQueue, WORK_QUEUE_SIZE_WORDS};
 // Shared TT Global State (for Lazy SMP with SharedArrayBuffer)
 // ============================================================================
 
-/// Thread-local storage for the shared TT pointer and length.
-/// Each worker receives the same SharedArrayBuffer from JavaScript,
-/// so all workers share the exact same TT memory.
-/// Thread-local storage for the shared TT pointer and length.
-/// Each worker receives the same SharedArrayBuffer from JavaScript,
-/// so all workers share the exact same TT memory.
 #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
 thread_local! {
-    // Raw pointer to the SharedArrayBuffer data and its length in u64 words
     static SHARED_TT_STATE: RefCell<Option<(*mut u64, usize)>> = RefCell::new(None);
-    // Pointer to shared work queue (offset after TT in shared memory)
     static SHARED_WORK_QUEUE_STATE: RefCell<Option<(*mut u64, usize)>> = RefCell::new(None);
 }
 

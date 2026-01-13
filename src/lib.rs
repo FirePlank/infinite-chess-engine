@@ -148,9 +148,7 @@ extern "C" {
     pub fn log(s: &str);
 }
 
-// ============================================================================
 // Shared TT WASM Bindings (for Lazy SMP with SharedArrayBuffer)
-// ============================================================================
 
 /// Size of the shared TT in u64 words (32MB = 4M words at 8 bytes each)
 #[cfg(feature = "multithreading")]
@@ -741,10 +739,8 @@ impl Engine {
 
         let inc_ms = inc_ms_raw;
 
-        // =========================================================================
         // Dynamic Time Allocation
         // Calculates optimal and maximum thinking time based on remaining budget.
-        // =========================================================================
 
         // Move overhead for communication latency
         let move_overhead: u64 = 50;

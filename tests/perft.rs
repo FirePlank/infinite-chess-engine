@@ -66,7 +66,7 @@ fn run_search_only_suite() {
             5,
         ));
     }
-    
+
     println!(
         "Running {} sequential search tests to depth {}...",
         NUM_RUNS, MAX_DEPTH

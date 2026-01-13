@@ -189,9 +189,7 @@ impl SharedWorkQueue {
         }
     }
 
-    // ========================================================================
     // Internal helpers for packing/unpacking moves
-    // ========================================================================
 
     unsafe fn store_move(&self, index: usize, m: &Move) {
         let base = HEADER_SIZE + index * WORDS_PER_PACKED_MOVE;

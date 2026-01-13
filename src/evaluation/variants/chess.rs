@@ -1,11 +1,10 @@
 // Chess Variant Evaluation (Standard 8x8 Chess)
-//
 // Uses an improved version of the PeSTO-based evaluation.
 
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;
 
-// ==================== Constants ====================
+// Constants
 
 const MG_VALUES: [i32; 6] = [82, 337, 365, 477, 1025, 0];
 const EG_VALUES: [i32; 6] = [94, 281, 297, 512, 936, 0];
@@ -28,7 +27,7 @@ const PASSED_PAWN_BONUS: [i32; 8] = [0, 5, 10, 20, 40, 70, 120, 200];
 const PHASE_INC: [i32; 6] = [0, 1, 1, 2, 4, 0];
 const MAX_PHASE: i32 = 24;
 
-// ==================== Piece-Square Tables (Top-Down, a8=0) ====================
+// Piece-Square Tables (Top-Down, a8=0)
 
 #[rustfmt::skip]
 const MG_PAWN_PST: [i32; 64] = [
@@ -215,7 +214,7 @@ fn get_piece_idx(pt: PieceType) -> usize {
     }
 }
 
-// ==================== Main Evaluation ====================
+// Main Evaluation
 
 pub fn evaluate(game: &GameState) -> i32 {
     let mut mg = [0i32; 2];
