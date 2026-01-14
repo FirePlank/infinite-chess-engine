@@ -3461,6 +3461,9 @@ impl GameState {
 
         // Compute initial hash
         self.recompute_hash();
+
+        // Rebuild spatial indices
+        self.spatial_indices = SpatialIndices::new(&self.board);
     }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]

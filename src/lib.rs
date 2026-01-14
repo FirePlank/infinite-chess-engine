@@ -496,6 +496,8 @@ impl Engine {
                 (2_000_000_000_000_000, -2_000_000_000_000_000, 1, 8)
             };
 
+        let spatial_indices = SpatialIndices::new(&board);
+
         let mut game = GameState {
             board,
             // Seed with the starting side; this ensures that replaying move history
@@ -520,7 +522,7 @@ impl Engine {
             starting_black_pieces: 0,
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
-            spatial_indices: SpatialIndices::default(),
+            spatial_indices,
             starting_squares: FxHashSet::default(),
             white_back_rank,
             black_back_rank,
@@ -567,9 +569,9 @@ impl Engine {
             Some((x, y))
         }
 
+        game.en_passant = parsed_en_passant;
+        
         if js_game.move_history.is_empty() {
-            // No history: trust JS turn/en-passant for this position
-            game.en_passant = parsed_en_passant;
             game.turn = js_turn;
         } else {
             // Replay the full move history from the start position.

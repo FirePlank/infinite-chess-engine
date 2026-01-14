@@ -1370,11 +1370,15 @@ fn generate_pawn_capture_moves(
             .as_ref()
             .is_some_and(|ep| ep.square.x == capture_x && ep.square.y == capture_y)
         {
-            out.push(Move::new(
+            add_pawn_cap_move(
+                out,
                 *from,
-                Coordinate::new(capture_x, capture_y),
+                capture_x,
+                capture_y,
                 *piece,
-            ));
+                &promotion_ranks,
+                promotion_pieces,
+            );
         }
     }
 }
@@ -3118,11 +3122,15 @@ fn generate_pawn_moves_into(
             .as_ref()
             .is_some_and(|ep| ep.square.x == capture_x && ep.square.y == capture_y)
         {
-            out.push(Move::new(
+            add_pawn_move(
+                out,
                 *from,
-                Coordinate::new(capture_x, capture_y),
+                capture_x,
+                capture_y,
                 *piece,
-            ));
+                &promotion_ranks,
+                promotion_pieces,
+            );
         }
     }
 }
