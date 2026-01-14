@@ -3068,9 +3068,11 @@ impl GameState {
             if piece.color() == PlayerColor::White {
                 self.material_score -= promo_val;
                 self.material_score += pawn_val;
+                self.white_pawn_count = self.white_pawn_count.saturating_add(1);
             } else {
                 self.material_score += promo_val;
                 self.material_score -= pawn_val;
+                self.black_pawn_count = self.black_pawn_count.saturating_add(1);
             }
             piece = Piece::new(PieceType::Pawn, piece.color());
         }
