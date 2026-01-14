@@ -2208,15 +2208,6 @@ fn find_cross_ray_targets_into(
                             if is_royal {
                                 royal_dists.insert(d);
                             }
-
-                            for w in 1..=wiggle {
-                                add_dist(dist_counts, d + w, max_dist);
-                                add_dist(dist_counts, d - w, max_dist);
-                                if is_royal {
-                                    royal_dists.insert(d + w);
-                                    royal_dists.insert(d - w);
-                                }
-                            }
                         }
                     }
                 }
@@ -2246,15 +2237,6 @@ fn find_cross_ray_targets_into(
                             add_dist(dist_counts, d, max_dist);
                             if is_royal {
                                 royal_dists.insert(d);
-                            }
-
-                            for w in 1..=wiggle {
-                                add_dist(dist_counts, d + w, max_dist);
-                                add_dist(dist_counts, d - w, max_dist);
-                                if is_royal {
-                                    royal_dists.insert(d + w);
-                                    royal_dists.insert(d - w);
-                                }
                             }
                         }
                     }
