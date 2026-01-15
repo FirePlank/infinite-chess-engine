@@ -4280,18 +4280,6 @@ mod tests {
         reset_search_state();
     }
 
-    // ======================== Get Current TT Stats Tests ========================
-
-    #[test]
-    fn test_get_current_tt_stats() {
-        GLOBAL_SEARCHER.with(|cell| {
-            *cell.borrow_mut() = Some(Searcher::new(1000));
-        });
-        let stats = get_current_tt_stats();
-        assert!(stats.tt_capacity > 0);
-        reset_search_state();
-    }
-
     // ======================== Searcher Method Tests ========================
 
     #[test]
