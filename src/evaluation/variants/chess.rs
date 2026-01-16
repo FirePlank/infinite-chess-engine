@@ -196,8 +196,11 @@ const EG_PST: [[i32; 64]; 6] = [
 #[inline]
 fn coord_to_pst_index(x: i64, y: i64) -> usize {
     // top-down: Rank 8 is row 0, Rank 1 is row 7
-    let row = (8 - y) as usize;
-    let col = (x - 1) as usize;
+    // DEFENSIVE: Clamp to 1-8 range to avoid underflow/overflow panics
+    let cx = x.clamp(1, 8);
+    let cy = y.clamp(1, 8);
+    let row = (8 - cy) as usize;
+    let col = (cx - 1) as usize;
     row * 8 + col
 }
 

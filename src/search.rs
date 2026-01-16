@@ -554,6 +554,9 @@ pub fn reset_search_state() {
 
     // Clear material cache for new game
     crate::evaluation::insufficient_material::clear_material_cache();
+
+    // Clear transposition table
+    if let Some(tt) = GLOBAL_TT.get() { tt.clear() }
 }
 
 /// Search state that persists across the search

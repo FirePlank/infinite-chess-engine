@@ -360,19 +360,6 @@ function applyMove(position, move) {
     return position;
 }
 
-// Extremely conservative game-end detection for SPRT harness.
-//
-// The Rust engine already handles true terminal states (no legal moves) and
-// our harness adds:
-//   - material/eval adjudication
-//   - repetition (threefold) and 50-move rule
-//   - time forfeits
-//   - illegal moves / engine failure
-//   - insufficient material (via engine's is_sufficient_material() function)
-//
-// Several variants (e.g. Pawn_Horde) are *designed* to have only one king
-// on the board, so treating "kings < 2" as checkmate is incorrect and was
-
 function clonePosition(position) {
     // Simple deep clone for our small position objects
     return JSON.parse(JSON.stringify(position));
@@ -503,6 +490,9 @@ async function ensureInit() {
 }
 
 async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise) {
+    if (typeof wasmNew.reset_engine_state === 'function') {
+        wasmNew.reset_engine_state();
+    }
     const startPosition = getVariantPosition(variantName);
     let position = clonePosition(startPosition);
     const newColor = newPlaysWhite ? 'w' : 'b';

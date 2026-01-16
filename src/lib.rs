@@ -131,6 +131,19 @@ impl Variant {
             _ => Variant::Classical, // Default fallback
         }
     }
+
+    pub fn get_default_bounds(&self) -> (i64, i64, i64, i64) {
+        match self {
+            Variant::Chess => (1, 8, 1, 8),
+            Variant::Obstocean => (-6, 15, -3, 12),
+            _ => (
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+            ),
+        }
+    }
 }
 
 impl std::str::FromStr for Variant {
@@ -150,6 +163,11 @@ extern "C" {
     pub fn group(s: &str);
     #[wasm_bindgen(js_namespace = console)]
     pub fn groupEnd();
+}
+
+#[wasm_bindgen]
+pub fn reset_engine_state() {
+    crate::search::reset_search_state();
 }
 
 // Lazy SMP via wasm-bindgen-rayon
@@ -314,6 +332,12 @@ impl Engine {
             crate::search::reset_search_state();
         }
 
+        let variant = js_game
+            .variant
+            .as_deref()
+            .map(Variant::parse)
+            .unwrap_or(Variant::Classical);
+
         // Apply world bounds from playableRegion if provided
         if let Some(wb) = &js_game.world_bounds {
             let left = wb.left.parse::<i64>().unwrap_or(-1_000_000_000_000_000);
@@ -322,14 +346,10 @@ impl Engine {
             let top = wb.top.parse::<i64>().unwrap_or(1_000_000_000_000_000);
             set_world_bounds(left, right, bottom, top);
         } else {
-            // Always reset to infinite defaults to prevent world borders from
+            // Always reset to defaults based on variant to prevent world borders from
             // leaking from previous games in the same worker (e.g. SPRT).
-            set_world_bounds(
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-            );
+            let (left, right, bottom, top) = variant.get_default_bounds();
+            set_world_bounds(left, right, bottom, top);
         }
 
         // Build starting GameState from JS board
