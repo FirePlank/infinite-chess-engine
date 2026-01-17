@@ -478,15 +478,12 @@ fn improve_worker(
                 &mut rng,
                 &mut scratch,
                 &shared.running,
-            ) {
-                // only commit if nobody changed it since we read cur
-                if shared.rook_shifts[sq]
-                    .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    shared.rook_magics[sq].store(magic, Ordering::Release);
-                    shared.improvements.fetch_add(1, Ordering::Relaxed);
-                }
+            ) && shared.rook_shifts[sq]
+                .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                shared.rook_magics[sq].store(magic, Ordering::Release);
+                shared.improvements.fetch_add(1, Ordering::Relaxed);
             }
         } else {
             if !shared.bishop_found[sq].load(Ordering::Relaxed) {
@@ -506,14 +503,12 @@ fn improve_worker(
                 &mut rng,
                 &mut scratch,
                 &shared.running,
-            ) {
-                if shared.bishop_shifts[sq]
-                    .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    shared.bishop_magics[sq].store(magic, Ordering::Release);
-                    shared.improvements.fetch_add(1, Ordering::Relaxed);
-                }
+            ) && shared.bishop_shifts[sq]
+                .compare_exchange(cur, target, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                shared.bishop_magics[sq].store(magic, Ordering::Release);
+                shared.improvements.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -750,7 +745,7 @@ fn gen_bishop_mask_edge_inclusive(sq: usize) -> u64 {
     for (dr, df) in &[(1, 1), (1, -1), (-1, 1), (-1, -1)] {
         let mut rr = r + dr;
         let mut ff = f + df;
-        while rr >= 0 && rr < 8 && ff >= 0 && ff < 8 {
+        while (0..8).contains(&rr) && (0..8).contains(&ff) {
             m |= 1u64 << (rr * 8 + ff);
             rr += dr;
             ff += df;
@@ -805,7 +800,7 @@ fn gen_bishop_attacks_edge_inclusive(sq: usize, occ: u64) -> u64 {
     for (dr, df) in &[(1i32, 1i32), (1, -1), (-1, 1), (-1, -1)] {
         let mut rr = r + dr;
         let mut ff = f + df;
-        while rr >= 0 && rr < 8 && ff >= 0 && ff < 8 {
+        while (0..8).contains(&rr) && (0..8).contains(&ff) {
             let s = (rr * 8 + ff) as usize;
             a |= 1u64 << s;
             if (occ & (1u64 << s)) != 0 {

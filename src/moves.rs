@@ -2076,28 +2076,26 @@ fn find_cross_ray_targets_into(
                                 .filter(|&(ny, _)| ny == py)
                         {
                             // Check visited targets (Vertical alignment = 1)
-                            if !is_enemy {
-                                if let Some(visited) = visited_targets.as_deref_mut() {
-                                    let target_coord = Coordinate::new(px, py);
-                                    let mut found = false;
-                                    let mut pruned = false;
-                                    for (c, m) in visited.iter_mut() {
-                                        if *c == target_coord {
-                                            if *m & 1 != 0 {
-                                                pruned = true;
-                                            } else {
-                                                *m |= 1;
-                                            }
-                                            found = true;
-                                            break;
+                            if !is_enemy && let Some(visited) = visited_targets.as_deref_mut() {
+                                let target_coord = Coordinate::new(px, py);
+                                let mut found = false;
+                                let mut pruned = false;
+                                for (c, m) in visited.iter_mut() {
+                                    if *c == target_coord {
+                                        if *m & 1 != 0 {
+                                            pruned = true;
+                                        } else {
+                                            *m |= 1;
                                         }
+                                        found = true;
+                                        break;
                                     }
-                                    if pruned {
-                                        continue;
-                                    }
-                                    if !found {
-                                        visited.push((target_coord, 1));
-                                    }
+                                }
+                                if pruned {
+                                    continue;
+                                }
+                                if !found {
+                                    visited.push((target_coord, 1));
                                 }
                             }
 
@@ -2137,28 +2135,26 @@ fn find_cross_ray_targets_into(
                                 .filter(|&(nx, _)| nx == px)
                         {
                             // Check visited targets (Horizontal alignment = 2)
-                            if !is_enemy {
-                                if let Some(visited) = visited_targets.as_deref_mut() {
-                                    let target_coord = Coordinate::new(px, py);
-                                    let mut found = false;
-                                    let mut pruned = false;
-                                    for (c, m) in visited.iter_mut() {
-                                        if *c == target_coord {
-                                            if *m & 2 != 0 {
-                                                pruned = true;
-                                            } else {
-                                                *m |= 2;
-                                            }
-                                            found = true;
-                                            break;
+                            if !is_enemy && let Some(visited) = visited_targets.as_deref_mut() {
+                                let target_coord = Coordinate::new(px, py);
+                                let mut found = false;
+                                let mut pruned = false;
+                                for (c, m) in visited.iter_mut() {
+                                    if *c == target_coord {
+                                        if *m & 2 != 0 {
+                                            pruned = true;
+                                        } else {
+                                            *m |= 2;
                                         }
+                                        found = true;
+                                        break;
                                     }
-                                    if pruned {
-                                        continue;
-                                    }
-                                    if !found {
-                                        visited.push((target_coord, 2));
-                                    }
+                                }
+                                if pruned {
+                                    continue;
+                                }
+                                if !found {
+                                    visited.push((target_coord, 2));
                                 }
                             }
 
@@ -2688,7 +2684,7 @@ fn find_blocker_via_indices(
 /// 2. O(log n) binary search in spatial indices for blocker detection
 /// 3. When no blocker, only generates moves to "interesting" squares aligned with cross-ray pieces
 /// 4. is_prime_fast() for O(1) primality checks instead of O(√n)
-/// gen_type controls which move types to generate: All, Quiets only, or Captures only
+///    gen_type controls which move types to generate: All, Quiets only, or Captures only
 fn generate_huygen_moves_into(
     board: &Board,
     from: &Coordinate,
@@ -2723,10 +2719,11 @@ fn generate_huygen_moves_into(
 
                 if prime_dist == blocker_dist {
                     // At blocker - can only move here if enemy (capture)
-                    if let Some(color) = blocker_color {
-                        if color != my_color && gen_type != MoveGenType::Quiets {
-                            out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
-                        }
+                    if let Some(color) = blocker_color
+                        && color != my_color
+                        && gen_type != MoveGenType::Quiets
+                    {
+                        out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
                     }
                 } else {
                     // Before blocker - empty square, valid move
@@ -2738,15 +2735,15 @@ fn generate_huygen_moves_into(
 
             // IMPORTANT: Handle captures at prime distances > 127
             // The loop above only covers primes up to 127, but blocker could be further
-            if blocker_dist > 127 && gen_type != MoveGenType::Quiets {
-                if let Some(color) = blocker_color {
-                    if color != my_color {
-                        // Blocker is enemy at prime distance > 127 - generate capture
-                        let to_x = from.x + dir_x * blocker_dist;
-                        let to_y = from.y + dir_y * blocker_dist;
-                        out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
-                    }
-                }
+            if blocker_dist > 127
+                && gen_type != MoveGenType::Quiets
+                && let Some(color) = blocker_color
+                && color != my_color
+            {
+                // Blocker is enemy at prime distance > 127 - generate capture
+                let to_x = from.x + dir_x * blocker_dist;
+                let to_y = from.y + dir_y * blocker_dist;
+                out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
             // CASE 2: No blocker found at any prime distance
@@ -2955,12 +2952,12 @@ fn generate_rose_moves_into(
 
                 if is_blocked {
                     // Generate capture if enemy and not already seen
-                    if !already_seen {
-                        if let Some(target) = occupant {
-                            if is_enemy_piece(target, my_color) && gen_type != MoveGenType::Quiets {
-                                out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
-                            }
-                        }
+                    if !already_seen
+                        && let Some(target) = occupant
+                        && is_enemy_piece(target, my_color)
+                        && gen_type != MoveGenType::Quiets
+                    {
+                        out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
                     }
                     break; // Blocked - can't continue spiral (regardless of seen status)
                 }

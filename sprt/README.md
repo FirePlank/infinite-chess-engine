@@ -27,7 +27,7 @@ wasm-pack build --target web --out-dir pkg-old
 ```
 
 > [!TIP]
-> If you want to test multithreaded performance (Lazy SMP), build with: `node build_mt.js`.
+> If you want to test multithreading, build with: `node build_mt.js`.
 
 ### 2. Make Your Changes
 
@@ -40,7 +40,7 @@ cd sprt
 # For single-threaded testing:
 npm run dev
 
-# For multi-threaded testing (Lazy SMP):
+# For multi-threaded testing:
 node sprt.js --mt
 ```
 
@@ -57,7 +57,7 @@ Navigate to `http://localhost:3000` in your browser.
 
 1. Select a **Bounds Preset** (see table below)
 2. Choose **Mode**: Gainer or Non-Regression
-3. Set **Time Per Move** (200ms recommended)
+3. Set **TC Mode** and **Time Control** (e.g., Smart Mix or 10+0.1)
 4. Click **Run SPRT**
 
 ---
@@ -83,12 +83,15 @@ Navigate to `http://localhost:3000` in your browser.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| TC Mode | Base+Inc | What type of time control to use |
+| TC Mode | Smart Mix | Randomized mix of time controls |
+| Time Control | 10+0.1 | Base time + increment (for Standard) |
 | Concurrency | 50 | Parallel games (Web Workers) |
 | Min Games | 250 | Minimum games before stopping |
 | Max Games | 1000 | Maximum games limit |
-| Max Moves | 200 | Moves before forced draw |
-| Material Adjudication | 1500 | Eval difference to auto win |
+| Max Moves | 300 | Moves before forced draw |
+| Material Adjudication | 2000 | Eval difference to auto win (cp) |
+| Search Noise | 50 | Randomness amplitude for first 4 ply (cp) |
+| Alpha / Beta | 0.05 | False positive / False negative rates |
 
 ---
 
@@ -173,12 +176,15 @@ npm run spsa
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--games <n>` | 60 | Games per iteration |
+| `--games <n>` | 100 | Games per side per iteration |
 | `--iterations <n>` | 100 | Total iterations |
-| `--tc <ms>` | 200 | Time per move (ms) |
+| `--tc <ms>` | 100 | Time control per move (ms) |
 | `--concurrency <n>` | 20 | Parallel workers |
 | `--fresh` | false | Ignore checkpoints |
 | `--verbose` | false | Show detailed updates |
+| `--native` | false | Use fast native iwasm execution |
+| `--browser` | false | Force browser execution (Puppeteer) |
+| `--variant <v>` | Classical | Variant to use for tuning |
 
 ### Examples
 

@@ -122,6 +122,7 @@ pub fn score_move(
 /// Sort all moves using selection sort approach.
 /// This is equivalent to calling pick_best_move repeatedly but more efficient
 /// when we need all moves sorted (e.g., at root).
+#[allow(clippy::needless_range_loop)]
 pub fn sort_moves(
     searcher: &Searcher,
     game: &GameState,
@@ -190,6 +191,7 @@ pub fn sort_moves_root(
 }
 
 /// Fast capture sorting using MVV-LVA only (no SEE for qsearch captures)
+#[allow(clippy::needless_range_loop)]
 pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
     // For captures, use selection sort since qsearch usually has few captures
     if moves.len() <= 16 {

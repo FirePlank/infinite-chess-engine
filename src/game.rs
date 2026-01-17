@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 /// Win conditions for a player. Determines how they win the game.
 /// - Checkmate: Standard - win by checkmating the opponent
-/// - RoyalCapture: Win by capturing the opponent's only royal piece
-/// - AllRoyalsCaptured: Win when all opponent's royal pieces are captured
-/// - AllPiecesCaptured: Win when all opponent's pieces are captured
+/// - RoyalCapture: Win by capturing one of the opponent's royal pieces
+/// - AllRoyalsCaptured: Win when all of the opponent's royal pieces are captured
+/// - AllPiecesCaptured: Win when all of the opponent's pieces are captured
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WinCondition {
     #[default]
@@ -2378,6 +2378,7 @@ impl GameState {
     /// - Ok(true): Move is DEFINITELY LEGAL (piece not on any slider ray from king AND side not in check)
     /// - Err(()): Cannot determine fast, must use full is_move_illegal check
     #[inline(always)]
+    #[allow(clippy::result_unit_err)]
     pub fn is_legal_fast(&self, m: &Move, in_check: bool) -> Result<bool, ()> {
         // 1. If currently in check, any move could be illegal or fail to escape check.
         if in_check {
@@ -3415,16 +3416,16 @@ impl GameState {
             }
 
             let mut has_special_rights = false;
-            let x_str = if x_str_raw.ends_with('+') {
+            let x_str = if let Some(stripped) = x_str_raw.strip_suffix('+') {
                 has_special_rights = true;
-                &x_str_raw[..x_str_raw.len() - 1]
+                stripped
             } else {
                 x_str_raw
             };
 
-            let y_str = if y_raw.ends_with('+') {
+            let y_str = if let Some(stripped) = y_raw.strip_suffix('+') {
                 has_special_rights = true;
-                &y_raw[..y_raw.len() - 1]
+                stripped
             } else {
                 y_raw
             };

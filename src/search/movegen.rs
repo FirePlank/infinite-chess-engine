@@ -276,11 +276,10 @@ impl StagedMoveGen {
             }
 
             // Destination must not be friendly
-            if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
-                if target.color() == game.turn {
+            if let Some(target) = game.board.get_piece(m.to.x, m.to.y)
+                && target.color() == game.turn {
                     return false;
                 }
-            }
 
             // Castling validation
             if piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() > 1 {
@@ -365,8 +364,7 @@ impl StagedMoveGen {
             if let Some(prev_move) = ply
                 .checked_sub(plies_ago + 1)
                 .and_then(|i| searcher.move_history.get(i).copied().flatten())
-            {
-                if let Some(&prev_piece) = searcher.moved_piece_history.get(ply - plies_ago - 1) {
+                && let Some(&prev_piece) = searcher.moved_piece_history.get(ply - plies_ago - 1) {
                     let prev_piece = prev_piece as usize;
                     if prev_piece < 16 {
                         let prev_to_h = hash_coord_32(prev_move.to.x, prev_move.to.y);
@@ -381,7 +379,6 @@ impl StagedMoveGen {
                         }
                     }
                 }
-            }
         }
 
         // Check bonus (if move gives check and SEE >= -75)
@@ -545,11 +542,10 @@ impl StagedMoveGen {
                     };
 
                     // Return TT move (already validated in constructor)
-                    if let Some(tt_m) = self.tt_move {
-                        if !self.is_excluded(&tt_m) {
+                    if let Some(tt_m) = self.tt_move
+                        && !self.is_excluded(&tt_m) {
                             return Some(tt_m);
                         }
-                    }
                 }
 
                 MoveStage::CaptureInit | MoveStage::QCaptureInit | MoveStage::ProbCutInit => {
@@ -631,7 +627,7 @@ impl StagedMoveGen {
                 }
 
                 MoveStage::BadCapture => {
-                    while self.cur < self.end_bad_captures {
+                    if self.cur < self.end_bad_captures {
                         let m = self.moves[self.cur].m;
                         self.cur += 1;
                         return Some(m);

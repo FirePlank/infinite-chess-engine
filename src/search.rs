@@ -351,7 +351,7 @@ pub fn store_tt_with_shared(_searcher: &mut Searcher, ctx: &StoreContext) {
             score: ctx.score,
             static_eval: ctx.static_eval,
             is_pv: ctx.is_pv,
-            best_move: ctx.best_move.clone(),
+            best_move: ctx.best_move,
             ply: ctx.ply,
         });
     }
@@ -556,7 +556,9 @@ pub fn reset_search_state() {
     crate::evaluation::insufficient_material::clear_material_cache();
 
     // Clear transposition table
-    if let Some(tt) = GLOBAL_TT.get() { tt.clear() }
+    if let Some(tt) = GLOBAL_TT.get() {
+        tt.clear()
+    }
 }
 
 /// Search state that persists across the search
@@ -931,9 +933,9 @@ impl Searcher {
             // Only trigger if we're very close to the limit and NPS is slow.
             // This is a last-resort safety, not a regular termination condition.
             if self.hot.nodes > 8192 {
-                let time_to_next_check = (8192.0 * elapsed as f64) / self.hot.nodes as f64;
+                let time_to_next_check = (8192.0 * elapsed) / self.hot.nodes as f64;
                 // Only stop if we literally cannot reach the next check in time.
-                if (elapsed as f64 + time_to_next_check) > hard_limit {
+                if (elapsed + time_to_next_check) > hard_limit {
                     self.hot.stopped = true;
                     return true;
                 }
@@ -993,6 +995,7 @@ impl Searcher {
     /// Update correction history based on search result.
     /// Updates only the tables relevant for the current mode.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_correction_history(
         &mut self,
         game: &GameState,
@@ -2167,7 +2170,7 @@ pub(crate) fn get_best_moves_multipv_impl(
 
         // Update best_lines with results from this depth
         best_lines.clear();
-        for (_, (mv, score, pv)) in root_scores.iter().take(multi_pv).enumerate() {
+        for (mv, score, pv) in root_scores.iter().take(multi_pv) {
             best_lines.push(PVLine {
                 mv: *mv,
                 score: *score,
@@ -2565,10 +2568,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         tt_is_pv = is_pv_ret;
 
         // Get TT depth for qsearch extension decision
-        if let Some(tt) = GLOBAL_TT.get() {
-            if let Some((_, d, _, _, _, _)) = tt.probe_for_singular(hash, ply) {
-                tt_depth = d;
-            }
+        if let Some(tt) = GLOBAL_TT.get()
+            && let Some((_, d, _, _, _, _)) = tt.probe_for_singular(hash, ply)
+        {
+            tt_depth = d;
         }
         // In non-PV nodes, use TT cutoff if valid score returned
         // Adding cutNode check for node type consistency
@@ -2631,14 +2634,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     };
 
     // Use TT value to improve position evaluation when valid and bound matches
-    if !in_check {
-        if let Some(tt_val) = tt_value {
-            if !is_decisive(tt_val) {
-                // If TT value > eval and has lower bound, or TT value < eval and has upper bound
-                // we can use it as a better position evaluation
-                static_eval = tt_val;
-            }
-        }
+    if !in_check
+        && let Some(tt_val) = tt_value
+        && !is_decisive(tt_val)
+    {
+        // If TT value > eval and has lower bound, or TT value < eval and has upper bound
+        // we can use it as a better position evaluation
+        static_eval = tt_val;
     }
 
     searcher.eval_stack[ply] = static_eval;
@@ -2789,7 +2791,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         && !in_check
         && depth >= probcut_min_depth()
         && !is_decisive(beta)
-        && !tt_value.is_some_and(|v| v < prob_cut_beta)
+        && tt_value.is_none_or(|v| v >= prob_cut_beta)
     {
         let mut prob_cut_depth =
             (depth as i32 - probcut_depth_sub() as i32 - (static_eval - beta) / probcut_divisor())
@@ -2865,17 +2867,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // This avoids searching positions where we already know there's a good move
     {
         let small_prob_cut_beta = beta + low_depth_probcut_margin();
-        if let Some(tt) = GLOBAL_TT.get() {
-            if let Some((tt_flag, tt_depth, tt_score, _, _, _)) = tt.probe_for_singular(hash, ply) {
-                if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
-                    && tt_depth as usize >= depth.saturating_sub(4)
-                    && tt_score >= small_prob_cut_beta
-                    && !is_decisive(beta)
-                    && !is_decisive(tt_score)
-                {
-                    return small_prob_cut_beta;
-                }
-            }
+        if let Some(tt) = GLOBAL_TT.get()
+            && let Some((tt_flag, tt_depth, tt_score, _, _, _)) = tt.probe_for_singular(hash, ply)
+            && (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
+            && tt_depth as usize >= depth.saturating_sub(4)
+            && tt_score >= small_prob_cut_beta
+            && !is_decisive(beta)
+            && !is_decisive(tt_score)
+        {
+            return small_prob_cut_beta;
         }
     }
 

@@ -212,7 +212,6 @@ pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
 const SLIDER_NET_BONUS: i32 = 20;
 
 // King safety ring and ray penalties - tuned for infinite boards.
-// King safety ring and ray penalties - tuned for infinite boards.
 
 // King pawn shield heuristics
 // Reward having pawns in front of the king and penalize the king walking
@@ -1189,7 +1188,6 @@ pub fn evaluate_rook(
         // Much faster than the previous complex detection
         let mut confinement_bonus = 0;
 
-        // Rook on same rank as king - controls king's horizontal movement
         // Rook on same rank as king - controls king's horizontal movement
         if y == ek.y && (x - ek.x).abs() <= 3 {
             confinement_bonus += 30;
@@ -2459,8 +2457,8 @@ pub fn evaluate_threat_traced<T: EvaluationTracer>(game: &GameState, tracer: &mu
                 PieceType::Pawn => {
                     let dy = if color == PlayerColor::White { 1 } else { -1 };
                     for dx in [-1i64, 1] {
-                        if let Some(target) = game.board.get_piece(x + dx, y + dy) {
-                            if target.color() == enemy {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
+                            && target.color() == enemy {
                                 let tv = get_piece_value(target.piece_type());
                                 if tv >= 600 {
                                     if color == PlayerColor::White {
@@ -2482,13 +2480,12 @@ pub fn evaluate_threat_traced<T: EvaluationTracer>(game: &GameState, tracer: &mu
                                     }
                                 }
                             }
-                        }
                     }
                 }
                 PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => {
                     for &(dx, dy) in &KNIGHT_OFFSETS {
-                        if let Some(target) = game.board.get_piece(x + dx, y + dy) {
-                            if target.color() == enemy {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
+                            && target.color() == enemy {
                                 let tv = get_piece_value(target.piece_type());
                                 let mv = get_piece_value(pt);
                                 if tv >= 600 && mv < 600 {
@@ -2505,7 +2502,6 @@ pub fn evaluate_threat_traced<T: EvaluationTracer>(game: &GameState, tracer: &mu
                                     }
                                 }
                             }
-                        }
                     }
                 }
                 _ => {}

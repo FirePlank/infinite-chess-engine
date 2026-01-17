@@ -56,11 +56,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         let victim_val = get_piece_value(captured.piece_type());
         let attacker_val = get_piece_value(m.piece.piece_type());
         // Simple approximation: gain if victim > attacker, otherwise assume even exchange
-        return if victim_val >= attacker_val {
-            victim_val - attacker_val
-        } else {
-            victim_val - attacker_val // Could be negative, which is correct
-        };
+        return victim_val - attacker_val;
     }
 
     #[derive(Clone, Copy)]
@@ -139,54 +135,54 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     }
     // Camels, Giraffes, Zebras
     for &(dx, dy) in &CAMEL_OFFSETS {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if p.piece_type() == PieceType::Camel {
-                add_piece!(tx + dx, ty + dy, p.packed());
-            }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && p.piece_type() == PieceType::Camel
+        {
+            add_piece!(tx + dx, ty + dy, p.packed());
         }
     }
     for &(dx, dy) in &GIRAFFE_OFFSETS {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if p.piece_type() == PieceType::Giraffe {
-                add_piece!(tx + dx, ty + dy, p.packed());
-            }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && p.piece_type() == PieceType::Giraffe
+        {
+            add_piece!(tx + dx, ty + dy, p.packed());
         }
     }
     for &(dx, dy) in &ZEBRA_OFFSETS {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if p.piece_type() == PieceType::Zebra {
-                add_piece!(tx + dx, ty + dy, p.packed());
-            }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && p.piece_type() == PieceType::Zebra
+        {
+            add_piece!(tx + dx, ty + dy, p.packed());
         }
     }
     // Hawks
     for &(dx, dy) in &HAWK_OFFSETS {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if p.piece_type() == PieceType::Hawk {
-                add_piece!(tx + dx, ty + dy, p.packed());
-            }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && p.piece_type() == PieceType::Hawk
+        {
+            add_piece!(tx + dx, ty + dy, p.packed());
         }
     }
     // King/Guard
     for &(dx, dy) in &KING_OFFSETS {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if attacks_like_king(p.piece_type()) {
-                add_piece!(tx + dx, ty + dy, p.packed());
-            }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && attacks_like_king(p.piece_type())
+        {
+            add_piece!(tx + dx, ty + dy, p.packed());
         }
     }
     // Pawns
     for &(dx, dy) in &[(1, 1), (-1, 1), (1, -1), (-1, -1)] {
-        if let Some(p) = game.board.get_piece(tx + dx, ty + dy) {
-            if p.piece_type() == PieceType::Pawn {
-                let dir = match p.color() {
-                    PlayerColor::White => 1,
-                    PlayerColor::Black => -1,
-                    _ => 0,
-                };
-                if dy == -dir {
-                    add_piece!(tx + dx, ty + dy, p.packed());
-                }
+        if let Some(p) = game.board.get_piece(tx + dx, ty + dy)
+            && p.piece_type() == PieceType::Pawn
+        {
+            let dir = match p.color() {
+                PlayerColor::White => 1,
+                PlayerColor::Black => -1,
+                _ => 0,
+            };
+            if dy == -dir {
+                add_piece!(tx + dx, ty + dy, p.packed());
             }
         }
     }

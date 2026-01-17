@@ -219,6 +219,7 @@ fn get_piece_idx(pt: PieceType) -> usize {
 
 // Main Evaluation
 
+#[allow(clippy::needless_range_loop)]
 pub fn evaluate(game: &GameState) -> i32 {
     let mut mg = [0i32; 2];
     let mut eg = [0i32; 2];
@@ -264,7 +265,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                 b_pawn_files |= 1 << ((x - 1).clamp(0, 7));
             }
             pawns.push((x, y, is_white));
-        } else if pc_idx >= 1 && pc_idx <= 4 {
+        } else if (1..=4).contains(&pc_idx) {
             // 3. Mobility (including capture squares)
             let mobility = count_mobility(&game.board, x, y, piece);
             mg[color_idx] += mobility * MG_MOBILITY[pc_idx];
@@ -319,11 +320,12 @@ pub fn evaluate(game: &GameState) -> i32 {
         let mut is_passed = true;
         for j in 0..pawns.len() {
             let (nx, ny, nw) = pawns[j];
-            if nw != is_white && (nx - x).abs() <= 1 {
-                if (is_white && ny > y) || (!is_white && ny < y) {
-                    is_passed = false;
-                    break;
-                }
+            if nw != is_white
+                && (nx - x).abs() <= 1
+                && ((is_white && ny > y) || (!is_white && ny < y))
+            {
+                is_passed = false;
+                break;
             }
         }
 
@@ -397,7 +399,7 @@ fn count_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::boa
     for (dx, dy) in dirs {
         let mut nx = x + dx;
         let mut ny = y + dy;
-        while nx >= 1 && nx <= 8 && ny >= 1 && ny <= 8 {
+        while (1..=8).contains(&nx) && (1..=8).contains(&ny) {
             if let Some(p) = board.get_piece(nx, ny) {
                 if p.color() != our_color && p.color() != PlayerColor::Neutral {
                     count += 1; // Count capture square
