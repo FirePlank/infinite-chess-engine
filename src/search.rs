@@ -13,13 +13,11 @@ use crate::search::params::{
     rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
     see_capture_hist_div, see_capture_linear, see_quiet_quad,
 };
-use std::cell::RefCell;
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-use wasm_bindgen::prelude::*;
-
 // For web WASM (browser), use js_sys::Date for timing
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 use js_sys::Date;
+use std::cell::RefCell;
 // For native builds and WASI, use std::time::Instant
 #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 use std::time::Instant;
@@ -61,26 +59,52 @@ fn now_ms() -> f64 {
     Date::now()
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = Math)]
-    fn random() -> f64;
+/// Fast deterministic seedable PRNG for search noise and strength limiting.
+/// Uses a custom Xorshift-like algorithm for speed and predictability.
+#[derive(Clone, Debug)]
+pub struct Prng {
+    state: u64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn random() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
-    let nanos = since_the_epoch.as_nanos();
-    let mut x = nanos as u64;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    (x as f64) / (u64::MAX as f64)
+impl Prng {
+    pub fn new(seed: u64) -> Self {
+        let mut p = Prng { state: seed };
+        // Advance once to avoid problems with 0 seed if necessary
+        if p.state == 0 {
+            p.state = 0x123456789ABCDEF0;
+        }
+        for _ in 0..4 {
+            p.next_u64();
+        }
+        p
+    }
+
+    #[inline(always)]
+    pub fn next_u64(&mut self) -> u64 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
+    }
+
+    #[inline(always)]
+    pub fn next_f64(&mut self) -> f64 {
+        (self.next_u64() as f64) / (u64::MAX as f64)
+    }
+}
+
+/// Generate deterministic noise for a given position and seed.
+#[inline(always)]
+fn get_noise(seed: u64, hash: u64, amp: i32) -> i32 {
+    if amp == 0 {
+        return 0;
+    }
+    // High-quality SplitMix64 hash stage for mixing position and seed
+    let mut x = seed.wrapping_add(hash);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x = x ^ (x >> 31);
+    (x % (2 * amp as u64)) as i32 - amp
 }
 
 pub const MAX_PLY: usize = 64;
@@ -599,6 +623,11 @@ pub struct Searcher {
     // Previous iteration score for aspiration windows
     pub prev_score: i32,
 
+    // Search noise parameters for SPRT pairing
+    pub noise_amp: i32,
+    pub seed: u64,
+    pub rng: Prng,
+
     // Depth fully completed in the current search
     pub completed_depth: usize,
 
@@ -709,6 +738,9 @@ impl Searcher {
             eval_stack: vec![0; MAX_PLY],
             best_move_root: None,
             prev_score: 0,
+            noise_amp: 0,
+            seed: 0,
+            rng: Prng::new(0),
             completed_depth: 0,
             silent: false,
             thread_id: 0,
@@ -1786,6 +1818,14 @@ fn get_best_move_threaded(
         // Get or create the persistent searcher
         let searcher = opt.get_or_insert_with(|| Searcher::new(max_time_ms));
 
+        // If this is a helper thread, ensure it has a unique RNG state based on global seed
+        if thread_id > 0 {
+            // Helpers don't mutate global seed, but use it to seed their local RNG
+            // We use wrapping_add to ensure deterministic variation per thread
+            let base_seed = searcher.seed;
+            searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
+        }
+
         // Initialize searcher for this search
         searcher.new_search();
 
@@ -1871,10 +1911,25 @@ pub fn get_best_moves_multipv(
     })
 }
 
+/// Sets the global seed and re-initializes the PRNG.
+/// This affects subsequent calls to functions that use GLOBAL_SEARCHER.
+pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        // Get or create the persistent searcher.
+        // If not initialized, we use a default max_time (e.g. 1000) which will be updated later.
+        let searcher = opt.get_or_insert_with(|| Searcher::new(1000));
+
+        searcher.seed = seed;
+        searcher.rng = Prng::new(seed);
+        searcher.noise_amp = noise_amp.unwrap_or(0);
+    });
+}
+
 /// Selects a move from MultiPV results using Stockfish's strength-limiting logic.
 /// weakness = 120 - 2 * skill_level
 /// push = (weakness * (top_score - score) + delta * (rng % weakness)) / 128
-fn pick_best(result: &MultiPVResult, skill_level: u32) -> Option<(Move, i32)> {
+fn pick_best(result: &MultiPVResult, skill_level: u32, rng: &mut Prng) -> Option<(Move, i32)> {
     if result.lines.is_empty() {
         return None;
     }
@@ -1892,7 +1947,7 @@ fn pick_best(result: &MultiPVResult, skill_level: u32) -> Option<(Move, i32)> {
     let mut chosen_idx = 0;
 
     for (idx, line) in result.lines.iter().enumerate() {
-        let rng_val = (random() * (weakness as f64)) as i32;
+        let rng_val = (rng.next_f64() * (weakness as f64)) as i32;
         let push = (weakness * (top_score - line.score) + delta * rng_val) / 128;
 
         if line.score + push >= max_score {
@@ -1921,7 +1976,14 @@ pub(crate) fn get_best_move_limited(
 
     let strength = strength_level.unwrap_or(3).clamp(1, 3);
     if strength >= 3 {
-        return get_best_move(game, max_depth, opt_time_ms, silent, is_soft_limit);
+        return get_best_move_parallel(
+            game,
+            max_depth,
+            opt_time_ms,
+            max_time_ms,
+            silent,
+            is_soft_limit,
+        );
     }
 
     GLOBAL_SEARCHER.with(|cell| {
@@ -1956,7 +2018,7 @@ pub(crate) fn get_best_move_limited(
         if multi_pv > 1 {
             let result = get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent);
             let stats = result.stats.clone();
-            pick_best(&result, skill_level).map(|(m, eval)| (m, eval, stats))
+            pick_best(&result, skill_level, &mut searcher.rng).map(|(m, eval)| (m, eval, stats))
         } else {
             let res = search_with_searcher(searcher, game, max_depth);
             let stats = build_search_stats(searcher);
@@ -2632,6 +2694,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let adjusted = searcher.adjusted_eval(game, raw, prev_move_idx);
         (adjusted, raw)
     };
+
+    // Apply deterministic search noise at low plies for SPRT
+    if searcher.noise_amp > 0 && ply < LOW_PLY_HISTORY_SIZE {
+        static_eval += get_noise(searcher.seed, hash, searcher.noise_amp);
+    }
 
     // Use TT value to improve position evaluation when valid and bound matches
     if !in_check

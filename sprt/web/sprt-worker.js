@@ -489,7 +489,7 @@ async function ensureInit() {
     }
 }
 
-async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise) {
+async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed) {
     if (typeof wasmNew.reset_engine_state === 'function') {
         wasmNew.reset_engine_state();
     }
@@ -636,7 +636,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             const noiseAmp = currentPly < 4 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
 
             let flaggedOnTime = false;
-            const move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp);
+            const move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, seed ? BigInt(seed) : undefined);
             engine.free();
 
             const elapsed = Math.max(0, Math.round(nowMs() - startMs));
@@ -1006,7 +1006,8 @@ self.onmessage = async (e) => {
                 msg.timeControl,
                 msg.variantName || 'Classical',
                 msg.maxDepth,
-                msg.searchNoise
+                msg.searchNoise,
+                msg.seed
             );
 
             // Timeout wrapper - treat timeout as draw

@@ -311,6 +311,21 @@ struct JsEvalWithFeatures {
     features: crate::evaluation::EvalFeatures,
 }
 
+#[cfg(target_arch = "wasm32")]
+fn get_random_seed() -> u64 {
+    (js_sys::Math::random() * (u32::MAX as f64)) as u64
+        ^ ((js_sys::Math::random() * (u32::MAX as f64)) as u64).rotate_left(32)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_random_seed() -> u64 {
+    use std::time::SystemTime;
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    duration.as_nanos() as u64
+}
+
 #[wasm_bindgen]
 pub struct Engine {
     game: GameState,
@@ -814,6 +829,8 @@ impl Engine {
         time_limit_ms: u32,
         silent: Option<bool>,
         max_depth: Option<usize>,
+        noise_amp: Option<i32>,
+        seed: Option<u64>,
     ) -> JsValue {
         // let legal_moves = self.game.get_legal_moves();
         // web_sys::console::log_1(&format!("Legal moves: {:?}", legal_moves).into());
@@ -873,9 +890,13 @@ impl Engine {
             }
         }
 
+        // Initialize randomness with global seed logic
+        let effective_seed = seed.unwrap_or_else(get_random_seed);
+        search::set_global_params(effective_seed, noise_amp);
+
         // Choose search path based on strength level.
         let (best_move, eval) = if strength.is_some_and(|s| s < 3) {
-            // Use strength limited search
+            // Use strength limited search (uses global seed we just set)
             if let Some((bm, ev, _stats)) = search::get_best_move_limited(
                 &mut self.game,
                 depth,

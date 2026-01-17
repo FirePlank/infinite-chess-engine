@@ -951,7 +951,8 @@ async function runSprt() {
     clearLog();
     sprtStatusEl.textContent = 'Status: running...';
     sprtStatusEl.className = 'sprt-status';
-    log('Starting SPRT: ' + maxGames + ' games (' + (maxGames / 2) + ' pairs), Mode=' + runConfig.tcMode + ', TC=' + displayTcString, 'info');
+    const sprtBaseSeed = Date.now() ^ ((Math.random() * 0xFFFFFFFF) | 0);
+    log('Starting SPRT: ' + maxGames + ' games (' + (maxGames / 2) + ' pairs), Mode=' + runConfig.tcMode + ', TC=' + displayTcString + ', Seed=' + sprtBaseSeed, 'info');
     sprtLog('SPRT Test Started (noisy opening moves for first 4 ply, paired games)');
 
     const maxConcurrent = Math.max(1, runConfig.concurrency | 0);
@@ -981,6 +982,7 @@ async function runSprt() {
             newPlaysWhite,
             materialThreshold: runConfig.materialThreshold,
             searchNoise: runConfig.searchNoise,
+            seed: sprtBaseSeed + pairIndex,
             baseTimeMs: tcParams.baseTimeMs,
             incrementMs: tcParams.incrementMs,
             maxDepth: tcParams.maxDepth,
