@@ -128,6 +128,17 @@ impl GameRules {
     }
 }
 
+/// Entry in move history for repetition detection.
+/// Stores move details to check if a reversal would repeat a position.
+#[derive(Clone, Copy, Debug)]
+pub struct MoveHistoryEntry {
+    pub from_x: i64,
+    pub from_y: i64,
+    pub to_x: i64,
+    pub to_y: i64,
+    pub piece_type: PieceType,
+}
+
 #[derive(Clone)]
 pub struct UndoMove {
     pub captured_piece: Option<Piece>,
@@ -283,6 +294,13 @@ pub struct GameState {
     /// Number of pieces currently checking the black king.
     #[serde(skip)]
     pub checkers_count_black: u8,
+    /// Move history for repetition detection.
+    /// Stores (from, to, piece_type) for each move.
+    #[serde(skip)]
+    pub move_history: Vec<MoveHistoryEntry>,
+    /// Search ply distance from last null move.
+    #[serde(skip)]
+    pub plies_from_null: u32,
 }
 
 // For backwards compatibility, keep castling_rights as an alias
@@ -365,6 +383,8 @@ impl GameState {
             pinned_black: rustc_hash::FxHashMap::default(),
             checkers_count_white: 0,
             checkers_count_black: 0,
+            move_history: Vec::with_capacity(128),
+            plies_from_null: 0,
         }
     }
 
@@ -418,6 +438,8 @@ impl GameState {
             pinned_black: rustc_hash::FxHashMap::default(),
             checkers_count_white: 0,
             checkers_count_black: 0,
+            move_history: Vec::with_capacity(128),
+            plies_from_null: 0,
         }
     }
 
@@ -1235,6 +1257,98 @@ impl GameState {
         self.repetition != 0 && self.repetition < (ply as i32)
     }
 
+    /// Check if we have an upcoming move that draws by repetition.
+    /// Checks if a single reversible move would lead to a repeated position.
+    /// Used for pruning and early draw detection.
+    #[inline]
+    pub fn upcoming_repetition(&self, ply: usize) -> bool {
+        use crate::search::zobrist::{SIDE_KEY, piece_key};
+
+        // Don't check during null move search
+        if self.null_moves > 0 {
+            return false;
+        }
+
+        // Use minimum of halfmove_clock and plies_from_null like Stockfish
+        let end = (self.halfmove_clock as usize).min(self.plies_from_null as usize);
+        if end < 3 {
+            return false;
+        }
+
+        // Check if positions differ by exactly two moves that allow reversal.
+        // We look for recent moves that can be reversed to create a repetition.
+        let current_hash = self.hash;
+        let stack_len = self.hash_stack.len();
+        let history_len = self.move_history.len();
+
+        if history_len < 2 || stack_len < 3 {
+            return false;
+        }
+
+        // For each odd distance (opposite side to move), check if we can make a move
+        // that transforms current position to match an earlier position.
+        for i in (3..=end.min(stack_len)).step_by(2) {
+            let hist_idx = if history_len >= i {
+                history_len - i
+            } else {
+                continue;
+            };
+            let hash_idx = if stack_len >= i {
+                stack_len - i
+            } else {
+                continue;
+            };
+            let target_hash = self.hash_stack[hash_idx];
+
+            // Compute what single move would transform current position to target position
+            // move_key = current_hash XOR target_hash XOR SIDE_KEY (since opposite side to move)
+            let move_key = current_hash ^ target_hash ^ SIDE_KEY;
+
+            // Check if any of our pieces can make a move that produces this hash difference.
+            // For a piece at (from_x, from_y) moving to (to_x, to_y):
+            // hash_diff = piece_key(type, color, from) XOR piece_key(type, color, to)
+            //
+            // The most common case: the piece that moved i plies ago can move back.
+            // Check our move from (i-1)/2 moves ago (rounded).
+            if hist_idx < history_len {
+                let entry = &self.move_history[hist_idx];
+                let pt = entry.piece_type;
+
+                // Check if the piece is still at entry.to and can move back to entry.from
+                if let Some(piece) = self.board.get_piece(entry.to_x, entry.to_y) {
+                    if piece.piece_type() == pt && piece.color() == self.turn {
+                        // Check if entry.from is empty (piece can move back)
+                        if self.board.get_piece(entry.from_x, entry.from_y).is_none() {
+                            // Compute hash difference for this reverse move
+                            let from_key = piece_key(pt, self.turn, entry.to_x, entry.to_y);
+                            let to_key = piece_key(pt, self.turn, entry.from_x, entry.from_y);
+                            let expected_key = from_key ^ to_key;
+
+                            if expected_key == move_key {
+                                // This move would create the repetition!
+                                // Check if repetition is within search tree
+                                if ply > i {
+                                    return true;
+                                }
+
+                                // For root nodes, check if target position was already repeated
+                                // This requires checking if hash_stack[hash_idx] had repetition
+                                // For simplicity, just check the most recent few positions
+                                for j in (0..hash_idx).rev().step_by(2).take(4) {
+                                    if self.hash_stack[j] == target_hash {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
     /// Check if this is a lone king endgame (one side only has a king)
     pub fn is_lone_king_endgame(&self) -> bool {
         use crate::board::{PieceType, PlayerColor};
@@ -1307,6 +1421,9 @@ impl GameState {
         self.turn = self.turn.opponent();
 
         self.null_moves += 1;
+
+        // Reset plies from last null move.
+        self.plies_from_null = 0;
     }
 
     /// Unmake a null move
@@ -2997,6 +3114,16 @@ impl GameState {
         self.hash ^= SIDE_KEY;
         self.turn = self.turn.opponent();
 
+        // Track move for repetition detection.
+        self.move_history.push(MoveHistoryEntry {
+            from_x: m.from.x,
+            from_y: m.from.y,
+            to_x: m.to.x,
+            to_y: m.to.y,
+            piece_type: piece.piece_type(),
+        });
+        self.plies_from_null += 1;
+
         // Compute distance to previous occurrence for repetition detection:
         // of same position. 0 = no repetition, positive = distance to twofold, negative = threefold.
         self.repetition = 0;
@@ -3185,6 +3312,10 @@ impl GameState {
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;
         self.castling_partner_counts = undo.old_castling_partner_counts;
+
+        // Pop move history (reverse of make_move push)
+        self.move_history.pop();
+        self.plies_from_null = self.plies_from_null.saturating_sub(1);
     }
 
     pub fn perft(&mut self, depth: usize) -> u64 {

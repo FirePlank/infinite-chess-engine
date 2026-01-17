@@ -539,9 +539,7 @@ impl Engine {
 
         let mut game = GameState {
             board,
-            // Seed with the starting side; this ensures that replaying move history
-            // produces the correct side-to-move even when Black (or another side)
-            // moved first.
+            // Start with current turn; replayed history ensures correct side-to-move.
             turn: js_turn,
             special_rights,
             en_passant: None,
@@ -587,15 +585,15 @@ impl Engine {
             pinned_black: rustc_hash::FxHashMap::default(),
             checkers_count_white: 0,
             checkers_count_black: 0,
+            move_history: Vec::with_capacity(js_game.move_history.len().saturating_add(8)),
+            plies_from_null: 0,
         };
 
         game.material_score = calculate_initial_material(&game.board);
         game.recompute_piece_counts(); // Rebuild piece lists and counts
         game.init_starting_piece_counts(); // Cache starting non-pawn piece counts for phase detection
-        // Initialize development starting squares from the initial board
-        // before replaying move history.
         game.init_starting_squares();
-        game.recompute_hash(); // Compute initial hash from position
+        game.recompute_hash();
 
         // Helper to parse "x,y" into (i64, i64)
         fn parse_coords(coord_str: &str) -> Option<(i64, i64)> {

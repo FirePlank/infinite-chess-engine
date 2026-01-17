@@ -33,7 +33,9 @@ pub fn value_from_tt(value: i32, ply: usize, rule50_count: u32, rule_limit: i32)
         // mate_distance = how many plies until mate from the stored position
         let mate_distance = MATE_VALUE - value;
 
-        // Or: mate_distance + rule50_count > rule_limit
+        // Downgrade a potentially false mate score:
+        // If mate_distance + rule50_count > rule_limit, the game would be drawn
+        // by the 50-move rule before we can deliver checkmate.
         if mate_distance + rule50_count as i32 > rule_limit {
             // Downgrade to non-mate winning score (just below mate threshold)
             return MATE_SCORE - 1;
@@ -47,6 +49,7 @@ pub fn value_from_tt(value: i32, ply: usize, rule50_count: u32, rule_limit: i32)
     if value < -MATE_SCORE {
         let mate_distance = MATE_VALUE + value;
 
+        // Downgrade a potentially false mate score
         if mate_distance + rule50_count as i32 > rule_limit {
             // Downgrade to non-mate losing score
             return -MATE_SCORE + 1;

@@ -219,7 +219,6 @@ const PARAM_TO_CONST = {
     history_bonus_base: 'DEFAULT_HISTORY_BONUS_BASE',
     history_bonus_sub: 'DEFAULT_HISTORY_BONUS_SUB',
     history_bonus_cap: 'DEFAULT_HISTORY_BONUS_CAP',
-    repetition_penalty: 'DEFAULT_REPETITION_PENALTY',
     delta_margin: 'DEFAULT_DELTA_MARGIN',
     // Array-based params need special handling
     lmp_threshold_1: 'DEFAULT_LMP_THRESHOLD[1]',

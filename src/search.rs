@@ -9,9 +9,9 @@ use crate::search::params::{
     lmr_divisor, lmr_history_thresh, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh,
     low_depth_probcut_margin, max_history, nmp_base, nmp_depth_mult, nmp_min_depth,
     nmp_reduction_base, nmp_reduction_div, probcut_depth_sub, probcut_divisor, probcut_improving,
-    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, repetition_penalty,
-    rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
-    see_capture_hist_div, see_capture_linear, see_quiet_quad,
+    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, rfp_improving_mult,
+    rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult, see_capture_hist_div,
+    see_capture_linear, see_quiet_quad,
 };
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 // For web WASM (browser), use js_sys::Date for timing
@@ -132,6 +132,13 @@ pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
 #[inline(always)]
 pub const fn is_decisive(value: i32) -> bool {
     value.abs() > MATE_SCORE
+}
+
+pub const VALUE_DRAW: i32 = 0;
+#[inline(always)]
+pub fn value_draw(nodes: u64) -> i32 {
+    // VALUE_DRAW is 0, so this gives -1 or +1
+    -1 + ((nodes & 0x2) as i32)
 }
 
 // Correction History constants (adapted for Infinite Chess)
@@ -2551,6 +2558,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         return evaluate(game);
     }
 
+    // Check if we have an upcoming move that draws by repetition
+    // Stockfish: this comes before is_draw check
+    if ply > 0 && alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
+        let draw_val = value_draw(searcher.hot.nodes);
+        if draw_val >= beta {
+            return draw_val;
+        }
+        alpha = alpha.max(draw_val);
+    }
+
     // Initialize node state
     let in_check = game.is_in_check();
     searcher.hot.nodes += 1;
@@ -2573,7 +2590,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if ply > 0 {
         // Draw by fifty-move rule or repetition
         if game.is_fifty() || game.is_repetition(ply) {
-            return -repetition_penalty();
+            return value_draw(searcher.hot.nodes);
         }
 
         // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
@@ -2635,18 +2652,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             tt_depth = d;
         }
-        // In non-PV nodes, use TT cutoff if valid score returned
-        // Adding cutNode check for node type consistency
-        // - Don't produce TT cutoffs when rule50 is high (>= 96)
+
+        // TT Cutoff Logic:
+        // - In non-PV nodes, use TT cutoff if valid score returned
+        // - Don't produce TT cutoffs when rule50 is high (>= ~96% of limit)
         // - Don't cutoff on mate scores (they need full verification)
-        let rule_limit = searcher.move_rule_limit as u32;
+        let rule50_threshold = (searcher.move_rule_limit as u32).saturating_sub(4);
         let fails_high = score >= beta;
         let node_type_matches = (cut_node == fails_high) || depth > 5;
         if !is_pv
             && score != INFINITY + 1
             && !is_decisive(score)
             && node_type_matches
-            && game.halfmove_clock < rule_limit.saturating_sub(4)
+            && game.halfmove_clock < rule50_threshold
             && game.repetition == 0
         {
             return score;
@@ -3713,9 +3731,17 @@ fn quiescence(
     beta: i32,
 ) -> i32 {
     // CRITICAL: Check for max ply BEFORE any array accesses to prevent out-of-bounds
-    // This must be the very first check to avoid panics when ply >= MAX_PLY
     if ply >= MAX_PLY - 1 {
         return evaluate(game);
+    }
+
+    // Check if we have an upcoming move that draws by repetition
+    if alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
+        let draw_val = value_draw(searcher.hot.nodes);
+        if draw_val >= beta {
+            return draw_val;
+        }
+        alpha = alpha.max(draw_val);
     }
 
     searcher.hot.nodes += 1;
@@ -3726,12 +3752,16 @@ fn quiescence(
         searcher.hot.seldepth = ply;
     }
 
+    // Draw by fifty-move rule or repetition
+    if game.is_fifty() || game.is_repetition(ply) {
+        return VALUE_DRAW;
+    }
+
     if searcher.check_time() {
         return 0;
     }
 
     // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
-    // Zero overhead: has_lost_by_royal_capture returns false immediately for Checkmate variants
     if game.has_lost_by_royal_capture() {
         return -MATE_VALUE + ply as i32;
     }

@@ -291,14 +291,6 @@ export const SPSA_PARAMS = {
     // ============================================================================
     // OTHER PARAMETERS
     // ============================================================================
-    repetition_penalty: {
-        default: 8,
-        min: 0,
-        max: 30,
-        step: 5,
-        weight: 0.4,
-        description: "Penalty for drawing by threefold repetition"
-    },
     delta_margin: {
         default: 200,
         min: 100,

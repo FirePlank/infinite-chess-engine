@@ -570,7 +570,6 @@ impl StagedMoveGen {
                     while self.cur < self.end_captures {
                         let sm = self.moves[self.cur];
 
-                        // Stockfish: see_ge(*cur, -cur->value / 18)
                         if super::see_ge(game, &sm.m, -sm.score / 18) {
                             self.cur += 1;
                             return Some(sm.m);

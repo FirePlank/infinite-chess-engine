@@ -91,9 +91,6 @@ pub const DEFAULT_HISTORY_BONUS_SUB: i32 = 250;
 pub const DEFAULT_HISTORY_BONUS_CAP: i32 = 1536;
 pub const DEFAULT_HISTORY_MAX_GRAVITY: i32 = 16384;
 
-// Repetition/Draw penalties
-pub const DEFAULT_REPETITION_PENALTY: i32 = 8;
-
 // Quiescence
 pub const DEFAULT_DELTA_MARGIN: i32 = 200;
 
@@ -176,7 +173,6 @@ pub struct SearchParams {
     pub history_bonus_cap: i32,
 
     // Other
-    pub repetition_penalty: i32,
     pub delta_margin: i32,
 }
 
@@ -232,7 +228,6 @@ impl Default for SearchParams {
             history_bonus_base: DEFAULT_HISTORY_BONUS_BASE,
             history_bonus_sub: DEFAULT_HISTORY_BONUS_SUB,
             history_bonus_cap: DEFAULT_HISTORY_BONUS_CAP,
-            repetition_penalty: DEFAULT_REPETITION_PENALTY,
             delta_margin: DEFAULT_DELTA_MARGIN,
         }
     }
@@ -368,7 +363,6 @@ define_accessor!(history_bonus_sub, i32, DEFAULT_HISTORY_BONUS_SUB);
 define_accessor!(history_bonus_cap, i32, DEFAULT_HISTORY_BONUS_CAP);
 
 // Other
-define_accessor!(repetition_penalty, i32, DEFAULT_REPETITION_PENALTY);
 define_accessor!(delta_margin, i32, DEFAULT_DELTA_MARGIN);
 
 #[cfg(test)]
