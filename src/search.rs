@@ -1130,13 +1130,14 @@ impl Searcher {
     }
 
     /// Extract PV by following TT moves (for display only)
+    /// Uses a cloned GameState to avoid corrupting the original board
     pub fn extract_pv_from_tt(&self, game: &mut GameState, max_len: usize) -> Vec<Move> {
         let mut pv = Vec::with_capacity(max_len);
+        let mut temp_game = game.clone();
         let mut seen_hashes = Vec::with_capacity(max_len);
-        let mut undos = Vec::with_capacity(max_len);
 
         for _ in 0..max_len {
-            let hash = game.hash;
+            let hash = temp_game.hash;
             if seen_hashes.contains(&hash) {
                 break;
             }
@@ -1150,50 +1151,56 @@ impl Searcher {
 
             if let Some(m) = tt_move {
                 // Validate that the move is still valid on the current board position
-                // TT can have stale/collided entries with moves that don't match
-                let piece_at_from = game.board.get_piece(m.from.x, m.from.y);
+                let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
                 if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
-                    // Move is invalid (no piece or wrong piece at source)
                     break;
                 }
 
-                let undo = game.make_move(&m);
-                if game.is_move_illegal() {
-                    game.undo_move(&m, undo);
+                temp_game.make_move(&m);
+                if temp_game.is_move_illegal() {
                     break;
                 }
                 pv.push(m);
-                undos.push(undo);
             } else {
                 break;
             }
-        }
-
-        // Undo all moves in reverse
-        for (m, undo) in pv.iter().zip(undos.into_iter()).rev() {
-            game.undo_move(m, undo);
         }
         pv
     }
 
     /// Extract the PV line (for internal use by MultiPV single-line path)
     pub fn extract_pv_only(&self, game: &mut GameState, depth: usize) -> Vec<Move> {
-        let mut pv = Vec::with_capacity(self.pv_length[0]);
-        for i in 0..self.pv_length[0] {
+        // Just extract moves from pv_table without making them on the board
+        // This is safe because we're only reading, not modifying game state
+        let mut pv = Vec::with_capacity(self.pv_length[0].min(depth));
+        for i in 0..self.pv_length[0].min(depth) {
             if let Some(m) = self.pv_table[i] {
                 pv.push(m);
+            } else {
+                break;
             }
         }
 
+        // Only extend with TT moves if we have room and the PV is short
         if pv.len() < depth {
-            let mut undos = Vec::with_capacity(depth);
+            // Clone game state for TT probing to avoid corrupting the original
+            let mut temp_game = game.clone();
+
+            // First, advance temp_game to the end of the current PV
+            // Validate each move before making it
             for m in &pv {
-                undos.push(game.make_move(m));
+                let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
+                if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                    // PV is invalid, return what we have so far (empty safe)
+                    return pv;
+                }
+                temp_game.make_move(m);
             }
 
+            // Now probe TT to extend
             let mut seen_hashes = Vec::with_capacity(depth);
             for _ in pv.len()..depth {
-                let hash = game.hash;
+                let hash = temp_game.hash;
                 if seen_hashes.contains(&hash) {
                     break;
                 }
@@ -1206,28 +1213,21 @@ impl Searcher {
                 };
 
                 if let Some(m) = tt_move {
-                    // Validate that the move is still legal on the current board position
-                    // TT can have stale/collided entries with moves that don't match
-                    let piece_at_from = game.board.get_piece(m.from.x, m.from.y);
+                    // Validate that the move is still valid on the current board position
+                    let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
                     if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
-                        // Move is invalid (no piece or wrong piece at source)
                         break;
                     }
 
-                    let undo = game.make_move(&m);
-                    if game.is_move_illegal() {
-                        game.undo_move(&m, undo);
+                    temp_game.make_move(&m);
+                    if temp_game.is_move_illegal() {
+                        // Don't add illegal moves to PV
                         break;
                     }
                     pv.push(m);
-                    undos.push(undo);
                 } else {
                     break;
                 }
-            }
-
-            for (m, undo) in pv.iter().zip(undos.into_iter()).rev() {
-                game.undo_move(m, undo);
             }
         }
         pv
