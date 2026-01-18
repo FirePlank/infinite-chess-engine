@@ -643,9 +643,9 @@ mod tests {
         assert!(res.is_none(), "Oldest/Weakest entry should be replaced");
 
         // Verify other entries are still there
-        for i in 1..4 {
+        for entry in entries.iter().take(4).skip(1) {
             let res = tt.probe(&TTProbeParams {
-                hash: entries[i].1 as u64,
+                hash: entry.1 as u64,
                 alpha: -1000,
                 beta: 1000,
                 depth: 0,

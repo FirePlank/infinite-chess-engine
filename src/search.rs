@@ -1149,6 +1149,14 @@ impl Searcher {
             };
 
             if let Some(m) = tt_move {
+                // Validate that the move is still valid on the current board position
+                // TT can have stale/collided entries with moves that don't match
+                let piece_at_from = game.board.get_piece(m.from.x, m.from.y);
+                if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                    // Move is invalid (no piece or wrong piece at source)
+                    break;
+                }
+
                 let undo = game.make_move(&m);
                 if game.is_move_illegal() {
                     game.undo_move(&m, undo);
@@ -1198,6 +1206,14 @@ impl Searcher {
                 };
 
                 if let Some(m) = tt_move {
+                    // Validate that the move is still legal on the current board position
+                    // TT can have stale/collided entries with moves that don't match
+                    let piece_at_from = game.board.get_piece(m.from.x, m.from.y);
+                    if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                        // Move is invalid (no piece or wrong piece at source)
+                        break;
+                    }
+
                     let undo = game.make_move(&m);
                     if game.is_move_illegal() {
                         game.undo_move(&m, undo);

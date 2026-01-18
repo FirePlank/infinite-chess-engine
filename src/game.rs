@@ -1315,29 +1315,30 @@ impl GameState {
                 let pt = entry.piece_type;
 
                 // Check if the piece is still at entry.to and can move back to entry.from
-                if let Some(piece) = self.board.get_piece(entry.to_x, entry.to_y) {
-                    if piece.piece_type() == pt && piece.color() == self.turn {
-                        // Check if entry.from is empty (piece can move back)
-                        if self.board.get_piece(entry.from_x, entry.from_y).is_none() {
-                            // Compute hash difference for this reverse move
-                            let from_key = piece_key(pt, self.turn, entry.to_x, entry.to_y);
-                            let to_key = piece_key(pt, self.turn, entry.from_x, entry.from_y);
-                            let expected_key = from_key ^ to_key;
+                if let Some(piece) = self.board.get_piece(entry.to_x, entry.to_y)
+                    && piece.piece_type() == pt
+                    && piece.color() == self.turn
+                {
+                    // Check if entry.from is empty (piece can move back)
+                    if self.board.get_piece(entry.from_x, entry.from_y).is_none() {
+                        // Compute hash difference for this reverse move
+                        let from_key = piece_key(pt, self.turn, entry.to_x, entry.to_y);
+                        let to_key = piece_key(pt, self.turn, entry.from_x, entry.from_y);
+                        let expected_key = from_key ^ to_key;
 
-                            if expected_key == move_key {
-                                // This move would create the repetition!
-                                // Check if repetition is within search tree
-                                if ply > i {
+                        if expected_key == move_key {
+                            // This move would create the repetition!
+                            // Check if repetition is within search tree
+                            if ply > i {
+                                return true;
+                            }
+
+                            // For root nodes, check if target position was already repeated
+                            // This requires checking if hash_stack[hash_idx] had repetition
+                            // For simplicity, just check the most recent few positions
+                            for j in (0..hash_idx).rev().step_by(2).take(4) {
+                                if self.hash_stack[j] == target_hash {
                                     return true;
-                                }
-
-                                // For root nodes, check if target position was already repeated
-                                // This requires checking if hash_stack[hash_idx] had repetition
-                                // For simplicity, just check the most recent few positions
-                                for j in (0..hash_idx).rev().step_by(2).take(4) {
-                                    if self.hash_stack[j] == target_hash {
-                                        return true;
-                                    }
                                 }
                             }
                         }
