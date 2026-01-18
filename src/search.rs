@@ -2767,7 +2767,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && !is_decisive(score)
             && node_type_matches
             && game.halfmove_clock < rule50_threshold
-            && game.repetition == 0
+            && !game.is_repetition(ply)
         {
             return score;
         }
