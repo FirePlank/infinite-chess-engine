@@ -362,24 +362,21 @@ impl StagedMoveGen {
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
 
-        for &plies_ago in &[0usize, 1, 2, 3, 5] {
+        for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
             if let Some(prev_move) = ply
                 .checked_sub(plies_ago + 1)
                 .and_then(|i| searcher.move_history.get(i).copied().flatten())
                 && let Some(&prev_piece) = searcher.moved_piece_history.get(ply - plies_ago - 1)
             {
                 let prev_piece = prev_piece as usize;
-                if prev_piece < 16 {
+                if prev_piece < 32 {
                     let prev_to_h = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                    if let Some(val) = searcher
-                        .cont_history
-                        .get(prev_piece)
-                        .and_then(|a| a.get(prev_to_h))
-                        .and_then(|b| b.get(cur_from_hash))
-                        .and_then(|c| c.get(cur_to_hash))
-                    {
-                        score += val;
-                    }
+                    let prev_ic = searcher.in_check_history[ply - plies_ago - 1] as usize;
+                    let prev_cap = searcher.capture_history_stack[ply - plies_ago - 1] as usize;
+
+                    let val = searcher.cont_history[prev_cap][prev_ic][prev_piece][prev_to_h]
+                        [cur_from_hash][cur_to_hash];
+                    score += val;
                 }
             }
         }

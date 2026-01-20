@@ -649,9 +649,13 @@ pub struct Searcher {
     // Moved piece history stack (piece type that moved at each ply)
     pub moved_piece_history: Vec<u8>,
 
-    // Continuation history: [prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
-    // Using smaller dimensions (16*32*32*32*4 = 2MB) to fit in WASM memory
-    pub cont_history: Vec<[[[i32; 32]; 32]; 32]>,
+    // Continuation history: [is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
+    // Using 32 for piece types to accommodate all types (8*32*32*32*32*4 = 32MB)
+    pub cont_history: Box<[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]>,
+
+    // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
+    // Used for evaluation correction (32*32*32*32*4 = 4MB)
+    pub cont_corrhist: Box<[[[[i32; 32]; 32]; 32]; 32]>,
 
     // MultiPV: moves to exclude from root search (for finding 2nd, 3rd, etc. best moves)
     // Stored as (from_x, from_y, to_x, to_y) tuples for fast comparison without cloning
@@ -666,6 +670,10 @@ pub struct Searcher {
     pub nonpawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub material_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub lastmove_corrhist: Box<[i32; LASTMOVE_CORRHIST_SIZE]>,
+
+    // Stacks to track node state for history updates
+    pub in_check_history: Vec<bool>,
+    pub capture_history_stack: Vec<bool>,
 
     /// TT Move History: tracks reliability of TT moves.
     /// Positive values = TT moves tend to be best moves.
@@ -751,7 +759,10 @@ impl Searcher {
             move_buffers,
             move_history: vec![None; MAX_PLY],
             moved_piece_history: vec![0; MAX_PLY],
-            cont_history: vec![[[[0i32; 32]; 32]; 32]; 16],
+            in_check_history: vec![false; MAX_PLY],
+            capture_history_stack: vec![false; MAX_PLY],
+            cont_history: Box::new([[[[[[0i32; 32]; 32]; 32]; 32]; 2]; 2]),
+            cont_corrhist: Box::new([[[[0i32; 32]; 32]; 32]; 32]),
             excluded_moves: Vec::new(),
             corrhist_mode: CorrHistMode::NonPawnBased, // Default, set based on variant at search start
             pawn_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
@@ -902,12 +913,23 @@ impl Searcher {
         }
 
         // Reset continuation history
-        for outer in self.cont_history.iter_mut() {
-            for mid in outer.iter_mut() {
-                for inner in mid.iter_mut() {
-                    for val in inner.iter_mut() {
-                        *val = 0;
+        for c in 0..2 {
+            for ic in 0..2 {
+                for p in 0..32 {
+                    for t in 0..32 {
+                        for f in 0..32 {
+                            self.cont_history[c][ic][p][t][f].fill(0);
+                        }
                     }
+                }
+            }
+        }
+
+        // Reset continuation correction history
+        for p in 0..32 {
+            for t in 0..32 {
+                for p2 in 0..32 {
+                    self.cont_corrhist[p][t][p2].fill(0);
                 }
             }
         }
@@ -1023,7 +1045,13 @@ impl Searcher {
     /// Apply correction history to raw static evaluation.
     /// Uses variant-specific mode set at search start for zero overhead.
     #[inline]
-    pub fn adjusted_eval(&self, game: &GameState, raw_eval: i32, prev_move_idx: usize) -> i32 {
+    pub fn adjusted_eval(
+        &self,
+        game: &GameState,
+        raw_eval: i32,
+        ply: usize,
+        prev_move_idx: usize,
+    ) -> i32 {
         let color_idx = (game.turn as usize).min(1);
 
         let total_correction = match self.corrhist_mode {
@@ -1049,8 +1077,34 @@ impl Searcher {
                 let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
                 let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
 
-                // 50% non-pawn, 30% material, 20% last-move
-                (nonpawn_corr * 50 + mat_corr * 30 + lastmove_corr * 20) / (CORRHIST_GRAIN * 100)
+                // Continuation correction (ss-2 and ss-4):
+                let mut cont_corr = 0;
+
+                if ply > 0 {
+                    if let Some(m) = self.move_history[ply - 1] {
+                        let cur_pc = m.piece.piece_type() as usize;
+                        let cur_to = hash_coord_32(m.to.x, m.to.y);
+
+                        for &plies_ago in &[1usize, 3] {
+                            if ply > plies_ago
+                                && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
+                            {
+                                let prev_piece =
+                                    self.moved_piece_history[ply - plies_ago - 1] as usize;
+                                if prev_piece < 32 {
+                                    let prev_to_hash =
+                                        hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                    cont_corr += self.cont_corrhist[prev_piece][prev_to_hash]
+                                        [cur_pc][cur_to];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 40% non-pawn, 25% material, 15% last-move, 20% continuation
+                (nonpawn_corr * 40 + mat_corr * 25 + lastmove_corr * 15 + cont_corr * 20)
+                    / (CORRHIST_GRAIN * 100)
             }
         };
 
@@ -1065,6 +1119,7 @@ impl Searcher {
     pub fn update_correction_history(
         &mut self,
         game: &GameState,
+        ply: usize,
         depth: usize,
         static_eval: i32,
         search_score: i32,
@@ -1098,7 +1153,7 @@ impl Searcher {
                 *mat_entry = (*mat_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
             }
             CorrHistMode::NonPawnBased => {
-                // Update non-pawn + material + last-move
+                // Update non-pawn + material + last-move + continuation
                 let nonpawn_idx = (game.nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_entry = &mut self.nonpawn_corrhist[color_idx][nonpawn_idx];
                 *nonpawn_entry = (*nonpawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
@@ -1119,6 +1174,35 @@ impl Searcher {
                     + scaled_diff * lm_weight)
                     / CORRHIST_WEIGHT_SCALE;
                 *lm_entry = (*lm_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+
+                // Update continuation correction history (ss-2 and ss-4)
+                if let Some(cur_m) = self.move_history[ply - 1] {
+                    let cur_pc = cur_m.piece.piece_type() as usize;
+                    let cur_to = hash_coord_32(cur_m.to.x, cur_m.to.y);
+                    let cont_weight = weight.min(128);
+
+                    for &plies_ago in &[1usize, 3] {
+                        if ply > plies_ago
+                            && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
+                        {
+                            let prev_pc = self.moved_piece_history[ply - plies_ago - 1] as usize;
+                            if prev_pc < 32 {
+                                let prev_to = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                let entry =
+                                    &mut self.cont_corrhist[prev_pc][prev_to][cur_pc][cur_to];
+
+                                let w = if plies_ago == 1 {
+                                    cont_weight
+                                } else {
+                                    cont_weight / 2
+                                };
+                                *entry = (*entry * (CORRHIST_WEIGHT_SCALE - w) + scaled_diff * w)
+                                    / CORRHIST_WEIGHT_SCALE;
+                                *entry = (*entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2836,7 +2920,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             );
         }
 
-        let adjusted = searcher.adjusted_eval(game, raw, prev_move_idx);
+        let adjusted = searcher.adjusted_eval(game, raw, ply, prev_move_idx);
         (adjusted, raw)
     };
 
@@ -3312,11 +3396,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let to_hash = hash_move_dest(&m);
         searcher.prev_move_stack[ply] = (from_hash, to_hash);
 
-        // Store move and piece info for continuation history
+        // Store move, piece and state info for continuation history
         let move_history_backup = searcher.move_history[ply].take();
         let piece_history_backup = searcher.moved_piece_history[ply];
+        let in_check_backup = searcher.in_check_history[ply];
+        let capture_backup = searcher.capture_history_stack[ply];
+
         searcher.move_history[ply] = Some(m);
         searcher.moved_piece_history[ply] = p_type as u8;
+        searcher.in_check_history[ply] = in_check;
+        searcher.capture_history_stack[ply] = is_capture;
 
         legal_moves += 1;
 
@@ -3658,18 +3747,26 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                     // Update continuation histories at ply offsets -1, -2, -4
                     // (matching the existing beta-cutoff update pattern)
-                    for &plies_ago in &[0usize, 1, 3] {
+                    // Update continuation histories at ply offsets -1, -2, -3, -4, -5, -6
+                    // (matching the new 6-lookup pattern)
+                    for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
                         if ply > plies_ago
                             && let Some(prev_move) = searcher.move_history[ply - plies_ago - 1]
                         {
                             let prev_piece =
                                 searcher.moved_piece_history[ply - plies_ago - 1] as usize;
-                            if prev_piece < 16 {
+                            if prev_piece < 32 {
                                 let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
                                 let cf_hash = hash_coord_32(m.from.x, m.from.y);
                                 let ct_hash = hash_coord_32(m.to.x, m.to.y);
-                                let entry = &mut searcher.cont_history[prev_piece][prev_to_hash]
-                                    [cf_hash][ct_hash];
+
+                                let prev_ic =
+                                    searcher.in_check_history[ply - plies_ago - 1] as usize;
+                                let prev_cap =
+                                    searcher.capture_history_stack[ply - plies_ago - 1] as usize;
+
+                                let entry = &mut searcher.cont_history[prev_cap][prev_ic]
+                                    [prev_piece][prev_to_hash][cf_hash][ct_hash];
                                 // Use gravity-based update: entry += bonus - entry * bonus / max
                                 *entry += lmr_bonus - *entry * lmr_bonus / max_history;
                             }
@@ -3684,6 +3781,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Restore previous-move stack entry for this ply after child returns.
         searcher.prev_move_stack[ply] = prev_entry_backup;
+        searcher.in_check_history[ply] = in_check_backup;
+        searcher.capture_history_stack[ply] = capture_backup;
         searcher.move_history[ply] = move_history_backup;
         searcher.moved_piece_history[ply] = piece_history_backup;
 
@@ -3763,13 +3862,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
                 // Continuation history update:
-                for &plies_ago in &[0usize, 1, 2, 3, 5] {
+                for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
                     if ply > plies_ago
                         && let Some(ref prev_move) = searcher.move_history[ply - plies_ago - 1]
                     {
                         let prev_piece = searcher.moved_piece_history[ply - plies_ago - 1] as usize;
-                        if prev_piece < 16 {
+                        if prev_piece < 32 {
                             let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                            let prev_ic = searcher.in_check_history[ply - plies_ago - 1] as usize;
+                            let prev_cap =
+                                searcher.capture_history_stack[ply - plies_ago - 1] as usize;
 
                             // Update all searched quiets (best with bonus, others with malus)
                             for quiet in &quiets_searched {
@@ -3777,8 +3879,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let q_to_hash = hash_coord_32(quiet.to.x, quiet.to.y);
                                 let is_best = quiet.from == m.from && quiet.to == m.to;
 
-                                let entry = &mut searcher.cont_history[prev_piece][prev_to_hash]
-                                    [q_from_hash][q_to_hash];
+                                let entry = &mut searcher.cont_history[prev_cap][prev_ic]
+                                    [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
                                 if is_best {
                                     *entry += adj - *entry * adj / max_history;
                                 } else {
@@ -3895,6 +3997,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if best_move_is_quiet && should_update {
             searcher.update_correction_history(
                 game,
+                ply,
                 depth,
                 raw_eval,
                 best_score,
@@ -4544,7 +4647,7 @@ mod tests {
         let game = GameState::new();
 
         let raw_eval = 100;
-        let adjusted = searcher.adjusted_eval(&game, raw_eval, 0);
+        let adjusted = searcher.adjusted_eval(&game, raw_eval, 0, 0);
         // Adjusted eval should be within reasonable bounds of raw
         assert!(adjusted.abs() < raw_eval.abs() + 1000);
     }

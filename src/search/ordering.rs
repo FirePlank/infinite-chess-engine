@@ -95,15 +95,18 @@ pub fn score_move(
             let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
             let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
 
-            for &plies_ago in &[0usize, 1, 2, 3, 5] {
+            for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
                 if ply > plies_ago
                     && let Some(ref prev_move) = searcher.move_history[ply - plies_ago - 1]
                 {
                     let prev_piece = searcher.moved_piece_history[ply - plies_ago - 1] as usize;
-                    if prev_piece < 16 {
+                    if prev_piece < 32 {
                         let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                        score += searcher.cont_history[prev_piece][prev_to_hash][cur_from_hash]
-                            [cur_to_hash];
+                        let prev_ic = searcher.in_check_history[ply - plies_ago - 1] as usize;
+                        let prev_cap = searcher.capture_history_stack[ply - plies_ago - 1] as usize;
+
+                        score += searcher.cont_history[prev_cap][prev_ic][prev_piece][prev_to_hash]
+                            [cur_from_hash][cur_to_hash];
                     }
                 }
             }
