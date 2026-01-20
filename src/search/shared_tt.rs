@@ -2,7 +2,9 @@ use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::moves::Move;
 
-use super::tt_defs::{TTFlag, TTProbeParams, TTStoreParams, value_from_tt, value_to_tt};
+use super::tt_defs::{
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
+};
 use super::{INFINITY, MATE_SCORE};
 
 const ENTRIES_PER_BUCKET: usize = 4;
@@ -385,7 +387,7 @@ impl SharedTranspositionTable {
     #[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
     pub fn prefetch_entry(&self, _hash: u64) {}
 
-    pub fn probe(&self, params: &TTProbeParams) -> Option<(i32, i32, Option<Move>, bool)> {
+    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
         let hash = params.hash;
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
@@ -394,52 +396,33 @@ impl SharedTranspositionTable {
             // Atomic read with verification
             if let Some((score, eval, depth, gen_bound, best_move)) = entry.read(hash) {
                 // Found a matching entry
+                let score =
+                    value_from_tt(score, params.ply, params.rule50_count, params.rule_limit);
+                let flag = TTEntry::flag(gen_bound);
+                let is_pv = TTEntry::is_pv(gen_bound);
+
+                let mut cutoff_score = INFINITY + 1;
                 if depth as usize >= params.depth {
-                    let score =
-                        value_from_tt(score, params.ply, params.rule50_count, params.rule_limit);
-                    let flag = TTEntry::flag(gen_bound);
-                    let is_pv = TTEntry::is_pv(gen_bound);
-
-                    let usable_score = match flag {
-                        TTFlag::Exact => Some(score),
-                        TTFlag::LowerBound if score >= params.beta => Some(score),
-                        TTFlag::UpperBound if score <= params.alpha => Some(score),
-                        _ => None,
+                    let usable = match flag {
+                        TTFlag::Exact => true,
+                        TTFlag::LowerBound if score >= params.beta => true,
+                        TTFlag::UpperBound if score <= params.alpha => true,
+                        _ => false,
                     };
-
-                    if let Some(s) = usable_score {
-                        return Some((s, eval, best_move, is_pv));
+                    if usable {
+                        cutoff_score = score;
                     }
                 }
-                return Some((INFINITY + 1, eval, best_move, TTEntry::is_pv(gen_bound)));
-            }
-        }
-        None
-    }
 
-    pub fn probe_for_singular(
-        &self,
-        hash: u64,
-        ply: usize,
-    ) -> Option<(TTFlag, u8, i32, i32, Option<Move>, bool)> {
-        let idx = self.bucket_index(hash);
-        let bucket = &self.buckets[idx];
-
-        for entry in &bucket.entries {
-            if let Some((mut score, eval, depth, gen_bound, best_move)) = entry.read(hash) {
-                if score > MATE_SCORE {
-                    score -= ply as i32;
-                } else if score < -MATE_SCORE {
-                    score += ply as i32;
-                }
-                return Some((
-                    TTEntry::flag(gen_bound),
-                    depth,
-                    score,
+                return Some(TTProbeResult {
+                    cutoff_score,
+                    tt_score: score,
                     eval,
+                    depth,
+                    flag,
+                    is_pv,
                     best_move,
-                    TTEntry::is_pv(gen_bound),
-                ));
+                });
             }
         }
         None
@@ -639,9 +622,9 @@ mod tests {
             rule_limit: 100,
         });
         assert!(result.is_some());
-        let (score, eval, _, _) = result.unwrap();
-        assert_eq!(score, 100);
-        assert_eq!(eval, 90);
+        let res = result.unwrap();
+        assert_eq!(res.cutoff_score, 100);
+        assert_eq!(res.eval, 90);
     }
 
     #[test]

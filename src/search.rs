@@ -184,7 +184,7 @@ pub enum NodeType {
 
 pub mod params;
 pub mod tt_defs;
-pub use tt_defs::{TTFlag, TTProbeParams, TTStoreParams};
+pub use tt_defs::{TTFlag, TTProbeParams, TTProbeResult, TTStoreParams};
 
 mod tt;
 use tt::LocalTranspositionTable;
@@ -240,24 +240,11 @@ pub enum TranspositionTableRef<'a> {
 
 impl<'a> TranspositionTableRef<'a> {
     #[inline]
-    pub fn probe(&self, params: &TTProbeParams) -> Option<(i32, i32, Option<Move>, bool)> {
+    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
         match self {
             Self::Local(tt) => tt.probe(params),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.probe(params),
-        }
-    }
-
-    #[inline]
-    pub fn probe_for_singular(
-        &self,
-        hash: u64,
-        ply: usize,
-    ) -> Option<(TTFlag, u8, i32, i32, Option<Move>, bool)> {
-        match self {
-            Self::Local(tt) => tt.probe_for_singular(hash, ply),
-            #[cfg(feature = "multithreading")]
-            Self::Shared(tt) => tt.probe_for_singular(hash, ply),
         }
     }
 
@@ -365,10 +352,7 @@ pub(crate) static GLOBAL_TT: GlobalTtHandle = GlobalTtHandle;
 
 /// Probe the TT. Dispatch based on thread configuration.
 #[inline]
-pub fn probe_tt_with_shared(
-    _searcher: &Searcher,
-    ctx: &ProbeContext,
-) -> Option<(i32, i32, Option<Move>, bool)> {
+pub fn probe_tt_with_shared(_searcher: &Searcher, ctx: &ProbeContext) -> Option<TTProbeResult> {
     GLOBAL_TT.get().and_then(|tt| {
         tt.probe(&crate::search::tt_defs::TTProbeParams {
             hash: ctx.hash,
@@ -2496,7 +2480,7 @@ fn negamax_root(
     // Probe TT for best move from previous search (uses shared TT if configured)
     // Pass half-move clock directly for score adjustment:
     let rule50_count = game.halfmove_clock;
-    if let Some((_, _, best, _)) = probe_tt_with_shared(
+    if let Some(res) = probe_tt_with_shared(
         searcher,
         &ProbeContext {
             hash,
@@ -2508,7 +2492,7 @@ fn negamax_root(
             rule_limit: searcher.move_rule_limit,
         },
     ) {
-        tt_move = best;
+        tt_move = res.best_move;
     }
 
     let in_check = game.is_in_check();
@@ -2653,7 +2637,7 @@ fn negamax_root(
     }
 
     // Store in TT with correct flag based on original alpha
-    let tt_flag = if best_score <= alpha_orig {
+    let tt_data_bound = if best_score <= alpha_orig {
         TTFlag::UpperBound
     } else if best_score >= beta {
         TTFlag::LowerBound
@@ -2665,7 +2649,7 @@ fn negamax_root(
         &StoreContext {
             hash,
             depth,
-            flag: tt_flag,
+            flag: tt_data_bound,
             score: best_score,
             static_eval: INFINITY + 1, // Not computed at root normally, or already stored
             is_pv: true,
@@ -2772,23 +2756,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Track reduction from parent ply for hindsight adjustment
     let prior_reduction = if ply > 0 {
-        searcher.reduction_stack[ply - 1]
+        let r = searcher.reduction_stack[ply - 1];
+        searcher.reduction_stack[ply - 1] = 0;
+        r
     } else {
         0
     };
 
     // Transposition table probe for hash move and potential cutoff
     let hash = game.hash;
-    let mut tt_move: Option<Move> = None;
-    let mut tt_value: Option<i32> = None;
-    let mut tt_depth: u8 = 0; // For TT move extension
-
-    // Pass half-move clock directly for score adjustment:
     let rule50_count = game.halfmove_clock;
-    // Capture tt_is_pv from probe
-    let mut tt_is_pv = false;
-    let mut tt_eval = INFINITY + 1;
-    if let Some((score, eval, best, is_pv_ret)) = probe_tt_with_shared(
+    let tt_probe = probe_tt_with_shared(
         searcher,
         &ProbeContext {
             hash,
@@ -2799,36 +2777,26 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             rule50_count,
             rule_limit: searcher.move_rule_limit,
         },
-    ) {
-        tt_move = best;
-        tt_value = Some(score);
-        tt_eval = eval;
-        tt_is_pv = is_pv_ret;
+    );
 
-        // Get TT depth for qsearch extension decision
-        if let Some(tt) = GLOBAL_TT.get()
-            && let Some((_, d, _, _, _, _)) = tt.probe_for_singular(hash, ply)
-        {
-            tt_depth = d;
-        }
-
-        // TT Cutoff Logic:
-        // - In non-PV nodes, use TT cutoff if valid score returned
-        // - Don't produce TT cutoffs when rule50 is high (>= ~96% of limit)
-        // - Don't cutoff on mate scores (they need full verification)
-        let rule50_threshold = (searcher.move_rule_limit as u32).saturating_sub(4);
-        let fails_high = score >= beta;
-        let node_type_matches = (cut_node == fails_high) || depth > 5;
-        if !is_pv
-            && score != INFINITY + 1
-            && !is_decisive(score)
-            && node_type_matches
-            && game.halfmove_clock < rule50_threshold
-            && !game.is_repetition(ply)
-        {
-            return score;
-        }
-    }
+    let (tt_hit_node, tt_move, tt_value, tt_data_static_eval, tt_data_depth, tt_pv, tt_data_bound) =
+        if let Some(res) = tt_probe {
+            (
+                true,
+                res.best_move,
+                if res.tt_score == INFINITY + 1 {
+                    None
+                } else {
+                    Some(res.tt_score)
+                },
+                res.eval,
+                res.depth,
+                res.is_pv,
+                res.flag,
+            )
+        } else {
+            (false, None, None, INFINITY + 1, 0, false, TTFlag::None)
+        };
 
     // Static evaluation for pruning decisions
     let prev_move_idx = if ply > 0 {
@@ -2848,7 +2816,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         (prev_eval, prev_eval)
     } else {
         // Use stored TT evaluation if available, otherwise compute it
-        let mut raw = tt_eval;
+        let mut raw = tt_data_static_eval;
         if raw == INFINITY + 1 {
             raw = evaluate(game);
 
@@ -2861,7 +2829,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     flag: TTFlag::None,
                     score: 0,
                     static_eval: raw,
-                    is_pv: tt_is_pv,
+                    is_pv: tt_pv,
                     best_move: tt_move,
                     ply,
                 },
@@ -2876,21 +2844,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if searcher.noise_amp > 0 && ply < LOW_PLY_HISTORY_SIZE {
         static_eval += get_noise(searcher.seed, hash, searcher.noise_amp);
     }
-
-    // Use TT value to improve position evaluation when valid and bound matches
-    if !in_check
-        && let Some(tt_val) = tt_value
-        && !is_decisive(tt_val)
-    {
-        // If TT value > eval and has lower bound, or TT value < eval and has upper bound
-        // we can use it as a better position evaluation
-        static_eval = tt_val;
-    }
-
     searcher.eval_stack[ply] = static_eval;
 
     // Position improving heuristic: compare eval to 2 plies ago
-    // Used to adjust pruning aggressiveness
     let mut improving = if ply >= 2 && !in_check {
         static_eval > searcher.eval_stack[ply - 2]
     } else {
@@ -2898,16 +2854,28 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     };
 
     // Opponent worsening: their last move made our position better
-    // Used to increase pruning when opponent is making poor moves
     let opponent_worsening = if ply >= 1 && !in_check {
         static_eval > -searcher.eval_stack[ply - 1]
     } else {
         false
     };
 
+    // Use TT value to improve position evaluation (Store in local variable 'eval' like Stockfish)
+    let mut eval = static_eval;
+    if !in_check
+        && let Some(tt_s) = tt_value
+        && !is_decisive(tt_s)
+    {
+        let fails_high = tt_s >= beta;
+        if (tt_data_bound == TTFlag::LowerBound && fails_high)
+            || (tt_data_bound == TTFlag::UpperBound && !fails_high)
+            || tt_data_bound == TTFlag::Exact
+        {
+            eval = tt_s;
+        }
+    }
+
     // Hindsight depth adjustment based on prior search behavior
-    // If we were reduced heavily but opponent didn't worsen, increase depth
-    // If position is stable, decrease depth
     if !in_check && ply > 0 {
         let prev_eval = searcher.eval_stack[ply - 1];
         if prior_reduction >= 3 && !opponent_worsening {
@@ -2918,9 +2886,49 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
+    // TT Cutoff
+    let excluded_move = ctx.excluded_move;
+    if !is_pv
+        && excluded_move.is_none()
+        && tt_hit_node
+        && let Some(tt_s) = tt_value
+        && !is_decisive(tt_s)
+    {
+        // Check TT depth vs adjusted depth
+        let depth_threshold = if tt_s <= beta {
+            depth.saturating_sub(1)
+        } else {
+            depth
+        };
+
+        let tt_data_depth_ok = (tt_data_depth as usize) > depth_threshold;
+
+        // Bound check
+        let fails_high = tt_s >= beta;
+        let bound_matches = if fails_high {
+            (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+        } else {
+            (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+        };
+
+        let node_type_matches = (cut_node == fails_high) || depth > 5;
+
+        // Graph history interaction workaround: don't cutoff at high rule50
+        let rule50_threshold = (searcher.move_rule_limit as u32).saturating_sub(4);
+        let rule50_ok = game.halfmove_clock < rule50_threshold;
+
+        if tt_data_depth_ok
+            && bound_matches
+            && node_type_matches
+            && rule50_ok
+            && !game.is_repetition(ply)
+        {
+            return tt_s;
+        }
+    }
+
     // Determine if this node is a TT PV node
-    let tt_hit = tt_value.is_some();
-    let tt_pv = is_pv || (tt_hit && tt_is_pv);
+    let tt_pv = is_pv || (tt_hit_node && tt_pv);
 
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
@@ -2956,7 +2964,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && !is_loss(beta)
             && !is_win(static_eval)
         {
-            let futility_mult = if tt_hit {
+            let futility_mult = if tt_hit_node {
                 rfp_mult_tt()
             } else {
                 rfp_mult_no_tt()
@@ -2972,8 +2980,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             let futility_margin = futility_mult * depth as i32 - bonus;
 
-            if static_eval - futility_margin >= beta && static_eval >= beta {
-                return (2 * beta + static_eval) / 3;
+            if eval - futility_margin >= beta && static_eval >= beta {
+                return (beta + eval) / 2;
             }
         }
 
@@ -3122,13 +3130,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // This avoids searching positions where we already know there's a good move
     {
         let small_prob_cut_beta = beta + low_depth_probcut_margin();
-        if let Some(tt) = GLOBAL_TT.get()
-            && let Some((tt_flag, tt_depth, tt_score, _, _, _)) = tt.probe_for_singular(hash, ply)
-            && (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
-            && tt_depth as usize >= depth.saturating_sub(4)
-            && tt_score >= small_prob_cut_beta
+        if tt_hit_node
+            && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
+            && tt_data_depth as usize >= depth.saturating_sub(4)
+            && let Some(tt_v) = tt_value
+            && tt_v >= small_prob_cut_beta
             && !is_decisive(beta)
-            && !is_decisive(tt_score)
+            && !is_decisive(tt_v)
         {
             return small_prob_cut_beta;
         }
@@ -3146,22 +3154,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
-    let se_conditions = if depth >= 6 && !in_check {
-        tt_move.as_ref().and_then(|_| {
-            GLOBAL_TT
-                .get()
-                .and_then(|tt| tt.probe_for_singular(hash, ply))
-                .and_then(|(tt_flag, tt_depth, tt_score, _, _, _)| {
-                    if (tt_flag == TTFlag::LowerBound || tt_flag == TTFlag::Exact)
-                        && tt_depth as usize >= depth.saturating_sub(3)
-                        && !is_decisive(tt_score)
-                    {
-                        Some((tt_score, (depth - 1) / 2)) // (singular_beta_base, singular_depth)
-                    } else {
-                        None
-                    }
-                })
-        })
+    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() {
+        if tt_hit_node
+            && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
+            && tt_data_depth as usize >= depth.saturating_sub(3)
+            && let Some(tt_v) = tt_value
+            && !is_decisive(tt_v)
+        {
+            Some((tt_v, (depth - 1) / 2)) // (singular_beta_base, singular_depth)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -3324,7 +3327,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             .filter(|tt_m| m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion)
             .is_some();
 
-        if let Some((tt_score, singular_depth)) = se_conditions.filter(|_| {
+        if let Some((tt_s_base, singular_depth)) = se_conditions.filter(|_| {
             is_tt_move
                 && !is_pv
                 && depth >= 6 + (tt_pv as usize)
@@ -3335,7 +3338,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // When TT moves are reliable (high ttMoveHistory), we can use a tighter margin
             // (less extension). When unreliable (low), use a more generous margin.
             let tt_history_adj = searcher.tt_move_history / 150; // History scaling factor
-            let singular_beta = tt_score - (depth as i32) * 3 + tt_history_adj;
+            let singular_beta = tt_s_base - (depth as i32) * 3 + tt_history_adj;
 
             // Undo the move we just made so we can search alternatives
             game.undo_move(&m, undo);
@@ -3618,8 +3621,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let mut pv_depth = adjusted_depth;
                 if is_pv && is_tt_move && pv_depth == 0 {
                     let has_decisive =
-                        tt_value.is_some_and(|v| v.abs() > MATE_SCORE) && tt_depth > 0;
-                    let has_deep_tt = tt_depth > 1;
+                        tt_value.is_some_and(|v| v.abs() > MATE_SCORE) && tt_data_depth > 0;
+                    let has_deep_tt = tt_data_depth > 1;
                     if has_decisive || has_deep_tt {
                         pv_depth = 1;
                     }
@@ -3827,7 +3830,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // - UPPERBOUND: best_score <= alpha_orig (failed low, didn't improve alpha)
     // - LOWERBOUND: best_score >= beta_orig (failed high, caused beta cutoff)
     // - EXACT: alpha_orig < best_score < beta_orig (true minimax value)
-    let tt_flag = if best_score <= alpha_orig {
+    let tt_data_bound = if best_score <= alpha_orig {
         TTFlag::UpperBound
     } else if best_score >= beta_orig {
         TTFlag::LowerBound
@@ -3839,7 +3842,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         &StoreContext {
             hash,
             depth,
-            flag: tt_flag,
+            flag: tt_data_bound,
             score: best_score,
             static_eval: raw_eval,
             is_pv,
@@ -3882,7 +3885,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Replacement conditions:
         // - If lower bound (failed high), score should not be below static eval
         // - If upper bound (failed low), score should not be above static eval
-        let should_update = match tt_flag {
+        let should_update = match tt_data_bound {
             TTFlag::LowerBound => best_score >= raw_eval,
             TTFlag::UpperBound => best_score <= raw_eval,
             TTFlag::Exact => true,
@@ -4672,10 +4675,10 @@ mod tests {
                 rule_limit: 100,
             });
         assert!(result.is_some());
-        let (probed_score, _, probed_move, _) = result.unwrap();
-        assert_eq!(probed_score, score);
-        assert!(probed_move.is_some());
-        assert_eq!(probed_move.unwrap().from.x, 0);
+        let res = result.unwrap();
+        assert_eq!(res.cutoff_score, score);
+        assert!(res.best_move.is_some());
+        assert_eq!(res.best_move.unwrap().from.x, 0);
     }
 
     #[test]

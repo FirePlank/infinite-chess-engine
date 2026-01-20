@@ -1,8 +1,10 @@
 use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::moves::Move;
 
-use super::tt_defs::{TTFlag, TTProbeParams, TTStoreParams, value_from_tt, value_to_tt};
-use super::{INFINITY, MATE_SCORE};
+use super::INFINITY;
+use super::tt_defs::{
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
+};
 
 const ENTRIES_PER_BUCKET: usize = 4;
 const NO_MOVE_SENTINEL: i32 = i32::MIN;
@@ -253,7 +255,7 @@ impl LocalTranspositionTable {
         None
     }
 
-    pub fn probe(&self, params: &TTProbeParams) -> Option<(i32, i32, Option<Move>, bool)> {
+    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
         let signature = self.hash_signature(params.hash);
         let idx = self.bucket_index(params.hash);
         let buckets = unsafe { &*self.buckets.get() };
@@ -265,61 +267,35 @@ impl LocalTranspositionTable {
             }
 
             let best_move = entry.best_move();
+            let score = value_from_tt(
+                entry.score,
+                params.ply,
+                params.rule50_count,
+                params.rule_limit,
+            );
 
+            let mut cutoff_score = INFINITY + 1;
             if entry.depth as usize >= params.depth {
-                let score = value_from_tt(
-                    entry.score,
-                    params.ply,
-                    params.rule50_count,
-                    params.rule_limit,
-                );
-                let usable_score = match entry.flag() {
-                    TTFlag::Exact => Some(score),
-                    TTFlag::LowerBound if score >= params.beta => Some(score),
-                    TTFlag::UpperBound if score <= params.alpha => Some(score),
-                    _ => None,
+                let usable = match entry.flag() {
+                    TTFlag::Exact => true,
+                    TTFlag::LowerBound if score >= params.beta => true,
+                    TTFlag::UpperBound if score <= params.alpha => true,
+                    _ => false,
                 };
-
-                if let Some(s) = usable_score {
-                    return Some((s, entry.eval, best_move, entry.is_pv()));
+                if usable {
+                    cutoff_score = score;
                 }
             }
 
-            return Some((INFINITY + 1, entry.eval, best_move, entry.is_pv()));
-        }
-        None
-    }
-
-    pub fn probe_for_singular(
-        &self,
-        hash: u64,
-        ply: usize,
-    ) -> Option<(TTFlag, u8, i32, i32, Option<Move>, bool)> {
-        let signature = self.hash_signature(hash);
-        let idx = self.bucket_index(hash);
-        let buckets = unsafe { &*self.buckets.get() };
-        let bucket = &buckets[idx];
-
-        for entry in &bucket.entries {
-            if entry.key32 != signature || entry.is_empty() {
-                continue;
-            }
-
-            let mut score = entry.score;
-            if score > MATE_SCORE {
-                score -= ply as i32;
-            } else if score < -MATE_SCORE {
-                score += ply as i32;
-            }
-
-            return Some((
-                entry.flag(),
-                entry.depth,
-                score,
-                entry.eval,
-                entry.best_move(),
-                entry.is_pv(),
-            ));
+            return Some(TTProbeResult {
+                cutoff_score,
+                tt_score: score,
+                eval: entry.eval,
+                depth: entry.depth,
+                flag: entry.flag(),
+                is_pv: entry.is_pv(),
+                best_move,
+            });
         }
         None
     }
@@ -499,9 +475,9 @@ mod tests {
             rule_limit: 100,
         });
         assert!(res.is_some());
-        let (s, e, _, _) = res.unwrap();
-        assert_eq!(s, 100);
-        assert_eq!(e, 90);
+        let res = res.unwrap();
+        assert_eq!(res.cutoff_score, 100);
+        assert_eq!(res.eval, 90);
     }
 
     #[test]
@@ -569,10 +545,13 @@ mod tests {
         });
 
         assert!(res.is_some());
-        let (s, e, mv, _) = res.unwrap();
-        assert_eq!(s, 100);
-        assert_eq!(e, 90);
-        assert!(mv.is_none(), "Out of range move should not be stored");
+        let res = res.unwrap();
+        assert_eq!(res.cutoff_score, 100);
+        assert_eq!(res.eval, 90);
+        assert!(
+            res.best_move.is_none(),
+            "Out of range move should not be stored"
+        );
     }
 
     #[test]
@@ -667,6 +646,6 @@ mod tests {
             rule_limit: 100,
         });
         assert!(res.is_some(), "New entry should be stored");
-        assert_eq!(res.unwrap().0, 200, "New entry score mismatch");
+        assert_eq!(res.unwrap().cutoff_score, 200, "New entry score mismatch");
     }
 }
