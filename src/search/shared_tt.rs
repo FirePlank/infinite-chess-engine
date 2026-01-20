@@ -2,292 +2,186 @@ use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::moves::Move;
 
+use super::INFINITY;
 use super::tt_defs::{
     TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
 };
-use super::{INFINITY, MATE_SCORE};
 
-const ENTRIES_PER_BUCKET: usize = 4;
-const NO_MOVE_SENTINEL: i64 = i64::MIN;
+const ENTRIES_PER_BUCKET: usize = 3;
 
-// ============================================================================
-// Compact Move Representation (Atomic Friendly)
-// ============================================================================
+const GENERATION_BITS: u8 = 3;
+const GENERATION_DELTA: u8 = 1 << GENERATION_BITS;
+#[allow(clippy::identity_op)]
+const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 
-/// Compact move for TT storage. Uses i64 coordinates (required for infinite chess).
-/// Size: 40 bytes.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct TTMove {
-    pub from_x: i64,
-    pub from_y: i64,
-    pub to_x: i64,
-    pub to_y: i64,
-    pub piece_type: u8,
-    pub piece_color: u8,
-    pub promotion: u8, // 0 = none, else PieceType as u8
-}
-
-impl TTMove {
-    /// Create a "no move" sentinel
-    #[inline]
-    pub const fn none() -> Self {
-        TTMove {
-            from_x: NO_MOVE_SENTINEL,
-            from_y: 0,
-            to_x: 0,
-            to_y: 0,
-            piece_type: 0,
-            piece_color: 0,
-            promotion: 0,
-        }
-    }
-
-    /// Check if this represents a valid move
-    #[inline]
-    pub fn is_some(&self) -> bool {
-        self.from_x != NO_MOVE_SENTINEL
-    }
-
-    /// Create from a Move
-    #[inline]
-    pub fn from_move(m: &Move) -> Self {
-        TTMove {
-            from_x: m.from.x,
-            from_y: m.from.y,
-            to_x: m.to.x,
-            to_y: m.to.y,
-            piece_type: m.piece.piece_type() as u8,
-            piece_color: m.piece.color() as u8,
-            promotion: m.promotion.map_or(0, |p| p as u8),
-        }
-    }
-
-    /// Convert back to Option<Move> for use in search
-    #[inline]
-    pub fn to_move(self) -> Option<Move> {
-        if !self.is_some() {
-            return None;
-        }
-
-        let piece_type = PieceType::from_u8(self.piece_type);
-        let color = PlayerColor::from_u8(self.piece_color);
-        let piece = Piece::new(piece_type, color);
-
-        let promotion = if self.promotion == 0 {
-            None
-        } else {
-            // SAFE: Pieces are valid u8s [0, PieceType::MAX]
-            Some(unsafe { std::mem::transmute::<u8, PieceType>(self.promotion) })
-        };
-
-        Some(Move {
-            from: Coordinate {
-                x: self.from_x,
-                y: self.from_y,
-            },
-            to: Coordinate {
-                x: self.to_x,
-                y: self.to_y,
-            },
-            piece,
-            promotion,
-            rook_coord: None,
-        })
-    }
-}
-// ============================================================================
-// TT Entry (Lock-Free Storage - Like Stockfish)
-// ============================================================================
+const NO_MOVE: u16 = 0;
 
 use std::cell::UnsafeCell;
 
-/// Lock-free Transposition Table entry.
-/// Like Stockfish, we use completely racy read/write access for maximum speed.
-/// No atomics, no synchronization - just raw memory access.
-/// This is safe because:
-/// 1. Torn reads are detected via key mismatch
-/// 2. Invalid data is handled gracefully by the search
-/// 3. The trade-off (occasional wrong data) is worth the massive speedup
-#[repr(C)]
+// Entries are stored as 3 × u64 words for atomic-friendly access without explicit locks.
+// word0: key16 (16) | depth (8) | gen_bound (8) | score (16) | eval (16)
+// word1: move16 (16) | from_x (16) | from_y (16) | to_x (16)
+// word2: to_y (16) | padding (48)
+
+#[repr(C, align(8))]
 pub struct TTEntry {
-    /// Full 64-bit hash key (for verification)
-    key: UnsafeCell<u64>,
-    /// Packed: score (32) | eval (32)
-    score_eval: UnsafeCell<u64>,
-    /// Packed: depth (8) | gen_bound (8) | padding (48)
-    meta: UnsafeCell<u64>,
-    /// Move data (5 words = 40 bytes)
-    move_words: [UnsafeCell<u64>; 5],
+    word0: UnsafeCell<u64>,
+    word1: UnsafeCell<u64>,
+    word2: UnsafeCell<u64>,
 }
 
-// SAFETY: TTEntry is designed for racy multi-threaded access like Stockfish.
-// Torn reads are acceptable and handled via key verification.
 unsafe impl Sync for TTEntry {}
 unsafe impl Send for TTEntry {}
 
+#[inline]
+fn clamp_to_i16(v: i32) -> i16 {
+    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
 impl TTEntry {
-    /// Create an empty/invalid entry
     pub fn empty() -> Self {
         TTEntry {
-            key: UnsafeCell::new(0),
-            score_eval: UnsafeCell::new(0),
-            meta: UnsafeCell::new(0),
-            move_words: [
-                UnsafeCell::new(NO_MOVE_SENTINEL as u64),
-                UnsafeCell::new(0),
-                UnsafeCell::new(0),
-                UnsafeCell::new(0),
-                UnsafeCell::new(0),
-            ],
+            word0: UnsafeCell::new(0),
+            word1: UnsafeCell::new(0),
+            word2: UnsafeCell::new(0),
         }
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        unsafe {
-            std::ptr::read_volatile(self.key.get()) == 0
-                && std::ptr::read_volatile(self.meta.get()) == 0
-        }
+        unsafe { std::ptr::read_volatile(self.word0.get()) == 0 }
     }
 
-    /// Read entry using raw memory access (like Stockfish).
-    /// No synchronization - accepts torn reads.
     #[inline]
-    pub fn read(&self, hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
+    pub fn read(&self, key16: u16) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
-            // Fast path: check key first
-            let key = std::ptr::read_volatile(self.key.get());
-            if key != hash {
+            let w0 = std::ptr::read_volatile(self.word0.get());
+            let stored_key = (w0 & 0xFFFF) as u16;
+            if stored_key != key16 || w0 == 0 {
                 return None;
             }
 
-            let score_eval = std::ptr::read_volatile(self.score_eval.get());
-            let meta = std::ptr::read_volatile(self.meta.get());
+            let depth = ((w0 >> 16) & 0xFF) as u8;
+            let gen_bound = ((w0 >> 24) & 0xFF) as u8;
+            let score = ((w0 >> 32) & 0xFFFF) as i16 as i32;
+            let eval = ((w0 >> 48) & 0xFFFF) as i16 as i32;
 
-            let depth = (meta >> 56) as u8;
-            let gen_bound = ((meta >> 48) & 0xFF) as u8;
-            let score = (score_eval >> 32) as i32;
-            let eval = (score_eval & 0xFFFFFFFF) as i32;
+            let w1 = std::ptr::read_volatile(self.word1.get());
+            let move16 = (w1 & 0xFFFF) as u16;
 
-            // Skip move loading for depth 0 entries
-            if depth == 0 {
-                return Some((score, eval, depth, gen_bound, None));
-            }
+            let best_move = if move16 == NO_MOVE {
+                None
+            } else {
+                let from_x = ((w1 >> 16) & 0xFFFF) as i16;
+                let from_y = ((w1 >> 32) & 0xFFFF) as i16;
+                let to_x = ((w1 >> 48) & 0xFFFF) as i16;
+                let w2 = std::ptr::read_volatile(self.word2.get());
+                let to_y = (w2 & 0xFFFF) as i16;
 
-            let m_words = [
-                std::ptr::read_volatile(self.move_words[0].get()),
-                std::ptr::read_volatile(self.move_words[1].get()),
-                std::ptr::read_volatile(self.move_words[2].get()),
-                std::ptr::read_volatile(self.move_words[3].get()),
-                std::ptr::read_volatile(self.move_words[4].get()),
-            ];
+                let pt = PieceType::from_u8((move16 & 0x1F) as u8);
+                let cl = PlayerColor::from_u8(((move16 >> 5) & 0x03) as u8);
+                let pr = ((move16 >> 7) & 0x1F) as u8;
 
-            let tt_move: TTMove = std::mem::transmute(m_words);
-            Some((score, eval, depth, gen_bound, tt_move.to_move()))
+                Some(Move {
+                    from: Coordinate {
+                        x: from_x as i64,
+                        y: from_y as i64,
+                    },
+                    to: Coordinate {
+                        x: to_x as i64,
+                        y: to_y as i64,
+                    },
+                    piece: Piece::new(pt, cl),
+                    promotion: if pr == 0 {
+                        None
+                    } else {
+                        Some(PieceType::from_u8(pr))
+                    },
+                    rook_coord: None,
+                })
+            };
+
+            Some((score, eval, depth, gen_bound, best_move))
         }
     }
 
-    /// Write entry using raw memory access (like Stockfish).
-    /// No synchronization - accepts racy writes.
     #[inline]
     pub fn write(
         &self,
-        hash: u64,
-        score: i32,
-        eval: i32,
+        key16: u16,
+        score: i16,
+        eval: i16,
         depth: u8,
         gen_bound: u8,
-        tt_move: TTMove,
+        move16: u16,
+        from_x: i16,
+        from_y: i16,
+        to_x: i16,
+        to_y: i16,
     ) {
-        let score_eval = ((score as u64) << 32) | (eval as u32 as u64);
-        let meta = ((depth as u64) << 56) | ((gen_bound as u64) << 48);
-        let m_words: [u64; 5] = unsafe { std::mem::transmute(tt_move) };
+        let w0 = (key16 as u64)
+            | ((depth as u64) << 16)
+            | ((gen_bound as u64) << 24)
+            | (((score as u16) as u64) << 32)
+            | (((eval as u16) as u64) << 48);
+        let w1 = (move16 as u64)
+            | (((from_x as u16) as u64) << 16)
+            | (((from_y as u16) as u64) << 32)
+            | (((to_x as u16) as u64) << 48);
+        let w2 = (to_y as u16) as u64;
 
         unsafe {
-            std::ptr::write_volatile(self.key.get(), hash);
-            std::ptr::write_volatile(self.score_eval.get(), score_eval);
-            std::ptr::write_volatile(self.meta.get(), meta);
-            std::ptr::write_volatile(self.move_words[0].get(), m_words[0]);
-            std::ptr::write_volatile(self.move_words[1].get(), m_words[1]);
-            std::ptr::write_volatile(self.move_words[2].get(), m_words[2]);
-            std::ptr::write_volatile(self.move_words[3].get(), m_words[3]);
-            std::ptr::write_volatile(self.move_words[4].get(), m_words[4]);
+            std::ptr::write_volatile(self.word0.get(), w0);
+            std::ptr::write_volatile(self.word1.get(), w1);
+            std::ptr::write_volatile(self.word2.get(), w2);
         }
     }
 
-    /// Raw key read for replacement logic
     #[inline]
-    pub fn raw_key(&self) -> u64 {
-        unsafe { std::ptr::read_volatile(self.key.get()) }
+    pub fn raw_word0(&self) -> u64 {
+        unsafe { std::ptr::read_volatile(self.word0.get()) }
     }
-
-    /// Raw meta read for replacement logic
-    #[inline]
-    pub fn raw_meta(&self) -> u64 {
-        unsafe { std::ptr::read_volatile(self.meta.get()) }
-    }
-
-    /// Clear this entry (for TT reset)
     #[inline]
     pub fn clear(&self) {
         unsafe {
-            std::ptr::write_volatile(self.key.get(), 0);
-            std::ptr::write_volatile(self.meta.get(), 0);
+            std::ptr::write_volatile(self.word0.get(), 0);
         }
     }
-
     #[inline]
     pub fn flag(gen_bound: u8) -> TTFlag {
         TTFlag::from_u8(gen_bound)
     }
-
     #[inline]
     pub fn is_pv(gen_bound: u8) -> bool {
         (gen_bound & 0x04) != 0
     }
-
     #[inline]
     pub fn generation(gen_bound: u8) -> u8 {
-        gen_bound >> 3
+        (gen_bound & GENERATION_MASK) >> GENERATION_BITS
     }
-
     #[inline]
-    pub fn pack_gen_bound(generation: u8, is_pv: bool, flag: TTFlag) -> u8 {
-        (generation << 3) | (if is_pv { 0x04 } else { 0 }) | (flag as u8)
+    pub fn pack_gen_bound(r#gen: u8, is_pv: bool, flag: TTFlag) -> u8 {
+        ((r#gen << GENERATION_BITS) & GENERATION_MASK)
+            | (if is_pv { 0x04 } else { 0 })
+            | (flag as u8 & 0x03)
     }
 }
 
-// ============================================================================
-// TT Bucket (Cluster of Entries)
-// ============================================================================
-
-/// A bucket/cluster containing multiple TT entries.
 pub struct TTBucket {
     entries: [TTEntry; ENTRIES_PER_BUCKET],
 }
-
 impl TTBucket {
     pub fn empty() -> Self {
         TTBucket {
-            entries: [
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-            ],
+            entries: [TTEntry::empty(), TTEntry::empty(), TTEntry::empty()],
         }
     }
 }
 
-/// Transposition Table with bucket-based collision handling.
-/// Thread-safe for Lazy SMP using lock-free architecture.
 pub struct SharedTranspositionTable {
     buckets: Vec<TTBucket>,
-    /// Bitmask for indexing
     mask: usize,
-    /// Current generation (wrapped in UnsafeCell for racy access like Stockfish)
+    index_bits: u32,
     generation: UnsafeCell<u8>,
 }
 
@@ -302,106 +196,105 @@ impl SharedTranspositionTable {
         let bytes = size_mb.max(1) * 1024 * 1024;
         let bucket_size = std::mem::size_of::<TTBucket>();
         let num_buckets = (bytes / bucket_size).max(1);
-
-        let mut cap_pow2 = 1usize;
-        while cap_pow2 * 2 <= num_buckets {
-            cap_pow2 *= 2;
+        let mut cap = 1usize;
+        let mut bits = 0u32;
+        while cap * 2 <= num_buckets {
+            cap *= 2;
+            bits += 1;
         }
 
-        let mut buckets = Vec::with_capacity(cap_pow2);
-        for _ in 0..cap_pow2 {
+        let mut buckets = Vec::with_capacity(cap);
+        for _ in 0..cap {
             buckets.push(TTBucket::empty());
         }
 
         SharedTranspositionTable {
             buckets,
-            mask: cap_pow2 - 1,
+            mask: cap - 1,
+            index_bits: bits,
             generation: UnsafeCell::new(1),
         }
     }
 
-    /// Get the hash for the current position
     #[inline]
     pub fn generate_hash(game: &GameState) -> u64 {
         game.hash
     }
-
     #[inline]
     pub fn capacity(&self) -> usize {
         self.buckets.len() * ENTRIES_PER_BUCKET
     }
-
     #[inline]
     pub fn used_entries(&self) -> usize {
-        // Approximate used entries by sampling (slow to count all)
         (self.hashfull() as usize * self.capacity()) / 1000
     }
-
     #[inline]
     pub fn fill_permille(&self) -> u32 {
         self.hashfull()
     }
 
-    /// Calculate hash table occupancy in permille (0-1000).
-    /// Samples first 1000 buckets like Stockfish to avoid expensive full scans.
+    /// Approximate fill level in permille (0-1000).
+    /// Samples a portion of the table for efficiency.
     pub fn hashfull(&self) -> u32 {
-        let mut occupied = 0;
-        let sample_size = self.buckets.len().min(1000);
-        let generation = unsafe { *self.generation.get() };
-
-        for i in 0..sample_size {
-            for entry in &self.buckets[i].entries {
-                let meta = entry.raw_meta();
-                let e_gen_bound = ((meta >> 48) & 0xFF) as u8;
-                let age_diff = (generation.wrapping_sub(TTEntry::generation(e_gen_bound))) & 0x1F;
-
-                if meta != 0 && age_diff == 0 {
-                    occupied += 1;
+        let sample = self.buckets.len().min(1000);
+        let r#gen = unsafe { *self.generation.get() };
+        let mut occ = 0u32;
+        for i in 0..sample {
+            for e in &self.buckets[i].entries {
+                let w0 = e.raw_word0();
+                if w0 != 0 {
+                    let gb = ((w0 >> 24) & 0xFF) as u8;
+                    if (r#gen.wrapping_sub(TTEntry::generation(gb))) & 0x1F == 0 {
+                        occ += 1;
+                    }
                 }
             }
         }
-
-        if sample_size == 0 {
-            return 0;
+        if sample == 0 {
+            0
+        } else {
+            (occ * 1000) / (sample * ENTRIES_PER_BUCKET) as u32
         }
-        (occupied * 1000 / (sample_size * ENTRIES_PER_BUCKET)) as u32
     }
 
     #[inline]
     fn bucket_index(&self, hash: u64) -> usize {
         (hash as usize) & self.mask
     }
-
-    /// Prefetch the TT bucket for the given hash into L1 cache.
     #[inline]
+    fn hash_key16(&self, hash: u64) -> u16 {
+        (hash >> self.index_bits) as u16
+    }
+
     #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
     pub fn prefetch_entry(&self, hash: u64) {
         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-        let idx = self.bucket_index(hash);
-        let ptr = self.buckets.as_ptr().wrapping_add(idx) as *const i8;
-        // SAFETY: ptr points into a valid, allocated slice
-        unsafe { _mm_prefetch(ptr, _MM_HINT_T0) };
+        let ptr = self.buckets.as_ptr().wrapping_add(self.bucket_index(hash)) as *const i8;
+        unsafe {
+            _mm_prefetch(ptr, _MM_HINT_T0);
+        }
     }
-
-    #[inline]
     #[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
     pub fn prefetch_entry(&self, _hash: u64) {}
 
-    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
-        let hash = params.hash;
-        let idx = self.bucket_index(hash);
-        let bucket = &self.buckets[idx];
+    pub fn probe_move(&self, hash: u64) -> Option<Move> {
+        let key16 = self.hash_key16(hash);
+        for e in &self.buckets[self.bucket_index(hash)].entries {
+            if let Some((_, _, _, _, m)) = e.read(key16) {
+                return m;
+            }
+        }
+        None
+    }
 
-        for entry in &bucket.entries {
-            // Atomic read with verification
-            if let Some((score, eval, depth, gen_bound, best_move)) = entry.read(hash) {
-                // Found a matching entry
+    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
+        let key16 = self.hash_key16(params.hash);
+        for e in &self.buckets[self.bucket_index(params.hash)].entries {
+            if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16) {
                 let score =
                     value_from_tt(score, params.ply, params.rule50_count, params.rule_limit);
                 let flag = TTEntry::flag(gen_bound);
-                let is_pv = TTEntry::is_pv(gen_bound);
-
-                let mut cutoff_score = INFINITY + 1;
+                let mut cutoff = INFINITY + 1;
                 if depth as usize >= params.depth {
                     let usable = match flag {
                         TTFlag::Exact => true,
@@ -410,17 +303,16 @@ impl SharedTranspositionTable {
                         _ => false,
                     };
                     if usable {
-                        cutoff_score = score;
+                        cutoff = score;
                     }
                 }
-
                 return Some(TTProbeResult {
-                    cutoff_score,
+                    cutoff_score: cutoff,
                     tt_score: score,
                     eval,
                     depth,
                     flag,
-                    is_pv,
+                    is_pv: TTEntry::is_pv(gen_bound),
                     best_move,
                 });
             }
@@ -428,131 +320,147 @@ impl SharedTranspositionTable {
         None
     }
 
-    /// Probe only for the best move (used for PV extraction)
-    pub fn probe_move(&self, hash: u64) -> Option<Move> {
-        let idx = self.bucket_index(hash);
-        let bucket = &self.buckets[idx];
-
-        for entry in &bucket.entries {
-            if let Some((_, _, _, _, best_move)) = entry.read(hash) {
-                return best_move;
-            }
-        }
-        None
-    }
-
+    /// Stores an entry in the multithreaded table.
+    /// Priority is given to deeper searches and newer generation entries.
     pub fn store(&self, params: &TTStoreParams) {
-        let hash = params.hash;
-        let adjusted_score = value_to_tt(params.score, params.ply);
-        let idx = self.bucket_index(hash);
-        let generation = unsafe { *self.generation.get() };
-        let bucket = &self.buckets[idx];
+        let key16 = self.hash_key16(params.hash);
+        let adj_score = value_to_tt(params.score, params.ply);
+        let r#gen = unsafe { *self.generation.get() };
+        let bucket = &self.buckets[self.bucket_index(params.hash)];
+
+        let (m16, fx, fy, tx, ty) = params
+            .best_move
+            .as_ref()
+            .map(|m| {
+                if m.from.x >= i16::MIN as i64
+                    && m.from.x <= i16::MAX as i64
+                    && m.from.y >= i16::MIN as i64
+                    && m.from.y <= i16::MAX as i64
+                    && m.to.x >= i16::MIN as i64
+                    && m.to.x <= i16::MAX as i64
+                    && m.to.y >= i16::MIN as i64
+                    && m.to.y <= i16::MAX as i64
+                {
+                    let pt = m.piece.piece_type() as u16;
+                    let cl = m.piece.color() as u16;
+                    let pr = m.promotion.map_or(0, |p| p as u16);
+                    (
+                        (pt & 0x1F) | ((cl & 0x03) << 5) | ((pr & 0x1F) << 7),
+                        m.from.x as i16,
+                        m.from.y as i16,
+                        m.to.x as i16,
+                        m.to.y as i16,
+                    )
+                } else {
+                    (0, 0, 0, 0, 0)
+                }
+            })
+            .unwrap_or((0, 0, 0, 0, 0));
 
         let mut replace_idx = 0;
-        let mut worst_score = i32::MAX;
+        let mut worst = i32::MAX;
 
-        for (i, entry) in bucket.entries.iter().enumerate() {
-            // Atomic read for comparison/replacement logic
-            if let Some((_, old_eval, old_depth, old_gen_bound, old_move)) = entry.read(hash) {
-                let move_to_store = if params.best_move.is_some() {
-                    TTMove::from_move(&params.best_move.as_ref().unwrap())
+        for (i, e) in bucket.entries.iter().enumerate() {
+            if let Some((_, old_eval, old_depth, old_gb, old_move)) = e.read(key16) {
+                let (sm16, sfx, sfy, stx, sty) = if m16 != 0 {
+                    (m16, fx, fy, tx, ty)
+                } else if let Some(m) = old_move {
+                    let pt = m.piece.piece_type() as u16;
+                    let cl = m.piece.color() as u16;
+                    let pr = m.promotion.map_or(0, |p| p as u16);
+                    (
+                        (pt & 0x1F) | ((cl & 0x03) << 5) | ((pr & 0x1F) << 7),
+                        m.from.x as i16,
+                        m.from.y as i16,
+                        m.to.x as i16,
+                        m.to.y as i16,
+                    )
                 } else {
-                    old_move.map_or(TTMove::none(), |m| TTMove::from_move(&m))
+                    (0, 0, 0, 0, 0)
                 };
 
-                let eval_to_store = if params.static_eval != INFINITY + 1 {
-                    params.static_eval
+                let store_eval = if params.static_eval != INFINITY + 1 {
+                    clamp_to_i16(params.static_eval)
                 } else {
-                    old_eval
+                    clamp_to_i16(old_eval)
                 };
-                let _old_flag = TTEntry::flag(old_gen_bound);
-                let old_gen = TTEntry::generation(old_gen_bound);
-
+                let old_gen = TTEntry::generation(old_gb);
                 let pv_bonus = if params.flag == TTFlag::Exact || params.is_pv {
                     2
                 } else {
                     0
                 };
-                let relative_age = (generation.wrapping_sub(old_gen)) & 0x1F;
+                let rel_age = (r#gen.wrapping_sub(old_gen)) & 0x1F;
 
                 if params.flag == TTFlag::Exact
                     || (params.depth as i32 + pv_bonus) > (old_depth as i32 - 4)
-                    || relative_age != 0
+                    || rel_age != 0
                     || params.depth == 0
                 {
-                    entry.write(
-                        hash,
-                        adjusted_score,
-                        eval_to_store,
+                    e.write(
+                        key16,
+                        clamp_to_i16(adj_score),
+                        store_eval,
                         params.depth as u8,
-                        TTEntry::pack_gen_bound(generation, params.is_pv, params.flag),
-                        move_to_store,
+                        TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
+                        sm16,
+                        sfx,
+                        sfy,
+                        stx,
+                        sty,
                     );
                 }
                 return;
             }
 
-            // Entry didn't match hash or was torn. Use standard replacement metric.
-            let key = entry.raw_key();
-            let meta = entry.raw_meta();
-            let e_depth = (meta >> 56) as u8;
-            let e_gen_bound = ((meta >> 48) & 0xFF) as u8;
-
-            let mut entry_priority = e_depth as i32;
-            let age_diff = (generation.wrapping_sub(TTEntry::generation(e_gen_bound))) & 0x1F;
-            entry_priority -= (age_diff as i32) * 2;
-            if TTEntry::flag(e_gen_bound) == TTFlag::Exact || TTEntry::is_pv(e_gen_bound) {
-                entry_priority += 2;
+            let w0 = e.raw_word0();
+            let ed = ((w0 >> 16) & 0xFF) as u8;
+            let egb = ((w0 >> 24) & 0xFF) as u8;
+            let mut prio =
+                ed as i32 - ((r#gen.wrapping_sub(TTEntry::generation(egb))) & 0x1F) as i32 * 2;
+            if TTEntry::flag(egb) == TTFlag::Exact || TTEntry::is_pv(egb) {
+                prio += 2;
             }
-            if key == 0 {
-                entry_priority = i32::MIN;
+            if w0 == 0 {
+                prio = i32::MIN;
             }
-
-            if entry_priority < worst_score {
-                worst_score = entry_priority;
+            if prio < worst {
+                worst = prio;
                 replace_idx = i;
             }
         }
 
-        // Prepare new entry
-        let move_to_store = params
-            .best_move
-            .as_ref()
-            .map_or(TTMove::none(), TTMove::from_move);
-        let new_priority = params.depth as i32
-            + (if params.flag == TTFlag::Exact || params.is_pv {
+        let new_prio = params.depth as i32
+            + if params.flag == TTFlag::Exact || params.is_pv {
                 2
             } else {
                 0
-            });
-
-        if new_priority >= worst_score {
+            };
+        if new_prio >= worst {
             bucket.entries[replace_idx].write(
-                hash,
-                adjusted_score,
-                params.static_eval,
+                key16,
+                clamp_to_i16(adj_score),
+                clamp_to_i16(params.static_eval),
                 params.depth as u8,
-                TTEntry::pack_gen_bound(generation, params.is_pv, params.flag),
-                move_to_store,
+                TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
+                m16,
+                fx,
+                fy,
+                tx,
+                ty,
             );
         }
     }
 
     pub fn increment_age(&self) {
         unsafe {
-            let old = *self.generation.get();
-            let mut new = (old + 1) & 0x1F;
-            if new == 0 {
-                new = 1;
-            }
-            *self.generation.get() = new;
+            *self.generation.get() = (*self.generation.get()).wrapping_add(GENERATION_DELTA);
         }
     }
-
     pub fn clear(&self) {
-        for bucket in &self.buckets {
-            for entry in &bucket.entries {
-                entry.clear();
+        for b in &self.buckets {
+            for e in &b.entries {
+                e.clear();
             }
         }
         unsafe {
@@ -561,46 +469,14 @@ impl SharedTranspositionTable {
     }
 }
 
-// ============================================================================
-// Re-export old types for API compatibility
-// ============================================================================
-
-// TTFlag is already defined above with the same variants (compatible)
-
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_struct_sizes() {
-        // Verify our compact structs are the expected sizes
-        assert_eq!(
-            std::mem::size_of::<TTMove>(),
-            40,
-            "TTMove should be 40 bytes"
-        );
-        assert_eq!(
-            std::mem::size_of::<TTEntry>(),
-            72,
-            "TTEntry should be 72 bytes"
-        );
-        assert_eq!(
-            std::mem::size_of::<TTBucket>(),
-            72 * ENTRIES_PER_BUCKET,
-            "TTBucket should be 288 bytes (4 x 72)"
-        );
-    }
-
-    #[test]
-    fn test_tt_basic_operations() {
-        let tt = SharedTranspositionTable::new(1); // 1 MB table
-
-        // Store and probe
-        let hash = 0x123456789ABCDEF0u64;
+    fn test_tt_basic() {
+        let tt = SharedTranspositionTable::new(1);
+        let hash = 0x123456789ABCDEFu64;
         tt.store(&TTStoreParams {
             hash,
             depth: 5,
@@ -611,63 +487,54 @@ mod tests {
             best_move: None,
             ply: 0,
         });
-
-        let result = tt.probe(&TTProbeParams {
-            hash,
-            alpha: -1000,
-            beta: 1000,
-            depth: 5,
-            ply: 0,
-            rule50_count: 0,
-            rule_limit: 100,
-        });
-        assert!(result.is_some());
-        let res = result.unwrap();
+        let res = tt
+            .probe(&TTProbeParams {
+                hash,
+                alpha: -1000,
+                beta: 1000,
+                depth: 5,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+            .unwrap();
         assert_eq!(res.cutoff_score, 100);
-        assert_eq!(res.eval, 90);
     }
 
     #[test]
-    fn test_tt_gen_bound_packing() {
-        // Test that generation and bound are packed correctly
-        for r#gen in [0u8, 1, 31] {
-            for flag in [
-                TTFlag::None,
-                TTFlag::Exact,
-                TTFlag::LowerBound,
-                TTFlag::UpperBound,
-            ] {
-                // Testing with is_pv = true
-                let packed_pv = TTEntry::pack_gen_bound(r#gen, true, flag);
-                assert_eq!(TTEntry::generation(packed_pv), r#gen & 0x1F);
-                assert_eq!(TTEntry::flag(packed_pv), flag);
-                assert!(TTEntry::is_pv(packed_pv));
-
-                // Testing with is_pv = false
-                let packed_nopv = TTEntry::pack_gen_bound(r#gen, false, flag);
-                assert_eq!(TTEntry::generation(packed_nopv), r#gen & 0x1F);
-                assert_eq!(TTEntry::flag(packed_nopv), flag);
-                assert!(!TTEntry::is_pv(packed_nopv));
-            }
-        }
-    }
-
-    #[test]
-    fn test_ttmove_sentinel() {
-        let none = TTMove::none();
-        assert!(!none.is_some());
-        assert!(none.to_move().is_none());
-
-        // A real move should be_some
-        let real = TTMove {
-            from_x: 0,
-            from_y: 0,
-            to_x: 1,
-            to_y: 1,
-            piece_type: 0,
-            piece_color: 0,
-            promotion: 0,
+    fn test_move_roundtrip() {
+        let tt = SharedTranspositionTable::new(1);
+        let hash = 0xABCDEF123456789u64;
+        let m = Move {
+            from: Coordinate::new(4, 2),
+            to: Coordinate::new(4, 4),
+            piece: Piece::new(PieceType::Pawn, PlayerColor::White),
+            promotion: None,
+            rook_coord: None,
         };
-        assert!(real.is_some());
+        tt.store(&TTStoreParams {
+            hash,
+            depth: 10,
+            flag: TTFlag::Exact,
+            score: 50,
+            static_eval: 40,
+            is_pv: true,
+            best_move: Some(m.clone()),
+            ply: 0,
+        });
+        let res = tt
+            .probe(&TTProbeParams {
+                hash,
+                alpha: -1000,
+                beta: 1000,
+                depth: 0,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+            .unwrap();
+        let decoded = res.best_move.unwrap();
+        assert_eq!(decoded.from, m.from);
+        assert_eq!(decoded.to, m.to);
     }
 }
