@@ -96,3 +96,6 @@ test-dashboard/
 /flake.nix
 flake.lock
 /default.nix
+
+# Engine tablebase files
+*.tb

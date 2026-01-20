@@ -52,6 +52,8 @@ pub struct NegamaxContext<'a> {
     pub beta: i32,
     pub allow_null: bool,
     pub node_type: NodeType,
+    pub was_null_move: bool,
+    pub excluded_move: Option<Move>,
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -704,6 +706,8 @@ pub struct Searcher {
     /// Tracks which moves were successful at low plies (first 4 from root).
     /// Used to boost ordering for moves that worked well near root.
     pub low_ply_history: Box<[[i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE]>,
+
+    pub plies_from_null: Box<[u8; MAX_PLY]>,
 }
 
 impl Searcher {
@@ -775,6 +779,7 @@ impl Searcher {
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
             move_rule_limit: 100,             // Default, will be updated from GameState
             low_ply_history: Box::new([[0i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE]),
+            plies_from_null: Box::new([255; MAX_PLY]),
         }
     }
 
@@ -785,6 +790,35 @@ impl Searcher {
         // Reset PV lengths only - much faster than clearing entire array
         // The PV entries will be overwritten as needed during search
         self.pv_length = [0; MAX_PLY];
+    }
+
+    /// Detects shuffling sequences to prevent search explosions in closed positions.
+    pub fn is_shuffling(&self, game: &GameState, m: &Move, ply: usize) -> bool {
+        // 1. Pawn moves, captures, and early game/reversible moves are not shuffling
+        if m.piece.piece_type() == PieceType::Pawn
+            || game.board.is_occupied(m.to.x, m.to.y)
+            || game.halfmove_clock < 10
+        {
+            return false;
+        }
+
+        // 2. Depth/Ply guards
+        let plies_from_null = self.plies_from_null[ply];
+        if plies_from_null <= 6 || ply < 20 {
+            return false;
+        }
+
+        // 3. Check for geometric shuffling pattern:
+        // Current move: A -> B
+        // Ply-2 move:   B -> A
+        // Ply-4 move:   A -> B
+        if let Some(ref m2) = self.move_history[ply - 2]
+            && let Some(ref m4) = self.move_history[ply - 4]
+        {
+            return m.from == m2.to && m2.from == m4.to;
+        }
+
+        false
     }
 
     /// Set correction history mode based on variant.
@@ -2282,6 +2316,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                     beta: INFINITY,
                     allow_null: true,
                     node_type: NodeType::PV,
+                    was_null_move: false,
+                    excluded_move: None,
                 })
             } else {
                 // Use PVS for efficiency with MultiPV-aware alpha bound
@@ -2296,6 +2332,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                     beta: -alpha,
                     allow_null: true,
                     node_type: NodeType::Cut,
+                    was_null_move: false,
+                    excluded_move: None,
                 });
                 if s > alpha && !searcher.hot.stopped {
                     // Re-search with full window to get accurate score
@@ -2308,6 +2346,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                         beta: INFINITY,
                         allow_null: true,
                         node_type: NodeType::PV,
+                        was_null_move: false,
+                        excluded_move: None,
                     });
                 }
                 s
@@ -2520,6 +2560,8 @@ fn negamax_root(
                 beta: -alpha,
                 allow_null: true,
                 node_type: NodeType::PV,
+                was_null_move: false,
+                excluded_move: None,
             });
         } else {
             // PVS: Null window first, then re-search if it improves alpha
@@ -2532,6 +2574,8 @@ fn negamax_root(
                 beta: -alpha,
                 allow_null: true,
                 node_type: NodeType::Cut,
+                was_null_move: false,
+                excluded_move: None,
             });
             if s > alpha && s < beta {
                 s = -negamax(&mut NegamaxContext {
@@ -2543,6 +2587,8 @@ fn negamax_root(
                     beta: -alpha,
                     allow_null: true,
                     node_type: NodeType::PV,
+                    was_null_move: false,
+                    excluded_move: None,
                 });
             }
             score = s;
@@ -2679,6 +2725,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if ply + 2 < MAX_PLY {
         searcher.cutoff_cnt[ply + 2] = 0;
     }
+
+    // Update plies_from_null stack (for is_shuffling detection)
+    // If previous move was null, reset count to 0. Otherwise increment.
+    let prev_plies = if ctx.was_null_move {
+        0
+    } else if ply > 0 {
+        searcher.plies_from_null[ply - 1]
+    } else {
+        255 // Root assumption (no recent null move)
+    };
+    searcher.plies_from_null[ply] = prev_plies.saturating_add(1);
 
     // Time management and selective depth tracking
     if searcher.check_time() {
@@ -2861,6 +2918,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
+    // Determine if this node is a TT PV node
+    let tt_hit = tt_value.is_some();
+    let tt_pv = is_pv || (tt_hit && tt_is_pv);
+
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
         // =================================================================
@@ -2874,10 +2935,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             return quiescence(searcher, game, ply, alpha, beta);
         }
-
-        // Determine if this node is a TT PV node
-        let tt_hit = tt_value.is_some();
-        let tt_pv = is_pv || (tt_hit && tt_is_pv);
 
         // Check if TT move is a capture (for RFP condition)
         let tt_capture = if let Some(m) = tt_move {
@@ -2927,6 +2984,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
+                // Backup move history for this ply and clear it (null move has no move)
+                let move_history_backup = searcher.move_history[ply].take();
+                let piece_history_backup = searcher.moved_piece_history[ply]; // Also backup piece history
+
                 game.make_null_move();
 
                 // Reduction: R = 7 + depth / 3
@@ -2940,10 +3001,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     beta: -beta + 1,
                     allow_null: false,
                     node_type: NodeType::Cut,
+                    was_null_move: true,
+                    excluded_move: None,
                 });
 
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
+                // Restore move history
+                searcher.move_history[ply] = move_history_backup;
+                searcher.moved_piece_history[ply] = piece_history_backup;
 
                 if searcher.hot.stopped {
                     return 0;
@@ -3018,6 +3084,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     beta: -prob_cut_beta + 1,
                     allow_null: true,
                     node_type: NodeType::Cut, // Expected cut node
+                    was_null_move: false,
+                    excluded_move: None,
                 });
             }
 
@@ -3256,7 +3324,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             .filter(|tt_m| m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion)
             .is_some();
 
-        if let Some((tt_score, singular_depth)) = se_conditions.filter(|_| is_tt_move && !is_pv) {
+        if let Some((tt_score, singular_depth)) = se_conditions.filter(|_| {
+            is_tt_move
+                && !is_pv
+                && depth >= 6 + (tt_pv as usize)
+                && !searcher.is_shuffling(game, &m, ply)
+        }) {
             // Singular extension margin with TT Move History adjustment.
             // Adjust margin based on TT move reliability.
             // When TT moves are reliable (high ttMoveHistory), we can use a tighter margin
@@ -3310,6 +3383,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     beta: -singular_beta + 1,
                     allow_null: false,
                     node_type: NodeType::Cut,
+                    was_null_move: false,
+                    excluded_move: None,
                 });
 
                 game.undo_move(&se_m, se_undo);
@@ -3397,6 +3472,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 beta: -alpha,
                 allow_null: true,
                 node_type: child_type,
+                was_null_move: false,
+                excluded_move: None,
             });
         } else {
             // Late Move Reductions
@@ -3513,6 +3590,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 beta: -alpha,
                 allow_null: true,
                 node_type: child_type,
+                was_null_move: false,
+                excluded_move: None,
             });
 
             // Re-search at full depth if it looks promising
@@ -3555,6 +3634,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     beta: -alpha,
                     allow_null: true,
                     node_type: research_type,
+                    was_null_move: false,
+                    excluded_move: None,
                 });
 
                 // Post LMR continuation history update
