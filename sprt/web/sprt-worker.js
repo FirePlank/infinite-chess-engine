@@ -636,7 +636,17 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             const noiseAmp = currentPly < 4 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
 
             let flaggedOnTime = false;
-            const move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, seed ? BigInt(seed) : undefined);
+            let move;
+            try {
+                move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, seed ? BigInt(seed) : undefined);
+            } catch (err) {
+                // Fallback for older engines that don't support BigInt seed
+                if (err instanceof TypeError || (err.message && err.message.includes('BigInt'))) {
+                    move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, undefined);
+                } else {
+                    throw err;
+                }
+            }
             engine.free();
 
             const elapsed = Math.max(0, Math.round(nowMs() - startMs));
