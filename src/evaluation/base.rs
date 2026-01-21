@@ -2151,13 +2151,10 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         i = j;
     }
 
-    // Passed pawns (O(P log P) due to individual binary searches per pawn)
-    // For white pawns, check black pawns on files x-1, x, x+1 with y > wy.
     for &(wx, wy) in &white_pawns {
         let mut is_passed = true;
         for dx in -1..=1 {
             let target_file = wx + dx;
-            // Binary search to find start of this file in black_pawns
             let start = black_pawns.partition_point(|&(bx, _)| bx < target_file);
             let mut k = start;
             while k < black_pawns.len() && black_pawns[k].0 == target_file {
@@ -2172,7 +2169,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             }
         }
         if is_passed {
-            w_passed += 20;
+            w_passed += taper(10, 18); // Minimal passer bonus (MG, EG)
         }
 
         if is_connected_pawn(game, wx, wy, PlayerColor::White) {
@@ -2185,7 +2182,6 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         let mut is_passed = true;
         for dx in -1..=1 {
             let target_file = bx + dx;
-            // Binary search to find start of this file in white_pawns
             let start = white_pawns.partition_point(|&(wx, _)| wx < target_file);
             let mut k = start;
             while k < white_pawns.len() && white_pawns[k].0 == target_file {
@@ -2200,7 +2196,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             }
         }
         if is_passed {
-            b_passed += 20;
+            b_passed += taper(10, 18); // Minimal passer bonus (MG, EG)
         }
 
         if is_connected_pawn(game, bx, by, PlayerColor::Black) {
