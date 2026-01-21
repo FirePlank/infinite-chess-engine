@@ -876,7 +876,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                 &ks_metrics,
             );
 
-            score += evaluate_pawn_structure_traced(game, final_phase, tracer);
+            score += evaluate_pawn_structure_traced(game, final_phase, tracer, &piece_list);
             score += evaluate_threat_traced(game, tracer);
         }
     });
@@ -2008,20 +2008,21 @@ fn evaluate_king_shelter(
 
 pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
     let phase = calculate_game_phase(game);
-    evaluate_pawn_structure_traced(game, phase, &mut NoTrace)
+    evaluate_pawn_structure_traced(game, phase, &mut NoTrace, &[])
 }
 
 pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
     tracer: &mut T,
+    piece_list: &[(i64, i64, crate::board::Piece)],
 ) -> i32 {
     // Check cache first using game's pawn_hash
     let pawn_hash = game.pawn_hash;
 
     // Bypassing cache if tracer is active to ensure we get a full breakdown.
     if tracer.is_active() {
-        return compute_pawn_structure_traced(game, phase, tracer);
+        return compute_pawn_structure_traced(game, phase, tracer, piece_list);
     }
 
     // Direct mapped cache probe
@@ -2040,7 +2041,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     }
 
     // Cache miss - compute pawn structure
-    let score = compute_pawn_structure_traced(game, phase, tracer);
+    let score = compute_pawn_structure_traced(game, phase, tracer, piece_list);
 
     // Direct mapped cache store
     PAWN_CACHE.with(|cache| {
@@ -2055,6 +2056,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
     tracer: &mut T,
+    piece_list: &[(i64, i64, crate::board::Piece)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -2065,115 +2067,143 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     let mut w_connected = 0;
     let mut b_connected = 0;
 
-    // Track pawns per file for each color
-    let mut white_pawn_files: Vec<i64> = Vec::new(); // For inter-tile doubled pawn check
-    let mut black_pawn_files: Vec<i64> = Vec::new();
     let mut white_pawns: Vec<(i64, i64)> = Vec::new();
     let mut black_pawns: Vec<(i64, i64)> = Vec::new();
 
     let w_promo = game.white_promo_rank;
     let b_promo = game.black_promo_rank;
 
-    // BITBOARD: Use per-tile occ_pawns - skip past-promo pawns for structure eval
-    for (cx, cy, tile) in game.board.tiles.iter() {
-        let w_pawns_bits = tile.occ_pawns & tile.occ_white;
-        let b_pawns_bits = tile.occ_pawns & tile.occ_black;
-        let base_y = cy * 8;
-
-        if w_pawns_bits != 0 {
-            let mut bits = w_pawns_bits;
-            while bits != 0 {
-                let idx = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                let x = cx * 8 + (idx % 8) as i64;
-                let y = base_y + (idx / 8) as i64;
+    // Use pre-collected piece list if provided
+    for &(x, y, piece) in piece_list.iter() {
+        if piece.piece_type() == PieceType::Pawn {
+            if piece.color() == PlayerColor::White {
                 if y < w_promo {
                     white_pawns.push((x, y));
-                    white_pawn_files.push(x);
                 }
+            } else if piece.color() == PlayerColor::Black && y > b_promo {
+                black_pawns.push((x, y));
             }
         }
+    }
 
-        if b_pawns_bits != 0 {
-            let mut bits = b_pawns_bits;
-            while bits != 0 {
-                let idx = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
+    // Fallback if piece list was empty (should not happen in evaluate_inner)
+    if white_pawns.is_empty()
+        && black_pawns.is_empty()
+        && (game.white_pawn_count > 0 || game.black_pawn_count > 0)
+    {
+        for (cx, cy, tile) in game.board.tiles.iter() {
+            let mut bits_w = tile.occ_pawns & tile.occ_white;
+            while bits_w != 0 {
+                let idx = bits_w.trailing_zeros() as usize;
+                bits_w &= bits_w - 1;
                 let x = cx * 8 + (idx % 8) as i64;
-                let y = base_y + (idx / 8) as i64;
+                let y = cy * 8 + (idx / 8) as i64;
+                if y < w_promo {
+                    white_pawns.push((x, y));
+                }
+            }
+            let mut bits_b = tile.occ_pawns & tile.occ_black;
+            while bits_b != 0 {
+                let idx = bits_b.trailing_zeros() as usize;
+                bits_b &= bits_b - 1;
+                let x = cx * 8 + (idx % 8) as i64;
+                let y = cy * 8 + (idx / 8) as i64;
                 if y > b_promo {
                     black_pawns.push((x, y));
-                    black_pawn_files.push(x);
                 }
             }
         }
     }
 
-    // Doubled pawns penalty and Passed Pawn / Tunnel detection
-    // Note: We reuse the coordinate lists built above.
-    // white_pawns and black_pawns are Vec<(x, y)>
+    // Sort pawns by file (x) then rank (y)
+    white_pawns.sort_unstable();
+    black_pawns.sort_unstable();
 
-    // --- WHITE PAWNS ---
-    let mut prev_file: Option<i64> = None;
-    white_pawn_files.sort();
-    for &file in &white_pawn_files {
-        if prev_file == Some(file) {
-            w_doubled -= taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
-            bump_feat!(doubled_pawn_penalty, -1);
+    // White Doubled Pawns
+    let mut i = 0;
+    while i < white_pawns.len() {
+        let mut count = 1;
+        let file = white_pawns[i].0;
+        let mut j = i + 1;
+        while j < white_pawns.len() && white_pawns[j].0 == file {
+            count += 1;
+            j += 1;
         }
-        prev_file = Some(file);
+        if count > 1 {
+            w_doubled -= (count - 1) * taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
+        }
+        i = j;
     }
 
-    // Check passed pawns for White
-    for (wx, wy) in &white_pawns {
-        // 1. Is it passed? (No black pawns ahead on files x-1, x, x+1)
+    // Black Doubled Pawns
+    let mut i = 0;
+    while i < black_pawns.len() {
+        let mut count = 1;
+        let file = black_pawns[i].0;
+        let mut j = i + 1;
+        while j < black_pawns.len() && black_pawns[j].0 == file {
+            count += 1;
+            j += 1;
+        }
+        if count > 1 {
+            b_doubled -= (count - 1) * taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
+        }
+        i = j;
+    }
+
+    // Passed pawns (O(P log P) due to individual binary searches per pawn)
+    // For white pawns, check black pawns on files x-1, x, x+1 with y > wy.
+    for &(wx, wy) in &white_pawns {
         let mut is_passed = true;
-        for (bx, by) in &black_pawns {
-            if (*bx - wx).abs() <= 1 && *by > *wy {
-                is_passed = false;
+        for dx in -1..=1 {
+            let target_file = wx + dx;
+            // Binary search to find start of this file in black_pawns
+            let start = black_pawns.partition_point(|&(bx, _)| bx < target_file);
+            let mut k = start;
+            while k < black_pawns.len() && black_pawns[k].0 == target_file {
+                if black_pawns[k].1 > wy {
+                    is_passed = false;
+                    break;
+                }
+                k += 1;
+            }
+            if !is_passed {
                 break;
             }
         }
-
         if is_passed {
-            // Base bonus for passed pawn
             w_passed += 20;
         }
 
-        // Connected pawn bonus: check if there's a friendly pawn diagonally behind
-        if is_connected_pawn(game, *wx, *wy, PlayerColor::White) {
+        if is_connected_pawn(game, wx, wy, PlayerColor::White) {
             w_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
         }
     }
 
-    // --- BLACK PAWNS ---
-    let mut prev_file_b: Option<i64> = None;
-    black_pawn_files.sort();
-    for &file in &black_pawn_files {
-        if prev_file_b == Some(file) {
-            b_doubled -= taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
-            bump_feat!(doubled_pawn_penalty, 1);
-        }
-        prev_file_b = Some(file);
-    }
-
-    // Check passed pawns for Black
-    for (bx, by) in &black_pawns {
-        // 1. Is it passed? (No white pawns ahead (y < by) on files x-1, x, x+1)
+    // For black pawns, check white pawns on files x-1, x, x+1 with y < by.
+    for &(bx, by) in &black_pawns {
         let mut is_passed = true;
-        for (wx, wy) in &white_pawns {
-            if (*wx - bx).abs() <= 1 && *wy < *by {
-                is_passed = false;
+        for dx in -1..=1 {
+            let target_file = bx + dx;
+            // Binary search to find start of this file in white_pawns
+            let start = white_pawns.partition_point(|&(wx, _)| wx < target_file);
+            let mut k = start;
+            while k < white_pawns.len() && white_pawns[k].0 == target_file {
+                if white_pawns[k].1 < by {
+                    is_passed = false;
+                    break;
+                }
+                k += 1;
+            }
+            if !is_passed {
                 break;
             }
         }
-
         if is_passed {
             b_passed += 20;
         }
 
-        // Connected pawn bonus: check if there's a friendly pawn diagonally behind
-        if is_connected_pawn(game, *bx, *by, PlayerColor::Black) {
+        if is_connected_pawn(game, bx, by, PlayerColor::Black) {
             b_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
         }
     }
