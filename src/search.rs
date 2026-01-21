@@ -652,6 +652,7 @@ pub struct Searcher {
     // Moved piece history stack (piece type that moved at each ply)
     pub moved_piece_history: Vec<u8>,
 
+    #[allow(clippy::type_complexity)]
     // Continuation history: [is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
     // Using 32 for piece types to accommodate all types (8*32*32*32*32*4 = 32MB)
     pub cont_history: Box<[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]>,
@@ -667,7 +668,6 @@ pub struct Searcher {
     // Correction History - variant-aware for optimal performance:
     // - PawnBased mode: pawn + material (for CoaIP/Classical/Chess variants)
     // - NonPawnBased mode: non-pawn + material + last-move (for other variants)
-    // Mode is set once at search start for zero runtime overhead.
     pub corrhist_mode: CorrHistMode,
     pub pawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub nonpawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
@@ -681,16 +681,13 @@ pub struct Searcher {
     /// TT Move History: tracks reliability of TT moves.
     /// Positive values = TT moves tend to be best moves.
     /// Negative values = TT moves often fail.
-    /// Uses gravity-based update formula for smoothing.
     pub tt_move_history: i32,
 
     /// Reduction stack for hindsight depth adjustment.
-    /// Stores the LMR reduction applied at each ply.
     /// Used to adjust depth based on prior search decisions.
     pub reduction_stack: Vec<i32>,
 
     /// Cutoff count per ply.
-    /// Tracks number of beta cutoffs at each ply.
     /// Used to increase LMR when next ply has many fail highs.
     pub cutoff_cnt: Vec<u8>,
 
@@ -707,7 +704,7 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn new(time_limit_ms: u128) -> Self {
-        // Triangular PV table - heap allocated to avoid stack overflow
+        // Triangular PV table
         let pv_table = Box::new([None; MAX_PLY * MAX_PLY]);
 
         let mut killers = Vec::with_capacity(MAX_PLY);
@@ -1083,23 +1080,21 @@ impl Searcher {
                 // Continuation correction (ss-2 and ss-4):
                 let mut cont_corr = 0;
 
-                if ply > 0 {
-                    if let Some(m) = self.move_history[ply - 1] {
-                        let cur_pc = m.piece.piece_type() as usize;
-                        let cur_to = hash_coord_32(m.to.x, m.to.y);
+                if ply > 0
+                    && let Some(m) = self.move_history[ply - 1]
+                {
+                    let cur_pc = m.piece.piece_type() as usize;
+                    let cur_to = hash_coord_32(m.to.x, m.to.y);
 
-                        for &plies_ago in &[1usize, 3] {
-                            if ply > plies_ago
-                                && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
-                            {
-                                let prev_piece =
-                                    self.moved_piece_history[ply - plies_ago - 1] as usize;
-                                if prev_piece < 32 {
-                                    let prev_to_hash =
-                                        hash_coord_32(prev_move.to.x, prev_move.to.y);
-                                    cont_corr += self.cont_corrhist[prev_piece][prev_to_hash]
-                                        [cur_pc][cur_to];
-                                }
+                    for &plies_ago in &[1usize, 3] {
+                        if ply > plies_ago
+                            && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
+                        {
+                            let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
+                            if prev_piece < 32 {
+                                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                cont_corr +=
+                                    self.cont_corrhist[prev_piece][prev_to_hash][cur_pc][cur_to];
                             }
                         }
                     }

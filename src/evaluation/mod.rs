@@ -12,11 +12,9 @@ pub mod pieces;
 pub mod variants;
 
 use crate::Variant;
-use crate::board::PlayerColor;
 use crate::game::GameState;
 
-// Re-export commonly used items
-pub use base::{calculate_initial_material, evaluate_lazy, get_piece_value};
+pub use base::{calculate_initial_material, get_piece_value};
 
 #[cfg(feature = "eval_tuning")]
 pub use base::{EvalFeatures, reset_eval_features, snapshot_eval_features};
@@ -33,7 +31,6 @@ pub fn evaluate(game: &GameState) -> i32 {
         _ => base::evaluate(game), // Default: use base for all others
     };
 
-    // Linear evaluation damping.
     // As the halfmove clock increases during shuffling, we slightly damp the
     // evaluation. This provides a gentle pressure to "get on with it" and
     // avoid unnecessary repetitions or shuffling.
@@ -43,19 +40,6 @@ pub fn evaluate(game: &GameState) -> i32 {
         raw_eval - (raw_eval * game.halfmove_clock as i32) / divisor
     } else {
         raw_eval
-    }
-}
-
-/// Fast evaluation for use - just material + basic positional
-#[allow(dead_code)]
-#[inline]
-pub fn evaluate_fast(game: &GameState) -> i32 {
-    let score = game.material_score;
-
-    if game.turn == PlayerColor::Black {
-        -score
-    } else {
-        score
     }
 }
 
@@ -122,26 +106,6 @@ mod tests {
             "Eval should be in reasonable range, got {}",
             eval
         );
-    }
-
-    #[test]
-    fn test_evaluate_fast_white_turn() {
-        let mut game = create_test_game();
-        game.material_score = 500;
-        game.turn = PlayerColor::White;
-
-        let score = evaluate_fast(&game);
-        assert_eq!(score, 500);
-    }
-
-    #[test]
-    fn test_evaluate_fast_black_turn() {
-        let mut game = create_test_game();
-        game.material_score = 500;
-        game.turn = PlayerColor::Black;
-
-        let score = evaluate_fast(&game);
-        assert_eq!(score, -500, "Should negate for black's perspective");
     }
 
     #[test]

@@ -1,7 +1,3 @@
-// Obstocean Variant Evaluator - SUPER SIMPLE
-//
-// RULE: Push edge pawns (x=1,8). Nothing else matters as much.
-
 use crate::board::{PieceType, PlayerColor};
 use crate::evaluation::base;
 use crate::game::GameState;
@@ -44,34 +40,49 @@ fn evaluate_inner(game: &GameState) -> i32 {
         );
     }
 
-    // Piece evaluation (minimal for non-pawns)
-    for ((x, y), p) in game.board.iter() {
-        if p.color() == PlayerColor::Neutral {
+    // Piece evaluation loop (tile-based)
+    for (cx, cy, tile) in game.board.tiles.iter() {
+        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
             continue;
         }
 
-        let v = match p.piece_type() {
-            PieceType::Pawn => eval_pawn(*x, *y, p.color(), game),
-            PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => {
-                base::evaluate_rook(game, *x, *y, p.color(), &wk, &bk, base::MAX_PHASE)
+        let mut bits = tile.occ_all;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let p = crate::board::Piece::from_packed(tile.piece[idx]);
+            if p.color() == PlayerColor::Neutral {
+                continue;
             }
-            PieceType::Queen | PieceType::RoyalQueen => {
-                base::evaluate_queen(game, *x, *y, p.color(), &wk, &bk, base::MAX_PHASE)
-            }
-            PieceType::Bishop => {
-                base::evaluate_bishop(game, *x, *y, p.color(), &wk, &bk, base::MAX_PHASE)
-            }
-            _ => 0, // Knights get NO bonus - just material value
-        };
 
-        if p.color() == PlayerColor::White {
-            score += v;
-        } else {
-            score -= v;
+            let is_white = p.color() == PlayerColor::White;
+            let pt = p.piece_type();
+            let x = cx * 8 + (idx % 8) as i64;
+            let y = cy * 8 + (idx / 8) as i64;
+
+            // Piece-specific positional eval
+            let v = match pt {
+                PieceType::Pawn => eval_pawn(x, y, p.color(), game),
+                PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => {
+                    base::evaluate_rook(game, x, y, p.color(), &wk, &bk, base::MAX_PHASE)
+                }
+                PieceType::Queen | PieceType::RoyalQueen => {
+                    base::evaluate_queen(game, x, y, p.color(), &wk, &bk, base::MAX_PHASE)
+                }
+                PieceType::Bishop => {
+                    base::evaluate_bishop(game, x, y, p.color(), &wk, &bk, base::MAX_PHASE)
+                }
+                _ => 0,
+            };
+
+            if is_white {
+                score += v;
+            } else {
+                score -= v;
+            }
         }
     }
 
-    score += base::evaluate_king_safety(game, &wk, &bk);
     score += race_eval(game);
 
     if game.turn == PlayerColor::Black {

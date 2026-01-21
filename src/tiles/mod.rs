@@ -592,6 +592,11 @@ impl TileTable {
             .map(|b| b.tile.occ_all.count_ones() as usize)
             .sum()
     }
+
+    /// Iterate tiles in a specific world column (target_cx).
+    pub fn iter_columns(&self, target_cx: i64) -> impl Iterator<Item = (i64, i64, &Tile)> {
+        self.iter().filter(move |(cx, _, _)| *cx == target_cx)
+    }
 }
 
 /// CTZ-based iterator over occupied buckets in the TileTable
