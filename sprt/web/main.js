@@ -178,16 +178,22 @@ function populateVariantDropdown() {
     // Get variants with custom eval (these will be disabled by default for SPRT stability)
     const customEvalVariants = new Set(getVariantsWithCustomEval());
 
+    // Variants to disable by default: custom evals AND Abundance
+    const defaultsDisabled = new Set(customEvalVariants);
+    defaultsDisabled.add('Abundance');
+
     sprtVariantsEl.innerHTML = '';
     availableVariants.forEach(variant => {
         const option = document.createElement('option');
         option.value = variant;
+
         // Mark variants with custom eval in the dropdown
         option.textContent = customEvalVariants.has(variant)
             ? `${variant} (custom eval)`
             : variant;
-        // Default: deselect variants with custom eval to reduce SPRT volatility
-        option.selected = !customEvalVariants.has(variant);
+
+        // Default: deselect variants that are disabled by default
+        option.selected = !defaultsDisabled.has(variant);
         sprtVariantsEl.appendChild(option);
     });
 }
@@ -864,7 +870,8 @@ async function runSprt() {
     }
     CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
     CONFIG.maxGames = parseInt(sprtMaxGames.value, 10) || 1000;
-    CONFIG.maxMoves = parseInt(sprtMaxMoves.value, 10) || 200;
+    const valMoves = parseInt(sprtMaxMoves.value, 10);
+    CONFIG.maxMoves = (Number.isFinite(valMoves) && valMoves > 0) ? valMoves : Infinity;
     {
         const mtVal = (sprtMaterialThresholdEl.value || '').trim();
         const mt = parseInt(mtVal, 10);
@@ -898,6 +905,8 @@ async function runSprt() {
     if (runVariantQueue.length === 0) {
         runVariantQueue.push({ variant: 'Classical', newPlaysWhite: true });
     }
+    const uniqueVariants = new Set(runVariantQueue.map(v => v.variant));
+    const isMultiVariantRun = uniqueVariants.size > 1;
     let nextVariantIndex = 0;
 
     function getNextVariantForRun() {
@@ -978,7 +987,7 @@ async function runSprt() {
             type: 'runGame',
             gameIndex,
             timePerMove: tcParams.timePerMove,
-            maxMoves: maxMovesPerGame,
+            maxMoves: (variantName === 'Abundance' && Number.isFinite(maxMovesPerGame) && isMultiVariantRun) ? Math.min(maxMovesPerGame * 1.5, 1000) : maxMovesPerGame,
             newPlaysWhite,
             materialThreshold: runConfig.materialThreshold,
             searchNoise: runConfig.searchNoise,
