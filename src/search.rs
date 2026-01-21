@@ -115,6 +115,9 @@ pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
 
+pub const MAX_SITE_SKILL: u32 = 3; // Current max skill level on the site
+pub const MAX_PV_COUNT: usize = 4; // MultiPV lines to use
+
 #[inline(always)]
 pub const fn is_win(value: i32) -> bool {
     value > MATE_SCORE
@@ -2150,8 +2153,6 @@ pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
 }
 
 /// Selects a move from MultiPV results using Stockfish's strength-limiting logic.
-/// weakness = 120 - 2 * skill_level
-/// push = (weakness * (top_score - score) + delta * (rng % weakness)) / 128
 fn pick_best(result: &MultiPVResult, skill_level: u32, rng: &mut Prng) -> Option<(Move, i32)> {
     if result.lines.is_empty() {
         return None;
@@ -2197,8 +2198,10 @@ pub(crate) fn get_best_move_limited(
     game.recompute_piece_counts();
     game.recompute_correction_hashes();
 
-    let strength = strength_level.unwrap_or(3).clamp(1, 3);
-    if strength >= 3 {
+    let input_skill = strength_level
+        .unwrap_or(MAX_SITE_SKILL)
+        .clamp(1, MAX_SITE_SKILL);
+    if input_skill >= MAX_SITE_SKILL {
         return get_best_move_parallel(
             game,
             max_depth,
@@ -2229,14 +2232,16 @@ pub(crate) fn get_best_move_limited(
         // Ensure TT is initialized
         GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
 
-        // Smart Strength Limiting:
         // Use MultiPV at the root and pick_best selection logic.
-        // multi_pv count and skill_level derived from strength_level.
-        let (multi_pv, skill_level) = match strength {
-            1 => (4, 4),  // Easy
-            2 => (3, 10), // Medium
-            _ => (1, 20),
+        // Automatically normalize site skill (1..MAX_SITE_SKILL) to internal (1..20)
+        let skill_level = if MAX_SITE_SKILL > 1 {
+            let progress = (input_skill - 1) as f32 / (MAX_SITE_SKILL - 1) as f32;
+            (1.0 + progress * 19.0).round() as u32
+        } else {
+            20
         };
+
+        let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
 
         if multi_pv > 1 {
             let result = get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent);
