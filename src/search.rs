@@ -6,12 +6,11 @@ use crate::search::params::{
     aspiration_fail_mult, aspiration_max_window, aspiration_window, delta_margin,
     history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf, hlp_history_reduce,
     hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult, lmr_cutoff_thresh,
-    lmr_divisor, lmr_history_thresh, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh,
-    low_depth_probcut_margin, max_history, nmp_base, nmp_depth_mult, nmp_min_depth,
-    nmp_reduction_base, nmp_reduction_div, probcut_depth_sub, probcut_divisor, probcut_improving,
-    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, rfp_improving_mult,
-    rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult, see_capture_hist_div,
-    see_capture_linear, see_quiet_quad,
+    lmr_divisor, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh, low_depth_probcut_margin,
+    max_history, nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
+    probcut_depth_sub, probcut_divisor, probcut_improving, probcut_margin, probcut_min_depth,
+    razoring_linear, razoring_quad, rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt,
+    rfp_worsening_mult, see_capture_hist_div, see_capture_linear, see_quiet_quad,
 };
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 // For web WASM (browser), use js_sys::Date for timing
@@ -3587,15 +3586,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
                 // History-adjusted LMR (simple, low-overhead version)
-                // Only use main history - continuation history lookups are too expensive.
-                // Only reduce LESS for good history (safe); don't increase for bad (risky).
+                // Continuous Stockfish-inspired adjustment: reduction -= history / 4096
                 let hist_idx = hash_move_dest(&m);
                 let hist_score = searcher.history[p_type as usize][hist_idx];
-
-                // Reduce less for moves with good history (threshold: ~50% of max)
-                if hist_score > lmr_history_thresh() && reduction > 0 {
-                    reduction -= 1;
-                }
+                reduction -= hist_score / 4096;
 
                 // Increase reduction if next ply has a lot of fail highs
                 // We use a simpler version: add 1 to reduction when many cutoffs

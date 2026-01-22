@@ -2745,9 +2745,7 @@ fn generate_huygen_moves_into(
                 // Blocker is enemy at prime distance > 127 - generate capture
                 let to_x = from.x + dir_x * blocker_dist;
                 let to_y = from.y + dir_y * blocker_dist;
-                if in_bounds(to_x, to_y) {
-                    out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
-                }
+                out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
         } else {
             // CASE 2: No blocker found at any prime distance
