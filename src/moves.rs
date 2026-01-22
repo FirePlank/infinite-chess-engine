@@ -1785,14 +1785,16 @@ fn generate_pawn_quiet_moves(
         promotion_ranks: &[i64],
         promotion_pieces: &[PieceType],
     ) {
-        if promotion_ranks.contains(&to_y) {
-            for &promo in promotion_pieces {
-                let mut m = Move::new(from, Coordinate::new(to_x, to_y), piece);
-                m.promotion = Some(promo);
-                out.push(m);
+        if in_bounds(to_x, to_y) {
+            if promotion_ranks.contains(&to_y) {
+                for &promo in promotion_pieces {
+                    let mut m = Move::new(from, Coordinate::new(to_x, to_y), piece);
+                    m.promotion = Some(promo);
+                    out.push(m);
+                }
+            } else {
+                out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
             }
-        } else {
-            out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
         }
     }
 
@@ -2743,7 +2745,9 @@ fn generate_huygen_moves_into(
                 // Blocker is enemy at prime distance > 127 - generate capture
                 let to_x = from.x + dir_x * blocker_dist;
                 let to_y = from.y + dir_y * blocker_dist;
-                out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
+                if in_bounds(to_x, to_y) {
+                    out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
+                }
             }
         } else {
             // CASE 2: No blocker found at any prime distance
@@ -2766,7 +2770,7 @@ fn generate_huygen_moves_into(
                         indices.rows.get(&to_y).is_some_and(|v| !v.is_empty())
                     };
 
-                    if aligned || prime_dist <= 3 {
+                    if in_bounds(to_x, to_y) && (aligned || prime_dist <= 3) {
                         out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
                     }
                 }
@@ -2943,6 +2947,11 @@ fn generate_rose_moves_into(
                 let tx = fx + cum_dx;
                 let ty = fy + cum_dy;
 
+                // Skip if outside world border
+                if !in_bounds(tx, ty) {
+                    break;
+                }
+
                 // Check if this square is occupied
                 let occupant = board.get_piece(tx, ty);
                 let is_blocked = occupant.is_some();
@@ -3036,14 +3045,16 @@ fn generate_pawn_moves_into(
         promotion_ranks: &[i64],
         promotion_pieces: &[PieceType],
     ) {
-        if promotion_ranks.contains(&to_y) {
-            for &promo in promotion_pieces {
-                let mut m = Move::new(from, Coordinate::new(to_x, to_y), piece);
-                m.promotion = Some(promo);
-                out.push(m);
+        if in_bounds(to_x, to_y) {
+            if promotion_ranks.contains(&to_y) {
+                for &promo in promotion_pieces {
+                    let mut m = Move::new(from, Coordinate::new(to_x, to_y), piece);
+                    m.promotion = Some(promo);
+                    out.push(m);
+                }
+            } else {
+                out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
             }
-        } else {
-            out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
         }
     }
 
@@ -3941,5 +3952,104 @@ mod tests {
             found,
             "Move (10,-30) -> (77,-30) should be generated to target King at (77,-41)"
         );
+    }
+
+    mod border_handling_tests {
+        use super::*;
+
+        #[test]
+        fn test_huygen_border_respect() {
+            let mut board = Board::new();
+            let from = Coordinate::new(0, 0);
+            let piece = Piece::new(PieceType::Huygen, PlayerColor::White);
+            board.set_piece(from.x, from.y, piece);
+            board.rebuild_tiles();
+            let indices = SpatialIndices::new(&board);
+
+            // Set small border
+            set_world_bounds(-5, 5, -5, 5);
+
+            let mut moves = MoveList::new();
+            generate_huygen_moves_into(
+                &board,
+                &from,
+                &piece,
+                &indices,
+                MoveGenType::All,
+                &mut moves,
+            );
+
+            for m in &moves {
+                assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
+            }
+
+            // Verify some moves were generated within bounds
+            assert!(!moves.is_empty());
+
+            // Reset bounds
+            set_world_bounds(
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+            );
+        }
+
+        #[test]
+        fn test_rose_border_respect() {
+            let mut board = Board::new();
+            let from = Coordinate::new(0, 0);
+            let piece = Piece::new(PieceType::Rose, PlayerColor::White);
+            board.set_piece(from.x, from.y, piece);
+            board.rebuild_tiles();
+
+            // Set small border
+            set_world_bounds(-2, 2, -2, 2);
+
+            let mut moves = MoveList::new();
+            generate_rose_moves_into(&board, &from, &piece, MoveGenType::All, &mut moves);
+
+            for m in &moves {
+                assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
+            }
+
+            // Reset bounds
+            set_world_bounds(
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+            );
+        }
+
+        #[test]
+        fn test_pawn_border_respect() {
+            let mut board = Board::new();
+            // Pawn at white terminal rank in a tiny world
+            let from = Coordinate::new(0, 5);
+            let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+            board.set_piece(from.x, from.y, piece);
+            board.rebuild_tiles();
+
+            let rules = GameRules::default();
+            let special = FxHashSet::default();
+
+            // Border ends just above the pawn
+            set_world_bounds(-10, 10, -10, 5);
+
+            let mut moves = MoveList::new();
+            generate_pawn_moves_into(&board, &from, &piece, &special, &None, &rules, &mut moves);
+
+            // Should have NO moves because they all go to y=6 which is out of bounds
+            assert!(moves.is_empty(), "Pawn should have no moves out of bounds");
+
+            // Reset bounds
+            set_world_bounds(
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+            );
+        }
     }
 }
