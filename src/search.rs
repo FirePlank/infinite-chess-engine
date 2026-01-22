@@ -603,16 +603,16 @@ pub struct Searcher {
     pub killers: Vec<[Option<Move>; 2]>,
 
     // History heuristic [piece_type][to_square_hash]
-    pub history: [[i32; 256]; 32],
+    pub history: Box<[[i32; 256]; 32]>,
 
     // Capture history [moving_piece_type][captured_piece_type]
     // Used to improve capture ordering beyond pure MVV-LVA
-    pub capture_history: [[i32; 32]; 32],
+    pub capture_history: Box<[[i32; 32]; 32]>,
 
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
     // Stores the move that refuted the previous move (for quiet beta cutoffs).
     // Using (u8, i16, i16) to store piece type and destination coords.
-    pub countermoves: [[(u8, i16, i16); 256]; 256],
+    pub countermoves: Box<[[(u8, i16, i16); 256]; 256]>,
 
     // Previous move info for countermove heuristic (from_hash, to_hash)
     pub prev_move_stack: Vec<(usize, usize)>,
@@ -742,9 +742,22 @@ impl Searcher {
             pv_table,
             pv_length: [0; MAX_PLY],
             killers,
-            history: [[0; 256]; 32],
-            capture_history: [[0; 32]; 32],
-            countermoves: [[(0, 0, 0); 256]; 256],
+            history: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 32 * 256].into_boxed_slice()) as *mut [[i32; 256]; 32]
+                )
+            },
+            capture_history: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 32 * 32].into_boxed_slice()) as *mut [[i32; 32]; 32]
+                )
+            },
+            countermoves: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![(0u8, 0i16, 0i16); 256 * 256].into_boxed_slice())
+                        as *mut [[(u8, i16, i16); 256]; 256],
+                )
+            },
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
             best_move_root: None,
@@ -760,20 +773,59 @@ impl Searcher {
             moved_piece_history: vec![0; MAX_PLY],
             in_check_history: vec![false; MAX_PLY],
             capture_history_stack: vec![false; MAX_PLY],
-            cont_history: Box::new([[[[[[0i32; 32]; 32]; 32]; 32]; 2]; 2]),
-            cont_corrhist: Box::new([[[[0i32; 32]; 32]; 32]; 32]),
+            cont_history: unsafe {
+                Box::from_raw(Box::into_raw(
+                    vec![0i32; 32 * 32 * 32 * 32 * 2 * 2].into_boxed_slice(),
+                )
+                    as *mut [[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2])
+            },
+            cont_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 32 * 32 * 32 * 32].into_boxed_slice())
+                        as *mut [[[[i32; 32]; 32]; 32]; 32],
+                )
+            },
             excluded_moves: Vec::new(),
             corrhist_mode: CorrHistMode::NonPawnBased, // Default, set based on variant at search start
-            pawn_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
-            nonpawn_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
-            material_corrhist: Box::new([[0i32; CORRHIST_SIZE]; 2]),
-            lastmove_corrhist: Box::new([0i32; LASTMOVE_CORRHIST_SIZE]),
+            pawn_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 2 * CORRHIST_SIZE].into_boxed_slice())
+                        as *mut [[i32; CORRHIST_SIZE]; 2],
+                )
+            },
+            nonpawn_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 2 * CORRHIST_SIZE].into_boxed_slice())
+                        as *mut [[i32; CORRHIST_SIZE]; 2],
+                )
+            },
+            material_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 2 * CORRHIST_SIZE].into_boxed_slice())
+                        as *mut [[i32; CORRHIST_SIZE]; 2],
+                )
+            },
+            lastmove_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; LASTMOVE_CORRHIST_SIZE].into_boxed_slice())
+                        as *mut [i32; LASTMOVE_CORRHIST_SIZE],
+                )
+            },
             tt_move_history: 0,
             reduction_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
             move_rule_limit: 100,             // Default, will be updated from GameState
-            low_ply_history: Box::new([[0i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE]),
-            plies_from_null: Box::new([255; MAX_PLY]),
+            low_ply_history: unsafe {
+                Box::from_raw(Box::into_raw(
+                    vec![0i32; LOW_PLY_HISTORY_ENTRIES * LOW_PLY_HISTORY_SIZE].into_boxed_slice(),
+                )
+                    as *mut [[i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE])
+            },
+            plies_from_null: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![255u8; MAX_PLY].into_boxed_slice()) as *mut [u8; MAX_PLY]
+                )
+            },
         }
     }
 
@@ -4611,7 +4663,7 @@ mod tests {
 
     #[test]
     fn test_format_pv_empty() {
-        let searcher = Searcher::new(1000);
+        let searcher = Box::new(Searcher::new(1000));
         let mut game = GameState::new();
         let pv = searcher.format_pv(&mut game, 0);
         // PV should be a string (possibly empty)
@@ -4622,7 +4674,7 @@ mod tests {
 
     #[test]
     fn test_set_corrhist_mode() {
-        let mut searcher = Searcher::new(1000);
+        let mut searcher = Box::new(Searcher::new(1000));
         let game = GameState::new();
 
         searcher.set_corrhist_mode(&game);
@@ -4637,7 +4689,7 @@ mod tests {
 
     #[test]
     fn test_adjusted_eval() {
-        let searcher = Searcher::new(1000);
+        let searcher = Box::new(Searcher::new(1000));
         let game = GameState::new();
 
         let raw_eval = 100;
@@ -4650,7 +4702,7 @@ mod tests {
 
     #[test]
     fn test_extract_pv() {
-        let searcher = Searcher::new(1000);
+        let searcher = Box::new(Searcher::new(1000));
         let mut game = GameState::new();
         let pv = searcher.extract_pv_only(&mut game, 1);
         // PV should be empty for a fresh searcher
@@ -4669,7 +4721,7 @@ mod tests {
 
     #[test]
     fn test_capture_history_update() {
-        let mut searcher = Searcher::new(1000);
+        let mut searcher = Box::new(Searcher::new(1000));
 
         // Update capture history
         searcher.capture_history[PieceType::Rook as usize][PieceType::Pawn as usize] = 100;
@@ -4679,7 +4731,7 @@ mod tests {
 
     #[test]
     fn test_countermove_heuristic() {
-        let mut searcher = Searcher::new(1000);
+        let mut searcher = Box::new(Searcher::new(1000));
 
         // Update countermove table
         let prev_from_hash = 10;
@@ -4855,7 +4907,7 @@ mod tests {
     }
     #[test]
     fn test_quiescence_search_depth() {
-        let mut searcher = Searcher::new(1000);
+        let mut searcher = Box::new(Searcher::new(1000));
         let mut game = GameState::new();
         game.board = Board::new();
 
@@ -4930,13 +4982,13 @@ mod tests {
 
     #[test]
     fn test_searcher_thread_id() {
-        let searcher = Searcher::new(1000);
+        let searcher = Box::new(Searcher::new(1000));
         assert_eq!(searcher.thread_id, 0); // Default thread ID
     }
 
     #[test]
     fn test_searcher_silent_mode() {
-        let mut searcher = Searcher::new(1000);
+        let mut searcher = Box::new(Searcher::new(1000));
         assert!(!searcher.silent); // Default is not silent
         searcher.silent = true;
         assert!(searcher.silent);
@@ -4946,7 +4998,7 @@ mod tests {
 
     #[test]
     fn test_move_rule_limit() {
-        let searcher = Searcher::new(1000);
+        let searcher = Box::new(Searcher::new(1000));
         assert_eq!(searcher.move_rule_limit, 100); // Default 50-move rule
     }
 }

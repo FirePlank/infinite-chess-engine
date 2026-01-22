@@ -50,10 +50,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Run tests
-        run: cargo test --lib --no-fail-fast
-        env:
-          CARGO_TERM_COLOR: always
 
       - name: Generate coverage report
         id: coverage
