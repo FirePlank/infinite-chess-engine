@@ -327,7 +327,6 @@ impl LocalTranspositionTable {
                 if params.flag == TTFlag::Exact
                     || (params.depth as i32 + pv_bonus) > (e.depth as i32 - 4)
                     || e.relative_age(curr_gen) != 0
-                    || params.depth == 0
                 {
                     let (old_m16, old_fx, old_fy, old_tx, old_ty) =
                         (e.move16, e.from_x, e.from_y, e.to_x, e.to_y);
