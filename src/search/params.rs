@@ -85,11 +85,15 @@ pub const DEFAULT_SORT_KILLER2: i32 = 800000;
 pub const DEFAULT_SORT_COUNTERMOVE: i32 = 600000;
 
 // History heuristic
-pub const DEFAULT_MAX_HISTORY: i32 = 4000;
+pub const DEFAULT_MAX_HISTORY: i32 = 16384;
 pub const DEFAULT_HISTORY_BONUS_BASE: i32 = 300;
 pub const DEFAULT_HISTORY_BONUS_SUB: i32 = 250;
 pub const DEFAULT_HISTORY_BONUS_CAP: i32 = 1536;
 pub const DEFAULT_HISTORY_MAX_GRAVITY: i32 = 16384;
+
+// Pawn History scale factors
+pub const DEFAULT_PAWN_HISTORY_BONUS_SCALE: i32 = 2;
+pub const DEFAULT_PAWN_HISTORY_MALUS_SCALE: i32 = 1;
 
 // Quiescence
 pub const DEFAULT_DELTA_MARGIN: i32 = 200;
@@ -172,6 +176,9 @@ pub struct SearchParams {
     pub history_bonus_sub: i32,
     pub history_bonus_cap: i32,
 
+    pub pawn_history_bonus_scale: i32,
+    pub pawn_history_malus_scale: i32,
+
     // Other
     pub delta_margin: i32,
 }
@@ -228,6 +235,8 @@ impl Default for SearchParams {
             history_bonus_base: DEFAULT_HISTORY_BONUS_BASE,
             history_bonus_sub: DEFAULT_HISTORY_BONUS_SUB,
             history_bonus_cap: DEFAULT_HISTORY_BONUS_CAP,
+            pawn_history_bonus_scale: DEFAULT_PAWN_HISTORY_BONUS_SCALE,
+            pawn_history_malus_scale: DEFAULT_PAWN_HISTORY_MALUS_SCALE,
             delta_margin: DEFAULT_DELTA_MARGIN,
         }
     }
@@ -361,6 +370,16 @@ define_accessor!(max_history, i32, DEFAULT_MAX_HISTORY);
 define_accessor!(history_bonus_base, i32, DEFAULT_HISTORY_BONUS_BASE);
 define_accessor!(history_bonus_sub, i32, DEFAULT_HISTORY_BONUS_SUB);
 define_accessor!(history_bonus_cap, i32, DEFAULT_HISTORY_BONUS_CAP);
+define_accessor!(
+    pawn_history_bonus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_BONUS_SCALE
+);
+define_accessor!(
+    pawn_history_malus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_MALUS_SCALE
+);
 
 // Other
 define_accessor!(delta_margin, i32, DEFAULT_DELTA_MARGIN);

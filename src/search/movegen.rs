@@ -12,7 +12,10 @@
 //! QSearch:     QSEARCH_TT → QCAPTURE_INIT → QCAPTURE
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
-use super::{LOW_PLY_HISTORY_MASK, LOW_PLY_HISTORY_SIZE, Searcher, hash_coord_32, hash_move_dest};
+use super::{
+    LOW_PLY_HISTORY_MASK, LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_32,
+    hash_move_dest,
+};
 use crate::board::{PieceType, PlayerColor};
 use crate::evaluation::get_piece_value;
 use crate::game::GameState;
@@ -356,6 +359,10 @@ impl StagedMoveGen {
         if pt_idx < searcher.history.len() {
             score += 2 * searcher.history[pt_idx][idx];
         }
+
+        // Pawn history: 2 * pawnHistory[pawn_hash % SIZE][piece][to]
+        let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+        score += 2 * searcher.pawn_history[ph_idx][pt_idx][idx];
 
         // Continuation history
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);

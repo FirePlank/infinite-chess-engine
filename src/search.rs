@@ -7,10 +7,11 @@ use crate::search::params::{
     history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf, hlp_history_reduce,
     hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult, lmr_cutoff_thresh,
     lmr_divisor, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh, low_depth_probcut_margin,
-    max_history, nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
-    probcut_depth_sub, probcut_divisor, probcut_improving, probcut_margin, probcut_min_depth,
-    razoring_linear, razoring_quad, rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt,
-    rfp_worsening_mult, see_capture_hist_div, see_capture_linear, see_quiet_quad,
+    nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
+    pawn_history_bonus_scale, pawn_history_malus_scale, probcut_depth_sub, probcut_divisor,
+    probcut_improving, probcut_margin, probcut_min_depth, razoring_linear, razoring_quad,
+    rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
+    see_capture_hist_div, see_capture_linear, see_quiet_quad,
 };
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 // For web WASM (browser), use js_sys::Date for timing
@@ -161,6 +162,11 @@ pub const CORRHIST_WEIGHT_SCALE: i32 = 256; // Weight scaling for updates
 pub const LOW_PLY_HISTORY_SIZE: usize = 4; // Only track first 4 plies
 pub const LOW_PLY_HISTORY_ENTRIES: usize = 4096; // Move hash entries per ply
 pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
+
+// Pawn History constants:
+// Tracks successful moves under specific pawn structures.
+pub const PAWN_HISTORY_SIZE: usize = 8192;
+pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
 
 /// Determines which correction history tables to use.
 /// Set once at search start for zero runtime overhead.
@@ -698,6 +704,10 @@ pub struct Searcher {
     /// Used to boost ordering for moves that worked well near root.
     pub low_ply_history: Box<[[i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE]>,
 
+    /// Pawn History: [pawn_hash % SIZE][piece_type][to_hash]
+    /// Tracks successful moves under specific pawn structure hashes.
+    pub pawn_history: Box<[[[i32; 256]; 32]; PAWN_HISTORY_SIZE]>,
+
     pub plies_from_null: Box<[u8; MAX_PLY]>,
 }
 
@@ -825,6 +835,12 @@ impl Searcher {
                 Box::from_raw(
                     Box::into_raw(vec![255u8; MAX_PLY].into_boxed_slice()) as *mut [u8; MAX_PLY]
                 )
+            },
+            pawn_history: unsafe {
+                Box::from_raw(Box::into_raw(
+                    vec![0i32; PAWN_HISTORY_SIZE * 32 * 256].into_boxed_slice(),
+                )
+                    as *mut [[[i32; 256]; 32]; PAWN_HISTORY_SIZE])
             },
         }
     }
@@ -1002,6 +1018,13 @@ impl Searcher {
             row.fill(0);
         }
 
+        // Reset pawn history
+        for table in self.pawn_history.iter_mut() {
+            for row in table.iter_mut() {
+                row.fill(0);
+            }
+        }
+
         // Reset killers
         for k in self.killers.iter_mut() {
             k[0] = None;
@@ -1022,10 +1045,26 @@ impl Searcher {
     /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
     #[inline]
     pub fn update_history(&mut self, piece: PieceType, idx: usize, bonus: i32) {
-        let max_h = max_history();
+        let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
         let clamped = bonus.clamp(-max_h, max_h);
 
         let entry = &mut self.history[piece as usize][idx];
+        *entry += clamped - *entry * clamped.abs() / max_h;
+    }
+
+    /// Update pawn history for moves that caused beta cutoff.
+    #[inline]
+    pub fn update_pawn_history(
+        &mut self,
+        pawn_hash: u64,
+        piece: PieceType,
+        to_hash: usize,
+        bonus: i32,
+    ) {
+        let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+        let clamped = bonus.clamp(-max_h, max_h);
+        let ph_idx = (pawn_hash & PAWN_HISTORY_MASK) as usize;
+        let entry = &mut self.pawn_history[ph_idx][piece as usize][to_hash];
         *entry += clamped - *entry * clamped.abs() / max_h;
     }
 
@@ -1034,7 +1073,7 @@ impl Searcher {
     #[inline]
     pub fn update_low_ply_history(&mut self, ply: usize, move_hash: usize, bonus: i32) {
         if ply < LOW_PLY_HISTORY_SIZE {
-            let max_h = max_history();
+            let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
             let clamped = bonus.clamp(-max_h, max_h);
             let idx = move_hash & LOW_PLY_HISTORY_MASK;
             let entry = &mut self.low_ply_history[ply][idx];
@@ -2826,7 +2865,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Check if we have an upcoming move that draws by repetition
-    // Stockfish: this comes before is_draw check
     if ply > 0 && alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
         let draw_val = value_draw(searcher.hot.nodes);
         if draw_val >= beta {
@@ -3640,8 +3678,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // History-adjusted LMR (simple, low-overhead version)
                 // Continuous Stockfish-inspired adjustment: reduction -= history / 4096
                 let hist_idx = hash_move_dest(&m);
+                let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
-                reduction -= hist_score / 4096;
+                let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
+                reduction -= (hist_score + pawn_score) / 4096;
 
                 // Increase reduction if next ply has a lot of fail highs
                 // We use a simpler version: add 1 to reduction when many cutoffs
@@ -3681,7 +3721,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_loss(best_score)
             {
                 let idx = hash_move_dest(&m);
-                let value = searcher.history[p_type as usize][idx];
+                let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+                let value = searcher.history[p_type as usize][idx]
+                    + searcher.pawn_history[ph_idx][p_type as usize][idx];
 
                 if value < hlp_history_reduce() {
                     // Extra reduction based on poor history
@@ -3880,6 +3922,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                 searcher.update_history(m.piece.piece_type(), idx, bonus);
+                searcher.update_pawn_history(
+                    game.pawn_hash,
+                    m.piece.piece_type(),
+                    idx,
+                    bonus * pawn_history_bonus_scale(),
+                );
 
                 // Low Ply History update:
                 searcher.update_low_ply_history(ply, idx, bonus);
@@ -3890,6 +3938,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         continue;
                     }
                     searcher.update_history(quiet.piece.piece_type(), qidx, -bonus);
+                    searcher.update_pawn_history(
+                        game.pawn_hash,
+                        quiet.piece.piece_type(),
+                        qidx,
+                        -bonus * pawn_history_malus_scale(),
+                    );
                     // Penalize other quiets in low ply history too
                     searcher.update_low_ply_history(ply, qidx, -bonus);
                 }
@@ -4064,7 +4118,7 @@ fn quiescence(
     mut alpha: i32,
     beta: i32,
 ) -> i32 {
-    // CRITICAL: Check for max ply BEFORE any array accesses to prevent out-of-bounds
+    // Check for max ply BEFORE any array accesses to prevent out-of-bounds
     if ply >= MAX_PLY - 1 {
         return evaluate(game);
     }

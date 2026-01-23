@@ -9,9 +9,8 @@ use super::params::{
 };
 
 /// Low-ply history table size for moves at shallow depths
-pub const LOW_PLY_HISTORY_SIZE: usize = 4;
-pub const LOW_PLY_HISTORY_ENTRIES: usize = 1024;
-pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
+pub const LOW_PLY_HISTORY_SIZE: usize = crate::search::LOW_PLY_HISTORY_SIZE;
+pub const LOW_PLY_HISTORY_MASK: usize = crate::search::LOW_PLY_HISTORY_MASK;
 
 /// Score a single move for ordering purposes.
 /// Returns higher score for better moves.
@@ -53,7 +52,7 @@ pub fn score_move(
         // Capture history
         let cap_hist =
             searcher.capture_history[m.piece.piece_type() as usize][target.piece_type() as usize];
-        score += cap_hist / 10;
+        score += cap_hist / 16;
     } else {
         // Quiet move scoring
 
@@ -89,7 +88,12 @@ pub fn score_move(
 
             // Main history heuristic
             let idx = hash_move_dest(m);
-            score += searcher.history[m.piece.piece_type() as usize][idx];
+            let pt_idx = m.piece.piece_type() as usize;
+            score += 2 * searcher.history[pt_idx][idx];
+
+            // Pawn history heuristic
+            let ph_idx = (game.pawn_hash & crate::search::PAWN_HISTORY_MASK) as usize;
+            score += 2 * searcher.pawn_history[ph_idx][pt_idx][idx];
 
             // Continuation history
             let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
@@ -114,7 +118,7 @@ pub fn score_move(
             // Low-ply history bonus:
             if ply < LOW_PLY_HISTORY_SIZE {
                 let move_hash = hash_move_for_lowply(m);
-                score += searcher.low_ply_history[ply][move_hash] / 4;
+                score += 8 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
             }
         }
     }
@@ -236,13 +240,19 @@ pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
 /// Hash move destination to 256-size index (for main history)
 #[inline]
 pub fn hash_move_dest(m: &Move) -> usize {
-    ((m.to.x.wrapping_abs() ^ m.to.y.wrapping_abs()) & 0xFF) as usize
+    let x = m.to.x as u64;
+    let y = m.to.y as u64;
+    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9136a9a9f9065e33);
+    ((h ^ (h >> 32)) & 0xFF) as usize
 }
 
 /// Hash move source to 256-size index
 #[inline]
 pub fn hash_move_from(m: &Move) -> usize {
-    ((m.from.x.wrapping_abs() ^ m.from.y.wrapping_abs()) & 0xFF) as usize
+    let x = m.from.x as u64;
+    let y = m.from.y as u64;
+    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9136a9a9f9065e33);
+    ((h ^ (h >> 32)) & 0xFF) as usize
 }
 
 /// Hash coordinate to 32-size index (for continuation history)
@@ -302,17 +312,6 @@ mod tests {
     fn test_hash_coord_32() {
         let hash = hash_coord_32(1000, -2000);
         assert!(hash < 32);
-    }
-
-    #[test]
-    fn test_hash_move_for_lowply() {
-        let m = Move::new(
-            Coordinate::new(4, 2),
-            Coordinate::new(4, 4),
-            Piece::new(PieceType::Pawn, PlayerColor::White),
-        );
-        let hash = hash_move_for_lowply(&m);
-        assert!(hash < LOW_PLY_HISTORY_ENTRIES);
     }
 
     #[test]
