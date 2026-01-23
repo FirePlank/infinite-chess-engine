@@ -3748,6 +3748,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
                 reduction -= (hist_score + pawn_score) / 4096;
 
+                // Correction history adjustment
+                let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
+                reduction -= (correction.abs() / 30370).clamp(0, 2);
+
+                // Shuffle penalty
+                if searcher.is_shuffling(game, &m, ply) {
+                    reduction += 1;
+                }
+
                 // Increase reduction if next ply has a lot of fail highs
                 // We use a simpler version: add 1 to reduction when many cutoffs
                 if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > lmr_cutoff_thresh() {
