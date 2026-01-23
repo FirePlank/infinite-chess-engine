@@ -119,6 +119,16 @@ pub const MAX_SITE_SKILL: u32 = 3; // Current max skill level on the site
 pub const MAX_PV_COUNT: usize = 4; // MultiPV lines to use
 
 #[inline(always)]
+pub const fn mate_in(ply: usize) -> i32 {
+    MATE_VALUE - ply as i32
+}
+
+#[inline(always)]
+pub const fn mated_in(ply: usize) -> i32 {
+    -MATE_VALUE + ply as i32
+}
+
+#[inline(always)]
 pub const fn is_win(value: i32) -> bool {
     value > MATE_SCORE
 }
@@ -2905,7 +2915,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Non-root node: check for draws and mate distance pruning
     if ply > 0 {
         // Draw by fifty-move rule or repetition
-        if game.is_fifty() || game.is_repetition(ply) {
+        if game.is_draw(ply, in_check) {
             return value_draw(searcher.hot.nodes);
         }
 
@@ -2915,9 +2925,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // Mate distance pruning: if we already found a faster mate, prune
-        let mate_score = MATE_VALUE - ply as i32;
-        alpha = alpha.max(-mate_score);
-        beta = beta.min(mate_score - 1);
+        alpha = alpha.max(mated_in(ply));
+        beta = beta.min(mate_in(ply + 1));
         if alpha >= beta {
             return alpha;
         }
@@ -4140,8 +4149,10 @@ fn quiescence(
         searcher.hot.seldepth = ply;
     }
 
+    let in_check = game.is_in_check();
+
     // Draw by fifty-move rule or repetition
-    if game.is_fifty() || game.is_repetition(ply) {
+    if game.is_draw(ply, in_check) {
         return VALUE_DRAW;
     }
 
@@ -4153,8 +4164,6 @@ fn quiescence(
     if game.has_lost_by_royal_capture() {
         return -MATE_VALUE + ply as i32;
     }
-
-    let in_check = game.is_in_check();
     // Only treat check specially if we must escape (checkmate-based win condition)
     let must_escape = in_check && game.must_escape_check();
 

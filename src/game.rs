@@ -1387,6 +1387,49 @@ impl GameState {
         !white_has_non_king || !black_has_non_king
     }
 
+    /// Returns true if the position is a draw by 50-move rule (or variant limit) or repetition.
+    #[inline]
+    pub fn is_draw(&mut self, ply: usize, in_check: bool) -> bool {
+        // Don't check during null move search
+        if self.null_moves > 0 {
+            return false;
+        }
+
+        // Draw by fifty-move rule: only if we aren't in checkmate
+        if let Some(limit) = self.game_rules.move_rule_limit {
+            // If not in check, rule50 draw is immediate.
+            // If in check, it's only a draw if we have at least one legal move.
+            if self.halfmove_clock >= limit && (!in_check || self.has_legal_evasions()) {
+                return true;
+            }
+        }
+
+        self.is_repetition(ply)
+    }
+
+    /// Check if the side-to-move has at least one legal move while in check.
+    /// Only called when 'in_check' is already known to be true.
+    pub fn has_legal_evasions(&mut self) -> bool {
+        // Use evasion generator if must escape
+        if self.must_escape_check() {
+            let mut moves = MoveList::new();
+            self.get_evasion_moves_into(&mut moves);
+
+            for m in &moves {
+                let undo = self.make_move(m);
+                let illegal = self.is_move_illegal();
+                self.undo_move(m, undo);
+                if !illegal {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Capture-based variants: assume that if we have pieces, we have moves
+        self.has_pieces(self.turn)
+    }
+
     /// Check if position is a draw by 50-move rule (or variant specific limit)
     pub fn is_fifty(&self) -> bool {
         // Don't check during null move search
