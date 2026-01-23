@@ -260,6 +260,9 @@ pub struct GameState {
     /// Material configuration hash for correction history.
     #[serde(skip)]
     pub material_hash: u64,
+    /// Minor piece position hash for correction history (Knights and Bishops).
+    #[serde(skip)]
+    pub minor_hash: u64,
     /// Repetition information: distance to previous occurrence of same position.
     /// 0 = no repetition, positive = distance to first occurrence, negative = threefold.
     /// Computed during make_move for O(1) is_repetition check.
@@ -374,6 +377,7 @@ impl GameState {
             pawn_hash: 0,
             nonpawn_hash: 0,
             material_hash: 0,
+            minor_hash: 0,
             repetition: 0,
             white_non_pawn_material: false,
             black_non_pawn_material: false,
@@ -429,6 +433,7 @@ impl GameState {
             pawn_hash: 0,
             nonpawn_hash: 0,
             material_hash: 0,
+            minor_hash: 0,
             repetition: 0,
             white_non_pawn_material: false,
             black_non_pawn_material: false,
@@ -601,6 +606,8 @@ impl GameState {
         self.spatial_indices = SpatialIndices::new(&self.board);
         // Recompute check squares for O(1) check detection
         self.recompute_check_squares();
+        // Recompute correction hashes for eval adjustment
+        self.recompute_correction_hashes();
     }
 
     /// Precompute check squares for both kings.
@@ -1550,6 +1557,7 @@ impl GameState {
         let mut ph: u64 = 0; // Pawn structure hash
         let mut nph: u64 = 0; // Non-pawn piece hash
         let mut mh: u64 = 0; // Material hash
+        let mut mih: u64 = 0; // Minor piece hash
 
         for ((x, y), piece) in self.board.iter() {
             if piece.color() == PlayerColor::Neutral {
@@ -1565,12 +1573,20 @@ impl GameState {
             } else {
                 // Non-pawn hash: all pieces except pawns
                 nph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+
+                // Minor hash: Knights and Bishops
+                if piece.piece_type() == PieceType::Knight
+                    || piece.piece_type() == PieceType::Bishop
+                {
+                    mih ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                }
             }
         }
 
         self.pawn_hash = ph;
         self.nonpawn_hash = nph;
         self.material_hash = mh;
+        self.minor_hash = mih;
     }
 
     #[inline(always)]
@@ -2818,6 +2834,11 @@ impl GameState {
         // Hash: remove piece from source
         self.hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
 
+        // Update minor_hash if needed
+        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+        }
+
         let mut undo_info = UndoMove {
             captured_piece: self.board.get_piece(m.to.x, m.to.y).copied(),
             old_en_passant: self.en_passant,
@@ -2863,6 +2884,14 @@ impl GameState {
             // - Non-neutral: was in hash, XOR removes it
             // - Neutral: wasn't in hash, XOR adds "removed obstacle" marker
             self.hash ^= piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+
+            // Update minor_hash for captured Knights/Bishops
+            if captured.piece_type() == PieceType::Knight
+                || captured.piece_type() == PieceType::Bishop
+            {
+                self.minor_hash ^=
+                    piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+            }
 
             // Update spatial indices for captured piece on destination square
             self.spatial_indices.remove(m.to.x, m.to.y);
@@ -3040,6 +3069,12 @@ impl GameState {
                 }
             } else {
                 // Non-pawn partner captured
+                if captured.piece_type() == PieceType::Knight
+                    || captured.piece_type() == PieceType::Bishop
+                {
+                    self.minor_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                }
                 if let Some(k_pos) = if captured.color() == PlayerColor::White {
                     self.white_king_pos
                 } else {
@@ -3123,6 +3158,16 @@ impl GameState {
             m.to.x,
             m.to.y,
         );
+        if final_piece.piece_type() == PieceType::Knight
+            || final_piece.piece_type() == PieceType::Bishop
+        {
+            self.minor_hash ^= piece_key(
+                final_piece.piece_type(),
+                final_piece.color(),
+                m.to.x,
+                m.to.y,
+            );
+        }
         self.board.set_piece(m.to.x, m.to.y, final_piece);
         // Update spatial indices for moved piece on destination square
         self.spatial_indices
@@ -3204,7 +3249,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self, m: &Move, undo: UndoMove) {
-        use crate::search::zobrist::material_key;
+        use crate::search::zobrist::{material_key, piece_key};
 
         // Pop the hash that was pushed in make_move and restore the saved hash
         self.hash_stack.pop();
@@ -3222,6 +3267,10 @@ impl GameState {
         let mut piece = self.board.remove_piece(&m.to.x, &m.to.y).unwrap();
         // Update spatial indices: remove piece from destination square
         self.spatial_indices.remove(m.to.x, m.to.y);
+
+        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
+        }
 
         // Handle Promotion Revert
         if m.promotion.is_some() {
@@ -3254,6 +3303,10 @@ impl GameState {
         // Update spatial indices for moved piece back on source square
         self.spatial_indices.add(m.from.x, m.from.y, piece.packed());
 
+        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+        }
+
         // Restore captured piece
         if let Some(captured) = undo.captured_piece {
             // Restore material hash
@@ -3283,6 +3336,13 @@ impl GameState {
             self.board.set_piece(m.to.x, m.to.y, captured);
             // Update spatial indices for restored captured piece
             self.spatial_indices.add(m.to.x, m.to.y, captured.packed());
+
+            if captured.piece_type() == PieceType::Knight
+                || captured.piece_type() == PieceType::Bishop
+            {
+                self.minor_hash ^=
+                    piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+            }
         }
 
         // Handle En Passant capture undo - use the stored captured piece

@@ -1,4 +1,4 @@
-use crate::board::PieceType;
+use crate::board::{PieceType, PlayerColor};
 use crate::evaluation::{evaluate, get_piece_value};
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
@@ -686,6 +686,11 @@ pub struct Searcher {
     pub corrhist_mode: CorrHistMode,
     pub pawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub nonpawn_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
+
+    /// Correction History: [color][minor_hash % SIZE] -> correction value
+    /// Tracks eval error for specific minor piece positions (Knights+Bishops).
+    pub minor_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
+
     pub material_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
     pub lastmove_corrhist: Box<[i32; LASTMOVE_CORRHIST_SIZE]>,
 
@@ -814,6 +819,12 @@ impl Searcher {
                 )
             },
             nonpawn_corrhist: unsafe {
+                Box::from_raw(
+                    Box::into_raw(vec![0i32; 2 * CORRHIST_SIZE].into_boxed_slice())
+                        as *mut [[i32; CORRHIST_SIZE]; 2],
+                )
+            },
+            minor_corrhist: unsafe {
                 Box::from_raw(
                     Box::into_raw(vec![0i32; 2 * CORRHIST_SIZE].into_boxed_slice())
                         as *mut [[i32; CORRHIST_SIZE]; 2],
@@ -1018,6 +1029,9 @@ impl Searcher {
         for row in self.nonpawn_corrhist.iter_mut() {
             row.fill(0);
         }
+        for row in self.minor_corrhist.iter_mut() {
+            row.fill(0);
+        }
         for row in self.material_corrhist.iter_mut() {
             row.fill(0);
         }
@@ -1145,6 +1159,24 @@ impl Searcher {
     /// Apply correction history to raw static evaluation.
     /// Uses variant-specific mode set at search start for zero overhead.
     #[inline]
+    fn get_minor_index(&self, game: &GameState) -> usize {
+        let king_pos = if game.turn == PlayerColor::White {
+            game.white_king_pos
+        } else {
+            game.black_king_pos
+        };
+
+        let mut h = game.minor_hash;
+        if let Some(kp) = king_pos {
+            // Incorporate king position to provide positional context for minor pieces.
+            h ^= (kp.x as u64).wrapping_mul(0x517cc1b727220a95);
+            h ^= (kp.y as u64).wrapping_mul(0x9136a9a9f9065e33);
+        }
+
+        (h & CORRHIST_MASK) as usize
+    }
+
+    #[inline]
     pub fn adjusted_eval(
         &self,
         game: &GameState,
@@ -1156,20 +1188,26 @@ impl Searcher {
 
         let total_correction = match self.corrhist_mode {
             CorrHistMode::PawnBased => {
-                // Pawn + Material (for CoaIP/Classical/Chess)
+                // Pawn + Material + Minor (with King context)
                 let pawn_idx = (game.pawn_hash & CORRHIST_MASK) as usize;
                 let pawn_corr = self.pawn_corrhist[color_idx][pawn_idx];
 
                 let mat_idx = (game.material_hash & CORRHIST_MASK) as usize;
                 let mat_corr = self.material_corrhist[color_idx][mat_idx];
 
-                // 60% pawn, 40% material - divide by (GRAIN * 100) for proper percentage scaling
-                (pawn_corr * 60 + mat_corr * 40) / (CORRHIST_GRAIN * 100)
+                let minor_idx = self.get_minor_index(game);
+                let minor_corr = self.minor_corrhist[color_idx][minor_idx];
+
+                // 45% pawn, 25% material, 30% minor (sum=100)
+                (pawn_corr * 45 + mat_corr * 25 + minor_corr * 30) / (CORRHIST_GRAIN * 100)
             }
             CorrHistMode::NonPawnBased => {
-                // Non-pawn + Material + Last-move (for other variants)
+                // Non-pawn + Minor (with King context) + Material + Last-move + Continuation
                 let nonpawn_idx = (game.nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_corr = self.nonpawn_corrhist[color_idx][nonpawn_idx];
+
+                let minor_idx = self.get_minor_index(game);
+                let minor_corr = self.minor_corrhist[color_idx][minor_idx];
 
                 let mat_idx = (game.material_hash & CORRHIST_MASK) as usize;
                 let mat_corr = self.material_corrhist[color_idx][mat_idx];
@@ -1200,8 +1238,12 @@ impl Searcher {
                     }
                 }
 
-                // 40% non-pawn, 25% material, 15% last-move, 20% continuation
-                (nonpawn_corr * 40 + mat_corr * 25 + lastmove_corr * 15 + cont_corr * 20)
+                // Weights: NonPawn 35%, Minor 20%, Mat 15%, LastMove 15%, Cont 15% (sum=100)
+                (nonpawn_corr * 35
+                    + minor_corr * 20
+                    + mat_corr * 15
+                    + lastmove_corr * 15
+                    + cont_corr * 15)
                     / (CORRHIST_GRAIN * 100)
             }
         };
@@ -1236,7 +1278,7 @@ impl Searcher {
 
         match self.corrhist_mode {
             CorrHistMode::PawnBased => {
-                // Update pawn + material only
+                // Update pawn + material + minor
                 let pawn_idx = (game.pawn_hash & CORRHIST_MASK) as usize;
                 let pawn_entry = &mut self.pawn_corrhist[color_idx][pawn_idx];
                 *pawn_entry = (*pawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
@@ -1249,9 +1291,16 @@ impl Searcher {
                 *mat_entry = (*mat_entry * (CORRHIST_WEIGHT_SCALE - weight) + scaled_diff * weight)
                     / CORRHIST_WEIGHT_SCALE;
                 *mat_entry = (*mat_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+
+                let minor_idx = self.get_minor_index(game);
+                let minor_entry = &mut self.minor_corrhist[color_idx][minor_idx];
+                *minor_entry = (*minor_entry * (CORRHIST_WEIGHT_SCALE - weight)
+                    + scaled_diff * weight)
+                    / CORRHIST_WEIGHT_SCALE;
+                *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
             }
             CorrHistMode::NonPawnBased => {
-                // Update non-pawn + material + last-move + continuation
+                // Update non-pawn + material + last-move + continuation + minor
                 let nonpawn_idx = (game.nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_entry = &mut self.nonpawn_corrhist[color_idx][nonpawn_idx];
                 *nonpawn_entry = (*nonpawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
@@ -1264,6 +1313,13 @@ impl Searcher {
                 *mat_entry = (*mat_entry * (CORRHIST_WEIGHT_SCALE - weight) + scaled_diff * weight)
                     / CORRHIST_WEIGHT_SCALE;
                 *mat_entry = (*mat_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+
+                let minor_idx = self.get_minor_index(game);
+                let minor_entry = &mut self.minor_corrhist[color_idx][minor_idx];
+                *minor_entry = (*minor_entry * (CORRHIST_WEIGHT_SCALE - weight)
+                    + scaled_diff * weight)
+                    / CORRHIST_WEIGHT_SCALE;
+                *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
                 let lm_weight = weight.min(64);
@@ -1285,9 +1341,9 @@ impl Searcher {
                         {
                             let prev_pc = self.moved_piece_history[ply - plies_ago - 1] as usize;
                             if prev_pc < 32 {
-                                let prev_to = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
                                 let entry =
-                                    &mut self.cont_corrhist[prev_pc][prev_to][cur_pc][cur_to];
+                                    &mut self.cont_corrhist[prev_pc][prev_to_hash][cur_pc][cur_to];
 
                                 let w = if plies_ago == 1 {
                                     cont_weight

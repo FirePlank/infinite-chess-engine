@@ -575,6 +575,7 @@ impl Engine {
             discovered_check_squares_black: FxHashSet::default(),
             pawn_hash: 0,
             nonpawn_hash: 0,
+            minor_hash: 0,
             material_hash: 0,
             repetition: 0,
             white_non_pawn_material: false,
