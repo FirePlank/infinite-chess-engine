@@ -1245,8 +1245,6 @@ impl GameState {
     /// Repetition detection for search.
     /// Returns true if the current position should be treated as a draw due to repetition.
     ///
-    /// Logic for draw detection: `repetition != 0 && repetition < ply`
-    ///
     /// For twofold (repetition > 0): Only a draw if the repetition distance is less than ply,
     /// meaning the first occurrence is within the search tree.
     ///
@@ -1258,15 +1256,12 @@ impl GameState {
         if self.null_moves > 0 {
             return false;
         }
+        
         // Result is true if a repetition occurred within the current search tree.
-        // This works for both positive (twofold) and negative (threefold) values.
-        // Negative values are always < positive ply, so threefold always returns true for ply > 0.
         self.repetition != 0 && self.repetition < (ply as i32)
     }
 
     /// Check if we have an upcoming move that draws by repetition.
-    /// Checks if a single reversible move would lead to a repeated position.
-    /// Used for pruning and early draw detection.
     #[inline]
     pub fn upcoming_repetition(&self, ply: usize) -> bool {
         use crate::search::zobrist::{SIDE_KEY, piece_key};
@@ -1308,13 +1303,9 @@ impl GameState {
             let target_hash = self.hash_stack[hash_idx];
 
             // Compute what single move would transform current position to target position
-            // move_key = current_hash XOR target_hash XOR SIDE_KEY (since opposite side to move)
             let move_key = current_hash ^ target_hash ^ SIDE_KEY;
 
             // Check if any of our pieces can make a move that produces this hash difference.
-            // For a piece at (from_x, from_y) moving to (to_x, to_y):
-            // hash_diff = piece_key(type, color, from) XOR piece_key(type, color, to)
-            //
             // The most common case: the piece that moved i plies ago can move back.
             // Check our move from (i-1)/2 moves ago (rounded).
             if hist_idx < history_len {
@@ -1341,8 +1332,6 @@ impl GameState {
                             }
 
                             // For root nodes, check if target position was already repeated
-                            // This requires checking if hash_stack[hash_idx] had repetition
-                            // For simplicity, just check the most recent few positions
                             for j in (0..hash_idx).rev().step_by(2).take(4) {
                                 if self.hash_stack[j] == target_hash {
                                     return true;

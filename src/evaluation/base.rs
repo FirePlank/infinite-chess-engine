@@ -255,9 +255,6 @@ const AMAZON_QUEEN_SCALE: i32 = 70; // 70% of queen eval
 const CENTAUR_KNIGHT_SCALE: i32 = 80; // 80% of knight eval
 const CENTAUR_GUARD_SCALE: i32 = 50; // 50% of guard/leaper eval
 
-// Knightrider specific
-const KNIGHTRIDER_RAY_BONUS: i32 = 3; // Per square of knight-ray mobility
-
 // ==================== Pawn Distance Scaling ====================
 
 // Pawns far from promotion are worth much less in infinite chess
@@ -1043,6 +1040,7 @@ struct PieceMetrics {
     cloud_center: Option<Coordinate>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_pieces_processed<T: EvaluationTracer>(
     game: &GameState,
     white_king: &Option<Coordinate>,
@@ -1844,40 +1842,9 @@ fn evaluate_knightrider(
     color: PlayerColor,
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
-    board: &Board,
+    _board: &Board,
 ) -> i32 {
     let mut bonus: i32 = 0;
-
-    // Knight offsets for all 8 directions
-    const KNIGHT_DIRS: [(i64, i64); 8] = [
-        (1, 2),
-        (2, 1),
-        (2, -1),
-        (1, -2),
-        (-1, -2),
-        (-2, -1),
-        (-2, 1),
-        (-1, 2),
-    ];
-
-    // Count how far the knightrider can travel in each direction
-    let mut total_reach = 0;
-    for (dx, dy) in KNIGHT_DIRS {
-        let mut nx = x + dx;
-        let mut ny = y + dy;
-        let mut steps = 0;
-        // Count empty squares along the knight-ray (max 5 steps for efficiency)
-        while steps < 5 {
-            if board.get_piece(nx, ny).is_some() {
-                break;
-            }
-            steps += 1;
-            nx += dx;
-            ny += dy;
-        }
-        total_reach += steps;
-    }
-    bonus += total_reach * KNIGHTRIDER_RAY_BONUS;
 
     // Tropism to enemy king
     let enemy_king = if color == PlayerColor::White {
