@@ -536,6 +536,35 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut w_has_queen_threat = false;
     let mut b_has_queen_threat = false;
 
+    // Interaction threat totals
+    let mut w_pawn_threats = 0;
+    let mut b_pawn_threats = 0;
+    let mut w_minor_threats = 0;
+    let mut b_minor_threats = 0;
+
+    // Readiness counts (Unified Loop)
+    let mut w_sliders_in_zone = 0;
+    let mut b_sliders_in_zone = 0;
+    const ATTACK_ZONE_RADIUS: i64 = 10;
+
+    // Interaction threat constants
+    const PAWN_THREATENS_MINOR: i32 = 25;
+    const PAWN_THREATENS_ROOK: i32 = 40;
+    const PAWN_THREATENS_QUEEN: i32 = 60;
+    const MINOR_THREATENS_ROOK: i32 = 20;
+    const MINOR_THREATENS_QUEEN: i32 = 35;
+
+    const KNIGHT_OFFSETS: [(i64, i64); 8] = [
+        (2, 1),
+        (2, -1),
+        (-2, 1),
+        (-2, -1),
+        (1, 2),
+        (1, -2),
+        (-1, 2),
+        (-1, -2),
+    ];
+
     // Pawn advancement metrics
     let mut white_max_y = i64::MIN;
     let mut black_min_y = i64::MAX;
@@ -574,13 +603,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                 let y = cy * 8 + (idx / 8) as i64;
 
                 // 1. Phase
-                let p_phase = get_piece_phase(pt);
-                phase += p_phase;
+                phase += get_piece_phase(pt);
 
                 // 2. Piece Collection
                 piece_list.push((x, y, piece));
 
-                // 3. Piece counts for scaling
+                // 3. Piece counts for scaling (Non-pawn, non-royal)
                 if pt != PieceType::Pawn && !pt.is_royal() {
                     if is_white {
                         white_non_pawn_non_royal += 1;
@@ -589,31 +617,135 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                     }
                 }
 
-                // 4. Cloud Stats
-                let cw = get_centrality_weight(pt);
-                if cw > 0 && pt != PieceType::Pawn {
-                    let rx = match (white_king, black_king) {
-                        (Some(wk), Some(bk)) => (wk.x + bk.x) / 2,
-                        (Some(wk), None) => wk.x,
-                        (None, Some(bk)) => bk.x,
-                        (None, None) => 0,
-                    };
-                    let ry = match (white_king, black_king) {
-                        (Some(wk), Some(bk)) => (wk.y + bk.y) / 2,
-                        (Some(wk), None) => wk.y,
-                        (None, Some(bk)) => bk.y,
-                        (None, None) => 0,
-                    };
-                    let dx = x - rx;
-                    let dy = y - ry;
-                    let cdx = dx.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
-                    let cdy = dy.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
-                    cloud_sum_x += cw * (rx + cdx);
-                    cloud_sum_y += cw * (ry + cdy);
-                    cloud_count += cw;
+                // 4. Cloud Stats (Non-pawn)
+                if pt != PieceType::Pawn {
+                    let cw = get_centrality_weight(pt);
+                    if cw > 0 {
+                        let rx = match (white_king, black_king) {
+                            (Some(wk), Some(bk)) => (wk.x + bk.x) / 2,
+                            (Some(wk), None) => wk.x,
+                            (None, Some(bk)) => bk.x,
+                            (None, None) => 0,
+                        };
+                        let ry = match (white_king, black_king) {
+                            (Some(wk), Some(bk)) => (wk.y + bk.y) / 2,
+                            (Some(wk), None) => wk.y,
+                            (None, Some(bk)) => bk.y,
+                            (None, None) => 0,
+                        };
+                        let dx = x - rx;
+                        let dy = y - ry;
+                        let cdx = dx.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
+                        let cdy = dy.clamp(-CLOUD_CENTER_MAX_SKEW_DIST, CLOUD_CENTER_MAX_SKEW_DIST);
+                        cloud_sum_x += cw * (rx + cdx);
+                        cloud_sum_y += cw * (ry + cdy);
+                        cloud_count += cw;
+                    }
                 }
 
-                // 5. Minor stats
+                // 5. Readiness sliders in zone
+                let is_diag_slider_type = matches!(
+                    pt,
+                    PieceType::Bishop
+                        | PieceType::Queen
+                        | PieceType::Archbishop
+                        | PieceType::Amazon
+                        | PieceType::RoyalQueen
+                );
+                let is_ortho_slider_type = matches!(
+                    pt,
+                    PieceType::Rook
+                        | PieceType::Queen
+                        | PieceType::Chancellor
+                        | PieceType::Amazon
+                        | PieceType::RoyalQueen
+                );
+                let is_slider =
+                    is_diag_slider_type || is_ortho_slider_type || pt == PieceType::Knightrider;
+
+                if is_slider {
+                    if is_white {
+                        if let Some(bk) = black_king
+                            && (x - bk.x).abs() <= ATTACK_ZONE_RADIUS
+                            && (y - bk.y).abs() <= ATTACK_ZONE_RADIUS
+                        {
+                            w_sliders_in_zone += 1;
+                        }
+                    } else if let Some(wk) = white_king
+                        && (x - wk.x).abs() <= ATTACK_ZONE_RADIUS
+                        && (y - wk.y).abs() <= ATTACK_ZONE_RADIUS
+                    {
+                        b_sliders_in_zone += 1;
+                    }
+                }
+
+                // 6. Interaction Threats
+                if pt == PieceType::Pawn {
+                    let enemy = if is_white {
+                        PlayerColor::Black
+                    } else {
+                        PlayerColor::White
+                    };
+                    let dy = if is_white { 1 } else { -1 };
+                    for dx in [-1i64, 1] {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
+                            && target.color() == enemy
+                        {
+                            let tv = get_piece_value(target.piece_type());
+                            if tv >= 600 {
+                                if is_white {
+                                    w_pawn_threats += PAWN_THREATENS_QUEEN;
+                                } else {
+                                    b_pawn_threats += PAWN_THREATENS_QUEEN;
+                                }
+                            } else if tv >= 400 {
+                                if is_white {
+                                    w_pawn_threats += PAWN_THREATENS_ROOK;
+                                } else {
+                                    b_pawn_threats += PAWN_THREATENS_ROOK;
+                                }
+                            } else if tv >= 200 {
+                                if is_white {
+                                    w_pawn_threats += PAWN_THREATENS_MINOR;
+                                } else {
+                                    b_pawn_threats += PAWN_THREATENS_MINOR;
+                                }
+                            }
+                        }
+                    }
+                } else if pt == PieceType::Knight
+                    || pt == PieceType::Centaur
+                    || pt == PieceType::RoyalCentaur
+                {
+                    let enemy = if is_white {
+                        PlayerColor::Black
+                    } else {
+                        PlayerColor::White
+                    };
+                    for &(dx, dy) in &KNIGHT_OFFSETS {
+                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
+                            && target.color() == enemy
+                        {
+                            let tv = get_piece_value(target.piece_type());
+                            let mv = get_piece_value(pt);
+                            if tv >= 600 && mv < 600 {
+                                if is_white {
+                                    w_minor_threats += MINOR_THREATENS_QUEEN;
+                                } else {
+                                    b_minor_threats += MINOR_THREATENS_QUEEN;
+                                }
+                            } else if tv >= 400 && mv < 400 {
+                                if is_white {
+                                    w_minor_threats += MINOR_THREATENS_ROOK;
+                                } else {
+                                    b_minor_threats += MINOR_THREATENS_ROOK;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 8. Minor stats
                 if (pt == PieceType::Knight || pt == PieceType::Bishop)
                     && game.starting_squares.contains(&Coordinate::new(x, y))
                 {
@@ -841,6 +973,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         let w_urgency = calc_urgency(black_threat_points, b_has_queen_threat);
         let b_urgency = calc_urgency(w_threat_points, w_has_queen_threat);
 
+        // Attack scale calculation (Finalized from Readiness loop counts)
+        let w_attack_ready =
+            compute_attack_readiness_optimized(game, black_king.as_ref(), w_sliders_in_zone);
+        let b_attack_ready =
+            compute_attack_readiness_optimized(game, white_king.as_ref(), b_sliders_in_zone);
+
         if !mop_up_applied {
             score += evaluate_pieces_processed(
                 game,
@@ -858,6 +996,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                     black_bishop_colors,
                     cloud_center,
                 },
+                w_attack_ready,
+                b_attack_ready,
             );
 
             // King Safety
@@ -877,7 +1017,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
             );
 
             score += evaluate_pawn_structure_traced(game, final_phase, tracer, &piece_list);
-            score += evaluate_threat_traced(game, tracer);
+
+            // Interaction Threats (Result from merged loop)
+            tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
+            tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
+            score += (w_pawn_threats + w_minor_threats) - (b_pawn_threats + b_minor_threats);
         }
     });
 
@@ -907,6 +1051,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     tracer: &mut T,
     piece_list: &[(i64, i64, crate::board::Piece)],
     metrics: PieceMetrics,
+    white_attack_ready: i32,
+    black_attack_ready: i32,
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -915,21 +1061,15 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 
     let cloud_center = metrics.cloud_center;
 
-    // Pre-calculate attack readiness using piece list
-    let white_attack_scale =
-        calculate_attack_readiness_from_list(game, black_king, piece_list, PlayerColor::White);
-    let black_attack_scale =
-        calculate_attack_readiness_from_list(game, white_king, piece_list, PlayerColor::Black);
-
-    let white_attack_scale = if metrics.white_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
-        white_attack_scale.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
+    let white_attack_ready = if metrics.white_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
+        white_attack_ready.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
     } else {
-        white_attack_scale
+        white_attack_ready
     };
-    let black_attack_scale = if metrics.black_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
-        black_attack_scale.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
+    let black_attack_ready = if metrics.black_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
+        black_attack_ready.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
     } else {
-        black_attack_scale
+        black_attack_ready
     };
 
     for &(x, y, piece) in piece_list {
@@ -1161,12 +1301,12 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 | PieceType::Amazon
         );
         if is_attacking_piece && piece_score > 0 {
-            let attack_scale = if piece.color() == PlayerColor::White {
-                white_attack_scale
+            let scale = if piece.color() == PlayerColor::White {
+                white_attack_ready
             } else {
-                black_attack_scale
+                black_attack_ready
             };
-            piece_score = piece_score * attack_scale / 100;
+            piece_score = piece_score * scale / 100;
         }
 
         if piece.color() == PlayerColor::White {
@@ -1200,15 +1340,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     (w_activity + w_pair_bonus) - (b_activity + b_pair_bonus)
 }
 
-fn calculate_attack_readiness_from_list(
+fn compute_attack_readiness_optimized(
     game: &GameState,
-    enemy_king: &Option<Coordinate>,
-    piece_list: &[(i64, i64, crate::board::Piece)],
-    attacker: PlayerColor,
+    enemy_king: Option<&Coordinate>,
+    sliders_in_zone: i32,
 ) -> i32 {
     let Some(ek) = enemy_king else { return 50 };
 
-    // 1. Count open rays around enemy king
+    // 1. Count open rays around enemy king (O(K))
     let mut open_diag_rays = 0;
     let mut open_ortho_rays = 0;
     const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -1217,11 +1356,7 @@ fn calculate_attack_readiness_from_list(
     for &(dx, dy) in &DIAG_DIRS {
         let mut is_open = true;
         for step in 1..=6 {
-            if game
-                .board
-                .get_piece(ek.x + dx * step, ek.y + dy * step)
-                .is_some()
-            {
+            if game.board.is_occupied(ek.x + dx * step, ek.y + dy * step) {
                 is_open = false;
                 break;
             }
@@ -1233,11 +1368,7 @@ fn calculate_attack_readiness_from_list(
     for &(dx, dy) in &ORTHO_DIRS {
         let mut is_open = true;
         for step in 1..=6 {
-            if game
-                .board
-                .get_piece(ek.x + dx * step, ek.y + dy * step)
-                .is_some()
-            {
+            if game.board.is_occupied(ek.x + dx * step, ek.y + dy * step) {
                 is_open = false;
                 break;
             }
@@ -1251,65 +1382,8 @@ fn calculate_attack_readiness_from_list(
         return 40;
     }
 
-    // 2. Scan Piece List for sliders in zone
-    let mut sliders_in_zone = 0;
-    let mut sliders_on_open_ray = 0;
-    const ATTACK_ZONE_RADIUS: i64 = 10;
-
-    for &(x, y, piece) in piece_list {
-        if piece.color() != attacker {
-            continue;
-        }
-        let pt = piece.piece_type();
-
-        // Is slider?
-        let is_diag_slider = matches!(
-            pt,
-            PieceType::Bishop
-                | PieceType::Queen
-                | PieceType::Archbishop
-                | PieceType::Amazon
-                | PieceType::RoyalQueen
-        );
-        let is_ortho_slider = matches!(
-            pt,
-            PieceType::Rook
-                | PieceType::Queen
-                | PieceType::Chancellor
-                | PieceType::Amazon
-                | PieceType::RoyalQueen
-        );
-
-        if !is_diag_slider && !is_ortho_slider {
-            continue;
-        }
-
-        let dx = (x - ek.x).abs();
-        let dy = (y - ek.y).abs();
-        let cheb = dx.max(dy);
-
-        if cheb <= ATTACK_ZONE_RADIUS {
-            sliders_in_zone += 1;
-
-            // Check if on ray align
-            let on_file = x == ek.x;
-            let on_rank = y == ek.y;
-            let on_diag1 = (x - ek.x) == (y - ek.y);
-            let on_diag2 = (x - ek.x) == -(y - ek.y);
-
-            if (is_ortho_slider && (on_file || on_rank))
-                || (is_diag_slider && (on_diag1 || on_diag2))
-            {
-                sliders_on_open_ray += 1;
-            }
-        }
-    }
-
-    if sliders_in_zone >= 3 && sliders_on_open_ray >= 1 {
-        130
-    } else if sliders_in_zone >= 2 && sliders_on_open_ray >= 1 {
-        115
-    } else if sliders_in_zone >= 2 {
+    // Scoring logic (Simplified from calculate_attack_readiness_from_list)
+    if sliders_in_zone >= 2 {
         100
     } else if sliders_in_zone == 1 && total_open_rays >= 5 {
         85
@@ -2209,132 +2283,6 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     tracer.record("Pawn: Connected", w_connected, b_connected);
 
     (w_doubled + w_passed + w_connected) - (b_doubled + b_passed + b_connected)
-}
-
-// ==================== Threat Evaluation ====================
-
-/// Evaluate threats: bonus for attacking higher-value pieces with lower-value pieces.
-/// Efficient on infinite boards - only checks direct attack squares for leapers (pawns, knights).
-pub fn evaluate_threats(game: &GameState) -> i32 {
-    evaluate_threat_traced(game, &mut NoTrace)
-}
-
-pub fn evaluate_threat_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
-    let mut w_pawn_threats = 0;
-    let mut b_pawn_threats = 0;
-    let mut w_minor_threats = 0;
-    let mut b_minor_threats = 0;
-
-    // Threat bonus constants (centipawns)
-    const PAWN_THREATENS_MINOR: i32 = 25;
-    const PAWN_THREATENS_ROOK: i32 = 40;
-    const PAWN_THREATENS_QUEEN: i32 = 60;
-    const MINOR_THREATENS_ROOK: i32 = 20;
-    const MINOR_THREATENS_QUEEN: i32 = 35;
-
-    const KNIGHT_OFFSETS: [(i64, i64); 8] = [
-        (2, 1),
-        (2, -1),
-        (-2, 1),
-        (-2, -1),
-        (1, 2),
-        (1, -2),
-        (-1, 2),
-        (-1, -2),
-    ];
-
-    for (cx, cy, tile) in game.board.tiles.iter() {
-        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
-            continue;
-        }
-
-        let mut bits = tile.occ_all;
-        while bits != 0 {
-            let idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-
-            let packed = tile.piece[idx];
-            if packed == 0 {
-                continue;
-            }
-            let piece = crate::board::Piece::from_packed(packed);
-            let pt = piece.piece_type();
-            let color = piece.color();
-            if color == PlayerColor::Neutral {
-                continue;
-            }
-
-            let x = cx * 8 + (idx % 8) as i64;
-            let y = cy * 8 + (idx / 8) as i64;
-
-            let enemy = if color == PlayerColor::White {
-                PlayerColor::Black
-            } else {
-                PlayerColor::White
-            };
-
-            match pt {
-                PieceType::Pawn => {
-                    let dy = if color == PlayerColor::White { 1 } else { -1 };
-                    for dx in [-1i64, 1] {
-                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
-                            && target.color() == enemy
-                        {
-                            let tv = get_piece_value(target.piece_type());
-                            if tv >= 600 {
-                                if color == PlayerColor::White {
-                                    w_pawn_threats += PAWN_THREATENS_QUEEN;
-                                } else {
-                                    b_pawn_threats += PAWN_THREATENS_QUEEN;
-                                }
-                            } else if tv >= 400 {
-                                if color == PlayerColor::White {
-                                    w_pawn_threats += PAWN_THREATENS_ROOK;
-                                } else {
-                                    b_pawn_threats += PAWN_THREATENS_ROOK;
-                                }
-                            } else if tv >= 200 {
-                                if color == PlayerColor::White {
-                                    w_pawn_threats += PAWN_THREATENS_MINOR;
-                                } else {
-                                    b_pawn_threats += PAWN_THREATENS_MINOR;
-                                }
-                            }
-                        }
-                    }
-                }
-                PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => {
-                    for &(dx, dy) in &KNIGHT_OFFSETS {
-                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
-                            && target.color() == enemy
-                        {
-                            let tv = get_piece_value(target.piece_type());
-                            let mv = get_piece_value(pt);
-                            if tv >= 600 && mv < 600 {
-                                if color == PlayerColor::White {
-                                    w_minor_threats += MINOR_THREATENS_QUEEN;
-                                } else {
-                                    b_minor_threats += MINOR_THREATENS_QUEEN;
-                                }
-                            } else if tv >= 400 && mv < 400 {
-                                if color == PlayerColor::White {
-                                    w_minor_threats += MINOR_THREATENS_ROOK;
-                                } else {
-                                    b_minor_threats += MINOR_THREATENS_ROOK;
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
-    tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
-
-    (w_pawn_threats + w_minor_threats) - (b_pawn_threats + b_minor_threats)
 }
 
 pub fn count_pawns_on_file(game: &GameState, file: i64, color: PlayerColor) -> (i32, i32) {
