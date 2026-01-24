@@ -4,7 +4,7 @@ use crate::Variant;
 use crate::evaluation::calculate_initial_material;
 
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
-use crate::evaluation::get_piece_value;
+use crate::evaluation::{get_piece_phase, get_piece_value};
 use crate::moves::{
     Move, MoveList, SpatialIndices, get_legal_moves, get_legal_moves_into,
     get_pseudo_legal_moves_for_piece_into, is_square_attacked,
@@ -160,6 +160,7 @@ pub struct UndoMove {
     /// Incremental castling state for O(1) restoration
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
+    pub old_total_phase: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +261,9 @@ pub struct GameState {
     /// Material configuration hash for correction history.
     #[serde(skip)]
     pub material_hash: u64,
+    /// Incremental game phase tracking.
+    #[serde(skip)]
+    pub total_phase: i32,
     /// Minor piece position hash for correction history (Knights and Bishops).
     #[serde(skip)]
     pub minor_hash: u64,
@@ -389,6 +393,7 @@ impl GameState {
             checkers_count_black: 0,
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
+            total_phase: 0,
         }
     }
 
@@ -445,6 +450,7 @@ impl GameState {
             checkers_count_black: 0,
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
+            total_phase: 0,
         }
     }
 
@@ -454,6 +460,7 @@ impl GameState {
         let mut black: u16 = 0;
         let mut white_pawns: u16 = 0;
         let mut black_pawns: u16 = 0;
+        self.total_phase = 0;
         let mut white_npm = false;
         let mut black_npm = false;
         self.white_pieces.clear();
@@ -475,6 +482,7 @@ impl GameState {
                         self.black_king_pos = Some(Coordinate::new(*x, *y));
                     }
                 }
+                self.total_phase += get_piece_phase(piece.piece_type());
                 match piece.color() {
                     PlayerColor::White => {
                         white = white.saturating_add(1);
@@ -509,6 +517,7 @@ impl GameState {
                         self.black_king_pos = Some(Coordinate::new(*x, *y));
                     }
                 }
+                self.total_phase += get_piece_phase(piece.piece_type());
                 match piece.color() {
                     PlayerColor::White => {
                         white = white.saturating_add(1);
@@ -1256,7 +1265,7 @@ impl GameState {
         if self.null_moves > 0 {
             return false;
         }
-        
+
         // Result is true if a repetition occurred within the current search tree.
         self.repetition != 0 && self.repetition < (ply as i32)
     }
@@ -2841,6 +2850,7 @@ impl GameState {
             ep_captured_piece: None,
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
+            old_total_phase: self.total_phase,
         };
 
         // Track king position updates for undo
@@ -2899,6 +2909,7 @@ impl GameState {
 
             // Only update material/piece counts for non-neutral pieces
             if captured.color() != PlayerColor::Neutral {
+                self.total_phase -= get_piece_phase(captured.piece_type());
                 // Update material hash (subtractive)
                 self.material_hash = self
                     .material_hash
@@ -2947,9 +2958,10 @@ impl GameState {
                 ep.pawn_square.x,
                 ep.pawn_square.y,
             );
-            // Update spatial indices for EP captured pawn
             self.spatial_indices
                 .remove(ep.pawn_square.x, ep.pawn_square.y);
+
+            self.total_phase -= get_piece_phase(captured_pawn.piece_type());
 
             // Update material hash (subtractive) for EP capture
             self.material_hash = self.material_hash.wrapping_sub(material_key(
@@ -2992,6 +3004,8 @@ impl GameState {
                 self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
                 self.black_non_pawn_material = true;
             }
+
+            self.total_phase += get_piece_phase(promo_type);
         }
 
         // Hash: remove old en passant
@@ -3284,6 +3298,7 @@ impl GameState {
                 self.material_score -= pawn_val;
                 self.black_pawn_count = self.black_pawn_count.saturating_add(1);
             }
+            self.total_phase = undo.old_total_phase;
             piece = Piece::new(PieceType::Pawn, piece.color());
         }
 
@@ -3401,6 +3416,7 @@ impl GameState {
         }
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
+        self.total_phase = undo.old_total_phase;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;

@@ -588,6 +588,7 @@ impl Engine {
             checkers_count_black: 0,
             move_history: Vec::with_capacity(js_game.move_history.len().saturating_add(8)),
             plies_from_null: 0,
+            total_phase: 0,
         };
 
         game.material_score = calculate_initial_material(&game.board);

@@ -14,7 +14,7 @@ pub mod variants;
 use crate::Variant;
 use crate::game::GameState;
 
-pub use base::{calculate_initial_material, get_piece_value};
+pub use base::{calculate_initial_material, get_piece_phase, get_piece_value};
 
 #[cfg(feature = "eval_tuning")]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};

@@ -38,61 +38,140 @@ pub fn evaluate(game: &GameState) -> i32 {
 /// Core evaluation logic - skips insufficient material check
 #[inline]
 fn evaluate_inner(game: &GameState) -> i32 {
-    // Start with material score
     let mut score = game.material_score;
-
-    // Use cached king positions (O(1) instead of O(n) board scan)
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
-    // Try scaled mop-up evaluation based on material imbalance
-    let mut mop_up_applied = false;
+    base::EVAL_WHITE_PAWNS.with(|wp_cell| {
+        base::EVAL_BLACK_PAWNS.with(|bp_cell| {
+            base::EVAL_PIECE_LIST.with(|pl_cell| {
+                base::EVAL_WHITE_RQ.with(|wrq_cell| {
+                    base::EVAL_BLACK_RQ.with(|brq_cell| {
+                        let mut white_pawns = wp_cell.borrow_mut();
+                        let mut black_pawns = bp_cell.borrow_mut();
+                        let mut heavy_pieces = pl_cell.borrow_mut();
+                        let mut white_rq = wrq_cell.borrow_mut();
+                        let mut black_rq = brq_cell.borrow_mut();
 
-    // Check if black is losing
-    if let (Some(_scale), Some(bk)) = (
-        crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::Black),
-        &black_king,
-    ) {
-        score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
-            game,
-            white_king.as_ref(),
-            bk,
-            PlayerColor::White,
-            PlayerColor::Black,
-        );
-        mop_up_applied = true;
-    }
+                        white_pawns.clear();
+                        black_pawns.clear();
+                        heavy_pieces.clear();
+                        white_rq.clear();
+                        black_rq.clear();
 
-    // Check if white is losing
-    if !mop_up_applied
-        && let (Some(_scale), Some(wk)) = (
-            crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White),
-            &white_king,
-        )
-    {
-        score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
-            game,
-            black_king.as_ref(),
-            wk,
-            PlayerColor::Black,
-            PlayerColor::White,
-        );
-        mop_up_applied = true;
-    }
+                        let mut white_back_obstacles = 0;
+                        let mut black_back_obstacles = 0;
 
-    // If mop-up wasn't applied, use normal Confined Classical evaluation
-    if !mop_up_applied {
-        // Custom piece evaluation for Confined Classical
-        score += evaluate_pieces_confined(game, &white_king, &black_king);
+                        // 1. Single efficient loop over the board
+                        for ((x, y), piece) in game.board.iter() {
+                            let pt = piece.piece_type();
+                            if pt == PieceType::Pawn {
+                                if piece.color() == PlayerColor::White {
+                                    white_pawns.push((*x, *y));
+                                } else if piece.color() == PlayerColor::Black {
+                                    black_pawns.push((*x, *y));
+                                }
+                            } else if pt == PieceType::Obstacle {
+                                if *y == 0 {
+                                    white_back_obstacles += 1;
+                                } else if *y == 9 {
+                                    black_back_obstacles += 1;
+                                }
+                            } else if piece.color() != PlayerColor::Neutral {
+                                heavy_pieces.push((*x, *y, *piece));
+                                // Track RQ for pawn structure evaluation
+                                match pt {
+                                    PieceType::Rook
+                                    | PieceType::Queen
+                                    | PieceType::Amazon
+                                    | PieceType::Chancellor
+                                    | PieceType::RoyalQueen => {
+                                        if piece.color() == PlayerColor::White {
+                                            white_rq.push((*x, *y));
+                                        } else {
+                                            black_rq.push((*x, *y));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
 
-        // Custom king safety - prefer center
-        score += evaluate_king_position_confined(&white_king, &black_king);
+                        // Sorting for O(log N) lookup in count_pawns_on_file
+                        white_pawns.sort_unstable();
+                        black_pawns.sort_unstable();
 
-        // Development and structure
-        score += evaluate_development_confined(game);
-        score += base::evaluate_pawn_structure(game);
-    }
+                        // 2. Mop-up
+                        let mut mop_up_applied = false;
+                        if let (Some(_scale), Some(bk)) = (
+                            crate::evaluation::mop_up::calculate_mop_up_scale(
+                                game,
+                                PlayerColor::Black,
+                            ),
+                            &black_king,
+                        ) {
+                            score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                                game,
+                                white_king.as_ref(),
+                                bk,
+                                PlayerColor::White,
+                                PlayerColor::Black,
+                            );
+                            mop_up_applied = true;
+                        }
 
-    // Return from current player's perspective
+                        if !mop_up_applied
+                            && let (Some(_scale), Some(wk)) = (
+                                crate::evaluation::mop_up::calculate_mop_up_scale(
+                                    game,
+                                    PlayerColor::White,
+                                ),
+                                &white_king,
+                            )
+                        {
+                            score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+                                game,
+                                black_king.as_ref(),
+                                wk,
+                                PlayerColor::Black,
+                                PlayerColor::White,
+                            );
+                            mop_up_applied = true;
+                        }
+
+                        // 3. Positional Logic (Deferred)
+                        if !mop_up_applied {
+                            score += evaluate_pieces_confined_optimized(
+                                game,
+                                &white_king,
+                                &black_king,
+                                &white_pawns,
+                                &black_pawns,
+                                &heavy_pieces,
+                            );
+
+                            score += evaluate_king_position_confined(&white_king, &black_king);
+                            score +=
+                                (white_back_obstacles - black_back_obstacles) * BACK_OBSTACLE_VALUE;
+
+                            // Safe Pawn Structure evaluation
+                            score += base::evaluate_pawn_structure_traced(
+                                game,
+                                game.total_phase.min(base::MAX_PHASE),
+                                &white_king,
+                                &black_king,
+                                &mut base::NoTrace,
+                                &white_pawns,
+                                &black_pawns,
+                                &white_rq,
+                                &black_rq,
+                            );
+                        }
+                    });
+                });
+            });
+        });
+    });
+
     if game.turn == PlayerColor::Black {
         -score
     } else {
@@ -101,10 +180,14 @@ fn evaluate_inner(game: &GameState) -> i32 {
 }
 
 /// Evaluate pieces for Confined Classical
-fn evaluate_pieces_confined(
+#[allow(clippy::too_many_arguments)]
+fn evaluate_pieces_confined_optimized(
     game: &GameState,
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
+    heavy_pieces: &[(i64, i64, crate::board::Piece)],
 ) -> i32 {
     let mut score: i32 = 0;
     let mut white_bishops = 0;
@@ -118,11 +201,28 @@ fn evaluate_pieces_confined(
     let mut white_queen_out = false;
     let mut black_queen_out = false;
 
-    for ((x, y), piece) in game.board.iter() {
-        if piece.color() == PlayerColor::Neutral {
-            continue;
-        }
+    // Process Pawns first (already collected)
+    for &(x, y) in white_pawns.iter() {
+        score += evaluate_pawn_confined(
+            x,
+            y,
+            PlayerColor::White,
+            game.white_promo_rank,
+            game.black_promo_rank,
+        );
+    }
+    for &(x, y) in black_pawns.iter() {
+        score -= evaluate_pawn_confined(
+            x,
+            y,
+            PlayerColor::Black,
+            game.white_promo_rank,
+            game.black_promo_rank,
+        );
+    }
 
+    // Process Heavy Pieces (already collected)
+    for &(x, y, piece) in heavy_pieces.iter() {
         let is_white = piece.color() == PlayerColor::White;
         let mut piece_score: i32 = 0;
 
@@ -130,28 +230,38 @@ fn evaluate_pieces_confined(
             PieceType::Rook => {
                 piece_score += base::evaluate_rook(
                     game,
-                    *x,
-                    *y,
+                    x,
+                    y,
                     piece.color(),
                     white_king,
                     black_king,
                     base::MAX_PHASE,
+                    white_pawns,
+                    black_pawns,
                 );
 
                 // Bonus for rook invading enemy territory (behind their obstacles)
-                let in_enemy_territory = if is_white { *y >= 8 } else { *y <= 1 };
+                let in_enemy_territory = if is_white { y >= 8 } else { y <= 1 };
                 if in_enemy_territory {
                     piece_score += 40;
                 }
             }
             PieceType::Queen | PieceType::RoyalQueen => {
                 // Less aggressive queen evaluation for Confined Classical
-                piece_score +=
-                    evaluate_queen_confined(game, *x, *y, piece.color(), white_king, black_king);
+                piece_score += evaluate_queen_confined(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    white_king,
+                    black_king,
+                    white_pawns,
+                    black_pawns,
+                );
 
                 // Track if queen has left starting position
                 let start_y = if is_white { 1 } else { 8 };
-                if *y != start_y {
+                if y != start_y {
                     if is_white {
                         white_queen_out = true;
                     } else {
@@ -161,11 +271,11 @@ fn evaluate_pieces_confined(
             }
             PieceType::Knight => {
                 // Custom knight eval: FORWARD development, not huddling around king
-                piece_score += evaluate_knight_confined(*x, *y, piece.color());
+                piece_score += evaluate_knight_confined(x, y, piece.color());
 
                 // Track development
                 let back_rank = if is_white { 1 } else { 8 };
-                if *y != back_rank {
+                if y != back_rank {
                     if is_white {
                         white_minors_developed += 1;
                     } else {
@@ -175,18 +285,18 @@ fn evaluate_pieces_confined(
             }
             PieceType::Bishop => {
                 // Custom bishop eval: forward and into enemy territory
-                piece_score += evaluate_bishop_confined(*x, *y, piece.color());
+                piece_score += evaluate_bishop_confined(x, y, piece.color());
 
                 if is_white {
                     white_bishops += 1;
-                    if (*x + *y) % 2 == 0 {
+                    if (x + y) % 2 == 0 {
                         white_bishop_colors.0 = true;
                     } else {
                         white_bishop_colors.1 = true;
                     }
                 } else {
                     black_bishops += 1;
-                    if (*x + *y) % 2 == 0 {
+                    if (x + y) % 2 == 0 {
                         black_bishop_colors.0 = true;
                     } else {
                         black_bishop_colors.1 = true;
@@ -195,23 +305,13 @@ fn evaluate_pieces_confined(
 
                 // Track development
                 let back_rank = if is_white { 1 } else { 8 };
-                if *y != back_rank {
+                if y != back_rank {
                     if is_white {
                         white_minors_developed += 1;
                     } else {
                         black_minors_developed += 1;
                     }
                 }
-            }
-            PieceType::Pawn => {
-                // Custom pawn eval: center pawn pushes are great
-                piece_score += evaluate_pawn_confined(
-                    *x,
-                    *y,
-                    piece.color(),
-                    game.white_promo_rank,
-                    game.black_promo_rank,
-                );
             }
             _ => {
                 // Other pieces get no special evaluation
@@ -225,7 +325,7 @@ fn evaluate_pieces_confined(
         }
     }
 
-    // Bishop pair bonus
+    // Bonus/Penalty logic
     if white_bishops >= 2 {
         score += 60;
         if white_bishop_colors.0 && white_bishop_colors.1 {
@@ -239,7 +339,6 @@ fn evaluate_pieces_confined(
         }
     }
 
-    // Penalize queen out before minors developed
     if white_queen_out && white_minors_developed < 3 {
         score -= QUEEN_EARLY_PENALTY;
     }
@@ -247,8 +346,6 @@ fn evaluate_pieces_confined(
         score += QUEEN_EARLY_PENALTY;
     }
 
-    // Bonus for developing minors AND penalty for undeveloped pieces
-    // White: 4 minors (2 knights + 2 bishops), Black: 4 minors
     let white_undeveloped = (4 - white_minors_developed).max(0);
     let black_undeveloped = (4 - black_minors_developed).max(0);
 
@@ -261,6 +358,7 @@ fn evaluate_pieces_confined(
 }
 
 /// Queen evaluation for Confined Classical - less aggressive
+#[allow(clippy::too_many_arguments)]
 fn evaluate_queen_confined(
     game: &GameState,
     x: i64,
@@ -268,6 +366,8 @@ fn evaluate_queen_confined(
     color: PlayerColor,
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let mut bonus: i32 = 0;
 
@@ -319,7 +419,8 @@ fn evaluate_queen_confined(
     }
 
     // Idle penalty from pawns on file (same as base)
-    let (own_pawns_on_file, enemy_pawns_on_file) = base::count_pawns_on_file(game, x, color);
+    let (own_pawns_on_file, enemy_pawns_on_file) =
+        base::count_pawns_on_file(game, x, color, white_pawns, black_pawns);
     if own_pawns_on_file > 0 && enemy_pawns_on_file > 0 {
         bonus -= 15;
     }
@@ -355,35 +456,6 @@ fn evaluate_king_position_confined(
             score += KING_CENTER_BONUS / 2;
         }
     }
-
-    score
-}
-
-/// Evaluate development for Confined Classical
-/// Penalizes capturing own back-rank obstacles (y=0 for white, y=9 for black)
-fn evaluate_development_confined(game: &GameState) -> i32 {
-    let mut score: i32 = 0;
-
-    // Count obstacles on back ranks
-    // White's protective obstacles are at y=0, black's are at y=9
-    let mut white_back_obstacles = 0;
-    let mut black_back_obstacles = 0;
-
-    for ((_, y), piece) in game.board.iter() {
-        if piece.piece_type() == PieceType::Obstacle {
-            if *y == 0 {
-                white_back_obstacles += 1;
-            } else if *y == 9 {
-                black_back_obstacles += 1;
-            }
-        }
-    }
-
-    // Bonus for keeping back obstacles (they protect the king)
-    // In starting position there should be ~8 obstacles per side on back rank
-    // Having more is good (we haven't eaten our own protective obstacles)
-    score += white_back_obstacles * BACK_OBSTACLE_VALUE;
-    score -= black_back_obstacles * BACK_OBSTACLE_VALUE;
 
     score
 }
@@ -674,7 +746,15 @@ mod tests {
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
 
-        let score = evaluate_development_confined(&game);
+        // Simulate obstacle counting as done in evaluate_inner
+        let mut white_back_obstacles = 0;
+        for ((_, y), piece) in game.board.iter() {
+            if piece.piece_type() == PieceType::Obstacle && *y == 0 {
+                white_back_obstacles += 1;
+            }
+        }
+        let score = white_back_obstacles * BACK_OBSTACLE_VALUE;
+
         // Should get back obstacle bonus
         assert!(
             score >= BACK_OBSTACLE_VALUE,

@@ -11,11 +11,11 @@ thread_local! {
     // Array of (hash, score). Initialize with MAX which is unlikely to valid hash.
     static PAWN_CACHE: RefCell<Vec<(u64, i32)>> = RefCell::new(vec![(u64::MAX, 0); PAWN_CACHE_SIZE]);
     // Reusable buffer for piece list to avoid allocation
-    static EVAL_PIECE_LIST: RefCell<Vec<(i64, i64, crate::board::Piece)>> = RefCell::new(Vec::with_capacity(64));
-    static EVAL_WHITE_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
-    static EVAL_BLACK_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
-    static EVAL_WHITE_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
-    static EVAL_BLACK_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
+    pub(crate) static EVAL_PIECE_LIST: RefCell<Vec<(i64, i64, crate::board::Piece)>> = RefCell::new(Vec::with_capacity(64));
+    pub(crate) static EVAL_WHITE_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
+    pub(crate) static EVAL_BLACK_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
+    pub(crate) static EVAL_WHITE_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
+    pub(crate) static EVAL_BLACK_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
 }
 
 /// Clear the pawn structure cache.
@@ -321,30 +321,6 @@ pub fn get_piece_phase(piece_type: PieceType) -> i32 {
     }
 }
 
-/// Calculate the current game phase (0 = Endgame, MAX_PHASE = Opening/Middlegame)
-/// Based on non-pawn material remaining on the board.
-pub fn calculate_game_phase(game: &GameState) -> i32 {
-    let mut phase = 0;
-
-    for (_cx, _cy, tile) in game.board.tiles.iter() {
-        if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
-            continue;
-        }
-        let mut bits = tile.occ_all & !tile.occ_void & !tile.occ_pawns; // Skip pawns/void
-        while bits != 0 {
-            let idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let packed = tile.piece[idx];
-            if packed != 0 {
-                let piece = crate::board::Piece::from_packed(packed);
-                phase += get_piece_phase(piece.piece_type());
-            }
-        }
-    }
-
-    phase.min(MAX_PHASE)
-}
-
 // ==================== Tapered Evaluation Constants (MG, EG) ====================
 
 // King Safety
@@ -383,84 +359,6 @@ const EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY: i32 = 2;
 // Slider Distances (Centralization less critical in EG)
 const MG_FAR_SLIDER_PENALTY_MULT: i32 = 100; // 100%
 const EG_FAR_SLIDER_PENALTY_MULT: i32 = 40; // 40%
-
-pub fn compute_cloud_center(board: &Board) -> Option<Coordinate> {
-    let mut sum_x: i64 = 0;
-    let mut sum_y: i64 = 0;
-    let mut total_weight: i64 = 0;
-
-    for (cx, cy, tile) in board.tiles.iter() {
-        let mut bits = tile.occ_all & !tile.occ_void & !tile.occ_pawns;
-        if bits == 0 {
-            continue;
-        }
-
-        while bits != 0 {
-            let idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-
-            let packed = tile.piece[idx];
-            // packed should not be 0 since bits came from occ_all
-            if packed == 0 {
-                continue;
-            }
-
-            let piece = crate::board::Piece::from_packed(packed);
-            let weight = get_centrality_weight(piece.piece_type());
-
-            if weight > 0 {
-                let x = cx * 8 + (idx % 8) as i64;
-                let y = cy * 8 + (idx / 8) as i64;
-                sum_x += weight * x;
-                sum_y += weight * y;
-                total_weight += weight;
-            }
-        }
-    }
-
-    if total_weight > 0 {
-        Some(Coordinate {
-            x: sum_x / total_weight,
-            y: sum_y / total_weight,
-        })
-    } else {
-        None
-    }
-}
-
-/// Compute centroid of finite-moving pieces only (knights, centaurs, etc.).
-/// Excludes sliders to prevent them from skewing the "action zone".
-/// Finite movers should cluster together for mutual support.
-pub fn compute_finite_mover_center(board: &Board) -> Option<Coordinate> {
-    let mut sum_x: i64 = 0;
-    let mut sum_y: i64 = 0;
-    let mut count: i64 = 0;
-
-    for (cx, cy, tile) in board.tiles.iter() {
-        // Only include finite movers: knights (includes centaurs which are also knight-like)
-        // We use occ_knights as the primary finite-mover bitboard
-        let finite_movers = tile.occ_knights;
-        let bits = finite_movers & tile.occ_all & !tile.occ_void;
-
-        if bits == 0 {
-            continue;
-        }
-
-        let n = bits.count_ones() as i64;
-        sum_x += n * cx * 8 + tile.sum_lx(bits) as i64;
-        sum_y += n * cy * 8 + tile.sum_ly(bits) as i64;
-        count += n;
-    }
-
-    if count > 0 {
-        Some(Coordinate {
-            x: sum_x / count,
-            y: sum_y / count,
-        })
-    } else {
-        None
-    }
-}
 
 /// Check if a pawn is connected (has a friendly pawn diagonally behind it).
 /// Connected pawns are much stronger as they protect each other.
@@ -1064,6 +962,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 },
                                 w_attack_ready,
                                 b_attack_ready,
+                                &white_pawns,
+                                &black_pawns,
                             );
 
                             // King Safety
@@ -1080,6 +980,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 final_phase,
                                 tracer,
                                 &ks_metrics,
+                                &white_pawns,
+                                &black_pawns,
                             );
 
                             score += evaluate_pawn_structure_traced(
@@ -1135,6 +1037,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     metrics: PieceMetrics,
     white_attack_ready: i32,
     black_attack_ready: i32,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1156,21 +1060,54 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 
     for &(x, y, piece) in piece_list {
         let mut piece_score = match piece.piece_type() {
-            PieceType::Rook => {
-                evaluate_rook(game, x, y, piece.color(), white_king, black_king, phase)
-            }
-            PieceType::Queen => {
-                evaluate_queen(game, x, y, piece.color(), white_king, black_king, phase)
-            }
+            PieceType::Rook => evaluate_rook(
+                game,
+                x,
+                y,
+                piece.color(),
+                white_king,
+                black_king,
+                phase,
+                white_pawns,
+                black_pawns,
+            ),
+            PieceType::Queen => evaluate_queen(
+                game,
+                x,
+                y,
+                piece.color(),
+                white_king,
+                black_king,
+                phase,
+                white_pawns,
+                black_pawns,
+            ),
             PieceType::Knight => {
                 evaluate_knight(x, y, piece.color(), black_king, white_king, phase)
             }
-            PieceType::Bishop => {
-                evaluate_bishop(game, x, y, piece.color(), white_king, black_king, phase)
-            }
+            PieceType::Bishop => evaluate_bishop(
+                game,
+                x,
+                y,
+                piece.color(),
+                white_king,
+                black_king,
+                phase,
+                white_pawns,
+                black_pawns,
+            ),
             PieceType::Chancellor => {
-                let rook_eval =
-                    evaluate_rook(game, x, y, piece.color(), white_king, black_king, phase);
+                let rook_eval = evaluate_rook(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    white_king,
+                    black_king,
+                    phase,
+                    white_pawns,
+                    black_pawns,
+                );
                 let mut b = 0;
                 let ek = if piece.color() == PlayerColor::White {
                     black_king
@@ -1188,8 +1125,17 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 (rook_eval * CHANCELLOR_ROOK_SCALE / 100) + b
             }
             PieceType::Archbishop => {
-                let bishop_eval =
-                    evaluate_bishop(game, x, y, piece.color(), white_king, black_king, phase);
+                let bishop_eval = evaluate_bishop(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    white_king,
+                    black_king,
+                    phase,
+                    white_pawns,
+                    black_pawns,
+                );
                 let mut b = 0;
                 let ek = if piece.color() == PlayerColor::White {
                     black_king
@@ -1207,10 +1153,28 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 (bishop_eval * ARCHBISHOP_BISHOP_SCALE / 100) + b
             }
             PieceType::Amazon => {
-                let queen_eval =
-                    evaluate_queen(game, x, y, piece.color(), white_king, black_king, phase);
-                let rook_eval =
-                    evaluate_rook(game, x, y, piece.color(), white_king, black_king, phase);
+                let queen_eval = evaluate_queen(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    white_king,
+                    black_king,
+                    phase,
+                    white_pawns,
+                    black_pawns,
+                );
+                let rook_eval = evaluate_rook(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    white_king,
+                    black_king,
+                    phase,
+                    white_pawns,
+                    black_pawns,
+                );
                 let mut b = 0;
                 let ek = if piece.color() == PlayerColor::White {
                     black_king
@@ -1227,9 +1191,17 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 }
                 (queen_eval * AMAZON_QUEEN_SCALE / 100) + (rook_eval * AMAZON_ROOK_SCALE / 100) + b
             }
-            PieceType::RoyalQueen => {
-                evaluate_queen(game, x, y, piece.color(), white_king, black_king, phase)
-            }
+            PieceType::RoyalQueen => evaluate_queen(
+                game,
+                x,
+                y,
+                piece.color(),
+                white_king,
+                black_king,
+                phase,
+                white_pawns,
+                black_pawns,
+            ),
             PieceType::Knightrider => {
                 evaluate_knightrider(x, y, piece.color(), white_king, black_king, &game.board)
             }
@@ -1483,6 +1455,7 @@ pub struct KingSafetyMetrics {
     pub has_enemy_queen: (bool, bool), // (white_sees_queen, black_sees_queen)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     game: &GameState,
     white_king: &Option<Coordinate>,
@@ -1490,6 +1463,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     phase: i32,
     tracer: &mut T,
     metrics: &KingSafetyMetrics,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let mut w_safety: i32 = 0;
     let mut b_safety: i32 = 0;
@@ -1505,6 +1480,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             phase,
             metrics.urgency.0,
             metrics.has_enemy_queen.0,
+            white_pawns,
         );
     }
     if let Some(bk) = black_king {
@@ -1515,6 +1491,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             phase,
             metrics.urgency.1,
             metrics.has_enemy_queen.1,
+            black_pawns,
         );
     }
 
@@ -1605,6 +1582,7 @@ fn compute_attack_bonus_optimized(
     diag_bonus + ortho_bonus
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_rook(
     _game: &GameState,
     x: i64,
@@ -1613,6 +1591,8 @@ pub fn evaluate_rook(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
+    _white_pawns: &[(i64, i64)],
+    _black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1691,6 +1671,7 @@ pub fn evaluate_rook(
     bonus
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_queen(
     game: &GameState,
     x: i64,
@@ -1699,6 +1680,8 @@ pub fn evaluate_queen(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
+    _white_pawns: &[(i64, i64)],
+    _black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1806,6 +1789,7 @@ pub fn evaluate_knight(
     bonus
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_bishop(
     _game: &GameState,
     x: i64,
@@ -1814,6 +1798,8 @@ pub fn evaluate_bishop(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
+    _white_pawns: &[(i64, i64)],
+    _black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1953,6 +1939,7 @@ fn evaluate_king_shelter(
     phase: i32,
     defense_urgency: i32,
     has_enemy_queen_possible: bool,
+    pawns: &[(i64, i64)], // Pre-sorted by (x, y)
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1984,44 +1971,30 @@ fn evaluate_king_shelter(
         bump_feat!(king_ring_missing_penalty, -1);
     }
 
-    // 1b. King shield (pawn ahead/behind) - Optimized: Check only relevant files
+    // 1b. King shield (pawn ahead/behind) - Unified: Use pre-sorted pawn list
     let mut has_pawn_ahead = false;
     let mut has_pawn_behind = false;
     let is_white = color == PlayerColor::White;
 
     for dx in -2..=2_i64 {
         let x = king.x + dx;
-        let tcx = x >> 3;
-        // We still need to find pawns on these files.
-        // Instead of iterating ALL tiles, we only iterate tiles in these 5 columns.
-        for (_tcx_actual, tcy, tile) in game.board.tiles.iter_columns(tcx) {
-            let col_idx = (x & 7) as usize;
-            let mut bits = tile.occ_pawns
-                & (if is_white {
-                    tile.occ_white
-                } else {
-                    tile.occ_black
-                });
-            bits &= 0x0101010101010101u64 << col_idx; // Mask for this file
-
-            if bits != 0 {
-                while bits != 0 {
-                    let idx = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let py = tcy * 8 + (idx / 8) as i64;
-                    if is_white {
-                        if py > king.y {
-                            has_pawn_ahead = true;
-                        } else if py < king.y {
-                            has_pawn_behind = true;
-                        }
-                    } else if py < king.y {
-                        has_pawn_ahead = true;
-                    } else if py > king.y {
-                        has_pawn_behind = true;
-                    }
+        // Find range of pawns on this file
+        let start = pawns.partition_point(|p| p.0 < x);
+        let mut k = start;
+        while k < pawns.len() && pawns[k].0 == x {
+            let py = pawns[k].1;
+            if is_white {
+                if py > king.y {
+                    has_pawn_ahead = true;
+                } else if py < king.y {
+                    has_pawn_behind = true;
                 }
+            } else if py < king.y {
+                has_pawn_ahead = true;
+            } else if py > king.y {
+                has_pawn_behind = true;
             }
+            k += 1;
         }
     }
 
@@ -2132,7 +2105,7 @@ fn evaluate_king_shelter(
 }
 
 pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
-    let phase = calculate_game_phase(game);
+    let phase = game.total_phase.min(MAX_PHASE);
     // For standalone call, we must fill the vectors
     EVAL_WHITE_PAWNS.with(|wp_cell| {
         EVAL_BLACK_PAWNS.with(|bp_cell| {
@@ -2388,38 +2361,40 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     (w_doubled + w_passed + w_connected) - (b_doubled + b_passed + b_connected)
 }
 
-pub fn count_pawns_on_file(game: &GameState, file: i64, color: PlayerColor) -> (i32, i32) {
+pub fn count_pawns_on_file(
+    _game: &GameState,
+    file: i64,
+    color: PlayerColor,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
+) -> (i32, i32) {
     let mut own_pawns = 0;
     let mut enemy_pawns = 0;
 
-    // BITBOARD: Only check the tile(s) that contain this file
-    let file_tile_x = file >> 3; // Which tile column contains this file
-    let local_x = (file & 7) as usize;
+    let target_pawns = if color == PlayerColor::White {
+        white_pawns
+    } else {
+        black_pawns
+    };
+    let opponent_pawns = if color == PlayerColor::White {
+        black_pawns
+    } else {
+        white_pawns
+    };
 
-    for (cx, _, tile) in game.board.tiles.iter() {
-        if cx != file_tile_x {
-            continue; // Skip tiles not on this file
-        }
+    // Find range of pawns on this file in our lists
+    let start = target_pawns.partition_point(|p| p.0 < file);
+    let mut k = start;
+    while k < target_pawns.len() && target_pawns[k].0 == file {
+        own_pawns += 1;
+        k += 1;
+    }
 
-        // Check each row in the tile for pawns in the target column
-        for row in 0..8 {
-            let idx = row * 8 + local_x;
-            if (tile.occ_pawns >> idx) & 1 != 0 {
-                if (tile.occ_white >> idx) & 1 != 0 {
-                    if color == PlayerColor::White {
-                        own_pawns += 1;
-                    } else {
-                        enemy_pawns += 1;
-                    }
-                } else if (tile.occ_black >> idx) & 1 != 0 {
-                    if color == PlayerColor::Black {
-                        own_pawns += 1;
-                    } else {
-                        enemy_pawns += 1;
-                    }
-                }
-            }
-        }
+    let start_opp = opponent_pawns.partition_point(|p| p.0 < file);
+    let mut k_opp = start_opp;
+    while k_opp < opponent_pawns.len() && opponent_pawns[k_opp].0 == file {
+        enemy_pawns += 1;
+        k_opp += 1;
     }
 
     (own_pawns, enemy_pawns)
@@ -2710,7 +2685,9 @@ mod tests {
             .set_piece(4, 7, Piece::new(PieceType::Pawn, PlayerColor::Black));
         game.board.rebuild_tiles();
 
-        let (own, enemy) = count_pawns_on_file(&game, 4, PlayerColor::White);
+        let w_pawns = vec![(4, 1), (4, 3)];
+        let b_pawns = vec![(4, 7)];
+        let (own, enemy) = count_pawns_on_file(&game, 4, PlayerColor::White, &w_pawns, &b_pawns);
         assert_eq!(own, 2);
         assert_eq!(enemy, 1);
     }
@@ -2739,20 +2716,6 @@ mod tests {
             "Pawn structure score should be reasonable: {}",
             score
         );
-    }
-
-    #[test]
-    fn test_compute_cloud_center() {
-        let mut board = Board::new();
-        // Use non-neutral pieces
-        board.set_piece(0, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.set_piece(10, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-
-        let center = compute_cloud_center(&board);
-        assert!(center.is_some(), "Cloud center should exist");
-        let c = center.unwrap();
-        assert_eq!(c.x, 5); // Average of 0 and 10
-        assert_eq!(c.y, 0);
     }
 
     #[test]
@@ -2846,7 +2809,17 @@ mod tests {
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
-        let score = evaluate_bishop(&game, 4, 4, PlayerColor::White, &wk, &bk, MAX_PHASE);
+        let score = evaluate_bishop(
+            &game,
+            4,
+            4,
+            PlayerColor::White,
+            &wk,
+            &bk,
+            MAX_PHASE,
+            &[],
+            &[],
+        );
         // Central bishop should have positive score
         assert!(
             score > 0,
@@ -2869,7 +2842,17 @@ mod tests {
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
-        let score = evaluate_rook(&game, 4, 1, PlayerColor::White, &wk, &bk, MAX_PHASE);
+        let score = evaluate_rook(
+            &game,
+            4,
+            1,
+            PlayerColor::White,
+            &wk,
+            &bk,
+            MAX_PHASE,
+            &[],
+            &[],
+        );
         // Rook should have score for mobility etc
         assert!(score.abs() < 1000, "Rook score should be reasonable");
     }
@@ -2889,7 +2872,17 @@ mod tests {
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
-        let score = evaluate_queen(&game, 4, 4, PlayerColor::White, &wk, &bk, MAX_PHASE);
+        let score = evaluate_queen(
+            &game,
+            4,
+            4,
+            PlayerColor::White,
+            &wk,
+            &bk,
+            MAX_PHASE,
+            &[],
+            &[],
+        );
         // Queen in center should have decent positional score
         assert!(score.abs() < 2000, "Queen score should be reasonable");
     }
