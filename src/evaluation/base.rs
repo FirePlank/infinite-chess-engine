@@ -241,6 +241,10 @@ const CLOUD_PENALTY_PER_100_VALUE: i32 = 1;
 // Pieces beyond this distance have their position clamped for centroid calculation.
 const CLOUD_CENTER_MAX_SKEW_DIST: i64 = 16;
 
+// Shared constants for ray detection
+const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+const ORTHO_DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+
 // Bishop pair & queen heuristics
 // Tapered pairs defined below
 const QUEEN_IDEAL_LINE_DIST: i32 = 4;
@@ -360,21 +364,6 @@ const EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY: i32 = 2;
 const MG_FAR_SLIDER_PENALTY_MULT: i32 = 100; // 100%
 const EG_FAR_SLIDER_PENALTY_MULT: i32 = 40; // 40%
 
-/// Check if a pawn is connected (has a friendly pawn diagonally behind it).
-/// Connected pawns are much stronger as they protect each other.
-#[inline]
-fn is_connected_pawn(game: &GameState, x: i64, y: i64, color: PlayerColor) -> bool {
-    let dy = if color == PlayerColor::White { -1 } else { 1 };
-    // Check if friendly pawn on adjacent file, one rank behind
-    game.board
-        .get_piece(x - 1, y + dy)
-        .is_some_and(|p| p.piece_type() == PieceType::Pawn && p.color() == color)
-        || game
-            .board
-            .get_piece(x + 1, y + dy)
-            .is_some_and(|p| p.piece_type() == PieceType::Pawn && p.color() == color)
-}
-
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
     // Check for insufficient material draw
@@ -411,6 +400,14 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // Use cached king positions
     let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
 
+    let taper = |mg: i32, eg: i32| -> i32 {
+        ((mg * game.total_phase.min(MAX_PHASE))
+            + (eg * (MAX_PHASE - game.total_phase.min(MAX_PHASE))))
+            / MAX_PHASE
+    };
+
+    let is_classical = matches!(game.variant, Some(crate::Variant::Classical));
+
     // Single-Pass Collection and Scoring
     let mut phase = 0;
     let mut white_undeveloped = 0;
@@ -445,6 +442,18 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut w_sliders_in_zone = 0;
     let mut b_sliders_in_zone = 0;
     const ATTACK_ZONE_RADIUS: i64 = 10;
+
+    // King Safety Arrays
+    // [0..4] = Diag, [4..8] = Ortho
+    // Stores: (distance, piece_value, piece_color)
+    let mut w_king_rays = [(i32::MAX, 0, PlayerColor::Neutral); 8];
+    let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral); 8];
+
+    let mut w_king_ring_covered = false;
+    let mut b_king_ring_covered = false;
+
+    let mut w_global_tropism: i32 = 0;
+    let mut b_global_tropism: i32 = 0;
 
     // Interaction threat constants
     const PAWN_THREATENS_MINOR: i32 = 25;
@@ -618,6 +627,133 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         && (y - wk.y).abs() <= ATTACK_ZONE_RADIUS
                                     {
                                         b_sliders_in_zone += 1;
+                                    }
+                                }
+
+                                // Global Tropism (Piece activity relative to enemy king)
+                                if !is_classical && !pt.is_royal() && pt != PieceType::Pawn {
+                                    let piece_val = get_piece_value(pt);
+                                    if is_white {
+                                        if let Some(bk) = black_king {
+                                            let d = (x - bk.x).abs() + (y - bk.y).abs();
+                                            w_global_tropism += piece_val / (d + 2) as i32;
+                                        }
+                                    } else if let Some(wk) = white_king {
+                                        let d = (x - wk.x).abs() + (y - wk.y).abs();
+                                        b_global_tropism += piece_val / (d + 2) as i32;
+                                    }
+                                }
+
+                                if !is_classical {
+                                    // Check White King
+                                    if let Some(wk) = white_king {
+                                        let dx = x - wk.x;
+                                        let dy = y - wk.y;
+                                        let adx = dx.abs();
+                                        let ady = dy.abs();
+                                        let dist = adx.max(ady);
+
+                                        // Ring Cover
+                                        if !w_king_ring_covered
+                                            && dist == 1
+                                            && is_white
+                                            && (pt == PieceType::Pawn
+                                                || pt == PieceType::Guard
+                                                || pt == PieceType::Void)
+                                        {
+                                            w_king_ring_covered = true;
+                                        }
+
+                                        // Rays
+                                        // Ortho: (1, 0), (-1, 0), (0, 1), (0, -1) -> Indices 4, 5, 6, 7
+                                        if dx != 0 && dy == 0 {
+                                            let idx = if dx > 0 { 4 } else { 5 };
+                                            if (dist as i32) < w_king_rays[idx].0 {
+                                                w_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        } else if dx == 0 && dy != 0 {
+                                            let idx = if dy > 0 { 6 } else { 7 };
+                                            if (dist as i32) < w_king_rays[idx].0 {
+                                                w_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        }
+                                        // Diag: (1, 1), (1, -1), (-1, 1), (-1, -1) -> Indices 0, 1, 2, 3
+                                        else if adx == ady && dist > 0 {
+                                            let idx = if dx > 0 {
+                                                if dy > 0 { 0 } else { 1 }
+                                            } else {
+                                                if dy > 0 { 2 } else { 3 }
+                                            };
+                                            if (dist as i32) < w_king_rays[idx].0 {
+                                                w_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    // Check Black King
+                                    if let Some(bk) = black_king {
+                                        let dx = x - bk.x;
+                                        let dy = y - bk.y;
+                                        let adx = dx.abs();
+                                        let ady = dy.abs();
+                                        let dist = adx.max(ady);
+
+                                        // Ring Cover
+                                        if !b_king_ring_covered
+                                            && dist == 1
+                                            && !is_white
+                                            && (pt == PieceType::Pawn
+                                                || pt == PieceType::Guard
+                                                || pt == PieceType::Void)
+                                        {
+                                            b_king_ring_covered = true;
+                                        }
+
+                                        // Rays
+                                        if dx != 0 && dy == 0 {
+                                            let idx = if dx > 0 { 4 } else { 5 };
+                                            if (dist as i32) < b_king_rays[idx].0 {
+                                                b_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        } else if dx == 0 && dy != 0 {
+                                            let idx = if dy > 0 { 6 } else { 7 };
+                                            if (dist as i32) < b_king_rays[idx].0 {
+                                                b_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        } else if adx == ady && dist > 0 {
+                                            let idx = if dx > 0 {
+                                                if dy > 0 { 0 } else { 1 }
+                                            } else {
+                                                if dy > 0 { 2 } else { 3 }
+                                            };
+                                            if (dist as i32) < b_king_rays[idx].0 {
+                                                b_king_rays[idx] = (
+                                                    dist as i32,
+                                                    get_piece_value(pt),
+                                                    piece.color(),
+                                                );
+                                            }
+                                        }
                                     }
                                 }
 
@@ -982,6 +1118,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 &ks_metrics,
                                 &white_pawns,
                                 &black_pawns,
+                                &w_king_rays,
+                                &b_king_rays,
+                                w_king_ring_covered,
+                                b_king_ring_covered,
                             );
 
                             score += evaluate_pawn_structure_traced(
@@ -1001,6 +1141,17 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
                             score += (w_pawn_threats + w_minor_threats)
                                 - (b_pawn_threats + b_minor_threats);
+
+                            // Global Tropism
+                            if !is_classical {
+                                let gt_mult = taper(4, 8);
+                                tracer.record(
+                                    "Global Tropism",
+                                    w_global_tropism * gt_mult / 10,
+                                    b_global_tropism * gt_mult / 10,
+                                );
+                                score += (w_global_tropism - b_global_tropism) * gt_mult / 10;
+                            }
                         }
                     }); // brq
                 }); // wrq
@@ -1404,8 +1555,6 @@ fn compute_attack_readiness_optimized(
     // 1. Count open rays around enemy king (O(K))
     let mut open_diag_rays = 0;
     let mut open_ortho_rays = 0;
-    const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-    const ORTHO_DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
     for &(dx, dy) in &DIAG_DIRS {
         let mut is_open = true;
@@ -1465,34 +1614,72 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     metrics: &KingSafetyMetrics,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
+    w_king_rays: &[(i32, i32, PlayerColor); 8],
+    b_king_rays: &[(i32, i32, PlayerColor); 8],
+    w_ring_covered: bool,
+    b_ring_covered: bool,
 ) -> i32 {
     let mut w_safety: i32 = 0;
     let mut b_safety: i32 = 0;
     let mut w_attack: i32 = 0;
     let mut b_attack: i32 = 0;
 
+    let is_classical = matches!(
+        game.variant,
+        Some(crate::Variant::Classical) | Some(crate::Variant::Chess)
+    );
+
     // Defense penalty (Shelter)
-    if let Some(wk) = white_king {
-        w_safety += evaluate_king_shelter(
-            game,
-            wk,
-            PlayerColor::White,
-            phase,
-            metrics.urgency.0,
-            metrics.has_enemy_queen.0,
-            white_pawns,
-        );
-    }
-    if let Some(bk) = black_king {
-        b_safety += evaluate_king_shelter(
-            game,
-            bk,
-            PlayerColor::Black,
-            phase,
-            metrics.urgency.1,
-            metrics.has_enemy_queen.1,
-            black_pawns,
-        );
+    if is_classical {
+        if let Some(wk) = white_king {
+            w_safety += evaluate_king_shelter_classic(
+                game,
+                wk,
+                PlayerColor::White,
+                phase,
+                metrics.urgency.0,
+                metrics.has_enemy_queen.0,
+                white_pawns,
+            );
+        }
+        if let Some(bk) = black_king {
+            b_safety += evaluate_king_shelter_classic(
+                game,
+                bk,
+                PlayerColor::Black,
+                phase,
+                metrics.urgency.1,
+                metrics.has_enemy_queen.1,
+                black_pawns,
+            );
+        }
+    } else {
+        if let Some(wk) = white_king {
+            w_safety += evaluate_king_shelter(
+                game,
+                wk,
+                PlayerColor::White,
+                phase,
+                metrics.urgency.0,
+                metrics.has_enemy_queen.0,
+                white_pawns,
+                w_king_rays,
+                w_ring_covered,
+            );
+        }
+        if let Some(bk) = black_king {
+            b_safety += evaluate_king_shelter(
+                game,
+                bk,
+                PlayerColor::Black,
+                phase,
+                metrics.urgency.1,
+                metrics.has_enemy_queen.1,
+                black_pawns,
+                b_king_rays,
+                b_ring_covered,
+            );
+        }
     }
 
     // Attack bonuses (using counts)
@@ -1520,9 +1707,6 @@ fn compute_attack_bonus_optimized(
     if our_diag_count == 0 && our_ortho_count == 0 {
         return 0;
     }
-
-    const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-    const ORTHO_DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
     let mut open_diag_rays = 0;
     let mut open_ortho_rays = 0;
@@ -1932,18 +2116,19 @@ fn evaluate_knightrider(
     bonus
 }
 
-fn evaluate_king_shelter(
+#[allow(clippy::too_many_arguments)]
+fn evaluate_king_shelter_classic(
     game: &GameState,
     king: &Coordinate,
     color: PlayerColor,
     phase: i32,
     defense_urgency: i32,
     has_enemy_queen_possible: bool,
-    pawns: &[(i64, i64)], // Pre-sorted by (x, y)
+    pawns: &[(i64, i64)],
 ) -> i32 {
+    let mut safety: i32 = 0;
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
-    let mut safety: i32 = 0;
 
     // 1. Local pawn / guard cover (Optimized: Board::get_piece is O(1))
     let mut has_ring_cover = false;
@@ -2083,6 +2268,156 @@ fn evaluate_king_shelter(
                 break;
             }
         }
+        let mut penalty = BASE_ORTHO_RAY_PENALTY;
+        if let Some((v, d)) = blocker {
+            penalty = penalty * (100 - blocker_reduction_pct(v, d)) / 100;
+        } else if enemy_blocked {
+            penalty = penalty * 60 / 100;
+        }
+        total_ray_penalty += penalty;
+    }
+
+    let mut total_danger = total_ray_penalty + tied_defender_penalty;
+    if !has_enemy_queen_possible {
+        total_danger = total_danger * 70 / 100;
+    }
+
+    let final_penalty =
+        (total_danger + (total_danger * total_danger / 800)) * defense_urgency / 100;
+    safety -= final_penalty.min(400);
+
+    safety
+}
+
+fn evaluate_king_shelter(
+    _game: &GameState,
+    king: &Coordinate,
+    color: PlayerColor,
+    phase: i32,
+    defense_urgency: i32,
+    has_enemy_queen_possible: bool,
+    pawns: &[(i64, i64)], // Pre-sorted by (x, y)
+    king_rays: &[(i32, i32, PlayerColor); 8],
+    has_ring_cover: bool,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut safety: i32 = 0;
+
+    // 1. Local pawn / guard cover (Optimized: Ring cover passed in)
+    if !has_ring_cover {
+        safety -= taper(MG_KING_RING_MISSING_PENALTY, EG_KING_RING_MISSING_PENALTY);
+        bump_feat!(king_ring_missing_penalty, -1);
+    }
+
+    // 1b. King shield (pawn ahead/behind) - Unified: Use pre-sorted pawn list
+    let mut has_pawn_ahead = false;
+    let mut has_pawn_behind = false;
+    let is_white = color == PlayerColor::White;
+
+    for dx in -2..=2_i64 {
+        let x = king.x + dx;
+        // Find range of pawns on this file
+        let start = pawns.partition_point(|p| p.0 < x);
+        let mut k = start;
+        while k < pawns.len() && pawns[k].0 == x {
+            let py = pawns[k].1;
+            if is_white {
+                if py > king.y {
+                    has_pawn_ahead = true;
+                } else if py < king.y {
+                    has_pawn_behind = true;
+                }
+            } else if py < king.y {
+                has_pawn_ahead = true;
+            } else if py > king.y {
+                has_pawn_behind = true;
+            }
+            k += 1;
+        }
+    }
+
+    if has_pawn_ahead && !has_pawn_behind {
+        safety += taper(MG_KING_PAWN_SHIELD_BONUS, EG_KING_PAWN_SHIELD_BONUS);
+    } else if !has_pawn_ahead && has_pawn_behind {
+        safety -= taper(MG_KING_PAWN_AHEAD_PENALTY, EG_KING_PAWN_AHEAD_PENALTY);
+    }
+
+    if defense_urgency <= 10 {
+        return safety;
+    }
+
+    // 2. Ray-based safety (pre-filtered by enemy metrics)
+    const BASE_DIAG_RAY_PENALTY: i32 = 30;
+    const BASE_ORTHO_RAY_PENALTY: i32 = 35;
+
+    let mut total_ray_penalty: i32 = 0;
+    let mut tied_defender_penalty: i32 = 0;
+
+    let blocker_reduction_pct = |v: i32, d: i32| {
+        let val_pct = if v <= 100 {
+            80
+        } else if v <= 300 {
+            60
+        } else if v <= 500 {
+            40
+        } else if v <= 700 {
+            20
+        } else {
+            0
+        };
+        let dist_mult = match d {
+            1 => 100,
+            2 => 75,
+            3 => 50,
+            _ => 30,
+        };
+        val_pct * dist_mult / 100
+    };
+
+    // Diagonal Rays (Indices 0..4)
+    for (dist, val, c) in &king_rays[0..4] {
+        let (dist, val, c) = (*dist, *val, *c);
+        let mut blocker: Option<(i32, i32)> = None;
+        let mut enemy_blocked = false;
+
+        if dist <= 8 {
+            if c == color {
+                blocker = Some((val, dist));
+                if val >= 600 {
+                    tied_defender_penalty += 10;
+                }
+            } else if c != PlayerColor::Neutral {
+                enemy_blocked = true;
+            }
+        }
+
+        let mut penalty = BASE_DIAG_RAY_PENALTY;
+        if let Some((v, d)) = blocker {
+            penalty = penalty * (100 - blocker_reduction_pct(v, d)) / 100;
+        } else if enemy_blocked {
+            penalty = penalty * 60 / 100;
+        }
+        total_ray_penalty += penalty;
+    }
+
+    // Ortho Rays (Indices 4..8)
+    for (dist, val, c) in &king_rays[4..8] {
+        let (dist, val, c) = (*dist, *val, *c);
+        let mut blocker: Option<(i32, i32)> = None;
+        let mut enemy_blocked = false;
+
+        if dist <= 8 {
+            if c == color {
+                blocker = Some((val, dist));
+                if val >= 600 {
+                    tied_defender_penalty += 12;
+                }
+            } else if c != PlayerColor::Neutral {
+                enemy_blocked = true;
+            }
+        }
+
         let mut penalty = BASE_ORTHO_RAY_PENALTY;
         if let Some((v, d)) = blocker {
             penalty = penalty * (100 - blocker_reduction_pct(v, d)) / 100;
@@ -2248,7 +2583,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 #[allow(clippy::too_many_arguments)]
 /// Core pawn structure computation. Called on cache miss.
 fn compute_pawn_structure_traced<T: EvaluationTracer>(
-    game: &GameState,
+    _game: &GameState,
     phase: i32,
     _white_king: &Option<Coordinate>,
     _black_king: &Option<Coordinate>,
@@ -2321,7 +2656,9 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             w_passed += taper(10, 18);
         }
 
-        if is_connected_pawn(game, wx, wy, PlayerColor::White) {
+        if white_pawns.binary_search(&(wx - 1, wy - 1)).is_ok()
+            || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
+        {
             w_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
         }
     }
@@ -2349,7 +2686,9 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             b_passed += taper(10, 18);
         }
 
-        if is_connected_pawn(game, bx, by, PlayerColor::Black) {
+        if black_pawns.binary_search(&(bx - 1, by + 1)).is_ok()
+            || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
+        {
             b_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
         }
     }
