@@ -2145,7 +2145,7 @@ pub fn get_best_move_parallel(
         tt_fill_permille: fill,
     };
 
-    Some((best_result.best_move.clone(), best_result.score, stats))
+    Some((best_result.best_move, best_result.score, stats))
 }
 
 #[cfg(not(feature = "multithreading"))]

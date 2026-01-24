@@ -213,8 +213,8 @@ mod tests {
 
         // All 8 knight moves from center should land in the same tile (index 4)
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += KNIGHT_MASKS[from_idx][n].count_ones();
+        for mask in KNIGHT_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(total_bits, 8, "Knight should have 8 moves from center");
 
@@ -236,8 +236,8 @@ mod tests {
         // (1,2), (2,1) - stay in center tile
         // (1,-2), (2,-1), (-1,2), (-2,1), (-1,-2), (-2,-1) - go to neighbor tiles
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += KNIGHT_MASKS[from_idx][n].count_ones();
+        for mask in KNIGHT_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(
             total_bits, 8,
@@ -257,8 +257,8 @@ mod tests {
         // King at corner (0, 0)
         let from_idx_corner = 0;
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += KING_MASKS[from_idx_corner][n].count_ones();
+        for mask in KING_MASKS[from_idx_corner] {
+            total_bits += mask.count_ones();
         }
         // Only 3 moves from corner: (1,0), (0,1), (1,1) stay; others go to neighbor tiles
         assert_eq!(
@@ -278,8 +278,8 @@ mod tests {
         // (3,3) + (-4,1) = (-1,4) - neighbor tile
         // etc.
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += GIRAFFE_MASKS[from_idx][n].count_ones();
+        for mask in GIRAFFE_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(total_bits, 8, "Giraffe has 8 moves");
     }
@@ -338,8 +338,8 @@ mod tests {
         // Camel from center (3, 3)
         let from_idx = 27;
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += CAMEL_MASKS[from_idx][n].count_ones();
+        for mask in CAMEL_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(total_bits, 8, "Camel has 8 moves");
     }
@@ -349,8 +349,8 @@ mod tests {
         // Zebra from center (3, 3)
         let from_idx = 27;
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += ZEBRA_MASKS[from_idx][n].count_ones();
+        for mask in ZEBRA_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(total_bits, 8, "Zebra has 8 moves");
     }
@@ -360,8 +360,8 @@ mod tests {
         // Hawk from center (3, 3)
         let from_idx = 27;
         let mut total_bits = 0;
-        for n in 0..9 {
-            total_bits += HAWK_MASKS[from_idx][n].count_ones();
+        for mask in HAWK_MASKS[from_idx] {
+            total_bits += mask.count_ones();
         }
         assert_eq!(total_bits, 16, "Hawk has 16 moves");
     }
@@ -390,8 +390,8 @@ mod tests {
         for from_idx in 0..64 {
             // Knight should have 8 total moves
             let mut knight_total = 0;
-            for n in 0..9 {
-                knight_total += KNIGHT_MASKS[from_idx][n].count_ones();
+            for mask in KNIGHT_MASKS[from_idx] {
+                knight_total += mask.count_ones();
             }
             assert_eq!(
                 knight_total, 8,
@@ -401,8 +401,8 @@ mod tests {
 
             // King should have 8 total moves
             let mut king_total = 0;
-            for n in 0..9 {
-                king_total += KING_MASKS[from_idx][n].count_ones();
+            for mask in KING_MASKS[from_idx] {
+                king_total += mask.count_ones();
             }
             assert_eq!(king_total, 8, "King at {} should have 8 moves", from_idx);
         }

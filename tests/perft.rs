@@ -300,7 +300,7 @@ fn perft_fairy_piece_mix() {
     let avg_dmax_micros = sum_dmax_micros / NUM_RUNS as u128;
 
     let avg_nps = (avg_total_nodes * 1_000_000) / avg_total_micros.max(1);
-    let avg_dmax_nps = (avg_dmax_nodes as u128 * 1_000_000) / avg_dmax_micros.max(1);
+    let avg_dmax_nps = (avg_dmax_nodes * 1_000_000) / avg_dmax_micros.max(1);
 
     println!("----------------------------------------------------------------");
     println!(

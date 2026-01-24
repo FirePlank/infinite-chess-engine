@@ -219,7 +219,7 @@ fn main() {
 
         for t in &tunables {
             // Rademacher distribution (+-1)
-            let sign = if (rand::random::<u8>() % 2) == 0 {
+            let sign = if rand::random::<u8>().is_multiple_of(2) {
                 1.0
             } else {
                 -1.0

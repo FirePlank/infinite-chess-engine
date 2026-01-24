@@ -188,9 +188,9 @@ mod tests {
     fn test_piece_keys_unique() {
         // Verify piece keys are reasonably unique
         let mut keys = Vec::new();
-        for i in 0..NUM_PIECE_TYPES {
-            for j in 0..NUM_COLORS {
-                keys.push(PIECE_KEYS[i][j]);
+        for row in PIECE_KEYS {
+            for key in row {
+                keys.push(key);
             }
         }
         keys.sort();

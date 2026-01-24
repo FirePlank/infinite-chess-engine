@@ -17,7 +17,7 @@ use crate::game::GameState;
 pub use base::{calculate_initial_material, get_piece_value};
 
 #[cfg(feature = "eval_tuning")]
-pub use base::{EvalFeatures, reset_eval_features, snapshot_eval_features};
+pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
 
 /// Main evaluation entry point.
 #[inline]

@@ -49,21 +49,17 @@ fn main() {
             // Match pattern: pub const DEFAULT_NAME: type = value;
             if line.trim().starts_with("pub const ")
                 && line.contains(&const_name)
-                && line.contains('=')
+                && let Some(eq_idx) = line.find('=')
+                && let Some(semi_idx) = line.find(';')
+                && eq_idx < semi_idx
             {
-                if let Some(eq_idx) = line.find('=') {
-                    if let Some(semi_idx) = line.find(';') {
-                        if eq_idx < semi_idx {
-                            let prefix = &line[..eq_idx + 1];
-                            let suffix = &line[semi_idx..];
-                            // Reconstruct line with new value
-                            let new_line = format!("{} {}{}", prefix, new_value_str, suffix);
-                            new_lines.push(new_line);
-                            found_limit = true;
-                            continue;
-                        }
-                    }
-                }
+                let prefix = &line[..eq_idx + 1];
+                let suffix = &line[semi_idx..];
+                // Reconstruct line with new value
+                let new_line = format!("{} {}{}", prefix, new_value_str, suffix);
+                new_lines.push(new_line);
+                found_limit = true;
+                continue;
             }
             new_lines.push(line);
         }

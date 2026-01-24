@@ -48,11 +48,6 @@ impl TTEntry {
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        unsafe { std::ptr::read_volatile(self.word0.get()) == 0 }
-    }
-
-    #[inline]
     pub fn read(&self, key16: u16) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
             let w0 = std::ptr::read_volatile(self.word0.get());
@@ -105,6 +100,7 @@ impl TTEntry {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn write(
         &self,
@@ -519,7 +515,7 @@ mod tests {
             score: 50,
             static_eval: 40,
             is_pv: true,
-            best_move: Some(m.clone()),
+            best_move: Some(m),
             ply: 0,
         });
         let res = tt
