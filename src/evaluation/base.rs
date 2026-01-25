@@ -1374,49 +1374,42 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 && cheb > PIECE_CLOUD_CHEB_RADIUS
             {
                 let pt = piece.piece_type();
+                let is_ortho = pt == PieceType::Rook || pt == PieceType::Chancellor;
+                let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
+                let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
 
-                let is_ortho_slider = pt == PieceType::Rook || pt == PieceType::Chancellor;
-                let is_diag_slider = pt == PieceType::Bishop || pt == PieceType::Archbishop;
-                let is_full_slider = pt == PieceType::Queen || pt == PieceType::Amazon;
+                let piece_val = get_piece_value(pt);
+                let value_factor = (piece_val / 100).max(1);
+                let mult = taper(MG_FAR_SLIDER_PENALTY_MULT, EG_FAR_SLIDER_PENALTY_MULT);
 
-                // Diagonals for diag-sliders
-                let d1 = ((x - y) - (center.x - center.y)).abs();
-                let d2 = ((x + y) - (center.x + center.y)).abs();
+                if is_ortho || is_diag || is_queen {
+                    // Sliders: only penalized if they cannot "see" the cloud center (misaligned).
+                    // Distance doesn't matter (infinite range).
+                    let mut lane_dist = i64::MAX;
 
-                let is_active = if is_ortho_slider {
-                    dx <= SLIDER_AXIS_WIGGLE || dy <= SLIDER_AXIS_WIGGLE
-                } else if is_diag_slider {
-                    d1 <= SLIDER_AXIS_WIGGLE || d2 <= SLIDER_AXIS_WIGGLE
-                } else if is_full_slider {
-                    dx <= SLIDER_AXIS_WIGGLE
-                        || dy <= SLIDER_AXIS_WIGGLE
-                        || d1 <= SLIDER_AXIS_WIGGLE
-                        || d2 <= SLIDER_AXIS_WIGGLE
+                    if is_ortho || is_queen {
+                        lane_dist = lane_dist.min(dx.min(dy));
+                    }
+                    if is_diag || is_queen {
+                        let d1 = ((x - y) - (center.x - center.y)).abs();
+                        let d2 = ((x + y) - (center.x + center.y)).abs();
+                        lane_dist = lane_dist.min(d1.min(d2));
+                    }
+
+                    if lane_dist > SLIDER_AXIS_WIGGLE {
+                        let excess = (lane_dist - SLIDER_AXIS_WIGGLE)
+                            .min(PIECE_CLOUD_CHEB_MAX_EXCESS)
+                            as i32;
+                        let penalty =
+                            excess * CLOUD_PENALTY_PER_100_VALUE * value_factor * mult / 100;
+                        piece_score -= penalty;
+                    }
                 } else {
-                    false
-                };
-
-                if !is_active {
-                    let piece_val = get_piece_value(pt);
-                    let value_factor = (piece_val / 100).max(1);
+                    // Leapers/Others: penalized by distance (Chebyshev)
+                    // We are only in this block if cheb > RADIUS, so dist_to_radius > 0
                     let dist_to_radius = cheb - PIECE_CLOUD_CHEB_RADIUS;
-                    let dist_to_lane = if is_ortho_slider {
-                        (dx - SLIDER_AXIS_WIGGLE).min(dy - SLIDER_AXIS_WIGGLE)
-                    } else if is_diag_slider {
-                        (d1 - SLIDER_AXIS_WIGGLE).min(d2 - SLIDER_AXIS_WIGGLE)
-                    } else if is_full_slider {
-                        let ortho_dist = (dx - SLIDER_AXIS_WIGGLE).min(dy - SLIDER_AXIS_WIGGLE);
-                        let diag_dist = (d1 - SLIDER_AXIS_WIGGLE).min(d2 - SLIDER_AXIS_WIGGLE);
-                        ortho_dist.min(diag_dist)
-                    } else {
-                        dist_to_radius
-                    };
-
-                    let excess = dist_to_radius.min(dist_to_lane).max(1);
-                    let capped_excess = excess.min(PIECE_CLOUD_CHEB_MAX_EXCESS) as i32;
-                    let mult = taper(MG_FAR_SLIDER_PENALTY_MULT, EG_FAR_SLIDER_PENALTY_MULT);
-                    let penalty =
-                        capped_excess * CLOUD_PENALTY_PER_100_VALUE * value_factor * mult / 100;
+                    let excess = dist_to_radius.min(PIECE_CLOUD_CHEB_MAX_EXCESS) as i32;
+                    let penalty = excess * CLOUD_PENALTY_PER_100_VALUE * value_factor * mult / 100;
                     piece_score -= penalty;
                 }
             }
