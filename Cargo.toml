@@ -19,6 +19,10 @@ required-features = ["search_tuning"]
 name = "apply_params"
 required-features = ["search_tuning"]
 
+[[bin]]
+name = "helpmate_solver"
+required-features = ["parallel_solver"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage)',
@@ -47,6 +51,7 @@ wasm-bindgen-rayon = { version = "1.2", features = [
     "no-bundler",
 ], optional = true }
 smallvec = { version = "1.15.1", features = ["union"] }
+num_cpus = { version = "1.16", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 serde_json = "1.0"
@@ -56,6 +61,7 @@ default = []
 eval_tuning = ["serde_json"]
 search_tuning = ["serde_json", "rand", "rayon"]
 multithreading = ["rayon", "wasm-bindgen-rayon"]
+parallel_solver = ["rayon", "num_cpus"]
 debug = ["console_error_panic_hook"]
 
 

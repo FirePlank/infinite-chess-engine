@@ -3455,7 +3455,7 @@ impl GameState {
         nodes
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     pub fn setup_position_from_icn(&mut self, position_icn: &str) {
         self.board = Board::new();
         self.special_rights.clear();
@@ -3631,7 +3631,7 @@ impl GameState {
         self.finalize_setup();
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     fn parse_icn_pieces(&mut self, piece_segment: &str) {
         for piece_def in piece_segment.split('|') {
             if piece_def.is_empty() {
@@ -3691,7 +3691,7 @@ impl GameState {
         }
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     fn finalize_setup(&mut self) {
         // Calculate initial material
         self.material_score = calculate_initial_material(&self.board);
@@ -3706,12 +3706,12 @@ impl GameState {
         self.spatial_indices = SpatialIndices::new(&self.board);
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     pub fn setup_variant(&mut self, variant: Variant) {
         self.setup_position_from_icn(variant.starting_icn());
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     pub fn setup_standard_chess(&mut self) {
         self.setup_variant(Variant::Classical);
     }
