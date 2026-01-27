@@ -224,7 +224,7 @@ struct JsFullGame {
     clock: Option<JsClock>,
     #[serde(default)]
     variant: Option<String>,
-    /// Optional strength hint from the UI/JS side (1=Relaxed, 2=Standard, 3=Maximum).
+    /// Optional strength hint from the UI/JS side (1=Easy, 2=Medium, 3=Hard).
     #[serde(default)]
     strength_level: Option<u32>,
 }

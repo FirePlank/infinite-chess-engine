@@ -489,7 +489,7 @@ async function ensureInit() {
     }
 }
 
-async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed) {
+async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed, oldStrength) {
     if (typeof wasmNew.reset_engine_state === 'function') {
         wasmNew.reset_engine_state();
     }
@@ -586,11 +586,22 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             const earlyTerminal = getTerminalResult(' (terminal state detected at start of ply)');
             if (earlyTerminal) return earlyTerminal;
 
+            // Let the appropriate engine choose a move
+            const EngineClass = isWhiteTurn
+                ? (newPlaysWhite ? EngineNew : EngineOld)
+                : (newPlaysWhite ? EngineOld : EngineNew);
+            const engineName = isWhiteTurn
+                ? (newPlaysWhite ? 'new' : 'old')
+                : (newPlaysWhite ? 'old' : 'new');
+
             // Build authoritative game input for engine search
             const engineInput = clonePosition(startPosition);
             engineInput.move_history = moveHistory.slice();
             engineInput.halfmove_clock = halfmoveClock;
             engineInput.fullmove_number = fullmoveNumber;
+            if (engineName === 'old' && oldStrength && oldStrength < 3) {
+                engineInput.strength_level = oldStrength;
+            }
             if (haveClocks) {
                 engineInput.clock = {
                     wtime: Math.floor(whiteClock),
@@ -599,14 +610,6 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                     binc: Math.floor(increment),
                 };
             }
-
-            // Let the appropriate engine choose a move
-            const EngineClass = isWhiteTurn
-                ? (newPlaysWhite ? EngineNew : EngineOld)
-                : (newPlaysWhite ? EngineOld : EngineNew);
-            const engineName = isWhiteTurn
-                ? (newPlaysWhite ? 'new' : 'old')
-                : (newPlaysWhite ? 'old' : 'new');
 
             let searchTimeMs = timePerMove;
             const engine = new EngineClass(engineInput);
@@ -1017,7 +1020,8 @@ self.onmessage = async (e) => {
                 msg.variantName || 'Classical',
                 msg.maxDepth,
                 msg.searchNoise,
-                msg.seed
+                msg.seed,
+                msg.oldStrength
             );
 
             // Timeout wrapper - treat timeout as draw

@@ -2368,9 +2368,6 @@ pub(crate) fn get_best_move_limited(
         let searcher = opt.get_or_insert_with(|| Searcher::new(max_time_ms));
 
         searcher.new_search();
-        searcher
-            .hot
-            .set_time_limits(opt_time_ms, max_time_ms, is_soft_limit);
         searcher.silent = silent;
         searcher.hot.timer.reset();
 
@@ -2393,6 +2390,16 @@ pub(crate) fn get_best_move_limited(
         };
 
         let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
+
+        // For MultiPV, we use the same optimum/maximum but disable dynamic extensions
+        searcher
+            .hot
+            .set_time_limits(opt_time_ms, max_time_ms, is_soft_limit);
+
+        if multi_pv > 1 {
+            // For MultiPV: cap dynamic time at optimum to prevent runaway extensions
+            searcher.hot.total_time_ms = opt_time_ms as f64;
+        }
 
         if multi_pv > 1 {
             let result = get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent);
@@ -2492,16 +2499,20 @@ pub(crate) fn get_best_moves_multipv_impl(
         if searcher.hot.min_depth_required == 0 && searcher.hot.time_limit_ms != u128::MAX {
             let elapsed = searcher.hot.timer.elapsed_ms() as f64;
 
+            // Hard stop at maximum time
             if elapsed >= searcher.hot.maximum_time_ms as f64 {
                 searcher.hot.stopped = true;
                 break;
             }
 
+            // Proactive stop: don't start a new iteration if we've used most of our time.
+            // Use a threshold based on soft/hard limit (more conservative for hard limits).
             let proactive_threshold = if searcher.hot.is_soft_limit {
-                0.90
+                0.76 // Stop at 76% of total_time for soft limits
             } else {
-                0.50
+                0.60 // Stop at 60% for hard limits (leave some buffer)
             };
+
             if searcher.hot.total_time_ms > 0.0
                 && elapsed > searcher.hot.total_time_ms * proactive_threshold
             {
@@ -2511,12 +2522,39 @@ pub(crate) fn get_best_moves_multipv_impl(
 
         root_scores.clear();
 
-        // Track the MultiPV alpha threshold incrementally to avoid repeated min() scans
+        // Track the MultiPV alpha threshold
         let mut multipv_alpha = -INFINITY;
+
+        // Aspiration window logic
+        let mut alpha = -INFINITY;
+        let mut beta = INFINITY;
+
+        // Only use aspiration if we have a previous best score and sufficient depth
+        if depth >= 5 && !best_lines.is_empty() {
+            let prev_score = best_lines[0].score;
+            let window = aspiration_window();
+            alpha = (prev_score - window).max(-INFINITY);
+            beta = (prev_score + window).min(INFINITY);
+        }
 
         // Search each root move (ordered by previous iteration's scores)
         for (move_idx, m) in legal_root_moves.iter().enumerate() {
+            // Strict time check *before* searching each root move
             if searcher.hot.stopped {
+                break;
+            }
+
+            let elapsed = searcher.hot.timer.elapsed_ms() as f64;
+
+            // Hard stop at maximum time
+            if searcher.hot.maximum_time_ms > 0 && elapsed > searcher.hot.maximum_time_ms as f64 {
+                searcher.hot.stopped = true;
+                break;
+            }
+
+            // Proactive stop at total_time - don't start new moves if time budget is exhausted
+            if searcher.hot.total_time_ms > 0.0 && elapsed > searcher.hot.total_time_ms {
+                searcher.hot.stopped = true;
                 break;
             }
 
@@ -2529,39 +2567,27 @@ pub(crate) fn get_best_moves_multipv_impl(
             searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
 
             // For MultiPV, we need to search all moves to get their scores.
-            // First move gets full window, subsequent moves use PVS with MultiPV-aware alpha.
-            let score = if move_idx == 0 {
-                -negamax(&mut NegamaxContext {
+            // First move gets aspiration window (or full), others use PVS logic.
+            let mut score;
+
+            if move_idx == 0 {
+                // first move: try aspiration window
+                score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
                     depth: depth - 1,
                     ply: 1,
-                    alpha: -INFINITY,
-                    beta: INFINITY,
+                    alpha: -beta,
+                    beta: -alpha,
                     allow_null: true,
                     node_type: NodeType::PV,
                     was_null_move: false,
                     excluded_move: None,
-                })
-            } else {
-                // Use PVS for efficiency with MultiPV-aware alpha bound
-                let alpha = multipv_alpha;
-
-                let mut s = -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: depth - 1,
-                    ply: 1,
-                    alpha: -alpha - 1,
-                    beta: -alpha,
-                    allow_null: true,
-                    node_type: NodeType::Cut,
-                    was_null_move: false,
-                    excluded_move: None,
                 });
-                if s > alpha && !searcher.hot.stopped {
-                    // Re-search with full window to get accurate score
-                    s = -negamax(&mut NegamaxContext {
+
+                // Fail Low or High -> Re-search with full window
+                if (score <= alpha || score >= beta) && !searcher.hot.stopped {
+                    score = -negamax(&mut NegamaxContext {
                         searcher,
                         game,
                         depth: depth - 1,
@@ -2574,7 +2600,39 @@ pub(crate) fn get_best_moves_multipv_impl(
                         excluded_move: None,
                     });
                 }
-                s
+            } else {
+                // Use PVS for efficiency with MultiPV-aware alpha bound
+                // If we haven't filled our PV slots yet, window is effectively [-INF, INF]
+                let target_alpha = multipv_alpha;
+
+                score = -negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: depth - 1,
+                    ply: 1,
+                    alpha: -target_alpha - 1,
+                    beta: -target_alpha,
+                    allow_null: true,
+                    node_type: NodeType::Cut,
+                    was_null_move: false,
+                    excluded_move: None,
+                });
+
+                if score > target_alpha && !searcher.hot.stopped {
+                    // Re-search with full window to get accurate score
+                    score = -negamax(&mut NegamaxContext {
+                        searcher,
+                        game,
+                        depth: depth - 1,
+                        ply: 1,
+                        alpha: -INFINITY,
+                        beta: INFINITY,
+                        allow_null: true,
+                        node_type: NodeType::PV,
+                        was_null_move: false,
+                        excluded_move: None,
+                    });
+                }
             };
 
             searcher.prev_move_stack[0] = prev_entry_backup;
@@ -2592,11 +2650,14 @@ pub(crate) fn get_best_moves_multipv_impl(
                 }
                 root_scores.push((*m, score, pv));
 
-                // Update multipv_alpha incrementally once we have enough candidates
+                // Update multipv_alpha: The threshold to beat is the K-th best score found so far.
                 if root_scores.len() >= multi_pv {
-                    // Find the minimum score among current candidates
-                    let worst = root_scores.iter().map(|(_, s, _)| *s).min().unwrap();
-                    multipv_alpha = worst;
+                    let mut sorted_scores: Vec<i32> =
+                        root_scores.iter().map(|(_, s, _)| *s).collect();
+                    sorted_scores.sort_unstable_by(|a, b| b.cmp(a)); // Descending
+                    if let Some(&kth_best) = sorted_scores.get(multi_pv - 1) {
+                        multipv_alpha = kth_best;
+                    }
                 }
             }
         }

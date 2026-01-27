@@ -353,10 +353,69 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* Skill level popup styles */
+    .skill-popup {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px) scale(0.95);
+      background: rgba(26, 26, 26, 0.95);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      padding: 12px 20px;
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      pointer-events: none;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .skill-popup.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0) scale(1);
+    }
+
+    .skill-popup .skill-icon {
+      font-size: 1.1rem;
+    }
+
+    .skill-popup .skill-text {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    .skill-popup .skill-level {
+      font-weight: 600;
+      background: linear-gradient(135deg, var(--accent), #a855f7);
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .skill-popup .skill-key {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      background: var(--surface-2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      border: 1px solid var(--border);
+    }
   </style>
 </head>
 
 <body>
+  <div id="skillPopup" class="skill-popup">
+    <span class="skill-icon">⚙️</span>
+    <span class="skill-text">Old Engine: <span id="skillLevel" class="skill-level">Hard</span></span>
+    <span class="skill-key">D</span>
+  </div>
   <div class="container">
     <header>
       <h1>⚡ HydroChess SPRT Tester</h1>
