@@ -4,7 +4,7 @@
 //! Uses parallel exhaustive search with a thread-safe Transposition Table.
 
 use hydrochess_wasm::{
-    board::PieceType,
+    board::{PieceType, PlayerColor},
     game::GameState,
     moves::{Move, MoveList},
     search::{INFINITY, MATE_VALUE},
@@ -232,11 +232,12 @@ struct HelpmateSolver {
     found_mate: AtomicBool,
     best_score: AtomicI32,
     target_depth: u32,
+    target_mated_side: PlayerColor,
     generation: u8,
 }
 
 impl HelpmateSolver {
-    fn new(target_depth: u32) -> Self {
+    fn new(target_depth: u32, target_mated_side: PlayerColor) -> Self {
         HelpmateSolver {
             tt: parallel_tt::TranspositionTable::new(512),
             pv_table: PvTable::new(),
@@ -244,6 +245,7 @@ impl HelpmateSolver {
             found_mate: AtomicBool::new(false),
             best_score: AtomicI32::new(-INFINITY),
             target_depth,
+            target_mated_side,
             generation: 0,
         }
     }
@@ -357,6 +359,7 @@ impl HelpmateSolver {
         }
 
         if depth <= 0 {
+            // Horizon reached without mate - failure for helpmate
             let s = -INFINITY + ply as i32;
             self.tt.store(hash, 0, s, None, self.generation);
             return s;
@@ -425,7 +428,13 @@ impl HelpmateSolver {
 
     fn terminal_score(&self, state: &GameState, ply: u32) -> i32 {
         if state.is_in_check() {
-            MATE_VALUE - ply as i32
+            // Valid mate only if the correct side is mated
+            if state.turn == self.target_mated_side {
+                MATE_VALUE - ply as i32
+            } else {
+                // Wrong side mated - treat as failure
+                -INFINITY + ply as i32
+            }
         } else {
             -INFINITY + ply as i32
         }
@@ -504,15 +513,17 @@ fn format_score(score: i32) -> String {
 struct Args {
     icn: String,
     mate_in: Option<u32>,
+    mated_side: Option<PlayerColor>,
 }
 
 fn print_help() {
     println!("=== Infinite Chess Helpmate Solver ===");
-    println!("Usage: helpmate_solver --icn \"<ICN>\" --mate-in <N>");
+    println!("Usage: helpmate_solver --icn \"<ICN>\" --mate-in <N> --mated-side <w|b>");
     println!();
     println!("Required Arguments:");
-    println!("  --icn \"<string>\"   The ICN string for the position.");
-    println!("  --mate-in <N>      Target plies to find a helpmate in.");
+    println!("  --icn \"<string>\"    The ICN string for the position.");
+    println!("  --mate-in <N>       Target plies to find a helpmate in.");
+    println!("  --mated-side <w|b>  The side to be mated (white/w or black/b).");
 }
 
 fn parse_args() -> Args {
@@ -523,6 +534,7 @@ fn parse_args() -> Args {
     }
     let mut icn = String::new();
     let mut mate_in = None;
+    let mut mated_side = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -534,6 +546,15 @@ fn parse_args() -> Args {
                 mate_in = args[i + 1].parse().ok();
                 i += 2;
             }
+            "--mated-side" if i + 1 < args.len() => {
+                let s = args[i + 1].to_lowercase();
+                if s.starts_with('w') {
+                    mated_side = Some(PlayerColor::White);
+                } else if s.starts_with('b') {
+                    mated_side = Some(PlayerColor::Black);
+                }
+                i += 2;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -541,16 +562,21 @@ fn parse_args() -> Args {
             _ => i += 1,
         }
     }
-    Args { icn, mate_in }
+    Args {
+        icn,
+        mate_in,
+        mated_side,
+    }
 }
 
 fn main() {
     let args = parse_args();
-    if args.icn.is_empty() || args.mate_in.is_none() {
+    if args.icn.is_empty() || args.mate_in.is_none() || args.mated_side.is_none() {
         print_help();
         std::process::exit(1);
     }
     let mate_in = args.mate_in.unwrap();
+    let mated_side = args.mated_side.unwrap();
 
     let mut game = GameState::new();
     game.setup_position_from_icn(&args.icn);
@@ -559,11 +585,14 @@ fn main() {
     println!("=== HELPMATE SOLVER ===");
     println!("Board: {} pieces", game.board.iter().count());
     println!("Turn: {:?}", game.turn);
-    println!("Target: Helpmate in {} plies", mate_in);
+    println!(
+        "Target: Helpmate in {} plies (Mate {:?})",
+        mate_in, mated_side
+    );
     println!("Threads: {}", rayon::current_num_threads());
     println!();
 
-    let mut solver = HelpmateSolver::new(mate_in);
+    let mut solver = HelpmateSolver::new(mate_in, mated_side);
     let start = Instant::now();
     let result = solver.solve(&mut game);
     let elapsed = start.elapsed();
