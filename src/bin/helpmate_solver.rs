@@ -10,6 +10,7 @@ use hydrochess_wasm::{
     search::{INFINITY, MATE_VALUE},
 };
 use rayon::prelude::*;
+use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -312,7 +313,15 @@ impl HelpmateSolver {
                 if self.found_mate.load(Ordering::Relaxed) {
                     return (-INFINITY, m);
                 }
-                let score = self.search_sequential(&mut local_state, depth - 1, 1);
+                let mut history = FxHashMap::default();
+                let mut killers = [[None; 2]; 64];
+                let score = self.search_sequential(
+                    &mut local_state,
+                    depth - 1,
+                    1,
+                    &mut history,
+                    &mut killers,
+                );
                 (score, m)
             })
             .collect();
@@ -339,7 +348,14 @@ impl HelpmateSolver {
         best_score
     }
 
-    fn search_sequential(&self, state: &mut GameState, depth: i32, ply: u32) -> i32 {
+    fn search_sequential(
+        &self,
+        state: &mut GameState,
+        depth: i32,
+        ply: u32,
+        history: &mut FxHashMap<(i16, i16, i16, i16), i32>,
+        killers: &mut [[Option<Move>; 2]; 64],
+    ) -> i32 {
         self.nodes.fetch_add(1, Ordering::Relaxed);
 
         if self.found_mate.load(Ordering::Relaxed) {
@@ -366,7 +382,7 @@ impl HelpmateSolver {
         }
 
         // Simple move ordering
-        let mut scored_moves: Vec<_> = moves
+        let mut scored_moves: SmallVec<[(Move, i32); 128]> = moves
             .iter()
             .map(|m| {
                 let mut s = 0i32;
@@ -379,9 +395,40 @@ impl HelpmateSolver {
                         s += 1000000;
                     }
                 }
-                if let Some(p) = state.board.get_piece(m.to.x, m.to.y) {
-                    s += 10000 + piece_value(p.piece_type()) * 10;
+                // History score
+                if let Some(&h) = history.get(&(
+                    m.from.x as i16,
+                    m.from.y as i16,
+                    m.to.x as i16,
+                    m.to.y as i16,
+                )) {
+                    s += h.min(1_000_000);
                 }
+
+                // Killer Move score
+                if ply < 64 {
+                    if let Some(km) = killers[ply as usize][0] {
+                        if km.from == m.from && km.to == m.to {
+                            s += 2_000_000;
+                        }
+                    } else if let Some(km) = killers[ply as usize][1] {
+                        if km.from == m.from && km.to == m.to {
+                            s += 1_900_000;
+                        }
+                    }
+                }
+
+                // Check bonus & Capture bonus
+                if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
+                {
+                    s += 50_000;
+                }
+
+                // Capture bonus (simple lookahead)
+                if let Some(p) = state.board.get_piece(m.to.x, m.to.y) {
+                    s += 10_000 + piece_value(p.piece_type()) * 10;
+                }
+
                 (*m, s)
             })
             .collect();
@@ -389,17 +436,29 @@ impl HelpmateSolver {
 
         let mut best_score = -INFINITY;
         let mut best_move = None;
-        let mut legal_count = 0;
+        let mut searched_count = 0;
+        let mut real_legal_move_exists = false;
 
         for (m, _) in scored_moves {
+            // At depth 1 (last move), moves MUST check the opponent to allow mate.
+            if depth == 1
+                && !hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
+                    state, &m,
+                )
+            {
+                continue;
+            }
+
             let undo = state.make_move(&m);
             if state.is_move_illegal() {
                 state.undo_move(&m, undo);
                 continue;
             }
-            legal_count += 1;
+            real_legal_move_exists = true;
 
-            let score = self.search_sequential(state, depth - 1, ply + 1);
+            searched_count += 1;
+
+            let score = self.search_sequential(state, depth - 1, ply + 1, history, killers);
             state.undo_move(&m, undo);
 
             if score > best_score {
@@ -412,25 +471,58 @@ impl HelpmateSolver {
             }
         }
 
-        if legal_count == 0 {
-            let s = self.terminal_score(state, ply);
-            self.tt.store(hash, depth, s, None, self.generation);
-            return s;
+        if searched_count == 0 {
+            if real_legal_move_exists {
+                // We had legal moves but pruned them all. This is a search failure, not a mate.
+                let s = -INFINITY + ply as i32;
+                self.tt.store(hash, depth, s, None, self.generation);
+                return s;
+            } else {
+                let s = self.terminal_score(state, ply);
+                self.tt.store(hash, depth, s, None, self.generation);
+                return s;
+            }
         }
 
         self.tt
             .store(hash, depth, best_score, best_move.as_ref(), self.generation);
         if let Some(ref m) = best_move {
             self.pv_table.store(hash, depth, best_score, m);
+            // Update history
+            *history
+                .entry((
+                    m.from.x as i16,
+                    m.from.y as i16,
+                    m.to.x as i16,
+                    m.to.y as i16,
+                ))
+                .or_insert(0) += depth as i32 * depth as i32;
+
+            // Update killers
+            if ply < 64 {
+                if killers[ply as usize][0].map_or(true, |k| k.from != m.from || k.to != m.to) {
+                    killers[ply as usize][1] = killers[ply as usize][0];
+                    killers[ply as usize][0] = Some(*m);
+                }
+            }
         }
         best_score
     }
 
-    fn terminal_score(&self, state: &GameState, ply: u32) -> i32 {
+    fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
         if state.is_in_check() {
             // Valid mate only if the correct side is mated
             if state.turn == self.target_mated_side {
-                MATE_VALUE - ply as i32
+                // Verify it's actually checkmate
+                let mut moves = hydrochess_wasm::moves::MoveList::new();
+                state.get_legal_moves_into(&mut moves);
+
+                if moves.is_empty() {
+                    MATE_VALUE - ply as i32
+                } else {
+                    // Check but not mate
+                    -INFINITY + ply as i32
+                }
             } else {
                 // Wrong side mated - treat as failure
                 -INFINITY + ply as i32
