@@ -43,30 +43,24 @@ const EN_PASSANT_KEY_MIXER: u64 = 0xCAFEBABE87654321;
 /// are kept distinct; far-away squares are wrapped into BUCKETS-sized
 /// buckets at the edges, preserving some translation invariance.
 #[inline(always)]
-fn normalize_coord(coord: i64) -> i32 {
-    const BOUND: i64 = 150;
-    const BUCKETS: i64 = 8;
-
-    if coord.abs() <= BOUND {
-        coord as i32
-    } else {
-        let sign = coord.signum();
-        let delta = (coord - sign * BOUND) % BUCKETS;
-        (sign * BOUND + delta) as i32
-    }
+fn normalize_coord(coord: i64) -> u64 {
+    coord as u64
 }
 
 /// Hash a coordinate into a u64
-/// Uses a fast mixing function on *bucketed* coordinates, preserving
-/// the infinite-board semantics while being efficient for incremental use.
+/// Uses a fast mixing function on full coordinates.
 #[inline(always)]
 pub fn hash_coordinate(x: i64, y: i64) -> u64 {
-    let nx = normalize_coord(x) as u64;
-    let ny = normalize_coord(y) as u64;
+    let nx = normalize_coord(x);
+    let ny = normalize_coord(y);
 
-    // Fast mixing - fewer operations, good enough distribution
-    let h = nx.wrapping_mul(0x517cc1b727220a95) ^ ny.wrapping_mul(0x9e3779b97f4a7c15);
-    h ^ (h >> 32)
+    // MurmurHash3-style finalizer for good mixing of 64-bit coordinates
+    let mut h = nx ^ (ny.rotate_left(32));
+    h = h.wrapping_mul(0xff51afd7ed558ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ceb9fe1a85ec53);
+    h ^= h >> 33;
+    h
 }
 
 /// Get the Zobrist key for a piece at a position

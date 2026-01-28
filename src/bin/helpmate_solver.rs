@@ -4,7 +4,7 @@
 //! Uses parallel exhaustive search with a thread-safe Transposition Table.
 
 use hydrochess_wasm::{
-    board::{PieceType, PlayerColor},
+    board::{Coordinate, PlayerColor},
     game::GameState,
     moves::{Move, MoveList},
     search::{INFINITY, MATE_VALUE},
@@ -131,7 +131,6 @@ mod parallel_tt {
 
             let mut replace_idx = 0;
             let mut found_slot = false;
-
             for (i, e) in bucket.entries.iter().enumerate() {
                 if e.key == hash || e.is_empty() {
                     replace_idx = i;
@@ -143,7 +142,12 @@ mod parallel_tt {
             if !found_slot {
                 let mut worst_v = i32::MAX;
                 for (i, e) in bucket.entries.iter().enumerate() {
-                    let v = (e.depth as i32) - (generation.wrapping_sub(e.generation) as i32 * 20);
+                    let mut v =
+                        (e.depth as i32) - (generation.wrapping_sub(e.generation) as i32 * 10);
+                    // Protect mate scores from replacement
+                    if e.score >= MATE_VALUE - 1000 {
+                        v += 100;
+                    }
                     if v < worst_v {
                         worst_v = v;
                         replace_idx = i;
@@ -177,77 +181,42 @@ mod parallel_tt {
     }
 }
 
-use rustc_hash::FxHashMap;
-use std::sync::Mutex;
-
-// ============================================================================
-// PV TABLE - Stores best moves for PV extraction (score+depth priority)
-// ============================================================================
-
-struct PvTable {
-    table: Mutex<FxHashMap<u64, (i32, i32, i16, i16, i16, i16)>>, // hash -> (depth, score, fx, fy, tx, ty)
-}
-
-impl PvTable {
-    fn new() -> Self {
-        PvTable {
-            table: Mutex::new(FxHashMap::default()),
-        }
-    }
-
-    fn store(&self, hash: u64, depth: i32, score: i32, m: &Move) {
-        let mut t = self.table.lock().unwrap();
-        let should_replace = match t.get(&hash) {
-            Some(&(d, s, _, _, _, _)) => depth > d || (depth == d && score > s),
-            None => true,
-        };
-        if should_replace {
-            t.insert(
-                hash,
-                (
-                    depth,
-                    score,
-                    m.from.x as i16,
-                    m.from.y as i16,
-                    m.to.x as i16,
-                    m.to.y as i16,
-                ),
-            );
-        }
-    }
-
-    fn probe(&self, hash: u64) -> Option<(i16, i16, i16, i16)> {
-        let t = self.table.lock().unwrap();
-        t.get(&hash).map(|&(_, _, fx, fy, tx, ty)| (fx, fy, tx, ty))
-    }
-}
-
 // ============================================================================
 // SOLVER
 // ============================================================================
 
 struct HelpmateSolver {
     tt: parallel_tt::TranspositionTable,
-    pv_table: PvTable,
     nodes: AtomicU64,
     found_mate: AtomicBool,
     best_score: AtomicI32,
     target_depth: u32,
     target_mated_side: PlayerColor,
     generation: u8,
+    history: Vec<AtomicI32>,
+    killers: Vec<[AtomicU64; 2]>,
 }
 
 impl HelpmateSolver {
-    fn new(target_depth: u32, target_mated_side: PlayerColor) -> Self {
-        HelpmateSolver {
-            tt: parallel_tt::TranspositionTable::new(512),
-            pv_table: PvTable::new(),
+    pub fn new(mate_in: u32, target_mated_side: PlayerColor) -> Self {
+        let mut history = Vec::with_capacity(32768);
+        for _ in 0..32768 {
+            history.push(AtomicI32::new(0));
+        }
+        let mut killers = Vec::with_capacity(64);
+        for _ in 0..64 {
+            killers.push([AtomicU64::new(0), AtomicU64::new(0)]);
+        }
+        Self {
+            tt: parallel_tt::TranspositionTable::new(128), // 128MB TT
+            target_depth: mate_in,
+            target_mated_side,
             nodes: AtomicU64::new(0),
             found_mate: AtomicBool::new(false),
             best_score: AtomicI32::new(-INFINITY),
-            target_depth,
-            target_mated_side,
             generation: 0,
+            history,
+            killers,
         }
     }
 
@@ -255,14 +224,18 @@ impl HelpmateSolver {
         self.found_mate.store(false, Ordering::SeqCst);
         self.best_score.store(-INFINITY, Ordering::SeqCst);
 
+        // Force Hash Consistency at Root
+        state.recompute_hash();
+
         let target = self.target_depth as i32;
         let mut best = -INFINITY;
         let start = Instant::now();
 
         // Iterative deepening (for move ordering and PV consistency)
-        for d in 1..=target {
+        for depth in 1..=target {
+            state.recompute_hash();
             self.generation = self.generation.wrapping_add(1);
-            let score = self.parallel_root_search(state, d);
+            let score = self.parallel_root_search(state, depth);
             best = score;
 
             let elapsed = start.elapsed().as_secs_f64().max(0.001);
@@ -271,7 +244,7 @@ impl HelpmateSolver {
 
             println!(
                 "info depth {} score {} nodes {} time {:.2}s nps {:.0}",
-                d,
+                depth,
                 format_score(score),
                 nodes,
                 elapsed,
@@ -287,9 +260,87 @@ impl HelpmateSolver {
         if best > -INFINITY { Some(best) } else { None }
     }
 
-    fn parallel_root_search(&self, state: &mut GameState, depth: i32) -> i32 {
+    // Fast check for any legal move. Stops at first found.
+    fn has_legal_moves(&self, state: &mut GameState) -> bool {
         let mut moves = MoveList::new();
         state.get_legal_moves_into(&mut moves);
+        moves.len() > 0
+    }
+
+    fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
+        if state.is_in_check() && state.turn == self.target_mated_side {
+            if !self.has_legal_moves(state) {
+                return MATE_VALUE - ply as i32;
+            }
+        }
+        -INFINITY + ply as i32
+    }
+
+    fn generate_helpmate_moves(&self, state: &GameState, depth: i32) -> SmallVec<[Move; 128]> {
+        let mut moves = SmallVec::new();
+
+        let tk = match self.target_mated_side {
+            PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            _ => Coordinate::new(0, 0),
+        };
+        let ok = if state.turn == PlayerColor::White {
+            state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
+        } else {
+            state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
+        };
+
+        let ml = (depth + 1) / 2;
+        let b = 2;
+        let min_x = tk.x.min(ok.x) - (ml * 2 + b) as i64;
+        let max_x = tk.x.max(ok.x) + (ml * 2 + b) as i64;
+        let min_y = tk.y.min(ok.y) - (ml * 2 + b) as i64;
+        let max_y = tk.y.max(ok.y) + (ml * 2 + b) as i64;
+
+        let ctx = hydrochess_wasm::moves::MoveGenContext {
+            special_rights: &state.special_rights,
+            en_passant: &state.en_passant,
+            game_rules: &state.game_rules,
+            indices: &state.spatial_indices,
+            enemy_king_pos: Some(&ok),
+        };
+
+        let is_white = state.turn == PlayerColor::White;
+        let mut piece_buf = MoveList::new();
+
+        for (px, py, piece) in state.board.iter_pieces_by_color(is_white) {
+            let in_z = px >= min_x && px <= max_x && py >= min_y && py <= max_y;
+            let pt = piece.piece_type();
+
+            if !in_z {
+                if !hydrochess_wasm::attacks::is_slider(pt) {
+                    continue;
+                }
+                let ax = (px >= min_x && px <= max_x) || px == tk.x || px == ok.x;
+                let ay = (py >= min_y && py <= max_y) || py == tk.y || py == ok.y;
+                let ad = (px - tk.x).abs() == (py - tk.y).abs()
+                    || (px - ok.x).abs() == (py - ok.y).abs();
+                if !ax && !ay && !ad {
+                    continue;
+                }
+            }
+
+            piece_buf.clear();
+            hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+                &state.board,
+                &piece,
+                &Coordinate::new(px, py),
+                &ctx,
+                &mut piece_buf,
+            );
+            moves.extend_from_slice(&piece_buf);
+        }
+        moves
+    }
+
+    fn parallel_root_search(&self, state: &mut GameState, depth: i32) -> i32 {
+        // Use custom generator
+        let moves = self.generate_helpmate_moves(state, depth);
 
         let work_items: Vec<_> = moves
             .iter()
@@ -304,6 +355,7 @@ impl HelpmateSolver {
             .collect();
 
         if work_items.is_empty() {
+            // In root, if no moves, check terminal state
             return self.terminal_score(state, 0);
         }
 
@@ -313,15 +365,7 @@ impl HelpmateSolver {
                 if self.found_mate.load(Ordering::Relaxed) {
                     return (-INFINITY, m);
                 }
-                let mut history = FxHashMap::default();
-                let mut killers = [[None; 2]; 64];
-                let score = self.search_sequential(
-                    &mut local_state,
-                    depth - 1,
-                    1,
-                    &mut history,
-                    &mut killers,
-                );
+                let score = self.search_sequential(&mut local_state, depth - 1, 1);
                 (score, m)
             })
             .collect();
@@ -336,26 +380,40 @@ impl HelpmateSolver {
             }
         }
 
-        if let Some(m) = best_move {
-            self.tt
-                .store(state.hash, depth, best_score, Some(&m), self.generation);
-            self.pv_table.store(state.hash, depth, best_score, &m);
-        } else {
-            self.tt
-                .store(state.hash, depth, best_score, None, self.generation);
-        }
+        self.tt.store(
+            state.hash,
+            depth,
+            best_score,
+            best_move.as_ref(),
+            self.generation,
+        );
 
         best_score
     }
 
-    fn search_sequential(
-        &self,
-        state: &mut GameState,
-        depth: i32,
-        ply: u32,
-        history: &mut FxHashMap<(i16, i16, i16, i16), i32>,
-        killers: &mut [[Option<Move>; 2]; 64],
-    ) -> i32 {
+    #[inline(always)]
+    fn score_to_tt(score: i32, ply: u32) -> i32 {
+        if score >= MATE_VALUE - 1000 {
+            score + ply as i32
+        } else if score <= -MATE_VALUE + 1000 {
+            score - ply as i32
+        } else {
+            score
+        }
+    }
+
+    #[inline(always)]
+    fn score_from_tt(val: i32, ply: u32) -> i32 {
+        if val >= MATE_VALUE - 1000 {
+            val - ply as i32
+        } else if val <= -MATE_VALUE + 1000 {
+            val + ply as i32
+        } else {
+            val
+        }
+    }
+
+    fn search_sequential(&self, state: &mut GameState, depth: i32, ply: u32) -> i32 {
         self.nodes.fetch_add(1, Ordering::Relaxed);
 
         if self.found_mate.load(Ordering::Relaxed) {
@@ -363,90 +421,129 @@ impl HelpmateSolver {
         }
 
         let hash = state.hash;
+
+        if let Some((raw_score, _)) = self.tt.probe(hash, depth) {
+            if raw_score != i32::MIN {
+                let tt_score = Self::score_from_tt(raw_score, ply);
+                if tt_score < MATE_VALUE - 1000 {
+                    return tt_score;
+                }
+            }
+        }
+
+        // Get TT move for ordering (probe at depth 0 to always get move hint)
         let tt_move = self.tt.probe(hash, 0).and_then(|(_, m)| m);
 
-        let mut moves = MoveList::new();
-        state.get_legal_moves_into(&mut moves);
-
-        if moves.is_empty() {
-            let s = self.terminal_score(state, ply);
-            self.tt.store(hash, depth, s, None, self.generation);
-            return s;
-        }
-
         if depth <= 0 {
-            // Horizon reached without mate - failure for helpmate
-            let s = -INFINITY + ply as i32;
-            self.tt.store(hash, 0, s, None, self.generation);
-            return s;
+            return self.terminal_score(state, ply);
         }
 
-        // Simple move ordering
-        let mut scored_moves: SmallVec<[(Move, i32); 128]> = moves
+        let moves = self.generate_helpmate_moves(state, depth);
+        if moves.is_empty() {
+            return self.terminal_score(state, ply);
+        }
+
+        let target_king_pos = match self.target_mated_side {
+            PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            _ => Coordinate::new(0, 0),
+        };
+        let opp_king = if state.turn == PlayerColor::White {
+            state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
+        } else {
+            state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
+        };
+
+        // Score and Order
+        let ply_idx = (ply as usize).min(63);
+        let k1_val = self.killers[ply_idx][0].load(Ordering::Relaxed);
+        let k2_val = self.killers[ply_idx][1].load(Ordering::Relaxed);
+
+        let mut scored_moves: SmallVec<[(Move, i32); 64]> = moves
             .iter()
             .map(|m| {
-                let mut s = 0i32;
+                let mut score = 0;
+                let dist = (m.to.x - opp_king.x).abs().max((m.to.y - opp_king.y).abs());
+                let target_dist = (m.to.x - target_king_pos.x)
+                    .abs()
+                    .max((m.to.y - target_king_pos.y).abs());
+
+                // Atomic Killers check
+                let m_val = (m.from.x as u16 as u64)
+                    | ((m.from.y as u16 as u64) << 16)
+                    | ((m.to.x as u16 as u64) << 32)
+                    | ((m.to.y as u16 as u64) << 48);
+                if m_val == k1_val {
+                    score += 900_000;
+                } else if m_val == k2_val {
+                    score += 800_000;
+                }
+
+                if state.turn == self.target_mated_side {
+                    if target_dist <= 2 {
+                        score += 50_000;
+                    }
+                } else {
+                    if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
+                        state, m,
+                    ) {
+                        score += 1_000_000;
+                    }
+                    if target_dist <= 2 {
+                        score += 30_000;
+                    }
+                    if dist <= 2 {
+                        score += 20_000;
+                    }
+                }
+
                 if let Some((fx, fy, tx, ty)) = tt_move {
                     if m.from.x as i16 == fx
                         && m.from.y as i16 == fy
                         && m.to.x as i16 == tx
                         && m.to.y as i16 == ty
                     {
-                        s += 1000000;
-                    }
-                }
-                // History score
-                if let Some(&h) = history.get(&(
-                    m.from.x as i16,
-                    m.from.y as i16,
-                    m.to.x as i16,
-                    m.to.y as i16,
-                )) {
-                    s += h.min(1_000_000);
-                }
-
-                // Killer Move score
-                if ply < 64 {
-                    if let Some(km) = killers[ply as usize][0] {
-                        if km.from == m.from && km.to == m.to {
-                            s += 2_000_000;
-                        }
-                    } else if let Some(km) = killers[ply as usize][1] {
-                        if km.from == m.from && km.to == m.to {
-                            s += 1_900_000;
-                        }
+                        score += 2_000_000;
                     }
                 }
 
-                // Check bonus & Capture bonus
-                if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
-                {
-                    s += 50_000;
-                }
+                let h_idx = ((m.from.x ^ m.from.y ^ m.to.x ^ m.to.y) as usize) & 32767;
+                let h_score = self.history[h_idx].load(Ordering::Relaxed);
+                score += h_score.min(200_000);
 
-                // Capture bonus (simple lookahead)
-                if let Some(p) = state.board.get_piece(m.to.x, m.to.y) {
-                    s += 10_000 + piece_value(p.piece_type()) * 10;
-                }
-
-                (*m, s)
+                (*m, score)
             })
             .collect();
+
         scored_moves.sort_unstable_by_key(|(_, s)| -s);
 
         let mut best_score = -INFINITY;
         let mut best_move = None;
         let mut searched_count = 0;
-        let mut real_legal_move_exists = false;
+        let mut real_legal = false;
 
-        for (m, _) in scored_moves {
-            // At depth 1 (last move), moves MUST check the opponent to allow mate.
-            if depth == 1
-                && !hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
+        for (m, _score) in scored_moves {
+            // === DEPTH-BASED PRUNING ===
+            // Depth 1: Mating side MUST give check
+            if depth == 1 && state.turn != self.target_mated_side {
+                if !hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
                     state, &m,
-                )
-            {
-                continue;
+                ) {
+                    continue;
+                }
+            }
+
+            // Depth 2: Mated side moves, then mating side must check. Prioritize moves near target king.
+            if depth == 2 && state.turn == self.target_mated_side {
+                let king_dist = (m.to.x - target_king_pos.x)
+                    .abs()
+                    .max((m.to.y - target_king_pos.y).abs());
+
+                // If this is a king move that escapes too far, skip
+                if m.piece.piece_type() == hydrochess_wasm::board::PieceType::King && king_dist > 3
+                {
+                    continue;
+                }
             }
 
             let undo = state.make_move(&m);
@@ -454,11 +551,10 @@ impl HelpmateSolver {
                 state.undo_move(&m, undo);
                 continue;
             }
-            real_legal_move_exists = true;
-
+            real_legal = true;
             searched_count += 1;
 
-            let score = self.search_sequential(state, depth - 1, ply + 1, history, killers);
+            let score = self.search_sequential(state, depth - 1, ply + 1);
             state.undo_move(&m, undo);
 
             if score > best_score {
@@ -466,70 +562,64 @@ impl HelpmateSolver {
                 best_move = Some(m);
             }
 
-            if best_score >= MATE_VALUE - ply as i32 - 1 {
+            if score >= MATE_VALUE - ply as i32 {
+                self.found_mate.store(true, Ordering::SeqCst);
                 break;
             }
         }
 
         if searched_count == 0 {
-            if real_legal_move_exists {
+            if real_legal {
                 // We had legal moves but pruned them all. This is a search failure, not a mate.
                 let s = -INFINITY + ply as i32;
-                self.tt.store(hash, depth, s, None, self.generation);
+                self.tt.store(
+                    hash,
+                    depth,
+                    Self::score_to_tt(s, ply),
+                    None,
+                    self.generation,
+                );
                 return s;
             } else {
                 let s = self.terminal_score(state, ply);
-                self.tt.store(hash, depth, s, None, self.generation);
+                self.tt.store(
+                    hash,
+                    depth,
+                    Self::score_to_tt(s, ply),
+                    None,
+                    self.generation,
+                );
                 return s;
             }
         }
 
-        self.tt
-            .store(hash, depth, best_score, best_move.as_ref(), self.generation);
-        if let Some(ref m) = best_move {
-            self.pv_table.store(hash, depth, best_score, m);
-            // Update history
-            *history
-                .entry((
-                    m.from.x as i16,
-                    m.from.y as i16,
-                    m.to.x as i16,
-                    m.to.y as i16,
-                ))
-                .or_insert(0) += depth as i32 * depth as i32;
+        self.tt.store(
+            hash,
+            depth,
+            Self::score_to_tt(best_score, ply),
+            best_move.as_ref(),
+            self.generation,
+        );
 
-            // Update killers
-            if ply < 64 {
-                if killers[ply as usize][0].map_or(true, |k| k.from != m.from || k.to != m.to) {
-                    killers[ply as usize][1] = killers[ply as usize][0];
-                    killers[ply as usize][0] = Some(*m);
+        if let Some(ref m) = best_move {
+            // Update history (atomic)
+            let h_idx = ((m.from.x ^ m.from.y ^ m.to.x ^ m.to.y) as usize) & 32767;
+            self.history[h_idx].fetch_add(depth * depth, Ordering::Relaxed);
+
+            // Update killers (atomic)
+            if ply_idx < 64 {
+                let m_val = (m.from.x as u16 as u64)
+                    | ((m.from.y as u16 as u64) << 16)
+                    | ((m.to.x as u16 as u64) << 32)
+                    | ((m.to.y as u16 as u64) << 48);
+                let k = &self.killers[ply_idx];
+                if k[0].load(Ordering::Relaxed) != m_val {
+                    k[1].store(k[0].load(Ordering::Relaxed), Ordering::Relaxed);
+                    k[0].store(m_val, Ordering::Relaxed);
                 }
             }
         }
         best_score
-    }
-
-    fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
-        if state.is_in_check() {
-            // Valid mate only if the correct side is mated
-            if state.turn == self.target_mated_side {
-                // Verify it's actually checkmate
-                let mut moves = hydrochess_wasm::moves::MoveList::new();
-                state.get_legal_moves_into(&mut moves);
-
-                if moves.is_empty() {
-                    MATE_VALUE - ply as i32
-                } else {
-                    // Check but not mate
-                    -INFINITY + ply as i32
-                }
-            } else {
-                // Wrong side mated - treat as failure
-                -INFINITY + ply as i32
-            }
-        } else {
-            -INFINITY + ply as i32
-        }
     }
 
     fn extract_pv(&self, state: &mut GameState, _target_score: i32) -> Vec<Move> {
@@ -537,8 +627,9 @@ impl HelpmateSolver {
         let mut current_state = state.clone();
 
         for _ in 0..self.target_depth {
-            // Get move from PV table
-            if let Some((fx, fy, tx, ty)) = self.pv_table.probe(current_state.hash) {
+            let move_coords = self.tt.probe(current_state.hash, 0).and_then(|(_, m)| m);
+
+            if let Some((fx, fy, tx, ty)) = move_coords {
                 let mut moves = MoveList::new();
                 current_state.get_legal_moves_into(&mut moves);
 
@@ -574,23 +665,6 @@ impl HelpmateSolver {
 // ============================================================================
 // UTILITIES & MAIN
 // ============================================================================
-
-fn piece_value(pt: PieceType) -> i32 {
-    match pt {
-        PieceType::Pawn => 1,
-        PieceType::Knight => 3,
-        PieceType::Bishop => 4,
-        PieceType::Hawk => 4,
-        PieceType::Rook => 5,
-        PieceType::Archbishop => 7,
-        PieceType::Chancellor => 8,
-        PieceType::Queen => 9,
-        PieceType::RoyalQueen => 9,
-        PieceType::Amazon => 9,
-        PieceType::King => 100,
-        _ => 0,
-    }
-}
 
 fn format_score(score: i32) -> String {
     if score >= MATE_VALUE - 1000 {
@@ -673,40 +747,47 @@ fn main() {
     let mut game = GameState::new();
     game.setup_position_from_icn(&args.icn);
 
-    println!();
-    println!("=== HELPMATE SOLVER ===");
-    println!("Board: {} pieces", game.board.iter().count());
-    println!("Turn: {:?}", game.turn);
     println!(
-        "Target: Helpmate in {} plies (Mate {:?})",
-        mate_in, mated_side
+        "\n=== HELPMATE SOLVER ===\nBoard: {} pieces\nTurn: {:?}\nTarget: Helpmate in {} plies (Mate {:?})\nThreads: {}\n",
+        game.board.iter().count(),
+        game.turn,
+        mate_in,
+        mated_side,
+        rayon::current_num_threads()
     );
-    println!("Threads: {}", rayon::current_num_threads());
-    println!();
 
     let mut solver = HelpmateSolver::new(mate_in, mated_side);
     let start = Instant::now();
-    let result = solver.solve(&mut game);
+    let result = solver.solve(&mut game.clone());
     let elapsed = start.elapsed();
 
-    println!();
-    println!("=== RESULT ===");
-    match result {
-        Some(score) if score >= MATE_VALUE - 1000 => {
-            println!("✓ FOUND HELPMATE in {} plies!", MATE_VALUE - score);
+    if let Some(score) = result {
+        if score >= MATE_VALUE - 1000 {
             let pv = solver.extract_pv(&mut game, score);
+            println!(
+                "\n=== RESULT ===\n✓ FOUND HELPMATE in {} plies!",
+                MATE_VALUE - score
+            );
             let pv_str: Vec<_> = pv
                 .iter()
                 .map(|m| format!("({},{})->({},{})", m.from.x, m.from.y, m.to.x, m.to.y))
                 .collect();
             println!("  PV: {}", pv_str.join(" "));
+            println!(
+                "\nTime: {:.2?}\nNodes: {}\nNPS: {:.0}",
+                elapsed,
+                solver.nodes.load(Ordering::Relaxed),
+                solver.nodes.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(0.001)
+            );
+            return;
         }
-        _ => println!("✗ No helpmate found in {} plies", mate_in),
     }
 
-    println!();
-    println!("Time: {:.2?}", elapsed);
-    println!("Nodes: {}", solver.nodes.load(Ordering::Relaxed));
-    let nps = solver.nodes.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(0.001);
-    println!("NPS: {:.0}", nps);
+    println!(
+        "\n=== RESULT ===\n✗ No helpmate found in {} plies\n\nTime: {:.2?}\nNodes: {}\nNPS: {:.0}",
+        mate_in,
+        elapsed,
+        solver.nodes.load(Ordering::Relaxed),
+        solver.nodes.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(0.001)
+    );
 }
