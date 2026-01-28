@@ -801,7 +801,7 @@ impl HelpmateSolver {
 
 fn format_score(score: i32) -> String {
     if score >= MATE_VALUE - 1000 {
-        format!("mate {} plies", MATE_VALUE - score)
+        format!("mate {}", (MATE_VALUE - score + 1) / 2)
     } else if score <= -INFINITY + 1000 {
         "fail".to_string()
     } else {
@@ -879,6 +879,53 @@ fn main() {
 
     let mut game = GameState::new();
     game.setup_position_from_icn(&args.icn);
+
+    // Find the bounding box of all pieces and add a small buffer.
+    // Intersect this with the existing world border to get the tightest possible bounds.
+    let mut min_x = i64::MAX;
+    let mut max_x = i64::MIN;
+    let mut min_y = i64::MAX;
+    let mut max_y = i64::MIN;
+    let mut has_pieces = false;
+
+    for ((x, y), _piece) in game.board.iter() {
+        has_pieces = true;
+        if *x < min_x {
+            min_x = *x;
+        }
+        if *x > max_x {
+            max_x = *x;
+        }
+        if *y < min_y {
+            min_y = *y;
+        }
+        if *y > max_y {
+            max_y = *y;
+        }
+    }
+
+    if has_pieces {
+        let buffer = 2;
+        min_x = min_x.saturating_sub(buffer);
+        max_x = max_x.saturating_add(buffer);
+        min_y = min_y.saturating_sub(buffer);
+        max_y = max_y.saturating_add(buffer);
+
+        let (cur_min_x, cur_max_x, cur_min_y, cur_max_y) =
+            hydrochess_wasm::moves::get_coord_bounds();
+
+        let final_min_x = min_x.max(cur_min_x);
+        let final_max_x = max_x.min(cur_max_x);
+        let final_min_y = min_y.max(cur_min_y);
+        let final_max_y = max_y.min(cur_max_y);
+
+        hydrochess_wasm::moves::set_world_bounds(
+            final_min_x,
+            final_max_x,
+            final_min_y,
+            final_max_y,
+        );
+    }
 
     println!(
         "\n=== HELPMATE SOLVER ===\nBoard: {} pieces\nTurn: {:?}\nTarget: Helpmate in {} plies (Mate {:?})\nThreads: {}\n",
