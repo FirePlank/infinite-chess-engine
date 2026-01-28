@@ -132,7 +132,26 @@ mod parallel_tt {
             let mut replace_idx = 0;
             let mut found_slot = false;
             for (i, e) in bucket.entries.iter().enumerate() {
-                if e.key == hash || e.is_empty() {
+                if e.key == hash && !e.is_empty() {
+                    // Match found! Only overwrite if NEW is 'better'
+                    let old_is_mate = e.score >= MATE_VALUE - 1000;
+                    let new_is_mate = score >= MATE_VALUE - 1000;
+
+                    if old_is_mate && !new_is_mate {
+                        bucket.unlock();
+                        return; // Protect mate score
+                    }
+
+                    if (depth as u8) < e.depth && e.generation == generation && !new_is_mate {
+                        bucket.unlock();
+                        return; // Don't downgrade depth in same generation
+                    }
+
+                    replace_idx = i;
+                    found_slot = true;
+                    break;
+                }
+                if e.is_empty() {
                     replace_idx = i;
                     found_slot = true;
                     break;
@@ -144,9 +163,9 @@ mod parallel_tt {
                 for (i, e) in bucket.entries.iter().enumerate() {
                     let mut v =
                         (e.depth as i32) - (generation.wrapping_sub(e.generation) as i32 * 10);
-                    // Protect mate scores from replacement
+                    // Strictly protect mate scores
                     if e.score >= MATE_VALUE - 1000 {
-                        v += 100;
+                        v += 10000;
                     }
                     if v < worst_v {
                         worst_v = v;
@@ -208,7 +227,7 @@ impl HelpmateSolver {
             killers.push([AtomicU64::new(0), AtomicU64::new(0)]);
         }
         Self {
-            tt: parallel_tt::TranspositionTable::new(128), // 128MB TT
+            tt: parallel_tt::TranspositionTable::new(128),
             target_depth: mate_in,
             target_mated_side,
             nodes: AtomicU64::new(0),
@@ -507,7 +526,12 @@ impl HelpmateSolver {
                     }
                 }
 
-                let h_idx = ((m.from.x ^ m.from.y ^ m.to.x ^ m.to.y) as usize) & 32767;
+                let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.x as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.y as u32)) as usize)
+                    & 32767;
                 let h_score = self.history[h_idx].load(Ordering::Relaxed);
                 score += h_score.min(200_000);
 
@@ -603,7 +627,12 @@ impl HelpmateSolver {
 
         if let Some(ref m) = best_move {
             // Update history (atomic)
-            let h_idx = ((m.from.x ^ m.from.y ^ m.to.x ^ m.to.y) as usize) & 32767;
+            let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
+                .wrapping_mul(31)
+                ^ (m.to.x as u32))
+                .wrapping_mul(31)
+                ^ (m.to.y as u32)) as usize)
+                & 32767;
             self.history[h_idx].fetch_add(depth * depth, Ordering::Relaxed);
 
             // Update killers (atomic)
@@ -626,31 +655,50 @@ impl HelpmateSolver {
         let mut pv = Vec::new();
         let mut current_state = state.clone();
 
-        for _ in 0..self.target_depth {
-            let move_coords = self.tt.probe(current_state.hash, 0).and_then(|(_, m)| m);
+        for ply in 0..self.target_depth {
+            let res = self.tt.probe(current_state.hash, 0);
 
-            if let Some((fx, fy, tx, ty)) = move_coords {
-                let mut moves = MoveList::new();
-                current_state.get_legal_moves_into(&mut moves);
-
-                let mut found_move = None;
-                for &m in moves.iter() {
-                    if m.from.x as i16 == fx
-                        && m.from.y as i16 == fy
-                        && m.to.x as i16 == tx
-                        && m.to.y as i16 == ty
-                    {
-                        let undo = current_state.make_move(&m);
-                        if !current_state.is_move_illegal() {
-                            found_move = Some(m);
-                            break;
-                        }
-                        current_state.undo_move(&m, undo);
-                    }
+            if let Some((raw_score, move_coords)) = res {
+                // If the score is no longer a mate or is just i32::MIN, we lost the thread
+                if raw_score == i32::MIN {
+                    break;
                 }
 
-                if let Some(m) = found_move {
-                    pv.push(m);
+                let actual_score = Self::score_from_tt(raw_score, ply);
+                if actual_score < MATE_VALUE - 1000 {
+                    // This entry is not a mate, don't follow it for PV
+                    break;
+                }
+
+                if let Some((fx, fy, tx, ty)) = move_coords {
+                    let mut moves = MoveList::new();
+                    current_state.get_legal_moves_into(&mut moves);
+
+                    let mut found_move = None;
+                    for &m in moves.iter() {
+                        if m.from.x as i16 == fx
+                            && m.from.y as i16 == fy
+                            && m.to.x as i16 == tx
+                            && m.to.y as i16 == ty
+                        {
+                            let undo = current_state.make_move(&m);
+                            if !current_state.is_move_illegal() {
+                                found_move = Some(m);
+                                break;
+                            }
+                            current_state.undo_move(&m, undo);
+                        }
+                    }
+
+                    if let Some(m) = found_move {
+                        pv.push(m);
+                        // If this move just delivered mate, we are done
+                        if self.terminal_score(&mut current_state, ply + 1) >= MATE_VALUE - 1000 {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
