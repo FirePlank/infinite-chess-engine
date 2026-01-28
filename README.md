@@ -11,6 +11,8 @@ A high-performance Rust chess engine compiled to WebAssembly, designed for [Infi
 | **[Setup Guide](docs/SETUP.md)** | Install Rust, wasm-pack, and build the engine |
 | **[Contributing Guide](docs/CONTRIBUTING.md)** | Workflow for adding features and testing changes |
 | **[SPRT Testing](sprt/README.md)** | Run strength tests to validate engine changes |
+| **[Roadmap](docs/ROADMAP.md)** | Planned features, technical debt, and backlog |
+| **[Utility Binaries](src/bin/README.md)** | Solvers, debuggers, and tuning tools |
 
 ---
 
