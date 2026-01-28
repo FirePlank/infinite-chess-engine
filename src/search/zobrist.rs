@@ -37,18 +37,13 @@ pub const SIDE_KEY: u64 = 0x9E3779B97F4A7C15;
 /// Key for en passant file
 const EN_PASSANT_KEY_MIXER: u64 = 0xCAFEBABE87654321;
 
-/// Normalize coordinate for hashing (handle infinite board via bucketing)
-///
-/// This mirrors the old TT behaviour: coordinates within [-BOUND, BOUND]
-/// are kept distinct; far-away squares are wrapped into BUCKETS-sized
-/// buckets at the edges, preserving some translation invariance.
+/// Normalize coordinate for hashing
 #[inline(always)]
 fn normalize_coord(coord: i64) -> u64 {
     coord as u64
 }
 
 /// Hash a coordinate into a u64
-/// Uses a fast mixing function on full coordinates.
 #[inline(always)]
 pub fn hash_coordinate(x: i64, y: i64) -> u64 {
     let nx = normalize_coord(x);

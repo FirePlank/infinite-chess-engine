@@ -21,7 +21,7 @@ use std::time::Instant;
 mod parallel_tt {
     use super::*;
 
-    const ENTRIES_PER_BUCKET: usize = 4;
+    const ENTRIES_PER_BUCKET: usize = 8;
 
     #[derive(Clone, Copy, Debug)]
     #[repr(C)]
@@ -279,16 +279,9 @@ impl HelpmateSolver {
         if best > -INFINITY { Some(best) } else { None }
     }
 
-    // Fast check for any legal move. Stops at first found.
-    fn has_legal_moves(&self, state: &mut GameState) -> bool {
-        let mut moves = MoveList::new();
-        state.get_legal_moves_into(&mut moves);
-        moves.len() > 0
-    }
-
     fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
         if state.is_in_check() && state.turn == self.target_mated_side {
-            if !self.has_legal_moves(state) {
+            if !state.has_legal_evasions() {
                 return MATE_VALUE - ply as i32;
             }
         }
@@ -308,6 +301,12 @@ impl HelpmateSolver {
         } else {
             state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
         };
+
+        // At depth 1, if mating side to move, must give check.
+        let must_check = depth == 1 && state.turn != self.target_mated_side;
+
+        // At depth 2, if defending side to move, must self-block or move king.
+        let strict_neighborhood = depth == 2 && state.turn == self.target_mated_side;
 
         let ml = (depth + 1) / 2;
         let b = 2;
@@ -332,6 +331,7 @@ impl HelpmateSolver {
             let pt = piece.piece_type();
 
             if !in_z {
+                // Optimization: Sliders can influence from far away, but only if they are somewhat aligned
                 if !hydrochess_wasm::attacks::is_slider(pt) {
                     continue;
                 }
@@ -352,7 +352,34 @@ impl HelpmateSolver {
                 &ctx,
                 &mut piece_buf,
             );
-            moves.extend_from_slice(&piece_buf);
+
+            if must_check {
+                for m in &piece_buf {
+                    // Fast check filter before full validation
+                    if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
+                        state, m,
+                    ) {
+                        moves.push(*m);
+                    }
+                }
+            } else if strict_neighborhood {
+                for m in &piece_buf {
+                    // Strict Neighborhood Filter:
+                    // 1. King moves are allowed
+                    // 2. Non-King moves MUST end near the King (Chebyshev dist <= 3)
+                    let is_k = m.piece.piece_type() == hydrochess_wasm::board::PieceType::King;
+                    if is_k {
+                        moves.push(*m);
+                    } else {
+                        let dist = (m.to.x - tk.x).abs().max((m.to.y - tk.y).abs());
+                        if dist <= 3 {
+                            moves.push(*m);
+                        }
+                    }
+                }
+            } else {
+                moves.extend_from_slice(&piece_buf);
+            }
         }
         moves
     }
@@ -432,6 +459,57 @@ impl HelpmateSolver {
         }
     }
 
+    fn is_king_isolated(&self, state: &GameState, target_pos: Coordinate, max_plies: i32) -> bool {
+        // If we have enough plies (e.g., > 4), strictly checking isolation is expensive and less likely to prune.
+        if max_plies >= 5 {
+            return false;
+        }
+
+        let moves_available = (max_plies + 1) / 2;
+        let threshold = moves_available + 1;
+
+        // Helper closure to check a color's pieces
+        let check_color = |is_white: bool| -> bool {
+            for (px, py, piece) in state.board.iter_pieces_by_color(is_white) {
+                // King itself doesn't count
+                if piece.piece_type() == hydrochess_wasm::board::PieceType::King
+                    && piece.color() == self.target_mated_side
+                {
+                    continue;
+                }
+
+                if hydrochess_wasm::attacks::is_slider(piece.piece_type()) {
+                    return true;
+                }
+
+                let dx = (px - target_pos.x).abs();
+                let dy = (py - target_pos.y).abs();
+                let dist = dx.max(dy);
+
+                let effective_dist = match piece.piece_type() {
+                    hydrochess_wasm::board::PieceType::Knight => (dist + 1) / 2,
+                    hydrochess_wasm::board::PieceType::Pawn => dist,
+                    _ => dist,
+                };
+
+                if effective_dist <= (threshold as i64) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // If we find ANY piece close enough (or slider), we are NOT isolated.
+        if check_color(true) {
+            return false;
+        }
+        if check_color(false) {
+            return false;
+        }
+
+        true
+    }
+
     fn search_sequential(&self, state: &mut GameState, depth: i32, ply: u32) -> i32 {
         self.nodes.fetch_add(1, Ordering::Relaxed);
 
@@ -457,16 +535,23 @@ impl HelpmateSolver {
             return self.terminal_score(state, ply);
         }
 
-        let moves = self.generate_helpmate_moves(state, depth);
-        if moves.is_empty() {
-            return self.terminal_score(state, ply);
-        }
-
         let target_king_pos = match self.target_mated_side {
             PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
             PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
             _ => Coordinate::new(0, 0),
         };
+
+        // Isolation Pruning
+        // If the King is too far from ANY piece (friend or foe), mate is impossible.
+        if self.is_king_isolated(state, target_king_pos, depth) {
+            return -INFINITY + ply as i32 + 1000;
+        }
+
+        let moves = self.generate_helpmate_moves(state, depth);
+        if moves.is_empty() {
+            return self.terminal_score(state, ply);
+        }
+
         let opp_king = if state.turn == PlayerColor::White {
             state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
         } else {

@@ -3675,13 +3675,16 @@ impl GameState {
 
             let first_char = code_str.chars().next().unwrap();
             let is_white = first_char.is_uppercase();
-            let color = if is_white {
+            let mut color = if is_white {
                 PlayerColor::White
             } else {
                 PlayerColor::Black
             };
 
             let piece_type = PieceType::from_site_code(&code_str.to_uppercase());
+            if piece_type.is_neutral_type() {
+                color = PlayerColor::Neutral;
+            }
 
             self.board.set_piece(x, y, Piece::new(piece_type, color));
 
