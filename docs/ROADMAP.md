@@ -60,7 +60,7 @@ The infrastructure exists (`src/search/shared_tt.rs`, `get_best_move_parallel`),
 
 ---
 
-## "Good First Issues"
+## Good First Issues
 
 If you are looking to contribute but aren't ready to tackle the big items above, here are some smaller tasks:
 
@@ -70,6 +70,6 @@ If you are looking to contribute but aren't ready to tackle the big items above,
 
 ---
 
-## 🔮 Backlog Ideas
+## Backlog Ideas
 
 - **NNUE**: Explore Neural Network evaluation for infinite chess.

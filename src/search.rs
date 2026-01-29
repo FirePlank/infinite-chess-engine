@@ -4286,6 +4286,59 @@ fn quiescence(
         return 0;
     }
 
+    // TT Probe in QSearch
+    let hash = game.hash;
+    let alpha_orig = alpha;
+    let rule50_count = game.halfmove_clock;
+
+    // QSearch TT probe with depth 0
+    let tt_probe = probe_tt_with_shared(
+        searcher,
+        &ProbeContext {
+            hash,
+            alpha,
+            beta,
+            depth: 0,
+            ply,
+            rule50_count,
+            rule_limit: searcher.move_rule_limit,
+        },
+    );
+
+    let (tt_hit, tt_value, tt_data_static_eval, tt_data_bound, pv_hit) = if let Some(res) = tt_probe
+    {
+        (
+            true,
+            if res.tt_score == INFINITY + 1 {
+                None
+            } else {
+                Some(res.tt_score)
+            },
+            res.eval,
+            res.flag,
+            res.is_pv,
+        )
+    } else {
+        (false, None, INFINITY + 1, TTFlag::None, false)
+    };
+
+    // TT Cutoff for QSearch
+    if tt_hit
+        && let Some(tt_s) = tt_value
+        && !is_decisive(tt_s)
+    {
+        let fails_high = tt_s >= beta;
+        let bound_matches = if fails_high {
+            (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+        } else {
+            (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+        };
+
+        if bound_matches {
+            return tt_s;
+        }
+    }
+
     // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
     if game.has_lost_by_royal_capture() {
         return -MATE_VALUE + ply as i32;
@@ -4293,30 +4346,80 @@ fn quiescence(
     // Only treat check specially if we must escape (checkmate-based win condition)
     let must_escape = in_check && game.must_escape_check();
 
-    // Stand pat (not when must escape check)
-    let stand_pat = if must_escape {
-        -MATE_VALUE + ply as i32
-    } else {
-        evaluate(game)
-    };
+    // Step 4. Static evaluation
+    let mut unadjusted_static_eval = INFINITY + 1;
+    let mut best_value;
+    let mut best_move: Option<Move> = None;
 
-    if !must_escape {
-        // Stand pat cutoff with adjustment for non-decisive scores
-        if stand_pat >= beta {
-            // Don't adjust mate scores
-            if !is_decisive(stand_pat) {
-                return (stand_pat + beta) / 2;
+    if must_escape {
+        best_value = -INFINITY;
+    } else {
+        // Calculate previous move index for correction history
+        let prev_move_idx = if ply > 0 {
+            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+            from_hash ^ to_hash
+        } else {
+            0
+        };
+
+        if tt_hit {
+            unadjusted_static_eval = tt_data_static_eval;
+            if unadjusted_static_eval == INFINITY + 1 {
+                unadjusted_static_eval = evaluate(game);
             }
-            return stand_pat;
+
+            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
+
+            // ttValue can be used as a better position evaluation
+            if let Some(tt_s) = tt_value
+                && !is_decisive(tt_s)
+            {
+                let bound_matches = if tt_s > best_value {
+                    (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+                } else {
+                    (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+                };
+
+                if bound_matches {
+                    best_value = tt_s;
+                }
+            }
+        } else {
+            unadjusted_static_eval = evaluate(game);
+            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
         }
 
-        if alpha < stand_pat {
-            alpha = stand_pat;
+        // Stand pat logic
+        if best_value >= beta {
+            if !is_decisive(best_value) {
+                best_value = (best_value + beta) / 2;
+            }
+
+            if !tt_hit {
+                store_tt_with_shared(
+                    searcher,
+                    &StoreContext {
+                        hash,
+                        depth: 0,
+                        flag: TTFlag::LowerBound,
+                        score: best_value,
+                        static_eval: unadjusted_static_eval,
+                        is_pv: false,
+                        best_move: None,
+                        ply: 0,
+                    },
+                );
+            }
+            return best_value;
+        }
+
+        if best_value > alpha {
+            alpha = best_value;
         }
     }
 
     if ply >= MAX_PLY - 1 {
-        return stand_pat;
+        return best_value;
     }
 
     // When must escape check, generate all pseudo-legal moves (evasions) via the normal generator.
@@ -4345,31 +4448,20 @@ fn quiescence(
     // Sort captures by MVV-LVA
     sort_captures(game, &mut tactical_moves);
 
-    let mut best_score = stand_pat;
     let mut legal_moves = 0;
-
-    // Delta pruning margin (safety buffer for positional factors)
     let delta_margin = delta_margin();
 
     for m in &tactical_moves {
-        // Don't prune when we're getting mated - need to search all moves
-        if !in_check && !is_loss(best_score) {
-            // See gain for the capture/promotion
+        if !in_check && !is_loss(best_value) {
             let see_gain = static_exchange_eval(game, m);
-
-            // Prune clearly losing captures that don't even break even materially.
             if see_gain < 0 {
                 continue;
             }
-
-            // Delta pruning: if stand_pat + best possible material swing from this
-            // capture (SEE gain) plus a small margin cannot beat alpha, skip.
-            if stand_pat + see_gain + delta_margin < alpha {
+            if best_value + see_gain + delta_margin < alpha {
                 continue;
             }
         }
 
-        // Fast legality check (skips is_move_illegal for non-pinned pieces)
         let fast_legal = game.is_legal_fast(m, in_check);
         if let Ok(false) = fast_legal {
             continue;
@@ -4389,16 +4481,16 @@ fn quiescence(
         game.undo_move(m, undo);
 
         if searcher.hot.stopped {
-            // Swap back move buffer before returning early
             std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
-            return best_score;
+            return best_value;
         }
 
-        if score > best_score {
-            best_score = score;
+        if score > best_value {
+            best_value = score;
 
             if score > alpha {
                 alpha = score;
+                best_move = Some(*m);
             }
         }
 
@@ -4408,27 +4500,43 @@ fn quiescence(
     }
 
     if legal_moves == 0 {
-        // Determine if this is a loss:
-        // 1. In check AND must escape check (our win condition is checkmate) → checkmate
-        // 2. No pieces left (relevant for allpiecescaptured variants) → loss
         let checkmate = in_check && game.must_escape_check();
         let no_pieces = !game.has_pieces(game.turn);
         if checkmate || no_pieces {
-            // Swap back move buffer before returning mate score
             std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
             return -MATE_VALUE + ply as i32;
         }
     }
 
-    // Swap back move buffer for this ply before returning
     std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
 
-    // Adjust score for fail-high, but not for mate scores
-    if !is_decisive(best_score) && best_score > beta {
-        best_score = (best_score + beta) / 2;
+    if !is_decisive(best_value) && best_value > beta {
+        best_value = (best_value + beta) / 2;
     }
 
-    best_score
+    let tt_flag = if best_value >= beta {
+        TTFlag::LowerBound
+    } else if best_value <= alpha_orig {
+        TTFlag::UpperBound
+    } else {
+        TTFlag::Exact
+    };
+
+    store_tt_with_shared(
+        searcher,
+        &StoreContext {
+            hash,
+            depth: 0,
+            flag: tt_flag,
+            score: best_value,
+            static_eval: unadjusted_static_eval,
+            is_pv: pv_hit,
+            best_move,
+            ply: 0,
+        },
+    );
+
+    best_value
 }
 
 #[cfg(test)]
