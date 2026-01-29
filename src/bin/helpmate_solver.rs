@@ -252,7 +252,6 @@ impl HelpmateSolver {
 
         // Iterative deepening (for move ordering and PV consistency)
         for depth in 1..=target {
-            state.recompute_hash();
             self.generation = self.generation.wrapping_add(1);
             let score = self.parallel_root_search(state, depth);
             best = score;
@@ -262,7 +261,7 @@ impl HelpmateSolver {
             let nps = nodes as f64 / elapsed;
 
             println!(
-                "info depth {} score {} nodes {} time {:.2}s nps {:.0}",
+                "info depth {} {} nodes {} time {:.2}s nps {:.0}",
                 depth,
                 format_score(score),
                 nodes,
@@ -335,10 +334,12 @@ impl HelpmateSolver {
                 if !hydrochess_wasm::attacks::is_slider(pt) {
                     continue;
                 }
+
                 let ax = (px >= min_x && px <= max_x) || px == tk.x || px == ok.x;
                 let ay = (py >= min_y && py <= max_y) || py == tk.y || py == ok.y;
                 let ad = (px - tk.x).abs() == (py - tk.y).abs()
                     || (px - ok.x).abs() == (py - ok.y).abs();
+
                 if !ax && !ay && !ad {
                     continue;
                 }
@@ -388,6 +389,10 @@ impl HelpmateSolver {
         // Use custom generator
         let moves = self.generate_helpmate_moves(state, depth);
 
+        if moves.is_empty() {
+            return self.terminal_score(state, 0);
+        }
+
         let work_items: Vec<_> = moves
             .iter()
             .filter_map(|m| {
@@ -401,7 +406,7 @@ impl HelpmateSolver {
             .collect();
 
         if work_items.is_empty() {
-            // In root, if no moves, check terminal state
+            // In root, if no moves that are legal, check terminal state
             return self.terminal_score(state, 0);
         }
 
@@ -459,52 +464,233 @@ impl HelpmateSolver {
         }
     }
 
+    fn find_mating_move(&self, state: &mut GameState, ply: u32) -> Option<(i32, Move)> {
+        // Only attacking side can deliver mate
+        if state.turn == self.target_mated_side {
+            return None;
+        }
+
+        // Depth 1 specialized search: Find ANY move that gives check and leads to mate.
+        let tk = match self.target_mated_side {
+            PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            _ => Coordinate::new(0, 0),
+        };
+        let ok = if state.turn == PlayerColor::White {
+            state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
+        } else {
+            state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
+        };
+
+        // Windowing (generous for sliders)
+        let min_x = tk.x.min(ok.x) - 10;
+        let max_x = tk.x.max(ok.x) + 10;
+        let min_y = tk.y.min(ok.y) - 10;
+        let max_y = tk.y.max(ok.y) + 10;
+
+        let is_white = state.turn == PlayerColor::White;
+
+        // Collect pieces to avoid borrow conflicts
+        let pieces: Vec<_> = state.board.iter_pieces_by_color(is_white).collect();
+        let mut piece_buf = MoveList::new();
+
+        for (px, py, piece) in pieces {
+            let in_z = px >= min_x && px <= max_x && py >= min_y && py <= max_y;
+            if !in_z {
+                if !hydrochess_wasm::attacks::is_slider(piece.piece_type()) {
+                    continue;
+                }
+                let ax = px == tk.x || px == ok.x;
+                let ay = py == tk.y || py == ok.y;
+                let ad = (px - tk.x).abs() == (py - tk.y).abs()
+                    || (px - ok.x).abs() == (py - ok.y).abs();
+                if !ax && !ay && !ad {
+                    continue;
+                }
+            }
+
+            piece_buf.clear();
+
+            // Scope to restrict borrow
+            {
+                let ctx = hydrochess_wasm::moves::MoveGenContext {
+                    special_rights: &state.special_rights,
+                    en_passant: &state.en_passant,
+                    game_rules: &state.game_rules,
+                    indices: &state.spatial_indices,
+                    enemy_king_pos: Some(&ok),
+                };
+
+                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+                    &state.board,
+                    &piece,
+                    &Coordinate::new(px, py),
+                    &ctx,
+                    &mut piece_buf,
+                );
+            } // ctx is dropped here, state borrow ends
+
+            let len = piece_buf.len();
+            for i in 0..len {
+                // SAFETY: i is within bounds 0..len
+                let m = unsafe { piece_buf.get_unchecked(i) };
+
+                // FAST CHECK: Only process moves that give check
+                if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
+                {
+                    let undo = state.make_move(m);
+
+                    // Check for legal evasions
+                    if state.is_move_illegal() {
+                        state.undo_move(m, undo);
+                        continue;
+                    }
+
+                    let mut opponent_moves = MoveList::new();
+
+                    let op_tk = if state.turn == PlayerColor::White {
+                        state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
+                    } else {
+                        state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
+                    };
+
+                    let mut found_legal = false;
+                    let is_white_turn = state.turn == PlayerColor::White;
+                    if let Some(kpos) = if is_white_turn {
+                        state.white_king_pos
+                    } else {
+                        state.black_king_pos
+                    } {
+                        if let Some(kpiece) = state.board.get_piece(kpos.x, kpos.y) {
+                            opponent_moves.clear();
+                            // Scope to restrict borrow
+                            {
+                                let op_ctx = hydrochess_wasm::moves::MoveGenContext {
+                                    special_rights: &state.special_rights,
+                                    en_passant: &state.en_passant,
+                                    game_rules: &state.game_rules,
+                                    indices: &state.spatial_indices,
+                                    enemy_king_pos: Some(&op_tk),
+                                };
+                                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+                                    &state.board,
+                                    kpiece,
+                                    &kpos,
+                                    &op_ctx,
+                                    &mut opponent_moves,
+                                );
+                            }
+
+                            for om in &opponent_moves {
+                                let ou = state.make_move(om);
+                                if !state.is_move_illegal() {
+                                    found_legal = true;
+                                    state.undo_move(om, ou);
+                                    break;
+                                }
+                                state.undo_move(om, ou);
+                            }
+                        }
+                    }
+
+                    if !found_legal {
+                        let op_pieces: Vec<_> =
+                            state.board.iter_pieces_by_color(is_white_turn).collect();
+
+                        'outer: for (px, py, piece) in op_pieces {
+                            if piece.piece_type() == hydrochess_wasm::board::PieceType::King {
+                                continue;
+                            } // Already checked
+
+                            opponent_moves.clear();
+                            {
+                                let op_ctx = hydrochess_wasm::moves::MoveGenContext {
+                                    special_rights: &state.special_rights,
+                                    en_passant: &state.en_passant,
+                                    game_rules: &state.game_rules,
+                                    indices: &state.spatial_indices,
+                                    enemy_king_pos: Some(&op_tk),
+                                };
+                                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+                                    &state.board,
+                                    &piece,
+                                    &Coordinate::new(px, py),
+                                    &op_ctx,
+                                    &mut opponent_moves,
+                                );
+                            }
+
+                            for om in &opponent_moves {
+                                let ou = state.make_move(om);
+                                if !state.is_move_illegal() {
+                                    found_legal = true;
+                                    state.undo_move(om, ou);
+                                    break 'outer;
+                                }
+                                state.undo_move(om, ou);
+                            }
+                        }
+                    }
+
+                    if !found_legal && state.is_in_check() {
+                        state.undo_move(m, undo);
+                        return Some((MATE_VALUE - ply as i32, *m));
+                    }
+                    state.undo_move(m, undo);
+                }
+            }
+        }
+        None
+    }
+
     fn is_king_isolated(&self, state: &GameState, target_pos: Coordinate, max_plies: i32) -> bool {
-        // If we have enough plies (e.g., > 4), strictly checking isolation is expensive and less likely to prune.
+        // Fast isolation check using SpatialIndices
         if max_plies >= 5 {
             return false;
         }
 
         let moves_available = (max_plies + 1) / 2;
-        let threshold = moves_available + 1;
+        let threshold = (moves_available + 1) as i64;
 
-        // Helper closure to check a color's pieces
-        let check_color = |is_white: bool| -> bool {
-            for (px, py, piece) in state.board.iter_pieces_by_color(is_white) {
-                // King itself doesn't count
-                if piece.piece_type() == hydrochess_wasm::board::PieceType::King
-                    && piece.color() == self.target_mated_side
-                {
-                    continue;
-                }
+        // Check pieces in rows [y-threshold, y+threshold]
+        let min_y = target_pos.y - threshold;
+        let max_y = target_pos.y + threshold;
 
-                if hydrochess_wasm::attacks::is_slider(piece.piece_type()) {
-                    return true;
-                }
+        for y in min_y..=max_y {
+            if let Some(row) = state.spatial_indices.rows.get(&y) {
+                // We want pieces with x in [x-threshold, x+threshold]
+                let min_x = target_pos.x - threshold;
+                let max_x = target_pos.x + threshold;
 
-                let dx = (px - target_pos.x).abs();
-                let dy = (py - target_pos.y).abs();
-                let dist = dx.max(dy);
+                // Use binary search to find starting index
+                let start_idx = row.partition_point(|(x, _)| *x < min_x);
 
-                let effective_dist = match piece.piece_type() {
-                    hydrochess_wasm::board::PieceType::Knight => (dist + 1) / 2,
-                    hydrochess_wasm::board::PieceType::Pawn => dist,
-                    _ => dist,
-                };
+                for (x, packed) in &row[start_idx..] {
+                    if *x > max_x {
+                        break;
+                    }
+                    // Keep skipping the king itself
+                    let piece = hydrochess_wasm::board::Piece::from_packed(*packed);
+                    if piece.piece_type() == hydrochess_wasm::board::PieceType::King
+                        && piece.color() == self.target_mated_side
+                    {
+                        continue;
+                    }
 
-                if effective_dist <= (threshold as i64) {
-                    return true;
+                    // Found a piece within threshold box!
+                    let dist = (*x - target_pos.x).abs().max((y - target_pos.y).abs());
+
+                    let effective_dist = match piece.piece_type() {
+                        hydrochess_wasm::board::PieceType::Knight => (dist + 1) / 2,
+                        hydrochess_wasm::board::PieceType::Pawn => dist,
+                        _ => dist, // Sliders are powerful, count as normal distance (or 1)
+                    };
+
+                    if effective_dist <= threshold {
+                        return false;
+                    }
                 }
             }
-            false
-        };
-
-        // If we find ANY piece close enough (or slider), we are NOT isolated.
-        if check_color(true) {
-            return false;
-        }
-        if check_color(false) {
-            return false;
         }
 
         true
@@ -545,6 +731,32 @@ impl HelpmateSolver {
         // If the King is too far from ANY piece (friend or foe), mate is impossible.
         if self.is_king_isolated(state, target_king_pos, depth) {
             return -INFINITY + ply as i32 + 1000;
+        }
+
+        // Leaf Node Optimization
+        if depth == 1 && state.turn != self.target_mated_side {
+            if let Some((score, best_move)) = self.find_mating_move(state, ply) {
+                // Found mate! Store the mating move in TT for PV extraction.
+                self.tt.store(
+                    hash,
+                    depth,
+                    Self::score_to_tt(score, ply),
+                    Some(&best_move),
+                    self.generation,
+                );
+                return score;
+            }
+            // If we checked all moves and found no mate involved, we failed.
+            // We return a "not mated" score.
+            let s = -INFINITY + ply as i32;
+            self.tt.store(
+                hash,
+                depth,
+                Self::score_to_tt(s, ply),
+                None,
+                self.generation,
+            );
+            return s;
         }
 
         let moves = self.generate_helpmate_moves(state, depth);
@@ -632,16 +844,6 @@ impl HelpmateSolver {
         let mut real_legal = false;
 
         for (m, _score) in scored_moves {
-            // === DEPTH-BASED PRUNING ===
-            // Depth 1: Mating side MUST give check
-            if depth == 1 && state.turn != self.target_mated_side {
-                if !hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
-                    state, &m,
-                ) {
-                    continue;
-                }
-            }
-
             // Depth 2: Mated side moves, then mating side must check. Prioritize moves near target king.
             if depth == 2 && state.turn == self.target_mated_side {
                 let king_dist = (m.to.x - target_king_pos.x)
@@ -803,7 +1005,7 @@ fn format_score(score: i32) -> String {
     if score >= MATE_VALUE - 1000 {
         format!("mate {}", (MATE_VALUE - score + 1) / 2)
     } else if score <= -INFINITY + 1000 {
-        "fail".to_string()
+        "score fail".to_string()
     } else {
         format!("cp {}", score)
     }

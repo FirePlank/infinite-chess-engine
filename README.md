@@ -39,7 +39,7 @@ A high-performance Rust chess engine compiled to WebAssembly, designed for [Infi
 ### Infinite Chess Support
 - **Coordinate-based board**: Arbitrary positions (not limited to 8x8)
 - **Fairy pieces**: Amazon, Chancellor, Archbishop, Centaur, Hawk, Knightrider, Rose, Huygen, and more
-- **Variant-specific evaluation**: Chess, Confined Classical, Obstocean, Pawn Horde, Palace
+- **Variant-specific evaluation**: Chess, Confined Classical, Obstocean, Pawn Horde
 
 ---
 
