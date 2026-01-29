@@ -6,7 +6,7 @@ use super::tt_defs::{
     TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
 };
 
-const ENTRIES_PER_BUCKET: usize = 2; // 2 × 24 = 48 bytes + padding = 64
+const ENTRIES_PER_BUCKET: usize = 3; // 3 × 18 = 54 bytes + 10 bytes padding = 64
 
 // Generation management
 const GENERATION_BITS: u8 = 3;
@@ -16,26 +16,24 @@ const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 const GENERATION_CYCLE: u16 = 255 + GENERATION_DELTA as u16;
 
 // TT entry structure uses i16 coordinates to save space while supporting
-// a massive board range. Size is 24 bytes to allow for 64-byte bucket alignment.
+// a massive board range. Size is 18 bytes to allow for 64-byte bucket alignment.
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct TTEntry {
     pub key16: u16,    // Upper hash bits for collision detection
-    pub depth: u8,     // Search depth
-    pub gen_bound: u8, // Aging generation + PV flag + Bound type
+    pub move16: u16,   // Piece type, color, and promotion
     pub score16: i16,  // Node score
     pub eval16: i16,   // Static evaluation
-    pub move16: u16,   // Piece type, color, and promotion
-    pub _pad: u16,
     pub from_x: i16,
     pub from_y: i16,
     pub to_x: i16,
     pub to_y: i16,
-    pub _pad2: u32,
+    pub depth: u8,     // Search depth
+    pub gen_bound: u8, // Aging generation + PV flag + Bound type
 }
 
-const _: () = assert!(std::mem::size_of::<TTEntry>() == 24);
+const _: () = assert!(std::mem::size_of::<TTEntry>() == 18);
 
 const NO_MOVE: u16 = 0;
 
@@ -49,17 +47,15 @@ impl TTEntry {
     pub const fn empty() -> Self {
         TTEntry {
             key16: 0,
-            depth: 0,
-            gen_bound: 0,
+            move16: NO_MOVE,
             score16: 0,
             eval16: 0,
-            move16: NO_MOVE,
-            _pad: 0,
             from_x: 0,
             from_y: 0,
             to_x: 0,
             to_y: 0,
-            _pad2: 0,
+            depth: 0,
+            gen_bound: 0,
         }
     }
 
@@ -151,8 +147,8 @@ impl TTEntry {
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct TTBucket {
-    entries: [TTEntry; ENTRIES_PER_BUCKET], // 48 bytes
-    _pad: [u8; 16],                         // 16 bytes padding
+    entries: [TTEntry; ENTRIES_PER_BUCKET], // 54 bytes
+    _pad: [u8; 10],                         // 10 bytes padding
 }
 
 const _: () = assert!(std::mem::size_of::<TTBucket>() == 64);
@@ -162,7 +158,7 @@ impl TTBucket {
     pub const fn empty() -> Self {
         TTBucket {
             entries: [TTEntry::empty(); ENTRIES_PER_BUCKET],
-            _pad: [0; 16],
+            _pad: [0; 10],
         }
     }
 }
@@ -337,12 +333,10 @@ impl LocalTranspositionTable {
                         score16: clamp_to_i16(adj_score),
                         eval16: store_eval,
                         move16: old_m16,
-                        _pad: 0,
                         from_x: old_fx,
                         from_y: old_fy,
                         to_x: old_tx,
                         to_y: old_ty,
-                        _pad2: 0,
                     };
                     if let Some(m) = &params.best_move {
                         e.encode_move(m);
@@ -366,12 +360,10 @@ impl LocalTranspositionTable {
             score16: clamp_to_i16(adj_score),
             eval16: clamp_to_i16(params.static_eval),
             move16: NO_MOVE,
-            _pad: 0,
             from_x: 0,
             from_y: 0,
             to_x: 0,
             to_y: 0,
-            _pad2: 0,
         };
         if let Some(m) = &params.best_move {
             new_e.encode_move(m);
@@ -409,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_struct_sizes() {
-        assert_eq!(std::mem::size_of::<TTEntry>(), 24);
+        assert_eq!(std::mem::size_of::<TTEntry>(), 18);
         assert_eq!(std::mem::size_of::<TTBucket>(), 64);
     }
 
