@@ -255,9 +255,12 @@ pub struct GameState {
     /// Pawn structure hash for correction history (helps CoaIP variants).
     #[serde(skip)]
     pub pawn_hash: u64,
-    /// Non-pawn piece position hash for correction history.
+    /// White non-pawn piece position hash for correction history.
     #[serde(skip)]
-    pub nonpawn_hash: u64,
+    pub white_nonpawn_hash: u64,
+    /// Black non-pawn piece position hash for correction history.
+    #[serde(skip)]
+    pub black_nonpawn_hash: u64,
     /// Material configuration hash for correction history.
     #[serde(skip)]
     pub material_hash: u64,
@@ -379,7 +382,8 @@ impl GameState {
             discovered_check_squares_white: FxHashSet::default(),
             discovered_check_squares_black: FxHashSet::default(),
             pawn_hash: 0,
-            nonpawn_hash: 0,
+            white_nonpawn_hash: 0,
+            black_nonpawn_hash: 0,
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
@@ -436,7 +440,8 @@ impl GameState {
             discovered_check_squares_white: FxHashSet::default(),
             discovered_check_squares_black: FxHashSet::default(),
             pawn_hash: 0,
-            nonpawn_hash: 0,
+            white_nonpawn_hash: 0,
+            black_nonpawn_hash: 0,
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
@@ -1280,7 +1285,7 @@ impl GameState {
             return false;
         }
 
-        // Use minimum of halfmove_clock and plies_from_null like Stockfish
+        // Use minimum of halfmove_clock and plies_from_null
         let end = (self.halfmove_clock as usize).min(self.plies_from_null as usize);
         if end < 3 {
             return false;
@@ -1553,7 +1558,8 @@ impl GameState {
         use crate::search::zobrist::{material_key, pawn_key, piece_key};
 
         let mut ph: u64 = 0; // Pawn structure hash
-        let mut nph: u64 = 0; // Non-pawn piece hash
+        let mut wnph: u64 = 0; // White non-pawn piece hash
+        let mut bnph: u64 = 0; // Black non-pawn piece hash
         let mut mh: u64 = 0; // Material hash
         let mut mih: u64 = 0; // Minor piece hash
 
@@ -1569,8 +1575,12 @@ impl GameState {
                 // Pawn hash: only pawns (helps CoaIP variants)
                 ph ^= pawn_key(piece.color(), *x, *y);
             } else {
-                // Non-pawn hash: all pieces except pawns
-                nph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                // Non-pawn hash: tracked per color
+                if piece.color() == PlayerColor::White {
+                    wnph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                } else {
+                    bnph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                }
 
                 // Minor hash: Knights and Bishops
                 if piece.piece_type() == PieceType::Knight
@@ -1582,7 +1592,8 @@ impl GameState {
         }
 
         self.pawn_hash = ph;
-        self.nonpawn_hash = nph;
+        self.white_nonpawn_hash = wnph;
+        self.black_nonpawn_hash = bnph;
         self.material_hash = mh;
         self.minor_hash = mih;
     }
@@ -2817,7 +2828,7 @@ impl GameState {
 
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
-            SIDE_KEY, en_passant_key, material_key, pawn_special_right_key, piece_key,
+            SIDE_KEY, en_passant_key, material_key, pawn_key, pawn_special_right_key, piece_key,
         };
 
         // Push current position hash BEFORE making the move (for repetition detection)
@@ -2832,9 +2843,20 @@ impl GameState {
         // Hash: remove piece from source
         self.hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
 
-        // Update minor_hash if needed
-        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
-            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+        // Update correction hashes incrementally
+        if piece.piece_type() == PieceType::Pawn {
+            self.pawn_hash ^= pawn_key(piece.color(), m.from.x, m.from.y);
+        } else {
+            if piece.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            } else {
+                self.black_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            }
+            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+                self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            }
         }
 
         let mut undo_info = UndoMove {
@@ -2884,12 +2906,23 @@ impl GameState {
             // - Neutral: wasn't in hash, XOR adds "removed obstacle" marker
             self.hash ^= piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
 
-            // Update minor_hash for captured Knights/Bishops
-            if captured.piece_type() == PieceType::Knight
-                || captured.piece_type() == PieceType::Bishop
-            {
-                self.minor_hash ^=
-                    piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+            // Update correction hashes incrementally for captured piece
+            if captured.piece_type() == PieceType::Pawn {
+                self.pawn_hash ^= pawn_key(captured.color(), m.to.x, m.to.y);
+            } else {
+                if captured.color() == PlayerColor::White {
+                    self.white_nonpawn_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                } else if captured.color() == PlayerColor::Black {
+                    self.black_nonpawn_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                }
+                if captured.piece_type() == PieceType::Knight
+                    || captured.piece_type() == PieceType::Bishop
+                {
+                    self.minor_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                }
             }
 
             // Update spatial indices for captured piece on destination square
@@ -2958,6 +2991,7 @@ impl GameState {
                 ep.pawn_square.x,
                 ep.pawn_square.y,
             );
+            self.pawn_hash ^= pawn_key(captured_pawn.color(), ep.pawn_square.x, ep.pawn_square.y);
             self.spatial_indices
                 .remove(ep.pawn_square.x, ep.pawn_square.y);
 
@@ -3072,6 +3106,13 @@ impl GameState {
                 }
             } else {
                 // Non-pawn partner captured
+                if captured.color() == PlayerColor::White {
+                    self.white_nonpawn_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                } else if captured.color() == PlayerColor::Black {
+                    self.black_nonpawn_hash ^=
+                        piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+                }
                 if captured.piece_type() == PieceType::Knight
                     || captured.piece_type() == PieceType::Bishop
                 {
@@ -3111,6 +3152,18 @@ impl GameState {
             // Hash: remove rook from original, add at new position
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
+
+            if rook.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^=
+                    piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+                self.white_nonpawn_hash ^=
+                    piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
+            } else {
+                self.black_nonpawn_hash ^=
+                    piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+                self.black_nonpawn_hash ^=
+                    piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
+            }
             self.board.set_piece(rook_to_x, m.from.y, rook);
             // Update spatial indices for rook move
             self.spatial_indices.remove(rook_coord.x, rook_coord.y);
@@ -3161,15 +3214,34 @@ impl GameState {
             m.to.x,
             m.to.y,
         );
-        if final_piece.piece_type() == PieceType::Knight
-            || final_piece.piece_type() == PieceType::Bishop
-        {
-            self.minor_hash ^= piece_key(
-                final_piece.piece_type(),
-                final_piece.color(),
-                m.to.x,
-                m.to.y,
-            );
+        if final_piece.piece_type() == PieceType::Pawn {
+            self.pawn_hash ^= crate::search::zobrist::pawn_key(final_piece.color(), m.to.x, m.to.y);
+        } else {
+            if final_piece.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^= crate::search::zobrist::piece_key(
+                    final_piece.piece_type(),
+                    final_piece.color(),
+                    m.to.x,
+                    m.to.y,
+                );
+            } else {
+                self.black_nonpawn_hash ^= crate::search::zobrist::piece_key(
+                    final_piece.piece_type(),
+                    final_piece.color(),
+                    m.to.x,
+                    m.to.y,
+                );
+            }
+            if final_piece.piece_type() == PieceType::Knight
+                || final_piece.piece_type() == PieceType::Bishop
+            {
+                self.minor_hash ^= crate::search::zobrist::piece_key(
+                    final_piece.piece_type(),
+                    final_piece.color(),
+                    m.to.x,
+                    m.to.y,
+                );
+            }
         }
         self.board.set_piece(m.to.x, m.to.y, final_piece);
         // Update spatial indices for moved piece on destination square
@@ -3252,7 +3324,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self, m: &Move, undo: UndoMove) {
-        use crate::search::zobrist::{material_key, piece_key};
+        use crate::search::zobrist::{material_key, pawn_key, piece_key};
 
         // Pop the hash that was pushed in make_move and restore the saved hash
         self.hash_stack.pop();
@@ -3271,8 +3343,19 @@ impl GameState {
         // Update spatial indices: remove piece from destination square
         self.spatial_indices.remove(m.to.x, m.to.y);
 
-        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
-            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
+        if piece.piece_type() == PieceType::Pawn {
+            self.pawn_hash ^= pawn_key(piece.color(), m.to.x, m.to.y);
+        } else {
+            if piece.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
+            } else {
+                self.black_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
+            }
+            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+                self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
+            }
         }
 
         // Handle Promotion Revert
@@ -3307,8 +3390,19 @@ impl GameState {
         // Update spatial indices for moved piece back on source square
         self.spatial_indices.add(m.from.x, m.from.y, piece.packed());
 
-        if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
-            self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+        if piece.piece_type() == PieceType::Pawn {
+            self.pawn_hash ^= pawn_key(piece.color(), m.from.x, m.from.y);
+        } else {
+            if piece.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            } else {
+                self.black_nonpawn_hash ^=
+                    piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            }
+            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+                self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
+            }
         }
 
         // Restore captured piece
@@ -3341,11 +3435,35 @@ impl GameState {
             // Update spatial indices for restored captured piece
             self.spatial_indices.add(m.to.x, m.to.y, captured.packed());
 
-            if captured.piece_type() == PieceType::Knight
-                || captured.piece_type() == PieceType::Bishop
-            {
-                self.minor_hash ^=
-                    piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
+            if captured.piece_type() == PieceType::Pawn {
+                self.pawn_hash ^=
+                    crate::search::zobrist::pawn_key(captured.color(), m.to.x, m.to.y);
+            } else {
+                if captured.color() == PlayerColor::White {
+                    self.white_nonpawn_hash ^= crate::search::zobrist::piece_key(
+                        captured.piece_type(),
+                        captured.color(),
+                        m.to.x,
+                        m.to.y,
+                    );
+                } else if captured.color() == PlayerColor::Black {
+                    self.black_nonpawn_hash ^= crate::search::zobrist::piece_key(
+                        captured.piece_type(),
+                        captured.color(),
+                        m.to.x,
+                        m.to.y,
+                    );
+                }
+                if captured.piece_type() == PieceType::Knight
+                    || captured.piece_type() == PieceType::Bishop
+                {
+                    self.minor_hash ^= crate::search::zobrist::piece_key(
+                        captured.piece_type(),
+                        captured.color(),
+                        m.to.x,
+                        m.to.y,
+                    );
+                }
             }
         }
 
@@ -3364,6 +3482,7 @@ impl GameState {
                 captured_pawn.piece_type(),
                 captured_pawn.color(),
             ));
+            self.pawn_hash ^= pawn_key(captured_pawn.color(), ep.pawn_square.x, ep.pawn_square.y);
 
             // Restore material value and piece counts
             let value = get_piece_value(captured_pawn.piece_type());
@@ -3391,6 +3510,27 @@ impl GameState {
                         self.spatial_indices.remove(rook_to_x, m.from.y);
                         self.spatial_indices
                             .add(rook_coord.x, rook_coord.y, rook.packed());
+
+                        // Revert non-pawn hash for rook
+                        if rook.color() == PlayerColor::White {
+                            self.white_nonpawn_hash ^=
+                                piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
+                            self.white_nonpawn_hash ^= piece_key(
+                                rook.piece_type(),
+                                rook.color(),
+                                rook_coord.x,
+                                rook_coord.y,
+                            );
+                        } else {
+                            self.black_nonpawn_hash ^=
+                                piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
+                            self.black_nonpawn_hash ^= piece_key(
+                                rook.piece_type(),
+                                rook.color(),
+                                rook_coord.x,
+                                rook_coord.y,
+                            );
+                        }
                     }
                 }
             }

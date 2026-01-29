@@ -1,6 +1,6 @@
 //! Staged move generation for efficient alpha-beta search.
 //!
-//! Implements Stockfish's exact move generation stages (from movepick.cpp):
+//! Implements multi-stage move generation:
 //!
 //! Main Search: MAIN_TT → CAPTURE_INIT → GOOD_CAPTURE → QUIET_INIT →
 //!              GOOD_QUIET → BAD_CAPTURE → BAD_QUIET
@@ -21,10 +21,10 @@ use crate::evaluation::get_piece_value;
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_quiet_moves_into};
 
-/// Good quiet threshold (Stockfish: goodQuietThreshold = -14000)
+/// Good quiet threshold
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
-/// Stages of move generation - matches Stockfish exactly
+/// Stages of move generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveStage {
     // Main search
@@ -61,7 +61,7 @@ struct ScoredMove {
     score: i32,
 }
 
-/// Staged move generator matching Stockfish's MovePicker
+/// Staged move generator
 pub struct StagedMoveGen {
     stage: MoveStage,
     tt_move: Option<Move>,
@@ -92,7 +92,7 @@ pub struct StagedMoveGen {
 }
 
 /// Partial insertion sort - sorts moves with score >= limit to the front in descending order.
-/// Matches Stockfish's partial_insertion_sort exactly.
+/// Performs partial insertion sort.
 #[inline]
 fn partial_insertion_sort(moves: &mut [ScoredMove], limit: i32) {
     let mut sorted_end = 0;
@@ -115,7 +115,7 @@ fn partial_insertion_sort(moves: &mut [ScoredMove], limit: i32) {
 
 impl StagedMoveGen {
     /// Create MovePicker for main search or quiescence search.
-    /// Matches Stockfish's first constructor.
+    /// Primary constructor.
     pub fn new(
         tt_move: Option<Move>,
         ply: usize,
@@ -126,7 +126,7 @@ impl StagedMoveGen {
         let is_in_check = Self::is_in_check(game);
         let tt_valid = tt_move.is_some() && Self::is_pseudo_legal(game, &tt_move.unwrap());
 
-        // Stockfish logic: stage = X + !(ttm && pseudo_legal(ttm))
+        // Set initial stage based on TT move availability
         // If TT move is valid, start at TT stage; otherwise skip to Init stage
         let start_stage = if is_in_check {
             if tt_valid {
@@ -153,7 +153,7 @@ impl StagedMoveGen {
     }
 
     /// Create MovePicker for ProbCut - captures with SEE >= threshold.
-    /// Matches Stockfish's second constructor.
+    /// Secondary constructor.
     pub fn new_probcut(
         tt_move: Option<Move>,
         threshold: i32,
@@ -530,7 +530,7 @@ impl StagedMoveGen {
         }
     }
 
-    /// Get next move - matches Stockfish's next_move() exactly
+    /// Get next move using multi-stage generation
     pub fn next(&mut self, game: &GameState, searcher: &Searcher) -> Option<Move> {
         loop {
             match self.stage {

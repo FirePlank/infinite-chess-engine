@@ -538,7 +538,7 @@ pub struct MultiPVResult {
 }
 
 /// Result from a single thread's search, used for Lazy SMP thread voting.
-/// Stockfish's thread voting algorithm weights votes by:
+/// The thread voting algorithm weights votes by:
 ///   (score - minScore + 14) * completedDepth
 /// This ensures deeper searches with better scores have more influence.
 #[cfg(feature = "multithreading")]
@@ -1203,7 +1203,12 @@ impl Searcher {
             }
             CorrHistMode::NonPawnBased => {
                 // Non-pawn + Minor (with King context) + Material + Last-move + Continuation
-                let nonpawn_idx = (game.nonpawn_hash & CORRHIST_MASK) as usize;
+                let nonpawn_hash = if color_idx == 0 {
+                    game.white_nonpawn_hash
+                } else {
+                    game.black_nonpawn_hash
+                };
+                let nonpawn_idx = (nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_corr = self.nonpawn_corrhist[color_idx][nonpawn_idx];
 
                 let minor_idx = self.get_minor_index(game);
@@ -1299,9 +1304,15 @@ impl Searcher {
                     / CORRHIST_WEIGHT_SCALE;
                 *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
             }
+
             CorrHistMode::NonPawnBased => {
                 // Update non-pawn + material + last-move + continuation + minor
-                let nonpawn_idx = (game.nonpawn_hash & CORRHIST_MASK) as usize;
+                let nonpawn_hash = if color_idx == 0 {
+                    game.white_nonpawn_hash
+                } else {
+                    game.black_nonpawn_hash
+                };
+                let nonpawn_idx = (nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_entry = &mut self.nonpawn_corrhist[color_idx][nonpawn_idx];
                 *nonpawn_entry = (*nonpawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
                     + scaled_diff * weight)
@@ -1330,7 +1341,7 @@ impl Searcher {
                 *lm_entry = (*lm_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 // Update continuation correction history (ss-2 and ss-4)
-                if let Some(cur_m) = self.move_history[ply - 1] {
+                if let Some(cur_m) = self.move_history.get(ply.wrapping_sub(1)).and_then(|&m| m) {
                     let cur_pc = cur_m.piece.piece_type() as usize;
                     let cur_to = hash_coord_32(cur_m.to.x, cur_m.to.y);
                     let cont_weight = weight.min(128);
@@ -1339,11 +1350,11 @@ impl Searcher {
                         if ply > plies_ago
                             && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
                         {
-                            let prev_pc = self.moved_piece_history[ply - plies_ago - 1] as usize;
-                            if prev_pc < 32 {
+                            let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
+                            if prev_piece < 32 {
                                 let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                                let entry =
-                                    &mut self.cont_corrhist[prev_pc][prev_to_hash][cur_pc][cur_to];
+                                let entry = &mut self.cont_corrhist[prev_piece][prev_to_hash]
+                                    [cur_pc][cur_to];
 
                                 let w = if plies_ago == 1 {
                                     cont_weight
@@ -1665,7 +1676,7 @@ fn search_with_searcher(
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
-        let score = evaluate(game);
+        let score = searcher.adjusted_eval(game, evaluate(game), 0, 0);
         return Some((single, score));
     }
 
@@ -2053,7 +2064,7 @@ pub fn get_best_move_parallel(
     }
 
     // ========================================================================
-    // Thread Voting Algorithm (based on Stockfish's get_best_thread)
+    // Thread Voting Algorithm
     // ========================================================================
 
     // Step 1: Find minimum score among all threads
@@ -2075,7 +2086,7 @@ pub fn get_best_move_parallel(
         *votes.entry(move_key).or_insert(0) += vote_value;
     }
 
-    // Step 3: Select best thread using Stockfish's criteria
+    // Step 3: Select best thread
     let mut best_idx = 0;
 
     // Helper to compute voting value for a thread
@@ -2303,7 +2314,7 @@ pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
     });
 }
 
-/// Selects a move from MultiPV results using Stockfish's strength-limiting logic.
+/// Selects a move from MultiPV results using strength-limiting logic.
 fn pick_best(result: &MultiPVResult, skill_level: u32, rng: &mut Prng) -> Option<(Move, i32)> {
     if result.lines.is_empty() {
         return None;
@@ -2456,12 +2467,11 @@ pub(crate) fn get_best_moves_multipv_impl(
     // If only one move, return immediately with a simple static eval as score.
     if legal_root_moves.len() == 1 {
         let single = legal_root_moves[0];
-        let score = evaluate(game);
         let stats = build_search_stats(searcher);
         return MultiPVResult {
             lines: vec![PVLine {
                 mv: single,
-                score,
+                score: searcher.adjusted_eval(game, evaluate(game), 0, 0),
                 depth: 0,
                 pv: Vec::new(),
             }],
@@ -2988,7 +2998,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Safety check
     if ply >= MAX_PLY - 1 {
-        return evaluate(game);
+        let prev_move_idx = if ply > 0 {
+            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+            from_hash ^ to_hash
+        } else {
+            0
+        };
+        return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
     }
 
     // Check if we have an upcoming move that draws by repetition
@@ -3159,7 +3175,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         false
     };
 
-    // Use TT value to improve position evaluation (Store in local variable 'eval' like Stockfish)
+    // Use TT value to improve position evaluation
     let mut eval = static_eval;
     if !in_check
         && let Some(tt_s) = tt_value
@@ -3802,7 +3818,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
                 // History-adjusted LMR (simple, low-overhead version)
-                // Continuous Stockfish-inspired adjustment: reduction -= history / 4096
+                // Continuous adjustment: reduction -= history / 4096
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
@@ -4255,7 +4271,13 @@ fn quiescence(
 ) -> i32 {
     // Check for max ply BEFORE any array accesses to prevent out-of-bounds
     if ply >= MAX_PLY - 1 {
-        return evaluate(game);
+        let prev_move_idx = if ply > 0 {
+            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+            from_hash ^ to_hash
+        } else {
+            0
+        };
+        return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
     }
 
     // Check if we have an upcoming move that draws by repetition
@@ -4367,7 +4389,6 @@ fn quiescence(
             if unadjusted_static_eval == INFINITY + 1 {
                 unadjusted_static_eval = evaluate(game);
             }
-
             best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
 
             // ttValue can be used as a better position evaluation
@@ -4535,6 +4556,28 @@ fn quiescence(
             ply: 0,
         },
     );
+
+    // Update correction history for QSearch
+    // We learn from the search result relative to the static evaluation
+    if !must_escape {
+        let prev_move_idx = if ply > 0 {
+            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
+            from_hash ^ to_hash
+        } else {
+            0
+        };
+
+        searcher.update_correction_history(
+            game,
+            ply,
+            0, // depth 0 for QSearch
+            unadjusted_static_eval,
+            best_value,
+            true,  // best_move_is_quiet
+            false, // We already checked for check
+            prev_move_idx,
+        );
+    }
 
     best_value
 }
@@ -4987,7 +5030,10 @@ mod tests {
     #[test]
     fn test_adjusted_eval() {
         let searcher = Box::new(Searcher::new(1000));
-        let game = GameState::new();
+        let mut game = GameState::new();
+        game.white_nonpawn_hash = 12345;
+        game.pawn_hash = 67890;
+        game.material_hash = 11111;
 
         let raw_eval = 100;
         let adjusted = searcher.adjusted_eval(&game, raw_eval, 0, 0);
