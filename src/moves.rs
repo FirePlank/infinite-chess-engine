@@ -210,6 +210,46 @@ pub fn in_bounds(x: i64, y: i64) -> bool {
     unsafe { x >= COORD_MIN_X && x <= COORD_MAX_X && y >= COORD_MIN_Y && y <= COORD_MAX_Y }
 }
 
+/// Helper to check if a path is clear between two squares ON THE SAME TILE.
+/// Returns Some(true) if clear, Some(false) if blocked.
+/// Returns None if squares are on different tiles.
+#[inline(always)]
+pub fn is_path_clear_locally(
+    board: &Board,
+    from: &Coordinate,
+    to: &Coordinate,
+    step_x: i64,
+    step_y: i64,
+) -> Option<bool> {
+    use crate::tiles::{local_index, tile_coords};
+    let (cx, cy) = tile_coords(from.x, from.y);
+    let (tx, ty) = tile_coords(to.x, to.y);
+
+    if cx != tx || cy != ty {
+        return None;
+    }
+
+    let tile = match board.tiles.get_tile(cx, cy) {
+        Some(t) => t,
+        None => return None, // Should not happen if 'from' has a piece
+    };
+
+    let mut cur_x = from.x + step_x;
+    let mut cur_y = from.y + step_y;
+
+    while cur_x != to.x || cur_y != to.y {
+        let idx = local_index(cur_x, cur_y);
+        // Direct array access - O(1)
+        if tile.piece[idx] != 0 {
+            return Some(false);
+        }
+        cur_x += step_x;
+        cur_y += step_y;
+    }
+
+    Some(true)
+}
+
 /// Check if a piece at `from` attacks square `to`.
 /// Optimized for sliders and leapers; falls back to full movegen for complex fairy pieces.
 pub fn is_piece_attacking_square(
@@ -247,6 +287,11 @@ pub fn is_piece_attacking_square(
         }
 
         if on_ray {
+            // Check fast path for same-tile sliding
+            if let Some(is_clear) = is_path_clear_locally(board, from, to, step_x, step_y) {
+                return is_clear;
+            }
+
             let (closest_dist, _) =
                 find_blocker_via_indices(board, from, step_x, step_y, indices, our_color);
             let target_dist = dx.abs().max(dy.abs());

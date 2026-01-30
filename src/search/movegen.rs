@@ -413,21 +413,13 @@ impl StagedMoveGen {
                     return false;
                 }
 
-                if tx == cx && ty == cy {
-                    let step_x = dx.signum();
-                    let step_y = dy.signum();
-                    let mut cur_x = m.from.x + step_x;
-                    let mut cur_y = m.from.y + step_y;
-
-                    while cur_x != m.to.x || cur_y != m.to.y {
-                        let idx = local_index(cur_x, cur_y);
-                        if tile.piece[idx] != 0 {
-                            return false;
-                        }
-                        cur_x += step_x;
-                        cur_y += step_y;
-                    }
-                    return true;
+                // Same-Tile Fast Path
+                let step_x = dx.signum();
+                let step_y = dy.signum();
+                if let Some(is_clear) =
+                    crate::moves::is_path_clear_locally(&game.board, &m.from, &m.to, step_x, step_y)
+                {
+                    return is_clear;
                 }
 
                 crate::moves::is_piece_attacking_square(

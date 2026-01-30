@@ -634,7 +634,7 @@ impl HelpmateSolver {
 
                     if !found_legal && state.is_in_check() {
                         state.undo_move(m, undo);
-                        return Some((MATE_VALUE - ply as i32, *m));
+                        return Some((MATE_VALUE - (ply + 1) as i32, *m));
                     }
                     state.undo_move(m, undo);
                 }
