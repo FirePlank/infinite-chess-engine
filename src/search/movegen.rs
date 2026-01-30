@@ -31,6 +31,8 @@ pub enum MoveStage {
     MainTT,
     CaptureInit,
     GoodCapture,
+    Killer1,
+    Killer2,
     QuietInit,
     GoodQuiet,
     BadCapture,
@@ -269,45 +271,182 @@ impl StagedMoveGen {
         game.board.is_occupied(m.to.x, m.to.y)
     }
 
-    /// Pseudo-legal check - verifies piece exists, correct color/type, and basic validity
+    /// Pseudo-legal check - verifies piece exists, correct color/type, and path validation
     #[inline]
     fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
-        if let Some(piece) = game.board.get_piece(m.from.x, m.from.y) {
-            // Must be our piece of correct type
-            if piece.color() != game.turn || piece.piece_type() != m.piece.piece_type() {
+        use crate::tiles::{local_index, tile_coords};
+
+        // 1. Fast Tile Access
+        let (cx, cy) = tile_coords(m.from.x, m.from.y);
+        let from_idx = local_index(m.from.x, m.from.y);
+
+        let tile = match game.board.tiles.get_tile(cx, cy) {
+            Some(t) => t,
+            None => return false,
+        };
+
+        // 2. Identity Check
+        let packed = tile.piece[from_idx];
+        if packed == 0 {
+            return false;
+        }
+
+        let piece = crate::board::Piece::from_packed(packed);
+
+        if piece.color() != game.turn || piece.piece_type() != m.piece.piece_type() {
+            return false;
+        }
+
+        // 3. Target Occupancy Check (Generic)
+        let (tx, ty) = tile_coords(m.to.x, m.to.y);
+        let target_packed = if tx == cx && ty == cy {
+            tile.piece[local_index(m.to.x, m.to.y)]
+        } else {
+            match game.board.tiles.get_tile(tx, ty) {
+                Some(t) => t.piece[local_index(m.to.x, m.to.y)],
+                None => 0,
+            }
+        };
+
+        if target_packed != 0 {
+            let target = crate::board::Piece::from_packed(target_packed);
+            if target.color() == game.turn {
                 return false;
             }
+        }
 
-            // Destination must not be friendly
-            if let Some(target) = game.board.get_piece(m.to.x, m.to.y)
-                && target.color() == game.turn
-            {
-                return false;
-            }
+        // 4. Piece-Specific Logic
+        match piece.piece_type() {
+            PieceType::Pawn => {
+                let dx = (m.to.x - m.from.x).abs();
+                let dy = m.to.y - m.from.y;
+                let dir = if game.turn == PlayerColor::White {
+                    1
+                } else {
+                    -1
+                };
 
-            // Castling validation
-            if piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() > 1 {
-                if let Some(rook_coord) = &m.rook_coord {
-                    if !game
-                        .board
-                        .is_occupied_by_color(rook_coord.x, rook_coord.y, game.turn)
-                    {
-                        return false;
-                    }
-                    let dir = if m.to.x > m.from.x { 1 } else { -1 };
-                    if game.board.is_occupied(m.from.x + dir, m.from.y)
-                        || game.board.is_occupied(m.to.x, m.from.y)
-                        || (dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y))
-                    {
+                if dx == 0 {
+                    // Push
+                    if dy == dir {
+                        return target_packed == 0;
+                    } else if dy == 2 * dir {
+                        // 2 steps
+                        if target_packed != 0 {
+                            return false;
+                        }
+                        // Check intermediate
+                        let mid_y = m.from.y + dir;
+                        let (mx, my) = tile_coords(m.from.x, mid_y);
+                        let mid_packed = if mx == cx && my == cy {
+                            tile.piece[local_index(m.from.x, mid_y)]
+                        } else {
+                            match game.board.tiles.get_tile(mx, my) {
+                                Some(t) => t.piece[local_index(m.from.x, mid_y)],
+                                None => 0,
+                            }
+                        };
+                        return mid_packed == 0;
+                    } else {
                         return false;
                     }
                 } else {
+                    // Capture
+                    if dx == 1 && dy == dir {
+                        if target_packed != 0 {
+                            return true;
+                        }
+                        if let Some(ep) = &game.en_passant {
+                            if ep.square.x == m.to.x && ep.square.y == m.to.y {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
                     return false;
                 }
             }
-            true
-        } else {
-            false
+            PieceType::Knight => {
+                let dx = (m.to.x - m.from.x).abs();
+                let dy = (m.to.y - m.from.y).abs();
+                (dx == 1 && dy == 2) || (dx == 2 && dy == 1)
+            }
+            PieceType::King => {
+                let dx = (m.to.x - m.from.x).abs();
+                let dy = (m.to.y - m.from.y).abs();
+
+                if dx > 1 {
+                    if let Some(rook_coord) = &m.rook_coord {
+                        if !game
+                            .board
+                            .is_occupied_by_color(rook_coord.x, rook_coord.y, game.turn)
+                        {
+                            return false;
+                        }
+                        let dir = if m.to.x > m.from.x { 1 } else { -1 };
+                        if game.board.is_occupied(m.from.x + dir, m.from.y)
+                            || game.board.is_occupied(m.to.x, m.from.y)
+                            || (dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y))
+                        {
+                            return false;
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+                dx <= 1 && dy <= 1
+            }
+            PieceType::Rook | PieceType::Bishop | PieceType::Queen => {
+                let dx = m.to.x - m.from.x;
+                let dy = m.to.y - m.from.y;
+
+                let is_ortho = dx == 0 || dy == 0;
+                let is_diag = dx.abs() == dy.abs();
+
+                let valid_type = match piece.piece_type() {
+                    PieceType::Rook => is_ortho,
+                    PieceType::Bishop => is_diag,
+                    PieceType::Queen => is_ortho || is_diag,
+                    _ => false,
+                };
+                if !valid_type {
+                    return false;
+                }
+
+                if tx == cx && ty == cy {
+                    let step_x = dx.signum();
+                    let step_y = dy.signum();
+                    let mut cur_x = m.from.x + step_x;
+                    let mut cur_y = m.from.y + step_y;
+
+                    while cur_x != m.to.x || cur_y != m.to.y {
+                        let idx = local_index(cur_x, cur_y);
+                        if tile.piece[idx] != 0 {
+                            return false;
+                        }
+                        cur_x += step_x;
+                        cur_y += step_y;
+                    }
+                    return true;
+                }
+
+                crate::moves::is_piece_attacking_square(
+                    &game.board,
+                    &piece,
+                    &m.from,
+                    &m.to,
+                    &game.spatial_indices,
+                    &game.game_rules,
+                )
+            }
+            _ => crate::moves::is_piece_attacking_square(
+                &game.board,
+                &piece,
+                &m.from,
+                &m.to,
+                &game.spatial_indices,
+                &game.game_rules,
+            ),
         }
     }
 
@@ -509,7 +648,11 @@ impl StagedMoveGen {
         get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
 
         for m in quiets {
-            if self.is_tt_move(&m) || self.is_excluded(&m) {
+            if self.is_tt_move(&m)
+                || self.is_excluded(&m)
+                || Self::moves_match(&m, &self.killer1)
+                || Self::moves_match(&m, &self.killer2)
+            {
                 continue;
             }
             let score = self.score_quiet(game, searcher, &m);
@@ -588,7 +731,40 @@ impl StagedMoveGen {
                         self.cur += 1;
                     }
 
+                    self.stage = MoveStage::Killer1;
+                }
+
+                MoveStage::Killer1 => {
+                    self.stage = MoveStage::Killer2;
+                    // Lazy Killer 1
+                    if self.skip_quiets {
+                        continue;
+                    }
+
+                    if let Some(m) = self.killer1
+                        && !self.is_tt_move(&m)
+                        && !self.is_excluded(&m)
+                        && Self::is_pseudo_legal(game, &m)
+                    {
+                        return Some(m);
+                    }
+                }
+
+                MoveStage::Killer2 => {
                     self.stage = MoveStage::QuietInit;
+                    // Lazy Killer 2
+                    if self.skip_quiets {
+                        continue;
+                    }
+
+                    if let Some(m) = self.killer2
+                        && !self.is_tt_move(&m)
+                        && !self.is_excluded(&m)
+                        && !Self::moves_match(&m, &self.killer1)
+                        && Self::is_pseudo_legal(game, &m)
+                    {
+                        return Some(m);
+                    }
                 }
 
                 MoveStage::QuietInit => {
