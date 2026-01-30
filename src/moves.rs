@@ -229,10 +229,7 @@ pub fn is_path_clear_locally(
         return None;
     }
 
-    let tile = match board.tiles.get_tile(cx, cy) {
-        Some(t) => t,
-        None => return None, // Should not happen if 'from' has a piece
-    };
+    let tile = board.tiles.get_tile(cx, cy)?;
 
     let mut cur_x = from.x + step_x;
     let mut cur_y = from.y + step_y;

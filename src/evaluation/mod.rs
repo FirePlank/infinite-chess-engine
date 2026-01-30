@@ -23,7 +23,6 @@ pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_f
 pub fn evaluate(game: &GameState) -> i32 {
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
-        Some(Variant::ConfinedClassical) => variants::confined_classical::evaluate(game),
         Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
         Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
         // Add new variants here as they get custom evaluators

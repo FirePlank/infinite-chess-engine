@@ -329,7 +329,7 @@ impl StagedMoveGen {
                 if dx == 0 {
                     // Push
                     if dy == dir {
-                        return target_packed == 0;
+                        target_packed == 0
                     } else if dy == 2 * dir {
                         // 2 steps
                         if target_packed != 0 {
@@ -346,9 +346,9 @@ impl StagedMoveGen {
                                 None => 0,
                             }
                         };
-                        return mid_packed == 0;
+                        mid_packed == 0
                     } else {
-                        return false;
+                        false
                     }
                 } else {
                     // Capture
@@ -356,14 +356,15 @@ impl StagedMoveGen {
                         if target_packed != 0 {
                             return true;
                         }
-                        if let Some(ep) = &game.en_passant {
-                            if ep.square.x == m.to.x && ep.square.y == m.to.y {
-                                return true;
-                            }
+                        if let Some(ep) = &game.en_passant
+                            && ep.square.x == m.to.x
+                            && ep.square.y == m.to.y
+                        {
+                            return true;
                         }
                         return false;
                     }
-                    return false;
+                    false
                 }
             }
             PieceType::Knight => {
