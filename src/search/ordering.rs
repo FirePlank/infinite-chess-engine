@@ -325,7 +325,6 @@ mod tests {
             .set_piece(0, 0, Piece::new(PieceType::Knight, PlayerColor::White));
         game.board
             .set_piece(1, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board.rebuild_tiles();
 
         let mut moves: MoveList = vec![
             Move::new(

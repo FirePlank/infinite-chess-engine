@@ -1025,7 +1025,7 @@ mod tests {
         let mut board = Board::new();
         board.set_piece(3, 3, Piece::new(PieceType::Queen, PlayerColor::White));
         board.set_piece(4, 3, Piece::new(PieceType::Queen, PlayerColor::White));
-        board.rebuild_tiles();
+        
 
         assert!(!needs_king_for_mate(&board, PlayerColor::White));
     }
@@ -1036,7 +1036,7 @@ mod tests {
         board.set_piece(1, 1, Piece::new(PieceType::Rook, PlayerColor::White));
         board.set_piece(2, 1, Piece::new(PieceType::Rook, PlayerColor::White));
         board.set_piece(3, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.rebuild_tiles();
+        
 
         assert!(!needs_king_for_mate(&board, PlayerColor::White));
     }
@@ -1051,7 +1051,6 @@ mod tests {
         game.board
             .set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let enemy_king = Coordinate::new(5, 8);
         let our_king = Coordinate::new(5, 1);
@@ -1072,7 +1071,6 @@ mod tests {
         game.board
             .set_piece(3, 4, Piece::new(PieceType::Queen, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let enemy_king = Coordinate::new(5, 8);
 
@@ -1101,7 +1099,6 @@ mod tests {
         game.board
             .set_piece(4, 1, Piece::new(PieceType::King, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let enemy_king = Coordinate::new(4, 4);
         let our_king = Coordinate::new(4, 1);
@@ -1127,7 +1124,6 @@ mod tests {
         game.board
             .set_piece(6, 5, Piece::new(PieceType::King, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let enemy_king = Coordinate::new(5, 5);
         let our_king_close = Coordinate::new(6, 5);
@@ -1196,7 +1192,6 @@ mod tests {
         game.board
             .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let enemy_king = Coordinate::new(4, 4);
         let (_is_caged, area) = find_bitboard_cage(

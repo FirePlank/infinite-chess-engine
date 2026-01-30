@@ -86,7 +86,7 @@ mod tests {
 
         // Recalculate material score
         let mut score = 0i32;
-        for (_, piece) in game.board.iter() {
+        for (_, _, piece) in game.board.iter() {
             let val = get_piece_value(piece.piece_type());
             match piece.color() {
                 PlayerColor::White => score += val,

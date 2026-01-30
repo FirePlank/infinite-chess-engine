@@ -951,12 +951,7 @@ impl GameState {
                 return false;
             }
             // If blocker is exactly at target, check if it's enemy (capture) or friendly
-            if blocker_dist == dist
-                && self
-                    .board
-                    .get_piece(bx, by)
-                    .is_some_and(|p| p.color() != self.turn)
-            {
+            if blocker_dist == dist && !self.board.is_occupied_by_color(bx, by, self.turn) {
                 return true;
             }
             if blocker_dist == dist {
@@ -990,12 +985,7 @@ impl GameState {
             if blocker_dist < dist {
                 return false;
             }
-            if blocker_dist == dist
-                && self
-                    .board
-                    .get_piece(bx, by)
-                    .is_some_and(|p| p.color() != self.turn)
-            {
+            if blocker_dist == dist && !self.board.is_occupied_by_color(bx, by, self.turn) {
                 return true;
             }
             if blocker_dist == dist {
@@ -1061,7 +1051,7 @@ impl GameState {
                     let sq = Coordinate::new(checker_sq.x + int_dx, checker_sq.y + int_dy);
 
                     // Check if this intermediate square is occupied
-                    if self.board.get_piece(sq.x, sq.y).is_some() {
+                    if self.board.is_occupied(sq.x, sq.y) {
                         path_blocked = true;
                         break;
                     }
@@ -1111,9 +1101,9 @@ impl GameState {
     /// from an initial position before replaying move history.
     pub fn init_starting_squares(&mut self) {
         self.starting_squares.clear();
-        for ((x, y), piece) in self.board.iter() {
+        for (x, y, piece) in self.board.iter() {
             if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
-                self.starting_squares.insert(Coordinate::new(*x, *y));
+                self.starting_squares.insert(Coordinate::new(x, y));
             }
         }
     }
@@ -1124,7 +1114,7 @@ impl GameState {
     pub fn init_starting_piece_counts(&mut self) {
         let mut white: u16 = 0;
         let mut black: u16 = 0;
-        for (_, piece) in self.board.iter() {
+        for (_, _, piece) in self.board.iter() {
             if piece.piece_type() != PieceType::Pawn && piece.color() != PlayerColor::Neutral {
                 match piece.color() {
                     PlayerColor::White => white += 1,
@@ -1357,7 +1347,7 @@ impl GameState {
                 }
             }
         } else {
-            for (_, piece) in self.board.iter() {
+            for (_, _, piece) in self.board.iter() {
                 if piece.piece_type() != PieceType::King {
                     if piece.color() == PlayerColor::White {
                         white_has_non_king = true;
@@ -1493,11 +1483,11 @@ impl GameState {
                 h ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
             }
         } else {
-            for ((x, y), piece) in self.board.iter() {
+            for (x, y, piece) in self.board.iter() {
                 if piece.color() == PlayerColor::Neutral {
                     continue;
                 }
-                h ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                h ^= piece_key(piece.piece_type(), piece.color(), x, y);
             }
         }
 
@@ -1538,7 +1528,7 @@ impl GameState {
         let mut mh: u64 = 0; // Material hash
         let mut mih: u64 = 0; // Minor piece hash
 
-        for ((x, y), piece) in self.board.iter() {
+        for (x, y, piece) in self.board.iter() {
             if piece.color() == PlayerColor::Neutral {
                 continue;
             }
@@ -1548,20 +1538,20 @@ impl GameState {
 
             if piece.piece_type() == PieceType::Pawn {
                 // Pawn hash: only pawns (helps CoaIP variants)
-                ph ^= pawn_key(piece.color(), *x, *y);
+                ph ^= pawn_key(piece.color(), x, y);
             } else {
                 // Non-pawn hash: tracked per color
                 if piece.color() == PlayerColor::White {
-                    wnph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                    wnph ^= piece_key(piece.piece_type(), piece.color(), x, y);
                 } else {
-                    bnph ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                    bnph ^= piece_key(piece.piece_type(), piece.color(), x, y);
                 }
 
                 // Minor hash: Knights and Bishops
                 if piece.piece_type() == PieceType::Knight
                     || piece.piece_type() == PieceType::Bishop
                 {
-                    mih ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
+                    mih ^= piece_key(piece.piece_type(), piece.color(), x, y);
                 }
             }
         }
@@ -1661,7 +1651,7 @@ impl GameState {
         };
 
         let king_piece = match self.board.get_piece(king_sq.x, king_sq.y) {
-            Some(p) => *p,
+            Some(p) => p,
             None => return,
         };
 
@@ -1678,7 +1668,7 @@ impl GameState {
                     p.color() == their_color
                         && crate::moves::is_piece_attacking_square(
                             &self.board,
-                            p,
+                            &p,
                             &Coordinate::new(ax, ay),
                             &king_sq,
                             indices,
@@ -1691,11 +1681,11 @@ impl GameState {
                 }
             }
         } else {
-            for (&(ax, ay), p) in self.board.iter() {
+            for (ax, ay, p) in self.board.iter() {
                 if p.color() == their_color
                     && crate::moves::is_piece_attacking_square(
                         &self.board,
-                        p,
+                        &p,
                         &Coordinate::new(ax, ay),
                         &king_sq,
                         indices,
@@ -2278,10 +2268,7 @@ impl GameState {
                                 // Check path is clear for knightrider
                                 let mut path_clear = true;
                                 for i in 1..t {
-                                    if s.board
-                                        .get_piece(from.x + i * ndx, from.y + i * ndy)
-                                        .is_some()
-                                    {
+                                    if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
                                         path_clear = false;
                                         break;
                                     }
@@ -2523,12 +2510,12 @@ impl GameState {
         if let Some(active) = &self.board.active_coords {
             for &(ax, ay) in active {
                 if let Some(p) = self.board.get_piece(ax, ay) {
-                    process_piece(self, Coordinate::new(ax, ay), p, out);
+                    process_piece(self, Coordinate::new(ax, ay), &p, out);
                 }
             }
         } else {
-            for (&(ax, ay), p) in self.board.iter() {
-                process_piece(self, Coordinate::new(ax, ay), p, out);
+            for (ax, ay, p) in self.board.iter() {
+                process_piece(self, Coordinate::new(ax, ay), &p, out);
             }
         }
     }
@@ -2668,9 +2655,9 @@ impl GameState {
                 }
             }
         } else {
-            for ((x, y), piece) in self.board.iter() {
+            for (x, y, piece) in self.board.iter() {
                 if piece.color() == moved_color && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(*x, *y);
+                    let pos = Coordinate::new(x, y);
                     if is_square_attacked(&self.board, &pos, self.turn, indices) {
                         return true;
                     }
@@ -2734,9 +2721,9 @@ impl GameState {
                 }
             }
         } else {
-            for ((x, y), piece) in self.board.iter() {
+            for (x, y, piece) in self.board.iter() {
                 if piece.color() == self.turn && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(*x, *y);
+                    let pos = Coordinate::new(x, y);
                     if is_square_attacked(&self.board, &pos, attacker_color, indices) {
                         return true;
                     }
@@ -2758,7 +2745,7 @@ impl GameState {
         promotion: Option<&str>,
     ) {
         let piece = match self.board.get_piece(from_x, from_y) {
-            Some(p) => *p,
+            Some(p) => p,
             None => return, // No piece at from - invalid move, just skip
         };
 
@@ -2835,7 +2822,7 @@ impl GameState {
         }
 
         let mut undo_info = UndoMove {
-            captured_piece: self.board.get_piece(m.to.x, m.to.y).copied(),
+            captured_piece: self.board.get_piece(m.to.x, m.to.y),
             old_en_passant: self.en_passant,
             old_halfmove_clock: self.halfmove_clock,
             old_hash: self.hash_stack.last().copied().unwrap_or(0),

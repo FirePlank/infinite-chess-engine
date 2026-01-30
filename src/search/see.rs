@@ -531,7 +531,6 @@ mod tests {
             .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -555,7 +554,6 @@ mod tests {
             .set_piece(6, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Defends 5,5
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -581,7 +579,6 @@ mod tests {
             .set_piece(4, 7, Piece::new(PieceType::Rook, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 1),
@@ -602,7 +599,6 @@ mod tests {
             .set_piece(5, 5, Piece::new(PieceType::Queen, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -624,7 +620,6 @@ mod tests {
             .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -643,7 +638,6 @@ mod tests {
             .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -664,7 +658,6 @@ mod tests {
             .set_piece(4, 5, Piece::new(PieceType::Bishop, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let m = Move::new(
             Coordinate::new(3, 3),

@@ -367,12 +367,12 @@ mod tests {
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();
-        for ((x, y), p) in game.board.iter() {
+        for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
                 if p.color() == PlayerColor::White {
-                    w_pawns.push((*x, *y));
+                    w_pawns.push((x, y));
                 } else if p.color() == PlayerColor::Black {
-                    b_pawns.push((*x, *y));
+                    b_pawns.push((x, y));
                 }
             }
         }
@@ -424,12 +424,12 @@ mod tests {
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();
-        for ((x, y), p) in game.board.iter() {
+        for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
                 if p.color() == PlayerColor::White {
-                    w_pawns.push((*x, *y));
+                    w_pawns.push((x, y));
                 } else if p.color() == PlayerColor::Black {
-                    b_pawns.push((*x, *y));
+                    b_pawns.push((x, y));
                 }
             }
         }
@@ -481,12 +481,12 @@ mod tests {
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();
-        for ((x, y), p) in game.board.iter() {
+        for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
                 if p.color() == PlayerColor::White {
-                    w_pawns.push((*x, *y));
+                    w_pawns.push((x, y));
                 } else if p.color() == PlayerColor::Black {
-                    b_pawns.push((*x, *y));
+                    b_pawns.push((x, y));
                 }
             }
         }

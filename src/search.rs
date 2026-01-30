@@ -1452,7 +1452,7 @@ impl Searcher {
             if let Some(m) = tt_move {
                 // Validate that the move is still valid on the current board position
                 let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
-                if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                if piece_at_from.is_none() || piece_at_from != Some(m.piece) {
                     break;
                 }
 
@@ -1490,7 +1490,7 @@ impl Searcher {
             // Validate each move before making it
             for m in &pv {
                 let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
-                if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                if piece_at_from.is_none() || piece_at_from != Some(m.piece) {
                     // PV is invalid, return what we have so far (empty safe)
                     return pv;
                 }
@@ -1515,7 +1515,7 @@ impl Searcher {
                 if let Some(m) = tt_move {
                     // Validate that the move is still valid on the current board position
                     let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
-                    if piece_at_from.is_none() || piece_at_from != Some(&m.piece) {
+                    if piece_at_from.is_none() || piece_at_from != Some(m.piece) {
                         break;
                     }
 
@@ -3294,7 +3294,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Check if TT move is a capture (for RFP condition)
         let tt_capture = if let Some(m) = tt_move {
-            if game.board.get_piece(m.to.x, m.to.y).is_some() {
+            if game.board.is_occupied(m.to.x, m.to.y) {
                 true
             } else if let Some(ep) = game.en_passant {
                 ep.square == m.to && m.piece.piece_type() == PieceType::Pawn
@@ -4986,7 +4986,6 @@ mod tests {
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
         game.recompute_hash();
-        game.board.rebuild_tiles();
 
         let result = get_best_move(&mut game, 3, 500, true, true);
         assert!(result.is_some(), "Should find a move in KQ vs K");
@@ -5014,7 +5013,6 @@ mod tests {
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
         game.recompute_hash();
-        game.board.rebuild_tiles();
 
         let result = get_best_move(&mut game, 4, 500, true, true);
         assert!(result.is_some());
@@ -5127,7 +5125,6 @@ mod tests {
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
         game.recompute_hash();
-        game.board.rebuild_tiles();
 
         // Search with MultiPV = 2
         let result = get_best_moves_multipv(&mut game, 2, 500, 500, 2, true, false);
@@ -5238,7 +5235,6 @@ mod tests {
         );
 
         game.recompute_hash();
-        game.board.rebuild_tiles();
 
         // Verification: ensure move generation works
         let moves = game.get_legal_moves();
@@ -5282,7 +5278,6 @@ mod tests {
             .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
         game.recompute_piece_counts();
         game.recompute_hash();
-        game.board.rebuild_tiles();
 
         // Qsearch should return static eval on quiet position
         let alpha = -10000;

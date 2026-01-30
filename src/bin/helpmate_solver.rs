@@ -574,7 +574,7 @@ impl HelpmateSolver {
                                 };
                                 hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
                                     &state.board,
-                                    kpiece,
+                                    &kpiece,
                                     &kpos,
                                     &op_ctx,
                                     &mut opponent_moves,
@@ -1090,7 +1090,7 @@ fn main() {
     let mut max_y = i64::MIN;
     let mut has_pieces = false;
 
-    for ((x, y), _piece) in game.board.iter() {
+    for (x, y, _piece) in game.board.iter() {
         has_pieces = true;
         if *x < min_x {
             min_x = *x;

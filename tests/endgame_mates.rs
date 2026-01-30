@@ -46,7 +46,7 @@ fn create_endgame(
 
     // Recalculate material score
     let mut score = 0;
-    for (_, piece) in game.board.iter() {
+    for (_, _, piece) in game.board.iter() {
         let val = hydrochess_wasm::evaluation::get_piece_value(piece.piece_type());
         match piece.color() {
             PlayerColor::White => score += val,

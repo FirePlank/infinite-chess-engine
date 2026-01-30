@@ -1294,7 +1294,7 @@ pub fn is_square_attacked(
                         for &(prev_dx, prev_dy) in spiral.iter().take(hop) {
                             let check_x = target.x - cum_dx + prev_dx;
                             let check_y = target.y - cum_dy + prev_dy;
-                            if board.get_piece(check_x, check_y).is_some() {
+                            if board.is_occupied(check_x, check_y) {
                                 blocked = true;
                                 break;
                             }
@@ -1390,7 +1390,7 @@ fn generate_pawn_capture_moves(
         let capture_y = from.y + direction;
 
         if let Some(target) = board.get_piece(capture_x, capture_y) {
-            if is_enemy_piece(target, piece.color()) {
+            if is_enemy_piece(&target, piece.color()) {
                 // Obstocean Optimization:
                 // If it's a neutral piece (Obstacle), capturing it is a "quiet" move in material terms (0 -> 0).
                 // Doing this for all obstacles causes a QS explosion.
@@ -1908,7 +1908,7 @@ fn generate_leaper_moves_into(
 
         if let Some(target) = board.get_piece(to_x, to_y) {
             // Target square occupied - this would be a capture
-            let dominated = is_enemy_piece(target, piece.color());
+            let dominated = is_enemy_piece(&target, piece.color());
             if dominated && gen_type != MoveGenType::Quiets {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
@@ -1955,7 +1955,7 @@ fn generate_compass_moves_into(
 
         if let Some(target) = board.get_piece(to_x, to_y) {
             // Target square occupied - this would be a capture
-            let dominated = is_enemy_piece(target, piece.color());
+            let dominated = is_enemy_piece(&target, piece.color());
             if dominated && gen_type != MoveGenType::Quiets {
                 out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
             }
@@ -3003,7 +3003,7 @@ fn generate_rose_moves_into(
                     // Generate capture if enemy and not already seen
                     if !already_seen
                         && let Some(target) = occupant
-                        && is_enemy_piece(target, my_color)
+                        && is_enemy_piece(&target, my_color)
                         && gen_type != MoveGenType::Quiets
                     {
                         out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
@@ -3101,7 +3101,7 @@ fn generate_pawn_moves_into(
     // Move forward 1
     let to_y = from.y + direction;
     let to_x = from.x;
-    let forward_blocked = board.get_piece(to_x, to_y).is_some();
+    let forward_blocked = board.is_occupied(to_x, to_y);
 
     if !forward_blocked {
         add_pawn_move(
@@ -3137,7 +3137,7 @@ fn generate_pawn_moves_into(
         let capture_y = from.y + direction;
 
         if let Some(target) = board.get_piece(capture_x, capture_y) {
-            if is_enemy_piece(target, piece.color()) {
+            if is_enemy_piece(&target, piece.color()) {
                 add_pawn_move(
                     out,
                     *from,
@@ -3246,7 +3246,7 @@ fn generate_knightrider_moves_into(
 ) {
     let moves = generate_knightrider_moves(board, from, piece);
     for m in moves {
-        let is_capture = board.get_piece(m.to.x, m.to.y).is_some();
+        let is_capture = board.is_occupied(m.to.x, m.to.y);
         // Filter based on gen_type
         if gen_type == MoveGenType::Quiets && is_capture {
             continue;
@@ -3622,7 +3622,6 @@ mod tests {
     fn test_generate_sliding_moves_rook() {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.rebuild_tiles();
 
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Rook, PlayerColor::White);
@@ -3651,7 +3650,6 @@ mod tests {
     fn test_generate_sliding_moves_bishop() {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Bishop, PlayerColor::White));
-        board.rebuild_tiles();
 
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Bishop, PlayerColor::White);
@@ -3679,7 +3677,6 @@ mod tests {
     fn test_is_square_attacked_by_knight() {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        board.rebuild_tiles();
 
         let indices = SpatialIndices::new(&board);
         let target_attacked = Coordinate::new(5, 6); // Knight can attack this
@@ -3703,7 +3700,6 @@ mod tests {
     fn test_is_square_attacked_by_rook() {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.rebuild_tiles();
 
         let indices = SpatialIndices::new(&board);
         let target_file = Coordinate::new(4, 10); // Same file
@@ -3728,7 +3724,6 @@ mod tests {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
         board.set_piece(4, 6, Piece::new(PieceType::Pawn, PlayerColor::White)); // Blocker
-        board.rebuild_tiles();
 
         let indices = SpatialIndices::new(&board);
         let target_blocked = Coordinate::new(4, 10); // Blocked by pawn at (4,6)
@@ -3746,7 +3741,6 @@ mod tests {
         let mut board = Board::new();
         board.set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
         board.set_piece(8, 1, Piece::new(PieceType::Rook, PlayerColor::White)); // Kingside rook
-        board.rebuild_tiles();
 
         let from = Coordinate::new(5, 1);
         let piece = Piece::new(PieceType::King, PlayerColor::White);
@@ -3802,7 +3796,6 @@ mod tests {
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
         board.set_piece(4, 8, Piece::new(PieceType::Pawn, PlayerColor::White)); // Blocker
-        board.rebuild_tiles();
 
         let from = Coordinate::new(4, 4);
         let indices = SpatialIndices::new(&board);
@@ -3851,7 +3844,6 @@ mod tests {
         board.set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
         board.set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
         board.set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        board.rebuild_tiles();
 
         let indices = SpatialIndices::new(&board);
         let special = FxHashSet::default();
@@ -3879,7 +3871,6 @@ mod tests {
         board.set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
         board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
         board.set_piece(5, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Capture target
-        board.rebuild_tiles();
 
         let indices = SpatialIndices::new(&board);
         let special = FxHashSet::default();
@@ -3905,7 +3896,6 @@ mod tests {
         // Rose on empty board should have many moves
         let mut board = Board::new();
         board.set_piece(4, 4, Piece::new(PieceType::Rose, PlayerColor::White));
-        board.rebuild_tiles();
 
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Rose, PlayerColor::White);
@@ -3931,7 +3921,6 @@ mod tests {
         board.set_piece(4, 4, Piece::new(PieceType::Rose, PlayerColor::White));
         // Place blocker at first knight hop destination
         board.set_piece(3, 2, Piece::new(PieceType::Pawn, PlayerColor::White)); // (4-1, 4-2)
-        board.rebuild_tiles();
 
         let from = Coordinate::new(4, 4);
         let piece = Piece::new(PieceType::Rose, PlayerColor::White);
@@ -4003,7 +3992,6 @@ mod tests {
             let from = Coordinate::new(0, 0);
             let piece = Piece::new(PieceType::Huygen, PlayerColor::White);
             board.set_piece(from.x, from.y, piece);
-            board.rebuild_tiles();
             let indices = SpatialIndices::new(&board);
 
             // Set small border
@@ -4041,7 +4029,6 @@ mod tests {
             let from = Coordinate::new(0, 0);
             let piece = Piece::new(PieceType::Rose, PlayerColor::White);
             board.set_piece(from.x, from.y, piece);
-            board.rebuild_tiles();
 
             // Set small border
             set_world_bounds(-2, 2, -2, 2);
@@ -4069,7 +4056,6 @@ mod tests {
             let from = Coordinate::new(0, 5);
             let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
             board.set_piece(from.x, from.y, piece);
-            board.rebuild_tiles();
 
             let rules = GameRules::default();
             let special = FxHashSet::default();

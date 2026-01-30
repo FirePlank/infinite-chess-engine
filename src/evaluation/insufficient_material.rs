@@ -113,7 +113,7 @@ fn has_sufficient_mating_material(
     let mut light_bishops = 0;
     let mut dark_bishops = 0;
 
-    for ((x, y), piece) in board.iter() {
+    for (x, y, piece) in board.iter() {
         if piece.color() != color {
             continue;
         }
@@ -136,7 +136,7 @@ fn has_sufficient_mating_material(
             PieceType::Pawn => {
                 // KEY CHANGE: If this pawn can promote, count it as the best promotion piece
                 if let Some(promo_piece) = best_promo {
-                    if can_pawn_promote(*y, color, game_rules) {
+                    if can_pawn_promote(y, color, game_rules) {
                         // Count as the promotion piece instead of a pawn
                         match promo_piece {
                             PieceType::Queen | PieceType::RoyalQueen => queens += 1,
@@ -714,7 +714,7 @@ fn compute_insufficient_material(game: &crate::game::GameState) -> Option<i32> {
     let mut white_pieces = 0; // Non-king pieces
     let mut black_pieces = 0; // Non-king pieces
 
-    for (_, p) in board.iter() {
+    for (_, _, p) in board.iter() {
         let is_royal = p.piece_type().is_royal();
         match p.color() {
             PlayerColor::White => {

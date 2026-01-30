@@ -1639,8 +1639,7 @@ fn compute_attack_bonus_optimized(
             for step in 1..=5 {
                 if game
                     .board
-                    .get_piece(enemy_king.x + dx * step, enemy_king.y + dy * step)
-                    .is_some()
+                    .is_occupied(enemy_king.x + dx * step, enemy_king.y + dy * step)
                 {
                     is_open = false;
                     break;
@@ -1657,8 +1656,7 @@ fn compute_attack_bonus_optimized(
             for step in 1..=5 {
                 if game
                     .board
-                    .get_piece(enemy_king.x + dx * step, enemy_king.y + dy * step)
-                    .is_some()
+                    .is_occupied(enemy_king.x + dx * step, enemy_king.y + dy * step)
                 {
                     is_open = false;
                     break;
@@ -2400,32 +2398,31 @@ pub fn is_clear_line_between(board: &Board, from: &Coordinate, to: &Coordinate) 
         return false;
     }
 
-    for ((px, py), _) in board.iter() {
+    for (px, py, _) in board.iter() {
         // Skip the endpoints themselves
-        if *px == from.x && *py == from.y {
+        if px == from.x && py == from.y {
             continue;
         }
-        if *px == to.x && *py == to.y {
+        if px == to.x && py == to.y {
             continue;
         }
 
         // Same file
-        if dx == 0 && *px == from.x && is_between(*py, from.y, to.y) {
+        if dx == 0 && px == from.x && is_between(py, from.y, to.y) {
             return false;
         }
 
         // Same rank
-        if dy == 0 && *py == from.y && is_between(*px, from.x, to.x) {
+        if dy == 0 && py == from.y && is_between(px, from.x, to.x) {
             return false;
         }
 
         // Same diagonal
         if dx.abs() == dy.abs() {
-            let vx = *px - from.x;
-            let vy = *py - from.y;
+            let vx = px - from.x;
+            let vy = py - from.y;
             // Collinear and between
-            if vx * dy == vy * dx && is_between(*px, from.x, to.x) && is_between(*py, from.y, to.y)
-            {
+            if vx * dy == vy * dx && is_between(px, from.x, to.x) && is_between(py, from.y, to.y) {
                 return false;
             }
         }
@@ -2626,12 +2623,12 @@ mod tests {
 
         // Add white queen
         board.set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        board.rebuild_tiles();
+        
         assert_eq!(calculate_initial_material(&board), 1350); // Queen = 1350 in infinite chess
 
         // Add black queen - should cancel out
         board.set_piece(4, 8, Piece::new(PieceType::Queen, PlayerColor::Black));
-        board.rebuild_tiles();
+        
         assert_eq!(calculate_initial_material(&board), 0);
     }
 
@@ -2650,7 +2647,6 @@ mod tests {
             .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
         game.turn = PlayerColor::White;
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
         game.recompute_hash();
 
         let score = evaluate(&game);
@@ -2667,7 +2663,6 @@ mod tests {
             .set_piece(4, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
         game.board
             .set_piece(4, 7, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.board.rebuild_tiles();
 
         let w_pawns = vec![(4, 1), (4, 3)];
         let b_pawns = vec![(4, 7)];
@@ -2689,7 +2684,6 @@ mod tests {
         game.board
             .set_piece(4, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
         game.recompute_hash();
 
         let score = evaluate_pawn_structure(&game);
@@ -2769,7 +2763,6 @@ mod tests {
         game.board
             .set_piece(4, 4, Piece::new(PieceType::Bishop, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
@@ -2802,7 +2795,6 @@ mod tests {
         game.board
             .set_piece(4, 1, Piece::new(PieceType::Rook, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
@@ -2832,7 +2824,6 @@ mod tests {
         game.board
             .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
         game.recompute_piece_counts();
-        game.board.rebuild_tiles();
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
