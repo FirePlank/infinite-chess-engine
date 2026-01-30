@@ -236,6 +236,39 @@ static LOCAL_TT: OnceLock<LocalTranspositionTable> = OnceLock::new();
 #[cfg(feature = "multithreading")]
 static SHARED_TT: OnceLock<SharedTranspositionTable> = OnceLock::new();
 
+/// Precomputed LMR table to avoid ln() calls at runtime.
+/// Indexed by [depth][moves_searched].
+static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
+
+#[inline]
+fn get_lmr(depth: usize, moves: usize) -> i32 {
+    let table = LMR_TABLE.get_or_init(|| {
+        let mut table = [[0; 256]; MAX_PLY];
+        let divisor = lmr_divisor() as f32;
+        for (d, row) in table.iter_mut().enumerate() {
+            for (m, entry) in row.iter_mut().enumerate() {
+                if d == 0 || m == 0 {
+                    *entry = 0;
+                    continue;
+                }
+
+                let reduction = 1.0 + (m as f32).ln() * (d as f32).ln() / divisor;
+                *entry = reduction as i32;
+            }
+        }
+        table
+    });
+
+    // Fall back to calculation for values outside the table range
+    if moves >= 256 {
+        let divisor = lmr_divisor() as f32;
+        let reduction = 1.0 + (moves as f32).ln() * (depth as f32).ln() / divisor;
+        return reduction as i32;
+    }
+
+    table[depth][moves]
+}
+
 /// Flag to enable shared TT usage.
 /// Set to true when parallel search is active.
 #[cfg(feature = "multithreading")]
@@ -3808,9 +3841,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_capture
                 && !(gives_check && (p_type == PieceType::Queen || p_type == PieceType::Amazon))
             {
-                reduction = 1
-                    + ((legal_moves as f32).ln() * (depth as f32).ln() / lmr_divisor() as f32)
-                        as i32;
+                reduction = get_lmr(depth, legal_moves);
 
                 // Reduce more when position is not improving
                 if !improving {
@@ -4269,15 +4300,9 @@ fn quiescence(
     mut alpha: i32,
     beta: i32,
 ) -> i32 {
-    // Check for max ply BEFORE any array accesses to prevent out-of-bounds
+    // Check for max ply
     if ply >= MAX_PLY - 1 {
-        let prev_move_idx = if ply > 0 {
-            let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
-            from_hash ^ to_hash
-        } else {
-            0
-        };
-        return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
+        return evaluate(game);
     }
 
     // Check if we have an upcoming move that draws by repetition
@@ -4443,10 +4468,6 @@ fn quiescence(
         return best_value;
     }
 
-    // When must escape check, generate all pseudo-legal moves (evasions) via the normal generator.
-    // When not must escape, use a specialized capture-only generator to avoid creating
-    // thousands of quiet moves only to filter them out.
-    // Reuse per-ply move buffer to avoid Vec allocations inside quiescence.
     let mut tactical_moves: MoveList = MoveList::new();
     std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
     tactical_moves.clear();
