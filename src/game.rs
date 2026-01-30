@@ -473,25 +473,35 @@ impl GameState {
         self.white_king_pos = None;
         self.black_king_pos = None;
 
-        if let Some(active) = &self.board.active_coords {
-            for (x, y) in active {
-                let piece = match self.board.get_piece(*x, *y) {
-                    Some(p) => p,
-                    None => continue,
-                };
+        // BITBOARD: Use tile-based CTZ iteration for O(popcount) piece enumeration
+        for (cx, cy, tile) in self.board.tiles.iter() {
+            let mut bits = tile.occ_all;
+            while bits != 0 {
+                let idx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+
+                let packed = tile.piece[idx];
+                if packed == 0 {
+                    continue;
+                }
+
+                let piece = crate::board::Piece::from_packed(packed);
+                let x = cx * 8 + (idx % 8) as i64;
+                let y = cy * 8 + (idx / 8) as i64;
+
                 // Track king positions (any royal piece)
                 if piece.piece_type().is_royal() {
                     if piece.color() == PlayerColor::White {
-                        self.white_king_pos = Some(Coordinate::new(*x, *y));
+                        self.white_king_pos = Some(Coordinate::new(x, y));
                     } else if piece.color() == PlayerColor::Black {
-                        self.black_king_pos = Some(Coordinate::new(*x, *y));
+                        self.black_king_pos = Some(Coordinate::new(x, y));
                     }
                 }
                 self.total_phase += get_piece_phase(piece.piece_type());
                 match piece.color() {
                     PlayerColor::White => {
                         white = white.saturating_add(1);
-                        self.white_pieces.push((*x, *y));
+                        self.white_pieces.push((x, y));
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             white_pawns += 1;
@@ -501,42 +511,7 @@ impl GameState {
                     }
                     PlayerColor::Black => {
                         black = black.saturating_add(1);
-                        self.black_pieces.push((*x, *y));
-                        // Track pawns and non-pawn material
-                        if piece.piece_type() == PieceType::Pawn {
-                            black_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            black_npm = true;
-                        }
-                    }
-                    PlayerColor::Neutral => {}
-                }
-            }
-        } else {
-            for ((x, y), piece) in self.board.iter() {
-                // Track king positions (any royal piece)
-                if piece.piece_type().is_royal() {
-                    if piece.color() == PlayerColor::White {
-                        self.white_king_pos = Some(Coordinate::new(*x, *y));
-                    } else if piece.color() == PlayerColor::Black {
-                        self.black_king_pos = Some(Coordinate::new(*x, *y));
-                    }
-                }
-                self.total_phase += get_piece_phase(piece.piece_type());
-                match piece.color() {
-                    PlayerColor::White => {
-                        white = white.saturating_add(1);
-                        self.white_pieces.push((*x, *y));
-                        // Track pawns and non-pawn material
-                        if piece.piece_type() == PieceType::Pawn {
-                            white_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            white_npm = true;
-                        }
-                    }
-                    PlayerColor::Black => {
-                        black = black.saturating_add(1);
-                        self.black_pieces.push((*x, *y));
+                        self.black_pieces.push((x, y));
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             black_pawns += 1;
