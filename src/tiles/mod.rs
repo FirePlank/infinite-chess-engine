@@ -1,10 +1,7 @@
 //! Sparse Tiled Bitboards for Infinite Chess
 //!
-//! This module implements an 8×8 tile-based representation that dramatically
-//! reduces HashMap lookups for leaper attack detection and move generation.
+//! This module implements an 8×8 tile-based representation.
 //! Each tile contains u64 occupancy bitboards and packed piece arrays.
-//!
-//! The design is SIMD-ready: piece array scans can be vectorized with u8x16.
 
 pub mod magic;
 pub mod masks;
@@ -76,9 +73,6 @@ pub fn neighbor_index(dx: i64, dy: i64) -> usize {
 
 /// An 8×8 tile containing occupancy bitboards and packed piece data.
 /// Aligned to 64 bytes for cache efficiency.
-///
-/// BITBOARD ARCHITECTURE: Per-piece-type occupancy for optimized move generation.
-/// This allows O(popcount) iteration over specific piece types without scanning.
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct Tile {
@@ -667,13 +661,12 @@ impl<'a> Iterator for TilePieceIter<'a> {
 }
 
 // ============================================================================
-// TileTable Fast Piece Iteration (for Evaluation)
+// TileTable Piece Iteration
 // ============================================================================
 
 impl TileTable {
     /// Iterate all pieces across all tiles.
     /// Yields (world_x, world_y, Piece) using CTZ bitboard iteration.
-    /// Much faster than HashMap iteration for evaluation loops.
     #[inline]
     pub fn iter_all_pieces(&self) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
         TileTablePieceIter {

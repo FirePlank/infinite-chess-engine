@@ -363,6 +363,12 @@ const EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY: i32 = 2;
 const MG_FAR_SLIDER_PENALTY_MULT: i32 = 100; // 100%
 const EG_FAR_SLIDER_PENALTY_MULT: i32 = 40; // 40%
 
+// Piece on Open File Bonuses
+const ROOK_OPEN_FILE_BONUS: i32 = 45;
+const ROOK_SEMI_OPEN_FILE_BONUS: i32 = 20;
+const QUEEN_OPEN_FILE_BONUS: i32 = 25;
+const QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
+
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
     // Check for insufficient material draw
@@ -1695,8 +1701,8 @@ pub fn evaluate_rook(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
-    _white_pawns: &[(i64, i64)],
-    _black_pawns: &[(i64, i64)],
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1766,6 +1772,32 @@ pub fn evaluate_rook(
         }
     }
 
+    // Open / Semi-Open File Bonus
+    let (my_pawns, enemy_pawns) = if color == PlayerColor::White {
+        (white_pawns, black_pawns)
+    } else {
+        (black_pawns, white_pawns)
+    };
+
+    // Check for our own pawns on this file
+    let run_start = my_pawns.partition_point(|p| p.0 < x);
+    let has_own_pawns = run_start < my_pawns.len() && my_pawns[run_start].0 == x;
+
+    if !has_own_pawns {
+        // Semi-open (at least)
+        let run_start_enemy = enemy_pawns.partition_point(|p| p.0 < x);
+        let has_enemy_pawns =
+            run_start_enemy < enemy_pawns.len() && enemy_pawns[run_start_enemy].0 == x;
+
+        if !has_enemy_pawns {
+            // Open file
+            bonus += ROOK_OPEN_FILE_BONUS;
+        } else {
+            // Semi-open file
+            bonus += ROOK_SEMI_OPEN_FILE_BONUS;
+        }
+    }
+
     bonus
 }
 
@@ -1778,8 +1810,8 @@ pub fn evaluate_queen(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
-    _white_pawns: &[(i64, i64)],
-    _black_pawns: &[(i64, i64)],
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1843,6 +1875,32 @@ pub fn evaluate_queen(
         if cheb > FAR_SLIDER_CHEB_RADIUS {
             let excess = (cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
             bonus -= excess * FAR_QUEEN_PENALTY;
+        }
+    }
+
+    // Open / Semi-Open File Bonus
+    let (my_pawns, enemy_pawns) = if color == PlayerColor::White {
+        (white_pawns, black_pawns)
+    } else {
+        (black_pawns, white_pawns)
+    };
+
+    // Check for our own pawns on this file
+    let run_start = my_pawns.partition_point(|p| p.0 < x);
+    let has_own_pawns = run_start < my_pawns.len() && my_pawns[run_start].0 == x;
+
+    if !has_own_pawns {
+        // Semi-open (at least)
+        let run_start_enemy = enemy_pawns.partition_point(|p| p.0 < x);
+        let has_enemy_pawns =
+            run_start_enemy < enemy_pawns.len() && enemy_pawns[run_start_enemy].0 == x;
+
+        if !has_enemy_pawns {
+            // Open file
+            bonus += QUEEN_OPEN_FILE_BONUS;
+        } else {
+            // Semi-open file
+            bonus += QUEEN_SEMI_OPEN_FILE_BONUS;
         }
     }
 
@@ -2623,12 +2681,12 @@ mod tests {
 
         // Add white queen
         board.set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        
+
         assert_eq!(calculate_initial_material(&board), 1350); // Queen = 1350 in infinite chess
 
         // Add black queen - should cancel out
         board.set_piece(4, 8, Piece::new(PieceType::Queen, PlayerColor::Black));
-        
+
         assert_eq!(calculate_initial_material(&board), 0);
     }
 
