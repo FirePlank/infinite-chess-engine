@@ -3023,7 +3023,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Leaf node: transition to quiescence search
     if depth == 0 {
-        return quiescence(searcher, game, ply, alpha, beta);
+        return quiescence(searcher, game, ply, alpha, beta, node_type);
     }
 
     // Cap depth to prevent overflow
@@ -3210,10 +3210,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Use TT value to improve position evaluation
     let mut eval = static_eval;
-    if !in_check
-        && let Some(tt_s) = tt_value
-        && !is_decisive(tt_s)
-    {
+    if !in_check && let Some(tt_s) = tt_value {
         let fails_high = tt_s >= beta;
         if (tt_data_bound == TTFlag::LowerBound && fails_high)
             || (tt_data_bound == TTFlag::UpperBound && !fails_high)
@@ -3240,7 +3237,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         && excluded_move.is_none()
         && tt_hit_node
         && let Some(tt_s) = tt_value
-        && !is_decisive(tt_s)
     {
         // Check TT depth vs adjusted depth
         let depth_threshold = if tt_s <= beta {
@@ -3289,7 +3285,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if !is_pv
             && static_eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
         {
-            return quiescence(searcher, game, ply, alpha, beta);
+            return quiescence(searcher, game, ply, alpha, beta, node_type);
         }
 
         // Check if TT move is a capture (for RFP condition)
@@ -3427,7 +3423,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
 
             // Preliminary qsearch to verify
-            let mut val = -quiescence(searcher, game, ply + 1, -prob_cut_beta, -prob_cut_beta + 1);
+            let mut val = -quiescence(
+                searcher,
+                game,
+                ply + 1,
+                -prob_cut_beta,
+                -prob_cut_beta + 1,
+                NodeType::Cut,
+            );
 
             // If qsearch held, perform regular search at reduced depth
             if val >= prob_cut_beta {
@@ -4299,7 +4302,9 @@ fn quiescence(
     ply: usize,
     mut alpha: i32,
     beta: i32,
+    node_type: NodeType,
 ) -> i32 {
+    let is_pv = node_type == NodeType::PV;
     // Check for max ply
     if ply >= MAX_PLY - 1 {
         return evaluate(game);
@@ -4370,9 +4375,9 @@ fn quiescence(
     };
 
     // TT Cutoff for QSearch
-    if tt_hit
+    if !is_pv
+        && tt_hit
         && let Some(tt_s) = tt_value
-        && !is_decisive(tt_s)
     {
         let fails_high = tt_s >= beta;
         let bound_matches = if fails_high {
@@ -4518,7 +4523,7 @@ fn quiescence(
 
         legal_moves += 1;
 
-        let score = -quiescence(searcher, game, ply + 1, -beta, -alpha);
+        let score = -quiescence(searcher, game, ply + 1, -beta, -alpha, node_type);
 
         game.undo_move(m, undo);
 
@@ -5282,7 +5287,7 @@ mod tests {
         // Qsearch should return static eval on quiet position
         let alpha = -10000;
         let beta = 10000;
-        let score = quiescence(&mut searcher, &mut game, 0, alpha, beta);
+        let score = quiescence(&mut searcher, &mut game, 0, alpha, beta, NodeType::PV);
         assert!(score.abs() < 500); // Should be near zero for balanced empty board
         assert_eq!(searcher.hot.qnodes, 1);
     }
