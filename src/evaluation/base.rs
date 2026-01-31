@@ -368,6 +368,8 @@ const ROOK_OPEN_FILE_BONUS: i32 = 45;
 const ROOK_SEMI_OPEN_FILE_BONUS: i32 = 20;
 const QUEEN_OPEN_FILE_BONUS: i32 = 25;
 const QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
+const MG_OUTPOST_BONUS: i32 = 20;
+const EG_OUTPOST_BONUS: i32 = 50;
 
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
@@ -1331,8 +1333,16 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 white_pawns,
                 black_pawns,
             ),
+            PieceType::Knight => evaluate_knight(
+                x,
+                y,
+                piece.color(),
+                cloud_center.as_ref(),
+                phase,
+                white_pawns,
+                black_pawns,
+            ),
             PieceType::Hawk
-            | PieceType::Knight
             | PieceType::Rose
             | PieceType::Camel
             | PieceType::Giraffe
@@ -1916,8 +1926,8 @@ pub fn evaluate_bishop(
     white_king: &Option<Coordinate>,
     black_king: &Option<Coordinate>,
     phase: i32,
-    _white_pawns: &[(i64, i64)],
-    _black_pawns: &[(i64, i64)],
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1957,6 +1967,88 @@ pub fn evaluate_bishop(
             let excess = (cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
             bonus -= excess * FAR_BISHOP_PENALTY;
         }
+    }
+
+    // Outpost Bonus: precise pawn support
+    let (my_pawns, _) = if color == PlayerColor::White {
+        (white_pawns, black_pawns)
+    } else {
+        (black_pawns, white_pawns)
+    };
+
+    // Check for pawn support: (x-1, y-dir) or (x+1, y-dir)
+    // White pawns at y-1 support piece at y. Black pawns at y+1 support piece at y.
+    let support_y = if color == PlayerColor::White {
+        y - 1
+    } else {
+        y + 1
+    };
+
+    // Check left support
+    let left_support_idx = my_pawns.partition_point(|p| p.0 < x - 1);
+    let has_left_support = left_support_idx < my_pawns.len()
+        && my_pawns[left_support_idx].0 == x - 1
+        && my_pawns[left_support_idx].1 == support_y;
+
+    // Check right support
+    let right_support_idx = my_pawns.partition_point(|p| p.0 < x + 1);
+    let has_right_support = right_support_idx < my_pawns.len()
+        && my_pawns[right_support_idx].0 == x + 1
+        && my_pawns[right_support_idx].1 == support_y;
+
+    if has_left_support || has_right_support {
+        bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
+    }
+
+    bonus
+}
+
+fn evaluate_knight(
+    x: i64,
+    y: i64,
+    color: PlayerColor,
+    cloud_center: Option<&Coordinate>,
+    phase: i32,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut bonus = evaluate_leaper_positioning(
+        x,
+        y,
+        color,
+        cloud_center,
+        get_piece_value(PieceType::Knight),
+    );
+
+    // Outpost Bonus: precise pawn support
+    let (my_pawns, _) = if color == PlayerColor::White {
+        (white_pawns, black_pawns)
+    } else {
+        (black_pawns, white_pawns)
+    };
+
+    let support_y = if color == PlayerColor::White {
+        y - 1
+    } else {
+        y + 1
+    };
+
+    // Check left support
+    let left_support_idx = my_pawns.partition_point(|p| p.0 < x - 1);
+    let has_left_support = left_support_idx < my_pawns.len()
+        && my_pawns[left_support_idx].0 == x - 1
+        && my_pawns[left_support_idx].1 == support_y;
+
+    // Check right support
+    let right_support_idx = my_pawns.partition_point(|p| p.0 < x + 1);
+    let has_right_support = right_support_idx < my_pawns.len()
+        && my_pawns[right_support_idx].0 == x + 1
+        && my_pawns[right_support_idx].1 == support_y;
+
+    if has_left_support || has_right_support {
+        bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
     }
 
     bonus
@@ -2932,6 +3024,48 @@ mod tests {
         assert!(
             supported_score > isolated_score,
             "Supported pawns should be better than isolated"
+        );
+    }
+
+    #[test]
+    fn test_outpost_bonus() {
+        let mut game = Box::new(GameState::new());
+        game.board = Board::new();
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // White Knight at (4,4)
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
+
+        // Case 1: No support
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        let score_no_support = evaluate_knight(4, 4, PlayerColor::White, None, 0, &[], &[]);
+
+        // Case 2: Support from pawn at (3,3) (White pawn at y-1 supports y)
+        game.board
+            .set_piece(3, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.recompute_piece_counts();
+        // Mock pawn list
+        let white_pawns = vec![(3, 3)];
+
+        let score_supported = evaluate_knight(4, 4, PlayerColor::White, None, 0, &white_pawns, &[]);
+
+        println!(
+            "No Support: {}, Supported: {}",
+            score_no_support, score_supported
+        );
+        assert!(
+            score_supported > score_no_support,
+            "Supported knight should have higher score"
+        );
+        assert_eq!(
+            score_supported - score_no_support,
+            EG_OUTPOST_BONUS,
+            "Bonus should match EG_OUTPOST_BONUS in endgame"
         );
     }
 }
