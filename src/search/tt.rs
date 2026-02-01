@@ -6,7 +6,7 @@ use super::tt_defs::{
     TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
 };
 
-const ENTRIES_PER_BUCKET: usize = 3; // 3 × 18 = 54 bytes + 10 bytes padding = 64
+const ENTRIES_PER_BUCKET: usize = 4; // 4 × 16 = 64 bytes
 
 // Generation management
 const GENERATION_BITS: u8 = 3;
@@ -15,31 +15,40 @@ const GENERATION_DELTA: u8 = 1 << GENERATION_BITS;
 const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 const GENERATION_CYCLE: u16 = 255 + GENERATION_DELTA as u16;
 
-// TT entry structure uses i16 coordinates to save space while supporting
-// a massive board range. Size is 18 bytes to allow for 64-byte bucket alignment.
+use super::tt_defs::{COORD_BITS, COORD_MASK, MAX_TT_COORD, MIN_TT_COORD};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct TTEntry {
-    pub key16: u16,    // Upper hash bits for collision detection
-    pub move16: u16,   // Piece type, color, and promotion
-    pub score16: i16,  // Node score
-    pub eval16: i16,   // Static evaluation
-    pub from_x: i16,
-    pub from_y: i16,
-    pub to_x: i16,
-    pub to_y: i16,
-    pub depth: u8,     // Search depth
-    pub gen_bound: u8, // Aging generation + PV flag + Bound type
+    pub key16: u16,     // Upper hash bits
+    pub depth: u8,      // Search depth
+    pub gen_bound: u8,  // Aging generation + PV flag + Bound type
+    pub score16: i16,   // Node score
+    pub eval16: i16,    // Static evaluation
+    pub move_data: u64, // Packed move info
 }
 
-const _: () = assert!(std::mem::size_of::<TTEntry>() == 18);
+const _: () = assert!(std::mem::size_of::<TTEntry>() == 16);
 
-const NO_MOVE: u16 = 0;
+const NO_MOVE: u64 = 0;
 
 #[inline]
 fn clamp_to_i16(v: i32) -> i16 {
     v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+#[inline]
+fn pack_coord(c: i64) -> u64 {
+    (c.clamp(MIN_TT_COORD, MAX_TT_COORD) & COORD_MASK as i64) as u64
+}
+
+#[inline]
+fn unpack_coord(v: u64) -> i64 {
+    let mut val = (v & COORD_MASK) as i64;
+    if val >= (1 << (COORD_BITS - 1)) {
+        val -= 1 << COORD_BITS;
+    }
+    val
 }
 
 impl TTEntry {
@@ -47,15 +56,11 @@ impl TTEntry {
     pub const fn empty() -> Self {
         TTEntry {
             key16: 0,
-            move16: NO_MOVE,
-            score16: 0,
-            eval16: 0,
-            from_x: 0,
-            from_y: 0,
-            to_x: 0,
-            to_y: 0,
             depth: 0,
             gen_bound: 0,
+            score16: 0,
+            eval16: 0,
+            move_data: NO_MOVE,
         }
     }
 
@@ -87,23 +92,26 @@ impl TTEntry {
 
     #[inline]
     pub fn best_move(&self) -> Option<Move> {
-        if self.move16 == NO_MOVE {
+        if self.move_data == NO_MOVE {
             return None;
         }
 
-        let pt = PieceType::from_u8((self.move16 & 0x1F) as u8);
-        let cl = PlayerColor::from_u8(((self.move16 >> 5) & 0x03) as u8);
-        let pr = ((self.move16 >> 7) & 0x1F) as u8;
+        let m = self.move_data;
+        let pt = PieceType::from_u8((m & 0x1F) as u8);
+        let cl = PlayerColor::from_u8(((m >> 5) & 0x03) as u8);
+        let pr = ((m >> 7) & 0x1F) as u8;
+
+        let from_x = unpack_coord(m >> 12);
+        let from_y = unpack_coord(m >> 25);
+        let to_x = unpack_coord(m >> 38);
+        let to_y = unpack_coord(m >> 51);
 
         Some(Move {
             from: Coordinate {
-                x: self.from_x as i64,
-                y: self.from_y as i64,
+                x: from_x,
+                y: from_y,
             },
-            to: Coordinate {
-                x: self.to_x as i64,
-                y: self.to_y as i64,
-            },
+            to: Coordinate { x: to_x, y: to_y },
             piece: Piece::new(pt, cl),
             promotion: if pr == 0 {
                 None
@@ -116,39 +124,40 @@ impl TTEntry {
 
     #[inline]
     fn encode_move(&mut self, m: &Move) -> bool {
-        if m.from.x < i16::MIN as i64
-            || m.from.x > i16::MAX as i64
-            || m.from.y < i16::MIN as i64
-            || m.from.y > i16::MAX as i64
-            || m.to.x < i16::MIN as i64
-            || m.to.x > i16::MAX as i64
-            || m.to.y < i16::MIN as i64
-            || m.to.y > i16::MAX as i64
+        if m.from.x < MIN_TT_COORD
+            || m.from.x > MAX_TT_COORD
+            || m.from.y < MIN_TT_COORD
+            || m.from.y > MAX_TT_COORD
+            || m.to.x < MIN_TT_COORD
+            || m.to.x > MAX_TT_COORD
+            || m.to.y < MIN_TT_COORD
+            || m.to.y > MAX_TT_COORD
         {
-            self.move16 = NO_MOVE;
+            self.move_data = NO_MOVE;
             return false;
         }
 
-        let pt = m.piece.piece_type() as u16;
-        let cl = m.piece.color() as u16;
-        let pr = m.promotion.map_or(0, |p| p as u16);
-        self.move16 = (pt & 0x1F) | ((cl & 0x03) << 5) | ((pr & 0x1F) << 7);
-        self.from_x = m.from.x as i16;
-        self.from_y = m.from.y as i16;
-        self.to_x = m.to.x as i16;
-        self.to_y = m.to.y as i16;
+        let pt = m.piece.piece_type() as u64;
+        let cl = m.piece.color() as u64;
+        let pr = m.promotion.map_or(0, |p| p as u64);
+
+        self.move_data = (pt & 0x1F)
+            | ((cl & 0x03) << 5)
+            | ((pr & 0x1F) << 7)
+            | (pack_coord(m.from.x) << 12)
+            | (pack_coord(m.from.y) << 25)
+            | (pack_coord(m.to.x) << 38)
+            | (pack_coord(m.to.y) << 51);
         true
     }
 }
 
 // Buckets are 64-byte aligned to fit exactly one CPU cache line.
-// This minimizes cache misses when probing a hash.
 
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct TTBucket {
-    entries: [TTEntry; ENTRIES_PER_BUCKET], // 54 bytes
-    _pad: [u8; 10],                         // 10 bytes padding
+    pub entries: [TTEntry; ENTRIES_PER_BUCKET],
 }
 
 const _: () = assert!(std::mem::size_of::<TTBucket>() == 64);
@@ -158,7 +167,6 @@ impl TTBucket {
     pub const fn empty() -> Self {
         TTBucket {
             entries: [TTEntry::empty(); ENTRIES_PER_BUCKET],
-            _pad: [0; 10],
         }
     }
 }
@@ -324,19 +332,14 @@ impl LocalTranspositionTable {
                     || (params.depth as i32 + pv_bonus) > (e.depth as i32 - 4)
                     || e.relative_age(curr_gen) != 0
                 {
-                    let (old_m16, old_fx, old_fy, old_tx, old_ty) =
-                        (e.move16, e.from_x, e.from_y, e.to_x, e.to_y);
+                    let old_move_data = e.move_data;
                     *e = TTEntry {
                         key16,
                         depth: params.depth as u8,
                         gen_bound: TTEntry::pack_gen_bound(curr_gen, params.is_pv, params.flag),
                         score16: clamp_to_i16(adj_score),
                         eval16: store_eval,
-                        move16: old_m16,
-                        from_x: old_fx,
-                        from_y: old_fy,
-                        to_x: old_tx,
-                        to_y: old_ty,
+                        move_data: old_move_data,
                     };
                     if let Some(m) = &params.best_move {
                         e.encode_move(m);
@@ -359,11 +362,7 @@ impl LocalTranspositionTable {
             gen_bound: TTEntry::pack_gen_bound(curr_gen, params.is_pv, params.flag),
             score16: clamp_to_i16(adj_score),
             eval16: clamp_to_i16(params.static_eval),
-            move16: NO_MOVE,
-            from_x: 0,
-            from_y: 0,
-            to_x: 0,
-            to_y: 0,
+            move_data: NO_MOVE,
         };
         if let Some(m) = &params.best_move {
             new_e.encode_move(m);
@@ -401,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_struct_sizes() {
-        assert_eq!(std::mem::size_of::<TTEntry>(), 18);
+        assert_eq!(std::mem::size_of::<TTEntry>(), 16);
         assert_eq!(std::mem::size_of::<TTBucket>(), 64);
     }
 
@@ -476,15 +475,15 @@ mod tests {
     fn test_extreme_coords() {
         let mut e = TTEntry::empty();
         let m = Move {
-            from: Coordinate::new(30000, -30000),
-            to: Coordinate::new(-30000, 30000),
+            from: Coordinate::new(4000, -4000),
+            to: Coordinate::new(-4000, 4000),
             piece: Piece::new(PieceType::Rook, PlayerColor::Black),
             promotion: None,
             rook_coord: None,
         };
         assert!(e.encode_move(&m));
         let decoded = e.best_move().unwrap();
-        assert_eq!(decoded.from.x, 30000);
-        assert_eq!(decoded.from.y, -30000);
+        assert_eq!(decoded.from.x, 4000);
+        assert_eq!(decoded.from.y, -4000);
     }
 }

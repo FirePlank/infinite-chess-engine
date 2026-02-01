@@ -93,6 +93,15 @@ pub struct TTProbeParams {
     pub rule_limit: i32,
 }
 
+/// Promotion type is 5 bits (supporting 32 types)
+pub const PROMO_BITS: u32 = 5;
+
+/// Coordinate bit-packing (13 bits = +/- 4096 range)
+pub const COORD_BITS: u32 = 13;
+pub const COORD_MASK: u64 = (1 << COORD_BITS) - 1;
+pub const MAX_TT_COORD: i64 = (1 << (COORD_BITS - 1)) - 1;
+pub const MIN_TT_COORD: i64 = -MAX_TT_COORD - 1;
+
 /// Parameters for storing to the TT
 pub struct TTStoreParams {
     pub hash: u64,

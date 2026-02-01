@@ -7,85 +7,92 @@ use super::tt_defs::{
     TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
 };
 
-const ENTRIES_PER_BUCKET: usize = 3;
+const ENTRIES_PER_BUCKET: usize = 4;
 
 const GENERATION_BITS: u8 = 3;
 const GENERATION_DELTA: u8 = 1 << GENERATION_BITS;
 #[allow(clippy::identity_op)]
 const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 
-const NO_MOVE: u16 = 0;
+const NO_MOVE: u64 = 0;
 
 use std::cell::UnsafeCell;
 
-// Entries are stored as 3 × u64 words for atomic-friendly access without explicit locks.
-// word0: key16 (16) | depth (8) | gen_bound (8) | score (16) | eval (16)
-// word1: move16 (16) | from_x (16) | from_y (16) | to_x (16)
-// word2: to_y (16) | padding (48)
+// TT entry structure uses 16 bytes.
+// Metadata: key16 | depth8 | gen_bound8 | score16 | eval16 (64 bits)
+// Move: Packed pieces and 13-bit coordinates (64 bits)
 
 #[repr(C, align(8))]
 pub struct TTEntry {
-    word0: UnsafeCell<u64>,
-    word1: UnsafeCell<u64>,
-    word2: UnsafeCell<u64>,
+    metadata: UnsafeCell<u64>,
+    move_data: UnsafeCell<u64>,
 }
 
 unsafe impl Sync for TTEntry {}
 unsafe impl Send for TTEntry {}
+
+use super::tt_defs::{COORD_BITS, COORD_MASK, MAX_TT_COORD, MIN_TT_COORD};
 
 #[inline]
 fn clamp_to_i16(v: i32) -> i16 {
     v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
+#[inline]
+fn pack_coord(c: i64) -> u64 {
+    (c.clamp(MIN_TT_COORD, MAX_TT_COORD) & COORD_MASK as i64) as u64
+}
+
+#[inline]
+fn unpack_coord(v: u64) -> i64 {
+    let mut val = (v & COORD_MASK) as i64;
+    if val >= (1 << (COORD_BITS - 1)) {
+        val -= 1 << COORD_BITS;
+    }
+    val
+}
+
 impl TTEntry {
     pub fn empty() -> Self {
         TTEntry {
-            word0: UnsafeCell::new(0),
-            word1: UnsafeCell::new(0),
-            word2: UnsafeCell::new(0),
+            metadata: UnsafeCell::new(0),
+            move_data: UnsafeCell::new(NO_MOVE),
         }
     }
 
     #[inline]
     pub fn read(&self, key16: u16) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
-            let w0 = std::ptr::read_volatile(self.word0.get());
-            let stored_key = (w0 & 0xFFFF) as u16;
-            if stored_key != key16 || w0 == 0 {
+            let meta = std::ptr::read_volatile(self.metadata.get());
+            if (meta & 0xFFFF) as u16 != key16 || meta == 0 {
                 return None;
             }
 
-            let depth = ((w0 >> 16) & 0xFF) as u8;
-            let gen_bound = ((w0 >> 24) & 0xFF) as u8;
-            let score = ((w0 >> 32) & 0xFFFF) as i16 as i32;
-            let eval = ((w0 >> 48) & 0xFFFF) as i16 as i32;
+            let mdata = std::ptr::read_volatile(self.move_data.get());
+            if std::ptr::read_volatile(self.metadata.get()) != meta {
+                return None;
+            }
 
-            let w1 = std::ptr::read_volatile(self.word1.get());
-            let move16 = (w1 & 0xFFFF) as u16;
+            let d = (meta >> 16) as u8;
+            let gb = (meta >> 24) as u8;
+            let score = (meta >> 32) as u16 as i16 as i32;
+            let eval = (meta >> 48) as u16 as i16 as i32;
 
-            let best_move = if move16 == NO_MOVE {
+            let best_move = if mdata == NO_MOVE {
                 None
             } else {
-                let from_x = ((w1 >> 16) & 0xFFFF) as i16;
-                let from_y = ((w1 >> 32) & 0xFFFF) as i16;
-                let to_x = ((w1 >> 48) & 0xFFFF) as i16;
-                let w2 = std::ptr::read_volatile(self.word2.get());
-                let to_y = (w2 & 0xFFFF) as i16;
+                let pt = PieceType::from_u8((mdata & 0x1F) as u8);
+                let cl = PlayerColor::from_u8(((mdata >> 5) & 0x03) as u8);
+                let pr = ((mdata >> 7) & 0x1F) as u8;
 
-                let pt = PieceType::from_u8((move16 & 0x1F) as u8);
-                let cl = PlayerColor::from_u8(((move16 >> 5) & 0x03) as u8);
-                let pr = ((move16 >> 7) & 0x1F) as u8;
+                let fx = unpack_coord(mdata >> 12);
+                let fy = unpack_coord(mdata >> 25);
+                let tx = unpack_coord(mdata >> 38);
+                let ty = unpack_coord(mdata >> 51);
 
                 Some(Move {
-                    from: Coordinate {
-                        x: from_x as i64,
-                        y: from_y as i64,
-                    },
-                    to: Coordinate {
-                        x: to_x as i64,
-                        y: to_y as i64,
-                    },
+                    from: Coordinate { x: fx, y: fy },
+                    to: Coordinate { x: tx, y: ty },
                     piece: Piece::new(pt, cl),
                     promotion: if pr == 0 {
                         None
@@ -96,7 +103,7 @@ impl TTEntry {
                 })
             };
 
-            Some((score, eval, depth, gen_bound, best_move))
+            Some((score, eval, d, gb, best_move))
         }
     }
 
@@ -109,43 +116,69 @@ impl TTEntry {
         eval: i16,
         depth: u8,
         gen_bound: u8,
-        move16: u16,
-        from_x: i16,
-        from_y: i16,
-        to_x: i16,
-        to_y: i16,
+        best_move: &Option<Move>,
     ) {
-        let w0 = (key16 as u64)
+        let mdata = if let Some(m) = best_move {
+            if m.from.x >= MIN_TT_COORD
+                && m.from.x <= MAX_TT_COORD
+                && m.from.y >= MIN_TT_COORD
+                && m.from.y <= MAX_TT_COORD
+                && m.to.x >= MIN_TT_COORD
+                && m.to.x <= MAX_TT_COORD
+                && m.to.y >= MIN_TT_COORD
+                && m.to.y <= MAX_TT_COORD
+            {
+                let pt = m.piece.piece_type() as u64;
+                let cl = m.piece.color() as u64;
+                let pr = m.promotion.map_or(0, |p| p as u64);
+                (pt & 0x1F)
+                    | ((cl & 0x03) << 5)
+                    | ((pr & 0x1F) << 7)
+                    | (pack_coord(m.from.x) << 12)
+                    | (pack_coord(m.from.y) << 25)
+                    | (pack_coord(m.to.x) << 38)
+                    | (pack_coord(m.to.y) << 51)
+            } else {
+                NO_MOVE
+            }
+        } else {
+            NO_MOVE
+        };
+
+        let meta = (key16 as u64)
             | ((depth as u64) << 16)
             | ((gen_bound as u64) << 24)
             | (((score as u16) as u64) << 32)
             | (((eval as u16) as u64) << 48);
-        let w1 = (move16 as u64)
-            | (((from_x as u16) as u64) << 16)
-            | (((from_y as u16) as u64) << 32)
-            | (((to_x as u16) as u64) << 48);
-        let w2 = (to_y as u16) as u64;
 
         unsafe {
-            std::ptr::write_volatile(self.word0.get(), w0);
-            std::ptr::write_volatile(self.word1.get(), w1);
-            std::ptr::write_volatile(self.word2.get(), w2);
+            std::ptr::write_volatile(self.move_data.get(), mdata);
+            std::ptr::write_volatile(self.metadata.get(), meta);
         }
     }
 
     #[inline]
-    pub fn raw_word0(&self) -> u64 {
-        unsafe { std::ptr::read_volatile(self.word0.get()) }
+    pub fn raw_key(&self) -> u16 {
+        unsafe { (std::ptr::read_volatile(self.metadata.get()) & 0xFFFF) as u16 }
     }
+    #[inline]
+    pub fn raw_depth(&self) -> u8 {
+        unsafe { (std::ptr::read_volatile(self.metadata.get()) >> 16) as u8 }
+    }
+    #[inline]
+    pub fn raw_gen_bound(&self) -> u8 {
+        unsafe { (std::ptr::read_volatile(self.metadata.get()) >> 24) as u8 }
+    }
+
     #[inline]
     pub fn clear(&self) {
         unsafe {
-            std::ptr::write_volatile(self.word0.get(), 0);
+            std::ptr::write_volatile(self.metadata.get(), 0);
         }
     }
     #[inline]
     pub fn flag(gen_bound: u8) -> TTFlag {
-        TTFlag::from_u8(gen_bound)
+        TTFlag::from_u8(gen_bound & 0x03)
     }
     #[inline]
     pub fn is_pv(gen_bound: u8) -> bool {
@@ -153,23 +186,27 @@ impl TTEntry {
     }
     #[inline]
     pub fn generation(gen_bound: u8) -> u8 {
-        (gen_bound & GENERATION_MASK) >> GENERATION_BITS
+        gen_bound & GENERATION_MASK
     }
     #[inline]
     pub fn pack_gen_bound(r#gen: u8, is_pv: bool, flag: TTFlag) -> u8 {
-        ((r#gen << GENERATION_BITS) & GENERATION_MASK)
-            | (if is_pv { 0x04 } else { 0 })
-            | (flag as u8 & 0x03)
+        (r#gen & GENERATION_MASK) | (if is_pv { 0x04 } else { 0 }) | (flag as u8 & 0x03)
     }
 }
 
+#[repr(C, align(64))]
 pub struct TTBucket {
     entries: [TTEntry; ENTRIES_PER_BUCKET],
 }
 impl TTBucket {
     pub fn empty() -> Self {
         TTBucket {
-            entries: [TTEntry::empty(), TTEntry::empty(), TTEntry::empty()],
+            entries: [
+                TTEntry::empty(),
+                TTEntry::empty(),
+                TTEntry::empty(),
+                TTEntry::empty(),
+            ],
         }
     }
 }
@@ -237,10 +274,10 @@ impl SharedTranspositionTable {
         let mut occ = 0u32;
         for i in 0..sample {
             for e in &self.buckets[i].entries {
-                let w0 = e.raw_word0();
-                if w0 != 0 {
-                    let gb = ((w0 >> 24) & 0xFF) as u8;
-                    if (r#gen.wrapping_sub(TTEntry::generation(gb))) & 0x1F == 0 {
+                let meta = unsafe { std::ptr::read_volatile(e.metadata.get()) };
+                if meta != 0 {
+                    let gb = (meta >> 24) as u8;
+                    if TTEntry::generation(gb) == r#gen {
                         occ += 1;
                     }
                 }
@@ -324,55 +361,16 @@ impl SharedTranspositionTable {
         let r#gen = unsafe { *self.generation.get() };
         let bucket = &self.buckets[self.bucket_index(params.hash)];
 
-        let (m16, fx, fy, tx, ty) = params
-            .best_move
-            .as_ref()
-            .map(|m| {
-                if m.from.x >= i16::MIN as i64
-                    && m.from.x <= i16::MAX as i64
-                    && m.from.y >= i16::MIN as i64
-                    && m.from.y <= i16::MAX as i64
-                    && m.to.x >= i16::MIN as i64
-                    && m.to.x <= i16::MAX as i64
-                    && m.to.y >= i16::MIN as i64
-                    && m.to.y <= i16::MAX as i64
-                {
-                    let pt = m.piece.piece_type() as u16;
-                    let cl = m.piece.color() as u16;
-                    let pr = m.promotion.map_or(0, |p| p as u16);
-                    (
-                        (pt & 0x1F) | ((cl & 0x03) << 5) | ((pr & 0x1F) << 7),
-                        m.from.x as i16,
-                        m.from.y as i16,
-                        m.to.x as i16,
-                        m.to.y as i16,
-                    )
-                } else {
-                    (0, 0, 0, 0, 0)
-                }
-            })
-            .unwrap_or((0, 0, 0, 0, 0));
-
         let mut replace_idx = 0;
         let mut worst = i32::MAX;
 
         for (i, e) in bucket.entries.iter().enumerate() {
-            if let Some((_, old_eval, old_depth, old_gb, old_move)) = e.read(key16) {
-                let (sm16, sfx, sfy, stx, sty) = if m16 != 0 {
-                    (m16, fx, fy, tx, ty)
-                } else if let Some(m) = old_move {
-                    let pt = m.piece.piece_type() as u16;
-                    let cl = m.piece.color() as u16;
-                    let pr = m.promotion.map_or(0, |p| p as u16);
-                    (
-                        (pt & 0x1F) | ((cl & 0x03) << 5) | ((pr & 0x1F) << 7),
-                        m.from.x as i16,
-                        m.from.y as i16,
-                        m.to.x as i16,
-                        m.to.y as i16,
-                    )
+            if let Some((_old_score, old_eval, old_depth, old_gb, old_move)) = e.read(key16) {
+                // If we don't have a new best move, but the old entry does, keep it.
+                let store_move = if params.best_move.is_some() {
+                    &params.best_move
                 } else {
-                    (0, 0, 0, 0, 0)
+                    &old_move
                 };
 
                 let store_eval = if params.static_eval != INFINITY + 1 {
@@ -380,13 +378,14 @@ impl SharedTranspositionTable {
                 } else {
                     clamp_to_i16(old_eval)
                 };
+
                 let old_gen = TTEntry::generation(old_gb);
                 let pv_bonus = if params.flag == TTFlag::Exact || params.is_pv {
                     2
                 } else {
                     0
                 };
-                let rel_age = (r#gen.wrapping_sub(old_gen)) & 0x1F;
+                let rel_age = (r#gen.wrapping_sub(old_gen)) & GENERATION_MASK;
 
                 if params.flag == TTFlag::Exact
                     || (params.depth as i32 + pv_bonus) > (old_depth as i32 - 4)
@@ -399,25 +398,21 @@ impl SharedTranspositionTable {
                         store_eval,
                         params.depth as u8,
                         TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
-                        sm16,
-                        sfx,
-                        sfy,
-                        stx,
-                        sty,
+                        store_move,
                     );
                 }
                 return;
             }
 
-            let w0 = e.raw_word0();
-            let ed = ((w0 >> 16) & 0xFF) as u8;
-            let egb = ((w0 >> 24) & 0xFF) as u8;
-            let mut prio =
-                ed as i32 - ((r#gen.wrapping_sub(TTEntry::generation(egb))) & 0x1F) as i32 * 2;
+            let ed = e.raw_depth();
+            let egb = e.raw_gen_bound();
+            let rel_age = (r#gen.wrapping_sub(TTEntry::generation(egb))) & GENERATION_MASK;
+            let mut prio = ed as i32 - (rel_age as i32 * 2);
+
             if TTEntry::flag(egb) == TTFlag::Exact || TTEntry::is_pv(egb) {
                 prio += 2;
             }
-            if w0 == 0 {
+            if e.raw_key() == 0 && egb == 0 {
                 prio = i32::MIN;
             }
             if prio < worst {
@@ -439,11 +434,7 @@ impl SharedTranspositionTable {
                 clamp_to_i16(params.static_eval),
                 params.depth as u8,
                 TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
-                m16,
-                fx,
-                fy,
-                tx,
-                ty,
+                &params.best_move,
             );
         }
     }
