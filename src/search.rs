@@ -3288,7 +3288,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // =================================================================
 
         // Razoring: if static eval is very low, drop to qsearch
-        // Formula: eval < alpha - 485 - 281 * depth²
         if !is_pv
             && static_eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
         {
@@ -3338,7 +3337,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Null move pruning: give opponent an extra move, if still >= beta, prune
         // Only in cut nodes with non-pawn material (avoid zugzwang)
-        // Guard: don't prune when beta is a losing mate score (preserve mate finding)
         if cut_node && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
@@ -3375,7 +3373,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
                 // If null move score >= beta, we can prune
-                // Guard: don't return mate scores from null move (they're unproven)
                 if null_score >= beta && !is_win(null_score) {
                     return null_score;
                 }
@@ -3543,12 +3540,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
 
         // In-move pruning at shallow depths (not in PV, have material, not losing)
-        // Guard: don't prune when we have a losing mate score (must find escape)
         if !is_pv && game.has_non_pawn_material(game.turn) && !is_loss(best_score) {
             // Late move pruning: skip quiet moves after seeing enough
-            // Threshold: (3 + depth²) / (2 if not improving, else 1)
             let improving_div = if improving { 1 } else { 2 };
             let lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
+
             // Signal movegen to skip quiet generation entirely (truly lazy)
             if legal_moves >= lmp_count {
                 movegen.skip_quiet_moves();
@@ -3563,7 +3559,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let capt_hist = searcher.capture_history[p_type as usize][cap_type as usize];
 
                     // Capture futility: skip captures that can't raise alpha
-                    // Threshold: eval + 232 + 217*lmrD + pieceVal + histBonus
                     if !gives_check && lmr_depth < 7 {
                         let cap_value = get_piece_value(cap_type);
                         let futility_value = static_eval
@@ -3578,7 +3573,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                     // SEE pruning for captures: skip losing captures
                     // Exempt moves that give check (they have tactical significance)
-                    // Threshold: -max(166*d + captHist/29, 0)
                     let see_margin = (see_capture_linear() * depth as i32
                         + capt_hist / see_capture_hist_div())
                     .max(0);
@@ -3594,7 +3588,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let history = main_hist;
 
                 // History-based pruning: skip moves with very bad history
-                // Threshold: history < -4083 * depth
                 if history < -4083 * depth as i32 {
                     continue;
                 }
@@ -3603,7 +3596,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let adj_lmr_depth = (lmr_depth + history / 3208).max(0);
 
                 // Quiet futility: skip moves that can't raise alpha
-                // Threshold: eval + 42 + 161*(no bestMove) + 127*lmrD
                 if !in_check && adj_lmr_depth < 13 {
                     let no_best = if best_move.is_none() { 161 } else { 0 };
                     let futility_value = static_eval + 42 + no_best + 127 * adj_lmr_depth;
@@ -3728,7 +3720,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     break;
                 }
 
-                // Fast legality check (skips is_move_illegal for non-pinned pieces)
+                // Fast legality check
                 let fast_legal = game.is_legal_fast(&se_m, in_check);
                 if let Ok(false) = fast_legal {
                     continue;
@@ -3797,7 +3789,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
             } else if se_best >= beta && !is_pv && !is_decisive(se_best) {
                 // Multi-cut: alternatives also beat beta, prune the whole subtree
-                // Guard: don't return mate scores (they need verification)
                 let penalty = (-400 - 100 * depth as i32).max(-4000);
                 let max_tt_hist = 8192;
                 searcher.tt_move_history +=
@@ -3829,8 +3820,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             } else {
                 NodeType::Cut
             };
+
             // Full window search for first legal move
-            // Calculate new depth: base depth - 1 + extension (extension can be negative)
             let new_depth = ((depth as i32) - 1 + extension).max(0) as usize;
             score = -negamax(&mut NegamaxContext {
                 searcher,
@@ -3860,8 +3851,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction += 1;
                 }
 
-                // History-adjusted LMR (simple, low-overhead version)
-                // Continuous adjustment: reduction -= history / 4096
+                // History-adjusted LMR
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
@@ -3889,7 +3879,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // TT Move History adjustment:
                 // If TT moves have been unreliable (low tt_move_history), reduce less
                 // since the move ordering from TT may not be trustworthy.
-                // Only adjust for significant negative values to avoid overhead.
                 if searcher.tt_move_history < lmr_tt_history_thresh() && reduction > 0 {
                     reduction -= 1;
                 }
@@ -3901,10 +3890,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // Base child depth after LMR (with singular extension if applicable)
             let mut new_depth = (depth as i32) - 1 + extension - reduction;
 
-            // History Leaf Pruning:
-            // Only in non-PV, quiet, shallow nodes and after enough moves
-            // Exempt checking moves to avoid missing check-fork tactics:
-            // Guard: don't prune when we have a losing mate score
+            // History Leaf Pruning
             if !in_check
                 && !is_pv
                 && !is_capture
@@ -4508,6 +4494,16 @@ fn quiescence(
     let delta_margin = delta_margin();
 
     for m in &tactical_moves {
+        // Compute essential move properties
+        let gives_check = StagedMoveGen::move_gives_check_fast(game, m);
+        let captured = game.board.get_piece(m.to.x, m.to.y);
+        let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
+
+        // Skip remaining quiet moves
+        if !in_check && legal_moves > 2 && !is_capture && !gives_check {
+            continue;
+        }
+
         if !in_check && !is_loss(best_value) {
             let see_gain = static_exchange_eval(game, m);
             if see_gain < 0 {

@@ -744,6 +744,7 @@ fn generate_captures_for_piece(
                 game_rules,
                 out,
             );
+            generate_pawn_quiet_promotions(board, from, piece, special_rights, game_rules, out);
         }
 
         // Knight-like leapers
@@ -1311,6 +1312,71 @@ pub fn is_square_attacked(
     false
 }
 
+/// Generate only quiet (non-capture) pawn promotions for quiescence search.
+fn generate_pawn_quiet_promotions(
+    board: &Board,
+    from: &Coordinate,
+    piece: &Piece,
+    special_rights: &FxHashSet<Coordinate>,
+    game_rules: &GameRules,
+    out: &mut MoveList,
+) {
+    let direction = match piece.color() {
+        PlayerColor::White => 1,
+        PlayerColor::Black => -1,
+        PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
+    };
+
+    // If board is empty in front, we *might* have a move
+    let to_y = from.y + direction;
+    let to_x = from.x;
+
+    if board.is_occupied(to_x, to_y) {
+        return;
+    }
+
+    // Get promotion ranks
+    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let promotion_ranks = match piece.color() {
+        PlayerColor::White => &ranks.white,
+        PlayerColor::Black => &ranks.black,
+        PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
+    };
+
+    let default_promos = [
+        PieceType::Queen,
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Knight,
+    ];
+    let promotion_pieces: &[PieceType] = game_rules
+        .promotion_types
+        .as_deref()
+        .unwrap_or(&default_promos);
+
+    // Helper to add promotions
+    let mut add_if_promo = |ty: i64| {
+        if promotion_ranks.contains(&ty) {
+            for &promo in promotion_pieces {
+                let mut m = Move::new(*from, Coordinate::new(to_x, ty), *piece);
+                m.promotion = Some(promo);
+                out.push(m);
+            }
+        }
+    };
+
+    // Single push
+    add_if_promo(to_y);
+
+    // Double push
+    if special_rights.contains(from) {
+        let to_y_2 = from.y + 2 * direction;
+        if !board.is_occupied(to_x, to_y_2) {
+            add_if_promo(to_y_2);
+        }
+    }
+}
+
 /// Generate only pawn captures (including en passant) for quiescence.
 fn generate_pawn_capture_moves(
     board: &Board,
@@ -1328,27 +1394,11 @@ fn generate_pawn_capture_moves(
     };
 
     // Get promotion ranks for this color
-    // If promotion_ranks is not set AND promotions_allowed is not set, use empty (no promotions)
-    let promotion_ranks: Vec<i64> = if let Some(ranks) = game_rules.promotion_ranks.as_ref() {
-        match piece.color() {
-            PlayerColor::White => ranks.white.clone(),
-            PlayerColor::Black => ranks.black.clone(),
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
-        }
-    } else if game_rules
-        .promotions_allowed
-        .as_ref()
-        .is_none_or(|v| v.is_empty())
-    {
-        // No promotion_ranks AND no promotions_allowed = no promotions anywhere
-        vec![]
-    } else {
-        // promotions_allowed is set but no ranks = use classical defaults
-        match piece.color() {
-            PlayerColor::White => vec![],
-            PlayerColor::Black => vec![],
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
-        }
+    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let promotion_ranks = match piece.color() {
+        PlayerColor::White => &ranks.white,
+        PlayerColor::Black => &ranks.black,
+        PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
     // Get allowed promotion pieces (use pre-converted types, default to Q, R, B, N)
@@ -1403,7 +1453,7 @@ fn generate_pawn_capture_moves(
                         capture_x,
                         capture_y,
                         *piece,
-                        &promotion_ranks,
+                        promotion_ranks,
                         promotion_pieces,
                     );
                 }
@@ -1418,7 +1468,7 @@ fn generate_pawn_capture_moves(
                 capture_x,
                 capture_y,
                 *piece,
-                &promotion_ranks,
+                promotion_ranks,
                 promotion_pieces,
             );
         }
@@ -1791,17 +1841,10 @@ fn generate_pawn_quiet_moves(
     };
 
     // Get promotion ranks
-    let promotion_ranks: Vec<i64> = match piece.color() {
-        PlayerColor::White => game_rules
-            .promotion_ranks
-            .as_ref()
-            .map(|p| p.white.clone())
-            .unwrap_or_default(),
-        PlayerColor::Black => game_rules
-            .promotion_ranks
-            .as_ref()
-            .map(|p| p.black.clone())
-            .unwrap_or_default(),
+    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let promotion_ranks = match piece.color() {
+        PlayerColor::White => &ranks.white,
+        PlayerColor::Black => &ranks.black,
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
@@ -1852,7 +1895,7 @@ fn generate_pawn_quiet_moves(
             to_x,
             to_y,
             *piece,
-            &promotion_ranks,
+            promotion_ranks,
             promotion_pieces,
         );
 
@@ -1866,7 +1909,7 @@ fn generate_pawn_quiet_moves(
                     to_x,
                     double_y,
                     *piece,
-                    &promotion_ranks,
+                    promotion_ranks,
                     promotion_pieces,
                 );
             }
@@ -3039,28 +3082,11 @@ fn generate_pawn_moves_into(
     };
 
     // Get promotion ranks for this color
-    // If promotion_ranks is not set AND promotions_allowed is not set, use empty (no promotions)
-    let promotion_ranks: Vec<i64> = if let Some(ref ranks) = game_rules.promotion_ranks {
-        match piece.color() {
-            PlayerColor::White => ranks.white.clone(),
-            PlayerColor::Black => ranks.black.clone(),
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
-        }
-    } else if game_rules
-        .promotions_allowed
-        .as_deref()
-        .unwrap_or(&[])
-        .is_empty()
-    {
-        // No promotion_ranks AND no promotions_allowed = no promotions anywhere
-        vec![]
-    } else {
-        // promotions_allowed is set but no ranks = use classical defaults
-        match piece.color() {
-            PlayerColor::White => vec![8],
-            PlayerColor::Black => vec![1],
-            PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
-        }
+    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let promotion_ranks = match piece.color() {
+        PlayerColor::White => &ranks.white,
+        PlayerColor::Black => &ranks.black,
+        PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
     let default_promos = [
@@ -3110,7 +3136,7 @@ fn generate_pawn_moves_into(
             to_x,
             to_y,
             *piece,
-            &promotion_ranks,
+            promotion_ranks,
             promotion_pieces,
         );
 
@@ -3124,7 +3150,7 @@ fn generate_pawn_moves_into(
                     to_x,
                     to_y_2,
                     *piece,
-                    &promotion_ranks,
+                    promotion_ranks,
                     promotion_pieces,
                 );
             }
@@ -3144,7 +3170,7 @@ fn generate_pawn_moves_into(
                     capture_x,
                     capture_y,
                     *piece,
-                    &promotion_ranks,
+                    promotion_ranks,
                     promotion_pieces,
                 );
             }
@@ -3158,7 +3184,7 @@ fn generate_pawn_moves_into(
                 capture_x,
                 capture_y,
                 *piece,
-                &promotion_ranks,
+                promotion_ranks,
                 promotion_pieces,
             );
         }
@@ -3981,6 +4007,42 @@ mod tests {
             found,
             "Move (10,-30) -> (77,-30) should be generated to target King at (77,-41)"
         );
+    }
+
+    #[test]
+    fn test_quiescence_generates_quiet_promotions() {
+        use crate::game::{GameRules, PromotionRanks};
+
+        let mut board = Board::new();
+        board.set_piece(0, 7, Piece::new(PieceType::Pawn, PlayerColor::White));
+
+        let indices = SpatialIndices::new(&board);
+        let special = FxHashSet::default();
+        let rules = GameRules {
+            promotion_ranks: Some(PromotionRanks {
+                white: vec![8],
+                black: vec![1],
+            }),
+            ..GameRules::default()
+        };
+
+        let ctx = MoveGenContext {
+            special_rights: &special,
+            en_passant: &None,
+            game_rules: &rules,
+            indices: &indices,
+            enemy_king_pos: None,
+        };
+
+        let mut moves = MoveList::new();
+        get_quiescence_captures(&board, PlayerColor::White, &ctx, &mut moves);
+
+        // Should include quiet promotion to (0, 8)
+        let found_promo = moves.iter().any(|m| {
+            m.from.x == 0 && m.from.y == 7 && m.to.x == 0 && m.to.y == 8 && m.promotion.is_some()
+        });
+
+        assert!(found_promo, "QSearch should generate quiet pawn promotions");
     }
 
     mod border_handling_tests {
