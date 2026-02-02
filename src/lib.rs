@@ -485,7 +485,10 @@ impl Engine {
                 };
 
             let mut rules = GameRules {
-                promotion_ranks,
+                promotion_ranks: promotion_ranks.unwrap_or_else(|| PromotionRanks {
+                    white: vec![],
+                    black: vec![],
+                }),
                 promotion_types: None,
                 promotions_allowed: js_rules.promotions_allowed,
                 move_rule_limit: js_rules.move_rule,
@@ -501,39 +504,35 @@ impl Engine {
         // Precompute effective promotion ranks and dynamic back ranks once per
         // game from promotion_ranks. For standard chess this yields promo
         // ranks 8/1 and back ranks 1/8.
-        let (white_promo_rank, black_promo_rank, white_back_rank, black_back_rank) =
-            if let Some(ref ranks) = game_rules.promotion_ranks {
-                let white_promo = ranks
-                    .white
-                    .iter()
-                    .copied()
-                    .max()
-                    .unwrap_or(2_000_000_000_000_000);
-                let black_promo = ranks
-                    .black
-                    .iter()
-                    .copied()
-                    .min()
-                    .unwrap_or(-2_000_000_000_000_000);
+        let (white_promo_rank, black_promo_rank, white_back_rank, black_back_rank) = {
+            let ranks = &game_rules.promotion_ranks;
+            let white_promo = ranks
+                .white
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(2_000_000_000_000_000);
+            let black_promo = ranks
+                .black
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(-2_000_000_000_000_000);
 
-                // White's home side is near Black's promotion ranks, and vice versa.
-                let wb = if black_promo == -2_000_000_000_000_000 {
-                    1
-                } else {
-                    black_promo
-                }; // white back rank
-                let bb = if white_promo == 2_000_000_000_000_000 {
-                    8
-                } else {
-                    white_promo
-                }; // black back rank
-
-                (white_promo, black_promo, wb, bb)
+            // White's home side is near Black's promotion ranks, and vice versa.
+            let wb = if black_promo == -2_000_000_000_000_000 {
+                1
             } else {
-                // Classical default: NO promotion unless explicitly provided.
-                // For simplicity use unreachable ranks.
-                (2_000_000_000_000_000, -2_000_000_000_000_000, 1, 8)
-            };
+                black_promo
+            }; // white back rank
+            let bb = if white_promo == 2_000_000_000_000_000 {
+                8
+            } else {
+                white_promo
+            }; // black back rank
+
+            (white_promo, black_promo, wb, bb)
+        };
 
         let spatial_indices = SpatialIndices::new(&board);
 

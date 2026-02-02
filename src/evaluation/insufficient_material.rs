@@ -36,26 +36,13 @@ fn get_best_promotion_piece(game_rules: &crate::game::GameRules) -> Option<Piece
 /// Check if a pawn at position y can still promote for the given color
 fn can_pawn_promote(y: i64, color: PlayerColor, game_rules: &crate::game::GameRules) -> bool {
     // Get promotion ranks for this color
-    let promo_ranks = if let Some(ref ranks) = game_rules.promotion_ranks {
+    let promo_ranks = {
+        let ranks = &game_rules.promotion_ranks;
         match color {
             PlayerColor::White => &ranks.white,
             PlayerColor::Black => &ranks.black,
             PlayerColor::Neutral => return false,
         }
-    } else if game_rules
-        .promotions_allowed
-        .as_ref()
-        .is_none_or(|v| v.is_empty())
-    {
-        // No promotion ranks AND no promotions_allowed = no promotions
-        return false;
-    } else {
-        // Use classical defaults: white promotes at 8, black at 1
-        return match color {
-            PlayerColor::White => y < 8,
-            PlayerColor::Black => y > 1,
-            PlayerColor::Neutral => false,
-        };
     };
 
     if promo_ranks.is_empty() {
@@ -964,10 +951,10 @@ mod tests {
     #[test]
     fn test_can_pawn_promote_basic() {
         let rules = GameRules {
-            promotion_ranks: Some(PromotionRanks {
+            promotion_ranks: PromotionRanks {
                 white: vec![8],
                 black: vec![1],
-            }),
+            },
             promotion_types: None,
             promotions_allowed: None,
             move_rule_limit: None,
@@ -990,7 +977,11 @@ mod tests {
 
     #[test]
     fn test_can_pawn_promote_no_ranks() {
-        let rules = GameRules::default();
+        let mut rules = GameRules::default();
+        rules.promotion_ranks = PromotionRanks {
+            white: vec![],
+            black: vec![],
+        };
 
         // No promotion ranks defined - pawns can never promote
         assert!(!can_pawn_promote(5, PlayerColor::White, &rules));
@@ -1053,10 +1044,10 @@ mod tests {
             (0, 10, PieceType::Pawn, PlayerColor::White), // Past rank 8
             (5, 5, PieceType::King, PlayerColor::Black),
         ]));
-        game.game_rules.promotion_ranks = Some(PromotionRanks {
+        game.game_rules.promotion_ranks = PromotionRanks {
             white: vec![8],
             black: vec![1],
-        });
+        };
 
         let result = compute_insufficient_material(&game);
         // White only has a dead pawn and a king.

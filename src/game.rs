@@ -90,16 +90,25 @@ pub struct EnPassantState {
 }
 
 /// Promotion ranks configuration for a variant
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromotionRanks {
     pub white: Vec<i64>,
     pub black: Vec<i64>,
 }
 
+impl Default for PromotionRanks {
+    fn default() -> Self {
+        Self {
+            white: vec![8],
+            black: vec![1],
+        }
+    }
+}
+
 /// Game rules that can vary between chess variants
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameRules {
-    pub promotion_ranks: Option<PromotionRanks>,
+    pub promotion_ranks: PromotionRanks,
     #[serde(skip)]
     pub promotion_types: Option<Vec<PieceType>>, // Pre-converted promotion piece types (fast)
     pub promotions_allowed: Option<Vec<String>>, // Piece type codes (only for serialization)
@@ -112,6 +121,19 @@ pub struct GameRules {
     /// E.g., "allpiecescaptured" means Black must capture all of White's pieces to win.
     #[serde(skip)]
     pub black_win_condition: WinCondition,
+}
+
+impl Default for GameRules {
+    fn default() -> Self {
+        Self {
+            promotion_ranks: PromotionRanks::default(),
+            promotion_types: None,
+            promotions_allowed: None,
+            move_rule_limit: None,
+            white_win_condition: WinCondition::default(),
+            black_win_condition: WinCondition::default(),
+        }
+    }
 }
 
 impl GameRules {
@@ -3630,16 +3652,16 @@ impl GameState {
                             self.black_promo_rank = rank;
                         }
 
-                        if self.game_rules.promotion_ranks.is_none() {
-                            self.game_rules.promotion_ranks = Some(PromotionRanks::default());
-                        }
-                        if let Some(ref mut pr) = self.game_rules.promotion_ranks {
-                            if idx == 0 {
-                                pr.white = vec![rank];
-                            } else {
-                                pr.black = vec![rank];
-                            }
-                        }
+                        self.game_rules.promotion_ranks.white = if idx == 0 {
+                            vec![rank]
+                        } else {
+                            self.game_rules.promotion_ranks.white.clone()
+                        };
+                        self.game_rules.promotion_ranks.black = if idx != 0 {
+                            vec![rank]
+                        } else {
+                            self.game_rules.promotion_ranks.black.clone()
+                        };
                     }
 
                     if parts.len() > 1 {

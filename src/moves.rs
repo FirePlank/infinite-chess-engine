@@ -1336,7 +1336,7 @@ fn generate_pawn_quiet_promotions(
     }
 
     // Get promotion ranks
-    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
         PlayerColor::Black => &ranks.black,
@@ -1394,7 +1394,7 @@ fn generate_pawn_capture_moves(
     };
 
     // Get promotion ranks for this color
-    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
         PlayerColor::Black => &ranks.black,
@@ -1841,7 +1841,7 @@ fn generate_pawn_quiet_moves(
     };
 
     // Get promotion ranks
-    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
         PlayerColor::Black => &ranks.black,
@@ -3082,7 +3082,7 @@ fn generate_pawn_moves_into(
     };
 
     // Get promotion ranks for this color
-    let ranks = game_rules.promotion_ranks.as_ref().unwrap();
+    let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
         PlayerColor::Black => &ranks.black,
@@ -3624,10 +3624,10 @@ mod tests {
 
         let rules = GameRules {
             promotions_allowed: Some(vec!["queens".to_string()]),
-            promotion_ranks: Some(PromotionRanks {
+            promotion_ranks: PromotionRanks {
                 white: vec![8],
                 black: vec![1],
-            }),
+            },
             ..GameRules::default()
         };
 
@@ -4019,10 +4019,10 @@ mod tests {
         let indices = SpatialIndices::new(&board);
         let special = FxHashSet::default();
         let rules = GameRules {
-            promotion_ranks: Some(PromotionRanks {
+            promotion_ranks: PromotionRanks {
                 white: vec![8],
                 black: vec![1],
-            }),
+            },
             ..GameRules::default()
         };
 
