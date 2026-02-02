@@ -397,7 +397,7 @@ impl SharedTranspositionTable {
                     old_eval
                 };
 
-                let old_gen = TTEntry::generation(old_gb);
+                let old_gen = old_gb & GENERATION_MASK;
                 let pv_bonus = if params.flag == TTFlag::Exact || params.is_pv {
                     2
                 } else {
@@ -428,14 +428,10 @@ impl SharedTranspositionTable {
             // Calculation for replacement strategy
             let ed = (meta >> 16) as u8;
             let egb = (meta >> 24) as u8;
-            let rel_age = (r#gen.wrapping_sub(TTEntry::generation(egb))) & GENERATION_MASK;
+            let rel_age = (r#gen.wrapping_sub(egb & GENERATION_MASK)) & GENERATION_MASK;
 
-            // Fix: remove * 2 multiplier to match Stockfish/LocalTT
-            let mut prio = ed as i32 - (rel_age as i32);
-
-            if TTEntry::flag(egb) == TTFlag::Exact || TTEntry::is_pv(egb) {
-                prio += 2;
-            }
+            let mut prio =
+                (ed as i32 + 3 + if TTEntry::is_pv(egb) { 2 } else { 0 }) - rel_age as i32;
             if (meta & 0xFFFF) == 0 && egb == 0 {
                 // Is empty check
                 prio = i32::MIN;

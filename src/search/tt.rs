@@ -14,7 +14,6 @@ const GENERATION_BITS: u8 = 3;
 const GENERATION_DELTA: u8 = 1 << GENERATION_BITS;
 #[allow(clippy::identity_op)]
 const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
-const GENERATION_CYCLE: u16 = 255 + GENERATION_DELTA as u16;
 
 use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
@@ -68,8 +67,7 @@ impl TTEntry {
 
     #[inline]
     pub fn relative_age(&self, current_gen: u8) -> u8 {
-        ((GENERATION_CYCLE + current_gen as u16 - (self.gen_bound as u16))
-            & (GENERATION_MASK as u16)) as u8
+        current_gen.wrapping_sub(self.gen_bound & GENERATION_MASK) & GENERATION_MASK
     }
 
     #[inline]
@@ -331,7 +329,8 @@ impl LocalTranspositionTable {
                 }
                 return;
             }
-            let priority = (e.depth as i32) - (e.relative_age(curr_gen) as i32);
+            let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
+                - (e.relative_age(curr_gen) as i32);
             if priority < worst {
                 worst = priority;
                 replace_idx = i;
