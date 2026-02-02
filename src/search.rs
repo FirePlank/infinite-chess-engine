@@ -3693,6 +3693,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if let Some((tt_s_base, singular_depth)) = se_conditions.filter(|_| {
             is_tt_move
                 && !is_pv
+                && !is_capture
+                && !is_promotion
                 && depth >= 6 + (tt_pv as usize)
                 && !searcher.is_shuffling(game, &m, ply)
         }) {

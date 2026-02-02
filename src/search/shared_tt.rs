@@ -4,7 +4,8 @@ use crate::moves::Move;
 
 use super::INFINITY;
 use super::tt_defs::{
-    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, clamp_to_i16, pack_coord, unpack_coord,
+    value_from_tt, value_to_tt,
 };
 
 const ENTRIES_PER_BUCKET: usize = 4;
@@ -31,26 +32,7 @@ pub struct TTEntry {
 unsafe impl Sync for TTEntry {}
 unsafe impl Send for TTEntry {}
 
-use super::tt_defs::{COORD_BITS, COORD_MASK, MAX_TT_COORD, MIN_TT_COORD};
-
-#[inline]
-fn clamp_to_i16(v: i32) -> i16 {
-    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
-#[inline]
-fn pack_coord(c: i64) -> u64 {
-    (c.clamp(MIN_TT_COORD, MAX_TT_COORD) & COORD_MASK as i64) as u64
-}
-
-#[inline]
-fn unpack_coord(v: u64) -> i64 {
-    let mut val = (v & COORD_MASK) as i64;
-    if val >= (1 << (COORD_BITS - 1)) {
-        val -= 1 << COORD_BITS;
-    }
-    val
-}
+use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
 impl TTEntry {
     pub fn empty() -> Self {
@@ -365,18 +347,54 @@ impl SharedTranspositionTable {
         let mut worst = i32::MAX;
 
         for (i, e) in bucket.entries.iter().enumerate() {
-            if let Some((_old_score, old_eval, old_depth, old_gb, old_move)) = e.read(key16) {
-                // If we don't have a new best move, but the old entry does, keep it.
-                let store_move = if params.best_move.is_some() {
-                    &params.best_move
+            // Read metadata ONCE strictly for this iteration
+            let meta = unsafe { std::ptr::read_volatile(e.metadata.get()) };
+
+            // Check if key matches (and entry is not empty)
+            if (meta & 0xFFFF) as u16 == key16 && meta != 0 {
+                let mdata = unsafe { std::ptr::read_volatile(e.move_data.get()) };
+
+                // Verify consistency: re-read metadata and fail if changed.
+                let old_depth = (meta >> 16) as u8;
+                let old_gb = (meta >> 24) as u8;
+                let old_eval = (meta >> 48) as i16;
+
+                // Decode old move for preservation
+                let old_move_data = mdata;
+
+                let store_move = params.best_move.as_ref();
+                let mdata_to_write = if let Some(m) = store_move {
+                    // Encode new move
+                    if m.from.x >= MIN_TT_COORD
+                        && m.from.x <= MAX_TT_COORD
+                        && m.from.y >= MIN_TT_COORD
+                        && m.from.y <= MAX_TT_COORD
+                        && m.to.x >= MIN_TT_COORD
+                        && m.to.x <= MAX_TT_COORD
+                        && m.to.y >= MIN_TT_COORD
+                        && m.to.y <= MAX_TT_COORD
+                    {
+                        let pt = m.piece.piece_type() as u64;
+                        let cl = m.piece.color() as u64;
+                        let pr = m.promotion.map_or(0, |p| p as u64);
+                        (pt & 0x1F)
+                            | ((cl & 0x03) << 5)
+                            | ((pr & 0x1F) << 7)
+                            | (pack_coord(m.from.x) << 12)
+                            | (pack_coord(m.from.y) << 25)
+                            | (pack_coord(m.to.x) << 38)
+                            | (pack_coord(m.to.y) << 51)
+                    } else {
+                        NO_MOVE
+                    }
                 } else {
-                    &old_move
+                    old_move_data
                 };
 
                 let store_eval = if params.static_eval != INFINITY + 1 {
                     clamp_to_i16(params.static_eval)
                 } else {
-                    clamp_to_i16(old_eval)
+                    old_eval
                 };
 
                 let old_gen = TTEntry::generation(old_gb);
@@ -392,27 +410,34 @@ impl SharedTranspositionTable {
                     || rel_age != 0
                     || params.depth == 0
                 {
-                    e.write(
-                        key16,
-                        clamp_to_i16(adj_score),
-                        store_eval,
-                        params.depth as u8,
-                        TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
-                        store_move,
-                    );
+                    let new_meta = (key16 as u64)
+                        | ((params.depth as u64) << 16)
+                        | ((TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag) as u64)
+                            << 24)
+                        | (((clamp_to_i16(adj_score) as u16) as u64) << 32)
+                        | (((store_eval as u16) as u64) << 48);
+
+                    unsafe {
+                        std::ptr::write_volatile(e.move_data.get(), mdata_to_write);
+                        std::ptr::write_volatile(e.metadata.get(), new_meta);
+                    }
                 }
                 return;
             }
 
-            let ed = e.raw_depth();
-            let egb = e.raw_gen_bound();
+            // Calculation for replacement strategy
+            let ed = (meta >> 16) as u8;
+            let egb = (meta >> 24) as u8;
             let rel_age = (r#gen.wrapping_sub(TTEntry::generation(egb))) & GENERATION_MASK;
-            let mut prio = ed as i32 - (rel_age as i32 * 2);
+
+            // Fix: remove * 2 multiplier to match Stockfish/LocalTT
+            let mut prio = ed as i32 - (rel_age as i32);
 
             if TTEntry::flag(egb) == TTFlag::Exact || TTEntry::is_pv(egb) {
                 prio += 2;
             }
-            if e.raw_key() == 0 && egb == 0 {
+            if (meta & 0xFFFF) == 0 && egb == 0 {
+                // Is empty check
                 prio = i32::MIN;
             }
             if prio < worst {
@@ -427,6 +452,7 @@ impl SharedTranspositionTable {
             } else {
                 0
             };
+
         if new_prio >= worst {
             bucket.entries[replace_idx].write(
                 key16,

@@ -3,7 +3,8 @@ use crate::moves::Move;
 
 use super::INFINITY;
 use super::tt_defs::{
-    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, value_from_tt, value_to_tt,
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, clamp_to_i16, pack_coord, unpack_coord,
+    value_from_tt, value_to_tt,
 };
 
 const ENTRIES_PER_BUCKET: usize = 4; // 4 × 16 = 64 bytes
@@ -15,7 +16,7 @@ const GENERATION_DELTA: u8 = 1 << GENERATION_BITS;
 const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 const GENERATION_CYCLE: u16 = 255 + GENERATION_DELTA as u16;
 
-use super::tt_defs::{COORD_BITS, COORD_MASK, MAX_TT_COORD, MIN_TT_COORD};
+use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -31,25 +32,6 @@ pub struct TTEntry {
 const _: () = assert!(std::mem::size_of::<TTEntry>() == 16);
 
 const NO_MOVE: u64 = 0;
-
-#[inline]
-fn clamp_to_i16(v: i32) -> i16 {
-    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
-#[inline]
-fn pack_coord(c: i64) -> u64 {
-    (c.clamp(MIN_TT_COORD, MAX_TT_COORD) & COORD_MASK as i64) as u64
-}
-
-#[inline]
-fn unpack_coord(v: u64) -> i64 {
-    let mut val = (v & COORD_MASK) as i64;
-    if val >= (1 << (COORD_BITS - 1)) {
-        val -= 1 << COORD_BITS;
-    }
-    val
-}
 
 impl TTEntry {
     #[inline]
