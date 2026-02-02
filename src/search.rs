@@ -2435,6 +2435,12 @@ pub(crate) fn get_best_move_limited(
 
         let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
 
+        let effective_depth = if skill_level < 20 {
+            max_depth.min((skill_level + 1) as usize)
+        } else {
+            max_depth
+        };
+
         // For MultiPV, we use the same optimum/maximum but disable dynamic extensions
         searcher
             .hot
@@ -2446,7 +2452,8 @@ pub(crate) fn get_best_move_limited(
         }
 
         if multi_pv > 1 {
-            let result = get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent);
+            let result =
+                get_best_moves_multipv_impl(searcher, game, effective_depth, multi_pv, silent);
             let stats = result.stats.clone();
             pick_best(&result, skill_level, &mut searcher.rng).map(|(m, eval)| (m, eval, stats))
         } else {
