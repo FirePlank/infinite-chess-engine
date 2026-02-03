@@ -73,7 +73,7 @@ pub const DEFAULT_IIR_MIN_DEPTH: usize = 6; // Adjusted to match search.rs:2326
 pub const DEFAULT_SEE_CAPTURE_LINEAR: i32 = 166;
 pub const DEFAULT_SEE_CAPTURE_HIST_DIV: i32 = 29;
 pub const DEFAULT_SEE_QUIET_QUAD: i32 = 25;
-pub const DEFAULT_SEE_WINNING_THRESHOLD: i32 = -80;
+pub const DEFAULT_SEE_WINNING_THRESHOLD: i32 = 0;
 
 // Move Ordering scores (higher = searched first)
 pub const DEFAULT_SORT_HASH: i32 = 6000000;

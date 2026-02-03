@@ -3341,13 +3341,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
-                // Backup move history for this ply and clear it (null move has no move)
                 let move_history_backup = searcher.move_history[ply].take();
-                let piece_history_backup = searcher.moved_piece_history[ply]; // Also backup piece history
+                let piece_history_backup = searcher.moved_piece_history[ply];
 
                 game.make_null_move();
 
-                // Reduction: R = 7 + depth / 3
                 let r = nmp_reduction_base() + depth / nmp_reduction_div();
                 let null_score = -negamax(&mut NegamaxContext {
                     searcher,
@@ -3364,7 +3362,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
-                // Restore move history
+
                 searcher.move_history[ply] = move_history_backup;
                 searcher.moved_piece_history[ply] = piece_history_backup;
 
@@ -3372,9 +3370,30 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     return 0;
                 }
 
-                // If null move score >= beta, we can prune
                 if null_score >= beta && !is_win(null_score) {
-                    return null_score;
+                    // At high depths, we verify the NMP cutoff by running a reduced-depth
+                    // search without the null move permission. This helps identify zugzwang
+                    // positions or cases where NMP was too optimistic.
+                    if depth >= 16 {
+                        let verify_score = negamax(&mut NegamaxContext {
+                            searcher,
+                            game,
+                            depth: depth.saturating_sub(r),
+                            ply, // Search at current ply (re-search)
+                            alpha: beta - 1,
+                            beta,
+                            allow_null: false, // Disable NMP for verification
+                            node_type: NodeType::All,
+                            was_null_move: false,
+                            excluded_move: None,
+                        });
+
+                        if verify_score >= beta {
+                            return null_score;
+                        }
+                    } else {
+                        return null_score;
+                    }
                 }
             }
         }
