@@ -3153,6 +3153,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             (false, None, None, INFINITY + 1, 0, false, TTFlag::None)
         };
 
+    // Check if TT move is a capture (for RFP and Singular Extensions)
+    let tt_capture = if let Some(m) = tt_move {
+        game.board.is_occupied(m.to.x, m.to.y)
+            || (game
+                .en_passant
+                .is_some_and(|ep| ep.square == m.to && m.piece.piece_type() == PieceType::Pawn))
+    } else {
+        false
+    };
+
     // Static evaluation for pruning decisions
     let prev_move_idx = if ply > 0 {
         let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
@@ -3293,19 +3303,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             return quiescence(searcher, game, ply, alpha, beta, node_type);
         }
-
-        // Check if TT move is a capture (for RFP condition)
-        let tt_capture = if let Some(m) = tt_move {
-            if game.board.is_occupied(m.to.x, m.to.y) {
-                true
-            } else if let Some(ep) = game.en_passant {
-                ep.square == m.to && m.piece.piece_type() == PieceType::Pawn
-            } else {
-                false
-            }
-        } else {
-            false
-        };
 
         // Reverse Futility Pruning (RFP)
         if !tt_pv
@@ -3796,10 +3793,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if se_best < singular_beta {
                 // TT move is singular - calculate extension level
+                let corr_val_adj = (static_eval - raw_eval).abs() / 256;
+
                 // Double extension margin: how much below singular_beta for +2 extension
-                let double_margin = (depth as i32) * 2;
+                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_val_adj;
                 // Triple extension margin: how much below for +3 extension
-                let triple_margin = (depth as i32) * 4;
+                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_val_adj;
 
                 extension = 1;
                 if se_best < singular_beta - double_margin {
