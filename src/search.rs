@@ -3573,12 +3573,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                     // SEE pruning for captures: skip losing captures
                     // Exempt moves that give check (they have tactical significance)
-                    let see_margin = (see_capture_linear() * depth as i32
-                        + capt_hist / see_capture_hist_div())
-                    .max(0);
-                    let see_value = static_exchange_eval(game, &m);
-                    if see_value < -see_margin {
-                        continue;
+                    if !gives_check {
+                        let see_margin = (see_capture_linear() * depth as i32
+                            + capt_hist / see_capture_hist_div())
+                        .max(0);
+                        let see_value = static_exchange_eval(game, &m);
+                        if see_value < -see_margin {
+                            continue;
+                        }
                     }
                 }
             } else {
