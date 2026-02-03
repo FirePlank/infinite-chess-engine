@@ -437,6 +437,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut w_has_queen_threat = false;
     let mut b_has_queen_threat = false;
 
+    // Connectivity (Fast integer version)
+    let mut w_connectivity: i32 = 0;
+    let mut b_connectivity: i32 = 0;
+
     // Interaction threat totals
     let mut w_pawn_threats = 0;
     let mut b_pawn_threats = 0;
@@ -660,6 +664,63 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             b_defensive_tropism +=
                                                 piece_val.min(350) / (d as i32 + 10);
                                         }
+                                    }
+                                }
+
+                                // 6. Connectivity
+                                // Kopec: Inverse value weights × protector value
+                                let conn_weight: i32 = match pt {
+                                    PieceType::Pawn => 50,
+                                    PieceType::Knight => 35,
+                                    PieceType::Bishop => 30,
+                                    PieceType::Rook => 10,
+                                    PieceType::Queen | PieceType::RoyalQueen => 4,
+                                    PieceType::Chancellor => 7,
+                                    PieceType::Amazon => 2,
+                                    _ => 0,
+                                };
+                                if conn_weight > 0 {
+                                    // Fast bitboard pawn protection
+                                    // bit = 1 << idx (our position in the tile)
+                                    let bit = 1u64 << idx;
+                                    let our_pawns = tile.occ_pawns
+                                        & if is_white {
+                                            tile.occ_white
+                                        } else {
+                                            tile.occ_black
+                                        };
+
+                                    // Count protecting pawns using bitboard shifts
+                                    // Mask to avoid wrapping: column A (0x0101...) and column H (0x8080...)
+                                    const NOT_A_FILE: u64 = !0x0101010101010101u64;
+                                    const NOT_H_FILE: u64 = !0x8080808080808080u64;
+
+                                    let prot_count = if is_white {
+                                        // White pieces protected by white pawns below
+                                        let left_prot =
+                                            ((bit >> 9) & NOT_H_FILE & our_pawns).count_ones();
+                                        let right_prot =
+                                            ((bit >> 7) & NOT_A_FILE & our_pawns).count_ones();
+                                        left_prot + right_prot
+                                    } else {
+                                        // Black pieces protected by black pawns above
+                                        let left_prot =
+                                            ((bit << 7) & NOT_H_FILE & our_pawns).count_ones();
+                                        let right_prot =
+                                            ((bit << 9) & NOT_A_FILE & our_pawns).count_ones();
+                                        left_prot + right_prot
+                                    };
+
+                                    // Single pawn = 8, Double pawn = 15 (per Kopec table)
+                                    let prot_val = if prot_count >= 2 {
+                                        15
+                                    } else {
+                                        prot_count as i32 * 8
+                                    };
+                                    if is_white {
+                                        w_connectivity += conn_weight * prot_val;
+                                    } else {
+                                        b_connectivity += conn_weight * prot_val;
                                     }
                                 }
 
