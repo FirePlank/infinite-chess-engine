@@ -1319,22 +1319,23 @@ impl Searcher {
                 // Update pawn + material + minor
                 let pawn_idx = (game.pawn_hash & CORRHIST_MASK) as usize;
                 let pawn_entry = &mut self.pawn_corrhist[color_idx][pawn_idx];
-                *pawn_entry = (*pawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
-                    + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *pawn_entry = ((*pawn_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *pawn_entry = (*pawn_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let mat_idx = (game.material_hash & CORRHIST_MASK) as usize;
                 let mat_entry = &mut self.material_corrhist[color_idx][mat_idx];
-                *mat_entry = (*mat_entry * (CORRHIST_WEIGHT_SCALE - weight) + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *mat_entry = ((*mat_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *mat_entry = (*mat_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let minor_idx = self.get_minor_index(game);
                 let minor_entry = &mut self.minor_corrhist[color_idx][minor_idx];
-                *minor_entry = (*minor_entry * (CORRHIST_WEIGHT_SCALE - weight)
-                    + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *minor_entry = ((*minor_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
             }
 
@@ -1347,30 +1348,31 @@ impl Searcher {
                 };
                 let nonpawn_idx = (nonpawn_hash & CORRHIST_MASK) as usize;
                 let nonpawn_entry = &mut self.nonpawn_corrhist[color_idx][nonpawn_idx];
-                *nonpawn_entry = (*nonpawn_entry * (CORRHIST_WEIGHT_SCALE - weight)
-                    + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *nonpawn_entry = ((*nonpawn_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *nonpawn_entry = (*nonpawn_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let mat_idx = (game.material_hash & CORRHIST_MASK) as usize;
                 let mat_entry = &mut self.material_corrhist[color_idx][mat_idx];
-                *mat_entry = (*mat_entry * (CORRHIST_WEIGHT_SCALE - weight) + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *mat_entry = ((*mat_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *mat_entry = (*mat_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let minor_idx = self.get_minor_index(game);
                 let minor_entry = &mut self.minor_corrhist[color_idx][minor_idx];
-                *minor_entry = (*minor_entry * (CORRHIST_WEIGHT_SCALE - weight)
-                    + scaled_diff * weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *minor_entry = ((*minor_entry as i64 * (CORRHIST_WEIGHT_SCALE - weight) as i64
+                    + scaled_diff as i64 * weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
                 let lm_weight = weight.min(64);
                 let lm_entry = &mut self.lastmove_corrhist[lastmove_idx];
-                *lm_entry = (*lm_entry * (CORRHIST_WEIGHT_SCALE - lm_weight)
-                    + scaled_diff * lm_weight)
-                    / CORRHIST_WEIGHT_SCALE;
+                *lm_entry = ((*lm_entry as i64 * (CORRHIST_WEIGHT_SCALE - lm_weight) as i64
+                    + scaled_diff as i64 * lm_weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *lm_entry = (*lm_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
 
                 // Update continuation correction history (ss-2 and ss-4)
@@ -1394,8 +1396,10 @@ impl Searcher {
                                 } else {
                                     cont_weight / 2
                                 };
-                                *entry = (*entry * (CORRHIST_WEIGHT_SCALE - w) + scaled_diff * w)
-                                    / CORRHIST_WEIGHT_SCALE;
+                                *entry = ((*entry as i64 * (CORRHIST_WEIGHT_SCALE - w) as i64
+                                    + scaled_diff as i64 * w as i64)
+                                    / CORRHIST_WEIGHT_SCALE as i64)
+                                    as i32;
                                 *entry = (*entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
                             }
                         }

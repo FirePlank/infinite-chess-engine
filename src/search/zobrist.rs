@@ -154,7 +154,7 @@ const PAWN_KEY_MIXER: u64 = 0xABCDEF0123456789;
 
 #[inline(always)]
 pub fn pawn_key(color: PlayerColor, x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ PAWN_KEY_MIXER ^ (color as u64 * 0x9E3779B97F4A7C15)
+    hash_coordinate(x, y) ^ PAWN_KEY_MIXER ^ (color as u64).wrapping_mul(0x9E3779B97F4A7C15)
 }
 
 /// Key for material configuration hash (used by correction history).
@@ -166,7 +166,7 @@ pub fn material_key(piece_type: PieceType, color: PlayerColor) -> u64 {
     // Use piece type as a simple hash - no position dependency
     let pt = piece_type as u64;
     let c = color as u64;
-    MATERIAL_KEY_MIXER.wrapping_mul(pt.wrapping_add(1)) ^ (c * 0x517CC1B727220A95)
+    MATERIAL_KEY_MIXER.wrapping_mul(pt.wrapping_add(1)) ^ c.wrapping_mul(0x517CC1B727220A95)
 }
 
 #[cfg(test)]
