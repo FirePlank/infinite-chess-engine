@@ -1071,6 +1071,15 @@ fn parse_args() -> Args {
 }
 
 fn main() {
+    #[cfg(debug_assertions)]
+    {
+        println!("⚠️  WARNING: Running in DEBUG mode. Performance will be significantly reduced.");
+        println!(
+            "   For production solving, use: cargo run --bin helpmate_solver --release -- <ARGS>"
+        );
+        println!();
+    }
+
     let args = parse_args();
     if args.icn.is_empty() || args.mate_in.is_none() || args.mated_side.is_none() {
         print_help();
@@ -1092,17 +1101,17 @@ fn main() {
 
     for (x, y, _piece) in game.board.iter() {
         has_pieces = true;
-        if *x < min_x {
-            min_x = *x;
+        if x < min_x {
+            min_x = x;
         }
-        if *x > max_x {
-            max_x = *x;
+        if x > max_x {
+            max_x = x;
         }
-        if *y < min_y {
-            min_y = *y;
+        if y < min_y {
+            min_y = y;
         }
-        if *y > max_y {
-            max_y = *y;
+        if y > max_y {
+            max_y = y;
         }
     }
 

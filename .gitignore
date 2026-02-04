@@ -99,3 +99,6 @@ flake.lock
 
 # Engine tablebase files
 *.tb
+
+# Engine NNUE files
+*.bin

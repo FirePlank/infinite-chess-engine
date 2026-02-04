@@ -3638,6 +3638,7 @@ impl GameState {
                 let inner = &token[1..token.len() - 1];
                 let sides: Vec<&str> = inner.split('|').collect();
                 let mut promo_types = Vec::new();
+                let mut seen_promos = FxHashSet::default();
 
                 for (idx, side_str) in sides.iter().enumerate() {
                     let parts: Vec<&str> = side_str.split(';').collect();
@@ -3668,7 +3669,7 @@ impl GameState {
                         let types: Vec<&str> = parts[1].split(',').collect();
                         for t in &types {
                             let pt = PieceType::from_site_code(&t.to_uppercase());
-                            if pt != PieceType::Void {
+                            if pt != PieceType::Void && seen_promos.insert(pt) {
                                 promo_types.push(pt);
                             }
                         }

@@ -170,6 +170,15 @@ fn main() {
         .build_global()
         .unwrap();
 
+    #[cfg(debug_assertions)]
+    {
+        println!("⚠️  WARNING: Running in DEBUG mode. SPSA optimization will be extremely slow.");
+        println!(
+            "   For production tuning, use: cargo run --bin spsa_tuner --release --features search_tuning"
+        );
+        println!();
+    }
+
     let tunables = get_tunable_params();
     println!("SPSA Tuner (Stable Node Minimization) Initializing...");
     println!(

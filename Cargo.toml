@@ -23,6 +23,10 @@ required-features = ["search_tuning"]
 name = "helpmate_solver"
 required-features = ["parallel_solver"]
 
+[[bin]]
+name = "gen_nnue_data"
+required-features = ["parallel_solver"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage)',
@@ -62,6 +66,7 @@ eval_tuning = ["serde_json"]
 search_tuning = ["serde_json", "rand", "rayon"]
 multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
+nnue = []
 debug = ["console_error_panic_hook"]
 
 
