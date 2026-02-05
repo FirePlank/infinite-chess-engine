@@ -569,6 +569,62 @@ impl SpatialIndices {
         }
         None
     }
+
+    /// Find first blocker on a ray starting from (from_x, from_y) in direction (dx, dy).
+    /// Returns (vx, vy, piece) if found.
+    pub fn find_first_blocker(
+        &self,
+        from_x: i64,
+        from_y: i64,
+        dx: i64,
+        dy: i64,
+    ) -> Option<(i64, i64, Piece)> {
+        let is_vertical = dx == 0;
+        let is_horizontal = dy == 0;
+        let is_diag1 = dx == dy; // Moving along x-y = const
+
+        let line_vec = if is_vertical {
+            self.cols.get(&from_x)
+        } else if is_horizontal {
+            self.rows.get(&from_y)
+        } else if is_diag1 {
+            self.diag1.get(&(from_x - from_y))
+        } else {
+            self.diag2.get(&(from_x + from_y))
+        };
+
+        let vec = line_vec?;
+        let search_val = if is_vertical { from_y } else { from_x };
+        let step_dir = if is_vertical { dy } else { dx };
+
+        if let Some((coord, packed)) = Self::find_nearest(vec, search_val, step_dir) {
+            let piece = Piece::from_packed(packed);
+            let key = if is_vertical {
+                from_x
+            } else if is_horizontal {
+                from_y
+            } else if is_diag1 {
+                from_x - from_y
+            } else {
+                from_x + from_y
+            };
+
+            // Convert back to x, y
+            let (vx, vy) = if is_vertical {
+                (from_x, coord)
+            } else if is_horizontal {
+                (coord, from_y)
+            } else if is_diag1 {
+                (coord, coord - key)
+            } else {
+                (coord, key - coord)
+            };
+
+            Some((vx, vy, piece))
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for SpatialIndices {

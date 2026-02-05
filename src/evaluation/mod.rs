@@ -18,8 +18,45 @@ pub use base::{calculate_initial_material, get_piece_phase, get_piece_value};
 #[cfg(feature = "eval_tuning")]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
 
-/// Main evaluation entry point.
+/// Main evaluation entry point - NNUE Enabled
 #[inline]
+#[cfg(feature = "nnue")]
+pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -> i32 {
+    let raw_eval = match game.variant {
+        Some(Variant::Chess) => variants::chess::evaluate(game),
+        Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
+        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
+        // Add new variants here as they get custom evaluators
+        _ => {
+            // Try NNUE first if applicable (standard pieces, kings present, weights loaded)
+            if crate::nnue::is_applicable(game) {
+                if let Some(state) = nnue_state {
+                    let score = crate::nnue::evaluate_with_state(game, state);
+                    return score + base::compute_mop_up_term(game);
+                } else {
+                    let score = crate::nnue::evaluate(game);
+                    return score + base::compute_mop_up_term(game);
+                }
+            }
+            base::evaluate(game)
+        } // Default: use base for all others
+    };
+
+    // As the halfmove clock increases during shuffling, we slightly damp the
+    // evaluation. This provides a gentle pressure to "get on with it" and
+    // avoid unnecessary repetitions or shuffling.
+    let rule_limit = game.game_rules.move_rule_limit.unwrap_or(100) as i32;
+    if rule_limit > 0 {
+        let divisor = 2 * rule_limit - 1;
+        raw_eval - (raw_eval * game.halfmove_clock as i32) / divisor
+    } else {
+        raw_eval
+    }
+}
+
+/// Main evaluation entry point - NNUE Disabled
+#[inline]
+#[cfg(not(feature = "nnue"))]
 pub fn evaluate(game: &GameState) -> i32 {
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
@@ -59,10 +96,18 @@ mod tests {
         game
     }
 
+    #[inline]
+    fn evaluate_wrapper(game: &GameState) -> i32 {
+        #[cfg(feature = "nnue")]
+        return evaluate(game, None);
+        #[cfg(not(feature = "nnue"))]
+        return evaluate(game);
+    }
+
     #[test]
     fn test_evaluate_returns_value() {
         let game = create_test_game();
-        let score = evaluate(&game);
+        let score = evaluate_wrapper(&game);
         // K vs K should be close to 0
         assert!(score.abs() < 1000, "K vs K should be near 0");
     }
@@ -96,7 +141,7 @@ mod tests {
         }
         game.material_score = score;
 
-        let eval = evaluate(&game);
+        let eval = evaluate_wrapper(&game);
         // Just verify we get a reasonable value (queen > rook typically)
         // Exact values depend on evaluation logic
         assert!(
@@ -112,7 +157,7 @@ mod tests {
         game.variant = Some(crate::Variant::Chess);
 
         // Should dispatch to Chess evaluator
-        let _score = evaluate(&game);
+        let _score = evaluate_wrapper(&game);
         // Just verify it doesn't panic
     }
 
@@ -128,13 +173,13 @@ mod tests {
         game.turn = PlayerColor::White;
         game.game_rules.move_rule_limit = Some(100);
 
-        let eval_0 = evaluate(&game);
+        let eval_0 = evaluate_wrapper(&game);
 
         game.halfmove_clock = 50;
-        let eval_50 = evaluate(&game);
+        let eval_50 = evaluate_wrapper(&game);
 
         game.halfmove_clock = 100;
-        let eval_100 = evaluate(&game);
+        let eval_100 = evaluate_wrapper(&game);
 
         // With 100-move rule limit (200 halfmoves), at 100 halfmoves
         // the damping should be roughly halving the evaluation.

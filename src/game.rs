@@ -698,8 +698,15 @@ impl GameState {
                     self.slider_rays_white[dir_idx] = Some((bx, by));
                     let p1 = self.board.get_piece(bx, by).unwrap();
                     let is_ortho = dir_idx < 4;
+                    let p1_color = p1.color();
 
-                    if p1.color() == PlayerColor::Black {
+                    // Neutral pieces (obstacles/voids) completely block slider rays.
+                    // Skip further processing on this ray.
+                    if p1_color == PlayerColor::Neutral {
+                        continue;
+                    }
+
+                    if p1_color == PlayerColor::Black {
                         // Immediate Checker?
                         let pt1 = p1.piece_type();
                         if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
@@ -720,7 +727,7 @@ impl GameState {
                             }
                         }
                     } else {
-                        // Friendly piece - could be pinned?
+                        // Friendly piece (White) - could be pinned?
                         if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
                             && let Some(p2) = self.board.get_piece(bx2, by2)
                             && p2.color() == PlayerColor::Black
@@ -772,8 +779,15 @@ impl GameState {
                     self.slider_rays_black[dir_idx] = Some((bx, by));
                     let p1 = self.board.get_piece(bx, by).unwrap();
                     let is_ortho = dir_idx < 4;
+                    let p1_color = p1.color();
 
-                    if p1.color() == PlayerColor::White {
+                    // Neutral pieces (obstacles/voids) completely block slider rays.
+                    // Skip further processing on this ray.
+                    if p1_color == PlayerColor::Neutral {
+                        continue;
+                    }
+
+                    if p1_color == PlayerColor::White {
                         // Immediate Checker?
                         let pt1 = p1.piece_type();
                         if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
@@ -794,7 +808,7 @@ impl GameState {
                             }
                         }
                     } else {
-                        // Friendly piece - could be pinned?
+                        // Friendly piece (Black) - could be pinned?
                         if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
                             && let Some(p2) = self.board.get_piece(bx2, by2)
                             && p2.color() == PlayerColor::White

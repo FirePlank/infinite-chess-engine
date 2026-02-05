@@ -214,6 +214,7 @@ struct HelpmateSolver {
     generation: u8,
     history: Vec<AtomicI32>,
     killers: Vec<[AtomicU64; 2]>,
+    iteration_depth: AtomicI32,
 }
 
 impl HelpmateSolver {
@@ -236,6 +237,7 @@ impl HelpmateSolver {
             generation: 0,
             history,
             killers,
+            iteration_depth: AtomicI32::new(0),
         }
     }
 
@@ -252,6 +254,7 @@ impl HelpmateSolver {
 
         // Iterative deepening (for move ordering and PV consistency)
         for depth in 1..=target {
+            self.iteration_depth.store(depth as i32, Ordering::Relaxed);
             self.generation = self.generation.wrapping_add(1);
             let score = self.parallel_root_search(state, depth);
             best = score;
@@ -432,7 +435,9 @@ impl HelpmateSolver {
         }
 
         self.tt.store(
-            state.hash,
+            state.hash
+                ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
+                    .wrapping_mul(0x9E3779B97F4A7C15),
             depth,
             best_score,
             best_move.as_ref(),
@@ -703,7 +708,9 @@ impl HelpmateSolver {
             return -INFINITY;
         }
 
-        let hash = state.hash;
+        let hash = state.hash
+            ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15);
 
         if let Some((raw_score, _)) = self.tt.probe(hash, depth) {
             if raw_score != i32::MIN {
@@ -943,7 +950,10 @@ impl HelpmateSolver {
         let mut current_state = state.clone();
 
         for ply in 0..self.target_depth {
-            let res = self.tt.probe(current_state.hash, 0);
+            let hash = current_state.hash
+                ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
+                    .wrapping_mul(0x9E3779B97F4A7C15);
+            let res = self.tt.probe(hash, 0);
 
             if let Some((raw_score, move_coords)) = res {
                 // If the score is no longer a mate or is just i32::MIN, we lost the thread
@@ -1075,7 +1085,7 @@ fn main() {
     {
         println!("⚠️  WARNING: Running in DEBUG mode. Performance will be significantly reduced.");
         println!(
-            "   For production solving, use: cargo run --bin helpmate_solver --release -- <ARGS>"
+            "   For production solving, use: cargo run --bin helpmate_solver --release --features parallel_solver -- <ARGS>"
         );
         println!();
     }

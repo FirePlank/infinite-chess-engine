@@ -7,6 +7,7 @@ pub mod board;
 pub mod evaluation;
 pub mod game;
 pub mod moves;
+pub mod nnue;
 pub mod search;
 pub mod simd;
 pub mod tiles;
@@ -677,12 +678,6 @@ impl Engine {
         crate::search::params::get_search_params_as_json()
     }
 
-    /// Return the engine's static evaluation of the current position in centipawns,
-    /// from the side-to-move's perspective (positive = advantage for side to move).
-    pub fn evaluate_position(&mut self) -> i32 {
-        evaluation::evaluate(&self.game)
-    }
-
     /// Derive an effective time limit for this move from the current clock and
     /// game state. Returns `(time_ms, is_soft_limit)`.
     ///
@@ -1045,5 +1040,16 @@ impl Engine {
             Some(0) => false, // Dead draw (insufficient)
             Some(_) => true,  // Drawish but not dead draw
         }
+    }
+}
+
+impl Engine {
+    /// Return the engine's static evaluation of the current position in centipawns,
+    /// from the side-to-move's perspective (positive = advantage for side to move).
+    pub fn evaluate_position(game: &GameState) -> i32 {
+        #[cfg(feature = "nnue")]
+        return crate::evaluation::evaluate(game, None);
+        #[cfg(not(feature = "nnue"))]
+        return crate::evaluation::evaluate(game);
     }
 }

@@ -54,6 +54,8 @@ pub struct NegamaxContext<'a> {
     pub node_type: NodeType,
     pub was_null_move: bool,
     pub excluded_move: Option<Move>,
+    #[cfg(feature = "nnue")]
+    pub nnue: Option<&'a crate::nnue::NnueState>,
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -1710,9 +1712,20 @@ fn search_with_searcher(
         return None;
     }
 
+    // Initialize NNUE state if applicable
+    #[cfg(feature = "nnue")]
+    let nnue_state = if crate::nnue::is_applicable(game) {
+        Some(crate::nnue::NnueState::from_position(game))
+    } else {
+        None
+    };
+
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
+        #[cfg(feature = "nnue")]
+        let score = searcher.adjusted_eval(game, evaluate(game, nnue_state.as_ref()), 0, 0);
+        #[cfg(not(feature = "nnue"))]
         let score = searcher.adjusted_eval(game, evaluate(game), 0, 0);
         return Some((single, score));
     }
@@ -1780,7 +1793,16 @@ fn search_with_searcher(
 
         let score = if depth == 1 {
             // First iteration: full window
-            negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves)
+            negamax_root(
+                searcher,
+                game,
+                depth,
+                -INFINITY,
+                INFINITY,
+                &mut legal_moves,
+                #[cfg(feature = "nnue")]
+                nnue_state.as_ref(),
+            )
         } else {
             // Aspiration window search
             let asp_win = aspiration_window();
@@ -1791,7 +1813,16 @@ fn search_with_searcher(
             let mut retries = 0;
 
             loop {
-                result = negamax_root(searcher, game, depth, alpha, beta, &mut legal_moves);
+                result = negamax_root(
+                    searcher,
+                    game,
+                    depth,
+                    alpha,
+                    beta,
+                    &mut legal_moves,
+                    #[cfg(feature = "nnue")]
+                    nnue_state.as_ref(),
+                );
                 retries += 1;
 
                 if searcher.hot.stopped {
@@ -1813,8 +1844,16 @@ fn search_with_searcher(
 
                 // Fallback to full window if window gets too large or too many retries
                 if window_size > aspiration_max_window() || retries >= 4 {
-                    result =
-                        negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves);
+                    result = negamax_root(
+                        searcher,
+                        game,
+                        depth,
+                        -INFINITY,
+                        INFINITY,
+                        &mut legal_moves,
+                        #[cfg(feature = "nnue")]
+                        nnue_state.as_ref(),
+                    );
                     break;
                 }
             }
@@ -2475,6 +2514,14 @@ pub(crate) fn get_best_moves_multipv_impl(
     multi_pv: usize,
     silent: bool,
 ) -> MultiPVResult {
+    // Initialize NNUE state
+    #[cfg(feature = "nnue")]
+    let nnue_state = if crate::nnue::is_applicable(game) {
+        Some(crate::nnue::NnueState::from_position(game))
+    } else {
+        None
+    };
+
     // Get all legal moves upfront
     let moves = game.get_legal_moves();
     if moves.is_empty() {
@@ -2515,6 +2562,9 @@ pub(crate) fn get_best_moves_multipv_impl(
         return MultiPVResult {
             lines: vec![PVLine {
                 mv: single,
+                #[cfg(feature = "nnue")]
+                score: searcher.adjusted_eval(game, evaluate(game, nnue_state.as_ref()), 0, 0),
+                #[cfg(not(feature = "nnue"))]
                 score: searcher.adjusted_eval(game, evaluate(game), 0, 0),
                 depth: 0,
                 pv: Vec::new(),
@@ -2612,6 +2662,16 @@ pub(crate) fn get_best_moves_multipv_impl(
                 break;
             }
 
+            // Incremental NNUE Update
+            #[cfg(feature = "nnue")]
+            let child_nnue = if let Some(parent_state) = nnue_state.as_ref() {
+                let mut next_state = parent_state.clone();
+                next_state.update_for_move(game, *m);
+                Some(next_state)
+            } else {
+                None
+            };
+
             let undo = game.make_move(m);
 
             // Set up prev move info for child search
@@ -2637,6 +2697,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                     node_type: NodeType::PV,
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: nnue_state.as_ref(),
                 });
 
                 // Fail Low or High -> Re-search with full window
@@ -2652,6 +2714,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                         node_type: NodeType::PV,
                         was_null_move: false,
                         excluded_move: None,
+                        #[cfg(feature = "nnue")]
+                        nnue: child_nnue.as_ref(),
                     });
                 }
             } else {
@@ -2670,6 +2734,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                     node_type: NodeType::Cut,
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: nnue_state.as_ref(),
                 });
 
                 if score > target_alpha && !searcher.hot.stopped {
@@ -2685,6 +2751,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                         node_type: NodeType::PV,
                         was_null_move: false,
                         excluded_move: None,
+                        #[cfg(feature = "nnue")]
+                        nnue: child_nnue.as_ref(),
                     });
                 }
             };
@@ -2811,6 +2879,8 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
         -INFINITY,
         INFINITY,
         &mut legal_moves,
+        #[cfg(feature = "nnue")]
+        None,
     );
     searcher.hot.nodes
 }
@@ -2821,8 +2891,10 @@ fn negamax_root(
     game: &mut GameState,
     depth: usize,
     mut alpha: i32,
+
     beta: i32,
     moves: &mut MoveList,
+    #[cfg(feature = "nnue")] nnue_state: Option<&crate::nnue::NnueState>,
 ) -> i32 {
     // Save original alpha for TT flag determination
     let alpha_orig = alpha;
@@ -2876,6 +2948,16 @@ fn negamax_root(
         // 1. Shared TT - threads benefit from each other's entries
         // 2. Slight timing differences - threads finish at different points
 
+        // Incremental NNUE Update
+        #[cfg(feature = "nnue")]
+        let child_nnue = if let Some(parent_state) = nnue_state {
+            let mut next_state = parent_state.clone();
+            next_state.update_for_move(game, *m);
+            Some(next_state)
+        } else {
+            None
+        };
+
         let undo = game.make_move(m);
 
         // At the root, this move becomes the previous move for child ply 1,
@@ -2901,6 +2983,8 @@ fn negamax_root(
                 node_type: NodeType::PV,
                 was_null_move: false,
                 excluded_move: None,
+                #[cfg(feature = "nnue")]
+                nnue: child_nnue.as_ref(),
             });
         } else {
             // PVS: Null window first, then re-search if it improves alpha
@@ -2915,6 +2999,8 @@ fn negamax_root(
                 node_type: NodeType::Cut,
                 was_null_move: false,
                 excluded_move: None,
+                #[cfg(feature = "nnue")]
+                nnue: child_nnue.as_ref(),
             });
             if s > alpha && s < beta {
                 s = -negamax(&mut NegamaxContext {
@@ -2928,6 +3014,8 @@ fn negamax_root(
                     node_type: NodeType::PV,
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: child_nnue.as_ref(),
                 });
             }
             score = s;
@@ -3034,6 +3122,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Leaf node: transition to quiescence search
     if depth == 0 {
+        #[cfg(feature = "nnue")]
+        return quiescence(searcher, game, ply, alpha, beta, node_type, ctx.nnue);
+        #[cfg(not(feature = "nnue"))]
         return quiescence(searcher, game, ply, alpha, beta, node_type);
     }
 
@@ -3048,6 +3139,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             0
         };
+        #[cfg(feature = "nnue")]
+        return searcher.adjusted_eval(game, evaluate(game, ctx.nnue), ply, prev_move_idx);
+        #[cfg(not(feature = "nnue"))]
         return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
     }
 
@@ -3187,7 +3281,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Use stored TT evaluation if available, otherwise compute it
         let mut raw = tt_data_static_eval;
         if raw == INFINITY + 1 {
-            raw = evaluate(game);
+            raw = {
+                #[cfg(feature = "nnue")]
+                {
+                    evaluate(game, ctx.nnue)
+                }
+                #[cfg(not(feature = "nnue"))]
+                {
+                    evaluate(game)
+                }
+            };
 
             // Store the computed evaluation in TT immediately
             store_tt_with_shared(
@@ -3305,6 +3408,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if !is_pv
             && static_eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
         {
+            #[cfg(feature = "nnue")]
+            return quiescence(searcher, game, ply, alpha, beta, node_type, ctx.nnue);
+            #[cfg(not(feature = "nnue"))]
             return quiescence(searcher, game, ply, alpha, beta, node_type);
         }
 
@@ -3359,6 +3465,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: NodeType::Cut,
                     was_null_move: true,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: None,
                 });
 
                 game.unmake_null_move();
@@ -3379,7 +3487,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         let verify_score = negamax(&mut NegamaxContext {
                             searcher,
                             game,
-                            depth: depth.saturating_sub(r),
+                            depth: depth.saturating_sub(r as usize),
                             ply, // Search at current ply (re-search)
                             alpha: beta - 1,
                             beta,
@@ -3387,6 +3495,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                             node_type: NodeType::All,
                             was_null_move: false,
                             excluded_move: None,
+                            #[cfg(feature = "nnue")]
+                            nnue: None, // Verification search (re-search) also without NNUE for consistency
                         });
 
                         if verify_score >= beta {
@@ -3440,13 +3550,35 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 continue;
             }
 
+            // Incremental NNUE for ProbCut
+            #[cfg(feature = "nnue")]
+            let child_nnue = if let Some(parent_state) = ctx.nnue {
+                let mut next_state = parent_state.clone();
+                next_state.update_for_move(game, m);
+                Some(next_state)
+            } else {
+                None
+            };
+
             let undo = game.make_move(&m);
+
             if fast_legal.is_err() && game.is_move_illegal() {
                 game.undo_move(&m, undo);
                 continue;
             }
 
             // Preliminary qsearch to verify
+            #[cfg(feature = "nnue")]
+            let mut val = -quiescence(
+                searcher,
+                game,
+                ply + 1,
+                -prob_cut_beta,
+                -prob_cut_beta + 1,
+                NodeType::Cut,
+                child_nnue.as_ref(),
+            );
+            #[cfg(not(feature = "nnue"))]
             let mut val = -quiescence(
                 searcher,
                 game,
@@ -3469,6 +3601,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: NodeType::Cut, // Expected cut node
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: child_nnue.as_ref(),
                 });
             }
 
@@ -3663,6 +3797,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
+        // Incremental NNUE Update
+        #[cfg(feature = "nnue")]
+        let child_nnue = if let Some(parent_state) = ctx.nnue {
+            let mut next_state = parent_state.clone();
+            next_state.update_for_move(game, m);
+            Some(next_state)
+        } else {
+            None
+        };
+
         let mut undo = game.make_move(&m);
 
         // Check if move is illegal (leaves our king in check)
@@ -3767,6 +3911,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: NodeType::Cut,
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: None,
                 });
 
                 game.undo_move(&se_m, se_undo);
@@ -3858,6 +4004,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 node_type: child_type,
                 was_null_move: false,
                 excluded_move: None,
+                #[cfg(feature = "nnue")]
+                nnue: child_nnue.as_ref(),
             });
         } else {
             // Late Move Reductions
@@ -3977,6 +4125,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 node_type: child_type,
                 was_null_move: false,
                 excluded_move: None,
+                #[cfg(feature = "nnue")]
+                nnue: child_nnue.as_ref(),
             });
 
             // Re-search at full depth if it looks promising
@@ -4021,6 +4171,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: research_type,
                     was_null_move: false,
                     excluded_move: None,
+                    #[cfg(feature = "nnue")]
+                    nnue: child_nnue.as_ref(),
                 });
 
                 // Post LMR continuation history update
@@ -4322,10 +4474,15 @@ fn quiescence(
     mut alpha: i32,
     beta: i32,
     node_type: NodeType,
+    #[cfg(feature = "nnue")]
+    nnue: Option<&crate::nnue::NnueState>,
 ) -> i32 {
     let is_pv = node_type == NodeType::PV;
     // Check for max ply
     if ply >= MAX_PLY - 1 {
+        #[cfg(feature = "nnue")]
+        return evaluate(game, nnue);
+        #[cfg(not(feature = "nnue"))]
         return evaluate(game);
     }
 
@@ -4436,7 +4593,14 @@ fn quiescence(
         if tt_hit {
             unadjusted_static_eval = tt_data_static_eval;
             if unadjusted_static_eval == INFINITY + 1 {
-                unadjusted_static_eval = evaluate(game);
+                #[cfg(feature = "nnue")]
+                {
+                    unadjusted_static_eval = evaluate(game, nnue);
+                }
+                #[cfg(not(feature = "nnue"))]
+                {
+                    unadjusted_static_eval = evaluate(game);
+                }
             }
             best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
 
@@ -4455,7 +4619,14 @@ fn quiescence(
                 }
             }
         } else {
-            unadjusted_static_eval = evaluate(game);
+            #[cfg(feature = "nnue")]
+            {
+                unadjusted_static_eval = evaluate(game, nnue);
+            }
+            #[cfg(not(feature = "nnue"))]
+            {
+                unadjusted_static_eval = evaluate(game);
+            }
             best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
         }
 
@@ -4552,7 +4723,26 @@ fn quiescence(
 
         legal_moves += 1;
 
-        let score = -quiescence(searcher, game, ply + 1, -beta, -alpha, node_type);
+        // Incremental NNUE Update
+        #[cfg(feature = "nnue")]
+        let child_nnue = if let Some(parent_state) = nnue {
+            let mut next_state = parent_state.clone();
+            next_state.update_for_move(game, *m);
+            Some(next_state)
+        } else {
+            None
+        };
+
+        let score = -quiescence(
+            searcher,
+            game,
+            ply + 1,
+            -beta,
+            -alpha,
+            node_type,
+            #[cfg(feature = "nnue")]
+            child_nnue.as_ref(),
+        );
 
         game.undo_move(m, undo);
 
@@ -4883,6 +5073,9 @@ mod tests {
         game.recompute_hash();
 
         // Get static eval
+        #[cfg(feature = "nnue")]
+        let static_eval = evaluate(&game, None);
+        #[cfg(not(feature = "nnue"))]
         let static_eval = evaluate(&game);
         // Should be close to 0 (roughly balanced)
         assert!(
@@ -5316,6 +5509,9 @@ mod tests {
         // Qsearch should return static eval on quiet position
         let alpha = -10000;
         let beta = 10000;
+        #[cfg(feature = "nnue")]
+        let score = quiescence(&mut searcher, &mut game, 0, alpha, beta, NodeType::PV, None);
+        #[cfg(not(feature = "nnue"))]
         let score = quiescence(&mut searcher, &mut game, 0, alpha, beta, NodeType::PV);
         assert!(score.abs() < 500); // Should be near zero for balanced empty board
         assert_eq!(searcher.hot.qnodes, 1);

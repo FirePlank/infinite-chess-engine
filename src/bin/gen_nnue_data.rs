@@ -985,13 +985,15 @@ fn play_game(
                     },
                 ));
 
+            let clamped_cp = teacher_cp.clamp(-31000, 31000);
+
             pending_samples.push(PendingSample {
                 relkp_white: build_relkp_list(&gs, PlayerColor::White),
                 relkp_black: build_relkp_list(&gs, PlayerColor::Black),
                 threat_white: build_threat_list(&gs, PlayerColor::White),
                 threat_black: build_threat_list(&gs, PlayerColor::Black),
                 stm: gs.turn,
-                teacher_cp: teacher_cp.clamp(-30000, 30000) as i16,
+                teacher_cp: clamped_cp as i16,
             });
         }
 
@@ -1003,9 +1005,9 @@ fn play_game(
     let result = determine_game_result(&gs);
 
     // Convert pending samples to final records with WDL
-    let final_samples = pending_samples
+    let final_samples: Vec<SampleRecord> = pending_samples
         .into_iter()
-        .map(|s| {
+        .filter_map(|s| {
             // Convert result to side-to-move perspective
             let result_wdl = match s.stm {
                 PlayerColor::White => result,
@@ -1013,7 +1015,21 @@ fn play_game(
                 _ => 0,
             };
 
-            SampleRecord {
+            // Filter inconsistent positions (Data Cleaning)
+            // 1. High CP Draw (>1500cp)
+            if result_wdl == 0 && s.teacher_cp.abs() > 1500 {
+                return None;
+            }
+            // 2. Mismatch: Loss with high CP (>1500cp)
+            if result_wdl == -1 && s.teacher_cp > 1500 {
+                return None;
+            }
+            // 3. Mismatch: Win with low CP (<-1500cp)
+            if result_wdl == 1 && s.teacher_cp < -1500 {
+                return None;
+            }
+
+            Some(SampleRecord {
                 stm: if s.stm == PlayerColor::White { 0 } else { 1 },
                 relkp_white: s.relkp_white,
                 relkp_black: s.relkp_black,
@@ -1021,7 +1037,7 @@ fn play_game(
                 threat_black: s.threat_black,
                 teacher_cp: s.teacher_cp,
                 result_wdl,
-            }
+            })
         })
         .collect();
 

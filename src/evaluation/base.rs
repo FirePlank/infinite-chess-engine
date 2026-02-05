@@ -386,6 +386,54 @@ pub fn evaluate(game: &GameState) -> i32 {
     evaluate_inner(game)
 }
 
+/// Compute MopUp term for NNUE hybrid evaluation.
+/// Always applied (both NNUE and HCE branches) to fix endgame conversion.
+#[cfg(feature = "nnue")]
+#[inline]
+pub fn compute_mop_up_term(game: &GameState) -> i32 {
+    use crate::evaluation::mop_up::{calculate_mop_up_scale, evaluate_lone_king_endgame};
+
+    // Determine which side has material advantage
+    let white_material = game.white_non_pawn_material;
+    let black_material = game.black_non_pawn_material;
+
+    let (winning_color, losing_color) = if white_material && !black_material {
+        (PlayerColor::White, PlayerColor::Black)
+    } else if black_material && !white_material {
+        (PlayerColor::Black, PlayerColor::White)
+    } else {
+        return 0; // No clear winner or both have material
+    };
+
+    // Check if mop-up is active
+    let scale = match calculate_mop_up_scale(game, losing_color) {
+        Some(s) if s > 0 => s,
+        _ => return 0,
+    };
+
+    // Get king positions
+    let (our_king, enemy_king) = if winning_color == PlayerColor::White {
+        (game.white_king_pos.as_ref(), game.black_king_pos.as_ref())
+    } else {
+        (game.black_king_pos.as_ref(), game.white_king_pos.as_ref())
+    };
+
+    let enemy_king = match enemy_king {
+        Some(k) => k,
+        None => return 0,
+    };
+
+    let raw = evaluate_lone_king_endgame(game, our_king, enemy_king, winning_color);
+    let mop_up = (raw * scale as i32) / 100;
+
+    // Return from white's perspective (positive = good for white)
+    if winning_color == PlayerColor::White {
+        mop_up
+    } else {
+        -mop_up
+    }
+}
+
 /// Perform a full evaluation with detailed tracing.
 pub fn debug_evaluate(game: &GameState) -> ActiveTrace {
     let mut tracer = ActiveTrace::default();
