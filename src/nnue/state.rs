@@ -113,9 +113,42 @@ impl NnueState {
             None => return,
         };
 
-        // If King moves, we must handle perspective updates carefully (recompute our side)
+        // If King moves, rebuild the entire state from scratch.
+        // We manually patch a cloned board rather than calling make_move,
+        // which avoids heavy GameState bookkeeping and potential side-effects.
         if m.piece.piece_type() == crate::board::PieceType::King {
-            self.handle_king_move(gs, m, weights);
+            let mut tmp = gs.clone();
+
+            // 1. Remove king from source
+            tmp.board.remove_piece(&m.from.x, &m.from.y);
+
+            // 2. Handle capture at destination
+            tmp.board.remove_piece(&m.to.x, &m.to.y);
+
+            // 3. Place king at destination
+            tmp.board.set_piece(m.to.x, m.to.y, m.piece);
+
+            // 4. Update king position
+            if m.piece.color() == crate::board::PlayerColor::White {
+                tmp.white_king_pos = Some(m.to);
+            } else {
+                tmp.black_king_pos = Some(m.to);
+            }
+
+            // 5. Handle castling rook
+            if (m.to.x - m.from.x).abs() > 1 {
+                if let Some(rook_from) = m.rook_coord {
+                    if let Some(rook) = tmp.board.remove_piece(&rook_from.x, &rook_from.y) {
+                        let rook_to_x = m.from.x + if m.to.x > m.from.x { 1 } else { -1 };
+                        tmp.board.set_piece(rook_to_x, m.from.y, rook);
+                    }
+                }
+            }
+
+            // 6. Update side to move (from_position uses gs.turn for perspective)
+            tmp.turn = tmp.turn.opponent();
+
+            *self = NnueState::from_position(&tmp);
             return;
         }
 
@@ -180,120 +213,53 @@ impl NnueState {
             if captured.color() != us {
                 update(captured, m.to, false);
             }
-        } else if let Some(eps) = gs.en_passant {
-            if m.piece.piece_type() == crate::board::PieceType::Pawn && m.to == eps.square {
-                // EP Capture
-                let cap_sq = eps.pawn_square;
-                if let Some(captured) = gs.board.get_piece(cap_sq.x, cap_sq.y) {
-                    update(captured, cap_sq, false);
-                }
+        } else if let Some(eps) = gs.en_passant
+            && m.piece.piece_type() == crate::board::PieceType::Pawn
+            && m.to == eps.square
+        {
+            // EP Capture
+            let cap_sq = eps.pawn_square;
+            if let Some(captured) = gs.board.get_piece(cap_sq.x, cap_sq.y) {
+                update(captured, cap_sq, false);
             }
         }
 
         // 4. Castling (Rook update) is handled in handle_king_move because Castling IS a King move.
         // So we don't need to handle it here.
     }
+}
 
-    /// Handle complex updates when the King moves (requires recomputing relative features for that side).
-    fn handle_king_move(
-        &mut self,
-        gs: &GameState,
-        m: crate::moves::Move,
-        weights: &super::weights::NnueWeights,
-    ) {
-        let us = m.piece.color();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 
-        // 1. Update Opponent's perspective (Incremental)
-        // For opponent, this is just an enemy piece (our King) moving.
-        let them = if us == crate::board::PlayerColor::White {
-            crate::board::PlayerColor::Black
-        } else {
-            crate::board::PlayerColor::White
-        };
-        let them_king = if us == crate::board::PlayerColor::White {
-            gs.black_king_pos
-        } else {
-            gs.white_king_pos
+    #[test]
+    fn test_accumulator_ops() {
+        let weights = match NNUE_WEIGHTS.as_ref() {
+            Some(w) => w,
+            None => return,
         };
 
-        if let Some(t_king) = them_king {
-            // Helper for single perspective
-            let mut update_them = |piece: crate::board::Piece,
-                                   sq: crate::board::Coordinate,
-                                   add: bool| {
-                if let Some(idx) = super::features::relkp_feature_id(them, piece, sq, t_king, gs) {
-                    if them == crate::board::PlayerColor::White {
-                        if add {
-                            self.add_feature(weights, idx, true);
-                        } else {
-                            self.remove_feature(weights, idx, true);
-                        }
-                    } else {
-                        if add {
-                            self.add_feature(weights, idx, false);
-                        } else {
-                            self.remove_feature(weights, idx, false);
-                        }
-                    }
-                }
-            };
+        let mut state = NnueState::default();
+        state.add_feature(weights, 0, true);
+        assert_ne!(state.rel_acc_white[0], 0);
 
-            // Remove King from From
-            update_them(m.piece, m.from, false);
-            // Add King to To
-            update_them(m.piece, m.to, true);
+        state.remove_feature(weights, 0, true);
+        // Assuming 0 embed for feat 0 in mock or it cancels out
+        assert_eq!(state.rel_acc_white[0], 0);
+    }
 
-            // Capture handling for THEM perspective
-            if let Some(captured) = gs.board.get_piece(m.to.x, m.to.y) {
-                if captured.color() != us {
-                    update_them(captured, m.to, false);
-                }
-            }
+    #[test]
+    fn test_from_position_consistency() {
+        let mut gs = GameState::new();
+        gs.white_king_pos = Some(Coordinate::new(4, 0));
+        gs.black_king_pos = Some(Coordinate::new(4, 7));
+        gs.board
+            .set_piece(4, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
 
-            // Castling Rook?
-            if (m.from.x - m.to.x).abs() > 1 {
-                if let Some(rook_from) = m.rook_coord {
-                    let rook_to_x = if m.to.x > m.from.x {
-                        m.to.x - 1
-                    } else {
-                        m.to.x + 1
-                    };
-                    let rook_to = crate::board::Coordinate::new(rook_to_x, m.to.y);
-                    if let Some(rook) = gs.board.get_piece(rook_from.x, rook_from.y) {
-                        update_them(rook, rook_from, false);
-                        update_them(rook, rook_to, true);
-                    }
-                }
-            }
-        }
-
-        // 2. Recompute Our Perspective (Scratch)
-        // Need to clear and re-accumulate because ALL relative coordinates changed.
-        if us == crate::board::PlayerColor::White {
-            self.rel_acc_white.copy_from_slice(&weights.rel_bias);
-        } else {
-            self.rel_acc_black.copy_from_slice(&weights.rel_bias);
-        }
-
-        let new_king_pos = m.to;
-
-        // Re-accumulate ALL pieces on the board based on the new state
-        for (px, py, piece) in gs.board.iter() {
-            let sq = crate::board::Coordinate::new(px, py);
-
-            // Skip our own King from the feature list (limit to perspective side)
-            // Feature set is relative TO the king, so the king itself is not a feature.
-            if piece.color() == us && piece.piece_type() == crate::board::PieceType::King {
-                continue;
-            }
-
-            if let Some(idx) = super::features::relkp_feature_id(us, piece, sq, new_king_pos, gs) {
-                if us == crate::board::PlayerColor::White {
-                    self.add_feature(weights, idx, true);
-                } else {
-                    self.add_feature(weights, idx, false);
-                }
-            }
-        }
+        let state = NnueState::from_position(&gs);
+        // Bias + feature
+        assert!(state.rel_acc_white.iter().any(|&v| v != 0));
     }
 }

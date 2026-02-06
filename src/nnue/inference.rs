@@ -120,7 +120,7 @@ fn forward_head(weights: &NnueWeights, input: &[i16; HEAD_IN]) -> i32 {
 
 /// Main NNUE evaluation function.
 ///
-/// Returns score in centipawns from white's perspective.
+/// Returns score in centipawns from side-to-move's perspective.
 /// If NNUE weights are not available, returns 0.
 pub fn evaluate(gs: &GameState) -> i32 {
     let weights = match NNUE_WEIGHTS.as_ref() {
@@ -162,12 +162,8 @@ pub fn evaluate(gs: &GameState) -> i32 {
     let scale = weights.scales.s_out * weights.scales.s_h2 * weights.scales.s_h1;
     let score_cp = ((raw_output as f32) * scale) as i32;
 
-    // Return from STM perspective (negate for black)
-    if gs.turn == PlayerColor::White {
-        score_cp
-    } else {
-        -score_cp
-    }
+    // Network output is already from STM perspective (friendly/enemy swap above)
+    score_cp
 }
 
 /// Evaluate with explicit state (for incremental updates).
@@ -204,11 +200,8 @@ pub fn evaluate_with_state(gs: &GameState, state: &NnueState) -> i32 {
     let scale = weights.scales.s_out * weights.scales.s_h2 * weights.scales.s_h1;
     let score_cp = ((raw_output as f32) * scale) as i32;
 
-    if gs.turn == PlayerColor::White {
-        score_cp
-    } else {
-        -score_cp
-    }
+    // Network output is already from STM perspective (friendly/enemy swap above)
+    score_cp
 }
 
 #[cfg(test)]
@@ -216,9 +209,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_crelu() {
+    fn test_crelu_i16() {
         assert_eq!(crelu_i16(-100), 0);
+        assert_eq!(crelu_i16(0), 0);
         assert_eq!(crelu_i16(50), 50);
+        assert_eq!(crelu_i16(127), 127);
         assert_eq!(crelu_i16(200), 127);
+    }
+
+    #[test]
+    fn test_crelu_i32() {
+        assert_eq!(crelu_i32(-100), 0);
+        assert_eq!(crelu_i32(0), 0);
+        assert_eq!(crelu_i32(50), 50);
+        assert_eq!(crelu_i32(127), 127);
+        assert_eq!(crelu_i32(200), 127);
+    }
+
+    #[test]
+    fn test_build_head_input() {
+        let rel_friendly = [10; RELKP_DIM];
+        let thr_friendly = [20; THREAT_DIM];
+        let rel_enemy = [30; RELKP_DIM];
+        let thr_enemy = [40; THREAT_DIM];
+
+        let input = build_head_input(&rel_friendly, &thr_friendly, &rel_enemy, &thr_enemy);
+
+        // Check a few indices
+        assert_eq!(input[0], 10);
+        assert_eq!(input[RELKP_DIM], 20); // Start of thr_friendly
+        assert_eq!(input[RELKP_DIM + THREAT_DIM], 30); // Start of rel_enemy
+        assert_eq!(input[RELKP_DIM * 2 + THREAT_DIM], 40); // Start of thr_enemy
     }
 }

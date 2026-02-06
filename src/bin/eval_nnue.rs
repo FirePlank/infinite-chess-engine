@@ -94,7 +94,7 @@ fn main() -> io::Result<()> {
             println!("NNUE Compute Time: {:?}", duration);
 
             // Compute Hybrid (Base) Score
-            let hybrid_score = hydrochess_wasm::evaluation::evaluate(&game);
+            let hybrid_score = hydrochess_wasm::evaluation::evaluate(&game, None);
             println!("Hybrid/Total Score (evaluate()): {} cp", hybrid_score);
 
             if nnue_score == 0 && hybrid_score != 0 {

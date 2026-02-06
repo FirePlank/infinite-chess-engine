@@ -57,7 +57,7 @@ fn fen_to_icn(fen: &str) -> String {
             if c.is_ascii_digit() {
                 x += c.to_digit(10).unwrap() as i64;
             } else {
-                let mut code = c.to_string(); // e.g. "P", "n"
+                let code = c.to_string(); // e.g. "P", "n"
 
                 let mut is_special = false;
 

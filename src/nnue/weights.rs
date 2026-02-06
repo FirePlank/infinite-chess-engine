@@ -190,6 +190,11 @@ static NNUE_BYTES: &[u8] = &[];
 
 /// Global NNUE weights, lazily loaded at first use.
 pub static NNUE_WEIGHTS: Lazy<Option<NnueWeights>> = Lazy::new(|| {
+    #[cfg(test)]
+    if NNUE_BYTES.is_empty() {
+        return Some(create_mock_weights());
+    }
+
     if NNUE_BYTES.is_empty() {
         None
     } else {
@@ -206,12 +211,73 @@ pub static NNUE_WEIGHTS: Lazy<Option<NnueWeights>> = Lazy::new(|| {
 });
 
 #[cfg(test)]
+fn create_mock_weights() -> NnueWeights {
+    let rel_dim = 256;
+    let rel_features = 25450;
+    let thr_dim = 64;
+    let thr_features = 6768;
+    let head_in = 640;
+    let h1 = 32;
+    let h2 = 32;
+
+    NnueWeights {
+        rel_features,
+        rel_dim,
+        thr_features,
+        thr_dim,
+        head_in,
+        h1,
+        h2,
+        scales: NnueScales {
+            s_rel: 1.0,
+            s_thr: 1.0,
+            s_h1: 1.0,
+            s_h2: 1.0,
+            s_out: 1.0,
+        },
+        rel_embed: vec![1; (rel_features * rel_dim) as usize].into_boxed_slice(),
+        rel_bias: vec![1; rel_dim as usize].into_boxed_slice(),
+        thr_embed: vec![1; (thr_features * thr_dim) as usize].into_boxed_slice(),
+        thr_bias: vec![1; thr_dim as usize].into_boxed_slice(),
+        fc1_weight: vec![1; (h1 * head_in) as usize].into_boxed_slice(),
+        fc1_bias: vec![1; h1 as usize].into_boxed_slice(),
+        fc2_weight: vec![1; (h2 * h1) as usize].into_boxed_slice(),
+        fc2_bias: vec![1; h2 as usize].into_boxed_slice(),
+        fc3_weight: vec![1; h2 as usize].into_boxed_slice(),
+        fc3_bias: 1,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_weights_lazy_load() {
-        // Just check it doesn't panic
         let _ = NNUE_WEIGHTS.is_some();
+    }
+
+    #[test]
+    fn test_invalid_magic() {
+        let data = b"BADMAGIC";
+        assert!(NnueWeights::from_bytes(data).is_err());
+    }
+
+    #[test]
+    fn test_short_data() {
+        let data = b"INNUEW1\0"; // Only magic, missing dims
+        assert!(NnueWeights::from_bytes(data).is_err());
+    }
+
+    #[test]
+    fn test_read_helpers() {
+        let data = vec![0u8; 100];
+        let mut cursor = Cursor::new(data.as_slice());
+
+        assert!(read_u32(&mut cursor).is_ok());
+        assert!(read_f32(&mut cursor).is_ok());
+        assert!(read_i16_array(&mut cursor, 2).is_ok());
+        assert!(read_i8_array(&mut cursor, 2).is_ok());
+        assert!(read_i32_array(&mut cursor, 2).is_ok());
     }
 }

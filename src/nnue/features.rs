@@ -574,3 +574,56 @@ pub fn relkp_feature_id(
     )
     .map(|code| code * NUM_RELKP_BUCKETS + bucket)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sign_code() {
+        assert_eq!(sign_code(-5), 0);
+        assert_eq!(sign_code(0), 1);
+        assert_eq!(sign_code(5), 2);
+    }
+
+    #[test]
+    fn test_dist_bin() {
+        assert_eq!(dist_bin(0), 0);
+        assert_eq!(dist_bin(1), 1);
+        assert_eq!(dist_bin(3), 2);
+        assert_eq!(dist_bin(10), 4);
+        assert_eq!(dist_bin(100), 7);
+        assert_eq!(dist_bin(1000), 8);
+    }
+
+    #[test]
+    fn test_relkp_bucket() {
+        // Near zone
+        assert_eq!(relkp_bucket(0, 0), 144); // (8) + 17*(8) = 8 + 136 = 144
+        assert_eq!(relkp_bucket(-8, -8), 0);
+        assert_eq!(relkp_bucket(8, 8), 16 + 17 * 16);
+
+        // Far zone
+        assert!(relkp_bucket(20, 0) >= NEAR_ZONE_BUCKETS);
+    }
+
+    #[test]
+    fn test_victim_type() {
+        assert_eq!(victim_type(PieceType::Pawn), Some(0));
+        assert_eq!(victim_type(PieceType::King), Some(5));
+        assert_eq!(victim_type(PieceType::Amazon), None);
+    }
+
+    #[test]
+    fn test_direction_index() {
+        assert_eq!(direction_index(0, 1), 0);
+        assert_eq!(direction_index(1, -1), 3);
+        assert_eq!(direction_index(-1, 0), 6);
+    }
+
+    #[test]
+    fn test_slider_dist_bin() {
+        assert_eq!(slider_dist_bin(1), 0);
+        assert_eq!(slider_dist_bin(10), 5);
+        assert_eq!(slider_dist_bin(500), 10);
+    }
+}

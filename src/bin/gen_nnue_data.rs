@@ -13,6 +13,7 @@
 use hydrochess_wasm::{
     Variant,
     board::{Coordinate, Piece, PieceType, PlayerColor},
+    evaluation,
     game::GameState,
     moves::{Move, MoveGenContext},
     search::{SearchStats, get_best_move},
@@ -45,7 +46,7 @@ const DEFAULT_SAMPLE_RATE: f64 = 0.05; // 5 samples per 100-ply game on average
 /// Maximum coordinate bound for generated positions
 const COORD_BOUND: i64 = 8192;
 /// Search depth for best move during self-play
-const DEFAULT_SELFPLAY_DEPTH: usize = 2;
+const DEFAULT_SELFPLAY_DEPTH: usize = 4;
 /// Search depth for teacher scores
 const DEFAULT_TEACHER_DEPTH: usize = 6;
 /// Probability of playing best move (vs random)
@@ -968,7 +969,13 @@ fn play_game(
         };
 
         // Sample with probability SAMPLE_RATE if NNUE applicable
+        // Reject tactically volatile positions
         if prng.next_f64() < sample_rate && is_nnue_applicable(&gs) {
+            #[cfg(feature = "nnue")]
+            let static_eval = evaluation::evaluate(&gs, None);
+            #[cfg(not(feature = "nnue"))]
+            let static_eval = evaluation::evaluate(&gs);
+
             let (_, teacher_cp, _) = get_best_move(&mut gs, teacher_depth, u128::MAX, true, false)
                 .unwrap_or((
                     Move::new(
@@ -985,16 +992,20 @@ fn play_game(
                     },
                 ));
 
-            let clamped_cp = teacher_cp.clamp(-31000, 31000);
+            // Quiet-position filter: reject if teacher eval (which includes qsearch)
+            // differs significantly from static eval — indicates tactical volatility
+            if (teacher_cp - static_eval).abs() <= 150 {
+                let clamped_cp = teacher_cp.clamp(-31000, 31000);
 
-            pending_samples.push(PendingSample {
-                relkp_white: build_relkp_list(&gs, PlayerColor::White),
-                relkp_black: build_relkp_list(&gs, PlayerColor::Black),
-                threat_white: build_threat_list(&gs, PlayerColor::White),
-                threat_black: build_threat_list(&gs, PlayerColor::Black),
-                stm: gs.turn,
-                teacher_cp: clamped_cp as i16,
-            });
+                pending_samples.push(PendingSample {
+                    relkp_white: build_relkp_list(&gs, PlayerColor::White),
+                    relkp_black: build_relkp_list(&gs, PlayerColor::Black),
+                    threat_white: build_threat_list(&gs, PlayerColor::White),
+                    threat_black: build_threat_list(&gs, PlayerColor::Black),
+                    stm: gs.turn,
+                    teacher_cp: clamped_cp as i16,
+                });
+            }
         }
 
         // Make move
@@ -1002,7 +1013,44 @@ fn play_game(
     }
 
     // Determine game result
-    let result = determine_game_result(&gs);
+    // If the game ended naturally (checkmate, stalemate, repetition, 50-move),
+    // use the real result. If we hit MAX_GAME_PLY, adjudicate via teacher eval
+    // to avoid injecting fake draws into the dataset.
+    let game_ended_naturally = gs.is_repetition(0) || gs.is_fifty() || !has_any_legal_move(&gs);
+
+    let result = if game_ended_naturally {
+        determine_game_result(&gs)
+    } else {
+        // Ply-cap reached — adjudicate with a teacher search
+        let (_, adj_cp, _) = get_best_move(&mut gs, teacher_depth, u128::MAX, true, false)
+            .unwrap_or((
+                Move::new(
+                    Coordinate::new(0, 0),
+                    Coordinate::new(0, 0),
+                    Piece::new(PieceType::Void, PlayerColor::Neutral),
+                ),
+                0,
+                SearchStats {
+                    nodes: 0,
+                    tt_capacity: 0,
+                    tt_used: 0,
+                    tt_fill_permille: 0,
+                },
+            ));
+        // adj_cp is from STM perspective; convert to White-perspective result
+        let white_cp = if gs.turn == PlayerColor::White {
+            adj_cp
+        } else {
+            -adj_cp
+        };
+        if white_cp >= 1500 {
+            1 // White wins
+        } else if white_cp <= -1500 {
+            -1 // Black wins
+        } else {
+            0 // Draw
+        }
+    };
 
     // Convert pending samples to final records with WDL
     let final_samples: Vec<SampleRecord> = pending_samples

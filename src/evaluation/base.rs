@@ -426,8 +426,8 @@ pub fn compute_mop_up_term(game: &GameState) -> i32 {
     let raw = evaluate_lone_king_endgame(game, our_king, enemy_king, winning_color);
     let mop_up = (raw * scale as i32) / 100;
 
-    // Return from white's perspective (positive = good for white)
-    if winning_color == PlayerColor::White {
+    // Return from side-to-move's perspective (positive = good for STM)
+    if winning_color == game.turn {
         mop_up
     } else {
         -mop_up

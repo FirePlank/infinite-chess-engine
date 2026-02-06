@@ -31,14 +31,13 @@ pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -
             // Try NNUE first if applicable (standard pieces, kings present, weights loaded)
             if crate::nnue::is_applicable(game) {
                 if let Some(state) = nnue_state {
-                    let score = crate::nnue::evaluate_with_state(game, state);
-                    return score + base::compute_mop_up_term(game);
+                    crate::nnue::evaluate_with_state(game, state) + base::compute_mop_up_term(game)
                 } else {
-                    let score = crate::nnue::evaluate(game);
-                    return score + base::compute_mop_up_term(game);
+                    crate::nnue::evaluate(game) + base::compute_mop_up_term(game)
                 }
+            } else {
+                base::evaluate(game)
             }
-            base::evaluate(game)
         } // Default: use base for all others
     };
 

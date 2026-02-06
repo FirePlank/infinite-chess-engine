@@ -107,6 +107,7 @@ impl Default for PromotionRanks {
 
 /// Game rules that can vary between chess variants
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct GameRules {
     pub promotion_ranks: PromotionRanks,
     #[serde(skip)]
@@ -123,18 +124,6 @@ pub struct GameRules {
     pub black_win_condition: WinCondition,
 }
 
-impl Default for GameRules {
-    fn default() -> Self {
-        Self {
-            promotion_ranks: PromotionRanks::default(),
-            promotion_types: None,
-            promotions_allowed: None,
-            move_rule_limit: None,
-            white_win_condition: WinCondition::default(),
-            black_win_condition: WinCondition::default(),
-        }
-    }
-}
 
 impl GameRules {
     /// Convert promotions_allowed strings to PieceTypes once

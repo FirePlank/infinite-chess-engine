@@ -14,6 +14,9 @@ mod inference;
 mod state;
 mod weights;
 
+#[cfg(test)]
+mod tests;
+
 pub use features::{build_relkp_active_lists, build_threat_active_lists};
 pub use inference::{evaluate, evaluate_with_state};
 pub use state::NnueState;
@@ -63,4 +66,46 @@ pub fn is_applicable(gs: &GameState) -> bool {
 /// Initialize NNUE state from scratch for a position.
 pub fn init_state(gs: &GameState) -> NnueState {
     NnueState::from_position(gs)
+}
+
+#[cfg(test)]
+mod mod_tests {
+    use super::*;
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
+
+    #[test]
+    fn test_is_applicable() {
+        let mut gs = GameState::new();
+        // Missing kings
+        assert!(!is_applicable(&gs));
+
+        gs.white_king_pos = Some(Coordinate::new(4, 0));
+        gs.black_king_pos = Some(Coordinate::new(4, 7));
+        // Kings present, but board empty
+        assert!(is_applicable(&gs));
+
+        // Standard piece
+        gs.board
+            .set_piece(0, 0, Piece::new(PieceType::Pawn, PlayerColor::White));
+        assert!(is_applicable(&gs));
+
+        // Fairy piece
+        gs.board
+            .set_piece(0, 1, Piece::new(PieceType::Amazon, PlayerColor::White));
+        assert!(!is_applicable(&gs));
+
+        // Obstacle
+        gs.board.remove_piece(&0, &1);
+        gs.board
+            .set_piece(0, 1, Piece::new(PieceType::Obstacle, PlayerColor::Neutral));
+        assert!(!is_applicable(&gs));
+    }
+
+    #[test]
+    fn test_init_state_no_panic() {
+        let mut gs = GameState::new();
+        gs.white_king_pos = Some(Coordinate::new(4, 0));
+        gs.black_king_pos = Some(Coordinate::new(4, 7));
+        let _state = init_state(&gs);
+    }
 }
