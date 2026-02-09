@@ -14,7 +14,7 @@ const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
 const initThreadPool = wasmNew.initThreadPool;
-import { getVariantData, getAllVariants } from './variants.js';
+import { getVariantData, getAllVariants, generateSetupICN } from './variants.js';
 
 let wasmReady = false;
 let threadPoolInitialized = false;
@@ -594,25 +594,49 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 ? (newPlaysWhite ? 'new' : 'old')
                 : (newPlaysWhite ? 'old' : 'new');
 
-            // Build authoritative game input for engine search
-            const engineInput = clonePosition(startPosition);
-            engineInput.move_history = moveHistory.slice();
-            engineInput.halfmove_clock = halfmoveClock;
-            engineInput.fullmove_number = fullmoveNumber;
-            if (engineName === 'old' && oldStrength && oldStrength < 3) {
-                engineInput.strength_level = oldStrength;
-            }
-            if (haveClocks) {
-                engineInput.clock = {
-                    wtime: Math.floor(whiteClock),
-                    btime: Math.floor(blackClock),
-                    winc: Math.floor(increment),
-                    binc: Math.floor(increment),
-                };
+            let searchTimeMs = timePerMove;
+
+            // Build ICN string from initial position and move history using the shared helper.
+            // This ensures dynamic promotion ranks, world bounds, and move rule limits.
+            const icnString = generateSetupICN(
+                variantName,
+                startPosition.turn,
+                halfmoveClock,
+                fullmoveNumber,
+                moveHistory
+            );
+
+            const engineConfig = {
+                strength_level: (engineName === 'old' && oldStrength && oldStrength < 3) ? oldStrength : 3,
+                wtime: Math.floor(whiteClock),
+                btime: Math.floor(blackClock),
+                winc: Math.floor(increment),
+                binc: Math.floor(increment)
+            };
+
+            let engine;
+            if (engineName === 'new') {
+                engine = wasmNew.Engine.from_icn(icnString, engineConfig);
+            } else {
+                // Backward compatibility for EngineOld
+                const engineInput = clonePosition(startPosition);
+                engineInput.move_history = moveHistory.slice();
+                engineInput.halfmove_clock = halfmoveClock;
+                engineInput.fullmove_number = fullmoveNumber;
+                if (oldStrength && oldStrength < 3) {
+                    engineInput.strength_level = oldStrength;
+                }
+                if (haveClocks) {
+                    engineInput.clock = {
+                        wtime: Math.floor(whiteClock),
+                        btime: Math.floor(blackClock),
+                        winc: Math.floor(increment),
+                        binc: Math.floor(increment),
+                    };
+                }
+                engine = new EngineClass(engineInput);
             }
 
-            let searchTimeMs = timePerMove;
-            const engine = new EngineClass(engineInput);
             const startMs = nowMs();
 
             // Safety check: if clock time is already zero or negative, flag timeout immediately
@@ -690,12 +714,14 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
                 let hasLegalMoves = false;
                 try {
-                    const checkerInput = clonePosition(startPosition);
-                    checkerInput.move_history = moveHistory.slice();
-                    checkerInput.halfmove_clock = halfmoveClock;
-                    checkerInput.fullmove_number = fullmoveNumber;
-
-                    const checker = new EngineNew(checkerInput);
+                    const icnString = generateSetupICN(
+                        variantName,
+                        startPosition.turn,
+                        halfmoveClock,
+                        fullmoveNumber,
+                        moveHistory
+                    );
+                    const checker = wasmNew.Engine.from_icn(icnString, {});
                     if (typeof checker.get_legal_moves_js === 'function') {
                         const legal = checker.get_legal_moves_js();
                         if (Array.isArray(legal) && legal.length > 0) {
@@ -713,12 +739,14 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
                 if (!hasLegalMoves) {
                     // True terminal: no legal moves for sideToMove.
-                    const checkerInput = clonePosition(startPosition);
-                    checkerInput.move_history = moveHistory.slice();
-                    checkerInput.halfmove_clock = halfmoveClock;
-                    checkerInput.fullmove_number = fullmoveNumber;
-
-                    const checker = new EngineNew(checkerInput);
+                    const icnString = generateSetupICN(
+                        variantName,
+                        startPosition.turn,
+                        halfmoveClock,
+                        fullmoveNumber,
+                        moveHistory
+                    );
+                    const checker = wasmNew.Engine.from_icn(icnString, {});
                     const inCheck = typeof checker.is_in_check === 'function' && checker.is_in_check();
                     checker.free();
 

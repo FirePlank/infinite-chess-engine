@@ -3,20 +3,9 @@ const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
 const initThreadPoolNew = wasmNew.initThreadPool;
-import { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval } from './variants.js';
+import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode, getVariantsWithCustomEval } from './variants.js';
 
 let isNewEngineMT = false;
-
-// Map internal engine piece letters to infinitechess.org ICN codes (lowercase for ICN)
-function engineLetterToICNCode(letter) {
-    const map = {
-        'k': 'k', 'q': 'q', 'r': 'r', 'b': 'b', 'n': 'n', 'p': 'p',
-        'm': 'am', 'c': 'ch', 'a': 'ar', 'h': 'ha', 'g': 'gu',
-        'l': 'ca', 'i': 'gi', 'z': 'ze', 'e': 'ce', 'y': 'rq',
-        'd': 'rc', 's': 'nr', 'u': 'hu', 'o': 'ro', 'x': 'ob', 'v': 'vo'
-    };
-    return map[letter] || letter;
-}
 
 function updateMTUI() {
     if (isNewEngineMT) {
@@ -78,8 +67,6 @@ const copyLogBtn = document.getElementById('copyLog');
 const downloadLogsBtn = document.getElementById('downloadLogs');
 const downloadGamesTxtBtn = document.getElementById('downloadGames-txt');
 const downloadGamesJsonBtn = document.getElementById('downloadGames-json');
-const icnOutputEl = document.getElementById('icnOutput');
-const icnTextEl = document.getElementById('icnText');
 const sprtStatusEl = document.getElementById('sprtStatus');
 
 let wasmReady = false;
@@ -511,64 +498,20 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     }).filter(Boolean);
 
     const movesStr = moves.join('|');
-    // Determine promotion ranks and allowed promotions for the variant
-    // Default to standard 8 for white, 1 for black, with q,r,b,n allowed
-    let whiteRank = '8';
-    let blackRank = '1';
-    let promotionsAllowed = ['q', 'r', 'b', 'n'];
-    let worldBoundsStr = '';
-    try {
-        const vdata = getVariantData(variantName);
-        if (vdata && vdata.game_rules) {
-            if (vdata.game_rules.promotion_ranks) {
-                const ranks = vdata.game_rules.promotion_ranks;
-                if (ranks.white && ranks.white.length > 0) whiteRank = ranks.white[0];
-                if (ranks.black && ranks.black.length > 0) blackRank = ranks.black[0];
-            }
-            if (vdata.game_rules.promotions_allowed && Array.isArray(vdata.game_rules.promotions_allowed)) {
-                promotionsAllowed = vdata.game_rules.promotions_allowed;
-            }
+    const moveHistoryList = moves.map(m => {
+        const promoIdx = m.indexOf('=');
+        let move = m;
+        let promotion = null;
+        if (promoIdx !== -1) {
+            move = m.slice(0, promoIdx);
+            promotion = m.slice(promoIdx + 1);
         }
-        // Compute world bounds: if worldBorder is a number, calculate finite bounds
-        // Otherwise, use infinite bounds
-        if (typeof vdata.worldBorder === 'number' && startPositionStr) {
-            // Parse pieces to find min/max coordinates
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            for (const pieceStr of startPositionStr.split('|')) {
-                const parts = pieceStr.split(',');
-                if (parts.length < 2) continue;
-                // Extract x from first part (after piece code)
-                const firstPart = parts[0];
-                let xStart = 0;
-                while (xStart < firstPart.length && !/[-0-9]/.test(firstPart[xStart])) xStart++;
-                const xStr = firstPart.slice(xStart).replace(/\+$/, '');
-                const yStr = parts[1].replace(/\+$/, '');
-                const x = parseInt(xStr, 10);
-                const y = parseInt(yStr, 10);
-                if (Number.isFinite(x) && Number.isFinite(y)) {
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-            }
-            if (Number.isFinite(minX)) {
-                const pad = vdata.worldBorder;
-                worldBoundsStr = `${minX - pad},${maxX + pad},${minY - pad},${maxY + pad}`;
-            }
-        } else {
-            // Infinite bounds for classical-style variants
-            worldBoundsStr = '-999999999999999,1000000000000008,-999999999999999,1000000000000008';
-        }
-    } catch (e) {
-        // Use infinite bounds on error
-        worldBoundsStr = '-999999999999999,1000000000000008,-999999999999999,1000000000000008';
-    }
-    // Build promotion token: (whiteRank;promo1,promo2,...|blackRank;promo1,promo2,...)
-    // Convert engine piece letters to ICN codes (e.g., 'm' -> 'am')
-    const promotionsICN = promotionsAllowed.map(p => engineLetterToICNCode(p)).join(',');
-    const promotionRanksToken = `(${whiteRank};${promotionsICN}|${blackRank};${promotionsICN})`;
-    return `${headers} ${nextTurn} ${halfmove}/100 ${fullmove} ${promotionRanksToken} ${worldBoundsStr} ${startPositionStr}${movesStr ? ' ' + movesStr : ''}`;
+        const parts = move.split('>');
+        return { from: parts[0], to: parts[1], promotion };
+    });
+
+    const setupIcn = generateSetupICN(variantName, nextTurn, halfmove, fullmove, moveHistoryList);
+    return `${headers} ${setupIcn}`;
 }
 
 function log(message, type) {
@@ -742,8 +685,10 @@ async function initWasm() {
         log('WASM module initialized successfully', 'success');
 
 
-        const testPos = getStandardPosition();
-        const engine = new EngineNew(testPos);
+        const classicalIcn = getVariantData('Classical').position;
+        // Use the shared generator for the sanity test to ensure it works end-to-end
+        const icn = generateSetupICN('Classical', 'w', 0, 1, []);
+        const engine = EngineNew.from_icn(icn, { strength_level: 3 });
         const move = engine.get_best_move_with_time(100, true);
         engine.free();
         log('Quick test: Best move = ' + (move ? move.from + ' to ' + move.to : 'null'), 'info');

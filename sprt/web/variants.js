@@ -165,4 +165,80 @@ function getVariantsWithCustomEval() {
     return Object.keys(VARIANTS).filter(name => VARIANTS[name].hasCustomEval === true);
 }
 
-export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval };
+// Map internal engine piece letters to infinitechess.org ICN codes (lowercase for ICN)
+function engineLetterToICNCode(letter) {
+    const map = {
+        'k': 'k', 'q': 'q', 'r': 'r', 'b': 'b', 'n': 'n', 'p': 'p',
+        'm': 'am', 'c': 'ch', 'a': 'ar', 'h': 'ha', 'g': 'gu',
+        'l': 'ca', 'i': 'gi', 'z': 'ze', 'e': 'ce', 'y': 'rq',
+        'd': 'rc', 's': 'nr', 'u': 'hu', 'o': 'ro', 'x': 'ob', 'v': 'vo'
+    };
+    return map[letter.toLowerCase()] || letter.toLowerCase();
+}
+
+/**
+ * Generate a setup ICN string for engine initialization.
+ * Matches the logic in main.js generateICNFromWorkerLog but for live engine setup.
+ */
+function generateSetupICN(variantName, startTurn, halfmoveClock, fullmoveNumber, moveHistoryList = []) {
+    const vdata = getVariantData(variantName);
+
+    // 1. Promotion Ranks and Allowed Pieces
+    let whiteRank = '8';
+    let blackRank = '1';
+    let promos = ['q', 'r', 'b', 'n'];
+    if (vdata.game_rules) {
+        if (vdata.game_rules.promotion_ranks) {
+            const ranks = vdata.game_rules.promotion_ranks;
+            if (ranks.white && ranks.white.length > 0) whiteRank = ranks.white[0];
+            if (ranks.black && ranks.black.length > 0) blackRank = ranks.black[0];
+        }
+        if (vdata.game_rules.promotions_allowed) {
+            promos = vdata.game_rules.promotions_allowed;
+        }
+    }
+    const promoICN = promos.map(p => engineLetterToICNCode(p)).join(',');
+    const promoToken = `(${whiteRank};${promoICN}|${blackRank};${promoICN})`;
+
+    // 2. World Bounds
+    let boundsToken = '-999999999999999,1000000000000008,-999999999999999,1000000000000008';
+    const startPosStr = vdata.position || '';
+    if (typeof vdata.worldBorder === 'number' && startPosStr) {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const pieceStr of startPosStr.split('|')) {
+            const parts = pieceStr.split(',');
+            if (parts.length < 2) continue;
+            let firstPart = parts[0];
+            let xStart = 0;
+            while (xStart < firstPart.length && !/[-0-9]/.test(firstPart[xStart])) xStart++;
+            const xStr = firstPart.slice(xStart).replace(/\+$/, '');
+            const yStr = parts[1].replace(/\+$/, '');
+            const x = parseInt(xStr, 10);
+            const y = parseInt(yStr, 10);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+        if (Number.isFinite(minX)) {
+            const pad = vdata.worldBorder;
+            boundsToken = `${minX - pad},${maxX + pad},${minY - pad},${maxY + pad}`;
+        }
+    }
+
+    // 3. Move Rule Limit (50-move rule)
+    const moveLimit = vdata.game_rules.move_rule || 100;
+
+    // 4. Moves string: "from1,y1>to1,y1|from2,y2>to2,y2"
+    const movesStr = moveHistoryList.map(h => {
+        let m = `${h.from}>${h.to}`;
+        if (h.promotion) m += `=${h.promotion}`;
+        return m;
+    }).join('|');
+
+    return `${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
+}
+
+export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, engineLetterToICNCode, generateSetupICN };

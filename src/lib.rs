@@ -1,4 +1,3 @@
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -14,17 +13,14 @@ pub mod tiles;
 mod utils;
 
 // Initialize panic hook for better error messages in WASM
-// This will show actual line numbers instead of just "unreachable"
 #[cfg(feature = "debug")]
 #[wasm_bindgen(start)]
 pub fn init_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-use crate::moves::{SpatialIndices, set_world_bounds};
-use board::{Board, Coordinate, Piece, PieceType, PlayerColor};
-use evaluation::calculate_initial_material;
-use game::{EnPassantState, GameState};
+use board::PlayerColor;
+use game::GameState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
@@ -112,20 +108,20 @@ impl Variant {
     pub fn parse(s: &str) -> Self {
         match s {
             "Classical" => Variant::Classical,
-            "Confined_Classical" => Variant::ConfinedClassical,
-            "Classical_Plus" => Variant::ClassicalPlus,
+            "Confined_Classical" | "Confined Classical" => Variant::ConfinedClassical,
+            "Classical_Plus" | "Classical Plus" => Variant::ClassicalPlus,
             "CoaIP" => Variant::CoaIP,
-            "CoaIP_HO" => Variant::CoaIPHO,
-            "CoaIP_RO" => Variant::CoaIPRO,
-            "CoaIP_NO" => Variant::CoaIPNO,
+            "CoaIP_HO" | "Chess on an Infinite Plane - Huygens Option" => Variant::CoaIPHO,
+            "CoaIP_RO" | "Chess on an Infinite Plane - Roses Option" => Variant::CoaIPRO,
+            "CoaIP_NO" | "Chess on an Infinite Plane - Knightriders Option" => Variant::CoaIPNO,
             "Palace" => Variant::Palace,
             "Pawndard" => Variant::Pawndard,
             "Core" => Variant::Core,
             "Standarch" => Variant::Standarch,
-            "Space_Classic" => Variant::SpaceClassic,
+            "Space_Classic" | "Space Classic" => Variant::SpaceClassic,
             "Space" => Variant::Space,
             "Abundance" => Variant::Abundance,
-            "Pawn_Horde" => Variant::PawnHorde,
+            "Pawn_Horde" | "Pawn Horde" => Variant::PawnHorde,
             "Knightline" => Variant::Knightline,
             "Obstocean" => Variant::Obstocean,
             "Chess" => Variant::Chess,
@@ -171,10 +167,7 @@ pub fn reset_engine_state() {
     crate::search::reset_search_state();
 }
 
-// Lazy SMP via wasm-bindgen-rayon
-// When the multithreading feature is enabled, we re-export init_thread_pool which
-// allows JS to initialize a rayon thread pool with shared WebAssembly memory.
-// The thread count is controlled by JS (defaults to 1 for single-threaded mode).
+// Lazy SMP via wasm-bindgen-rayon (shared memory thread pool)
 #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
@@ -206,110 +199,20 @@ pub struct JsPVLine {
 }
 
 #[derive(Deserialize)]
-struct JsFullGame {
-    board: JsBoard,
-    turn: String,
-    /// All special rights - includes castling (kings/rooks) AND pawn double-move rights
-    #[serde(default)]
-    special_rights: Vec<String>,
-    en_passant: Option<JsEnPassant>,
-    halfmove_clock: u32,
-    fullmove_number: u32,
-    #[serde(default)]
-    move_history: Vec<JsMoveHistory>,
-    #[serde(default)]
-    game_rules: Option<JsGameRules>,
-    #[serde(default)]
-    world_bounds: Option<JsWorldBounds>,
-    #[serde(default)]
-    clock: Option<JsClock>,
-    #[serde(default)]
-    variant: Option<String>,
-    /// Optional strength hint from the UI/JS side (1=Easy, 2=Medium, 3=Hard).
-    #[serde(default)]
-    strength_level: Option<u32>,
+pub struct JsEngineConfig {
+    pub strength_level: Option<u32>,
+    pub wtime: Option<u64>,
+    pub btime: Option<u64>,
+    pub winc: Option<u64>,
+    pub binc: Option<u64>,
 }
 
-#[derive(Deserialize, Default)]
-struct JsGameRules {
-    #[serde(default)]
-    promotion_ranks: Option<JsPromotionRanks>,
-    #[serde(default)]
-    promotions_allowed: Option<Vec<String>>,
-    #[serde(default)]
-    move_rule: Option<u32>,
-    #[serde(default)]
-    win_conditions: Option<JsWinConditions>,
-}
-
-/// Win conditions per side, as received from JavaScript.
-/// Each side has an array of conditions; we only use the first.
-#[derive(Deserialize, Default)]
-struct JsWinConditions {
-    #[serde(default)]
-    white: Vec<String>,
-    #[serde(default)]
-    black: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct JsPromotionRanks {
-    white: Vec<String>, // String because BigInt serializes as string
-    black: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct JsWorldBounds {
-    left: String,
-    right: String,
-    bottom: String,
-    top: String,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-struct JsClock {
-    /// Remaining time for White in milliseconds
-    wtime: u64,
-    /// Remaining time for Black in milliseconds
-    btime: u64,
-    /// Increment for White in milliseconds
-    winc: u64,
-    /// Increment for Black in milliseconds
-    binc: u64,
-}
-
-#[derive(Deserialize)]
-struct JsMoveHistory {
-    from: String, // "x,y"
-    to: String,   // "x,y"
-    #[serde(default)]
-    promotion: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct JsBoard {
-    pieces: Vec<JsPiece>,
-}
-
-#[derive(Deserialize)]
-struct JsPiece {
-    x: String,
-    y: String,
-    piece_type: String,
-    player: String,
-}
-
-#[derive(Deserialize)]
-struct JsEnPassant {
-    square: String,      // "x,y"
-    pawn_square: String, // "x,y"
-}
-
-#[cfg(feature = "eval_tuning")]
-#[derive(Serialize)]
-struct JsEvalWithFeatures {
-    eval: i32,
-    features: crate::evaluation::EvalFeatures,
+#[derive(Deserialize, Serialize, Clone, Copy)]
+pub struct JsClock {
+    pub wtime: u64,
+    pub btime: u64,
+    pub winc: u64,
+    pub binc: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -336,299 +239,25 @@ pub struct Engine {
 
 #[wasm_bindgen]
 impl Engine {
-    #[wasm_bindgen(constructor)]
-    pub fn new(json_state: JsValue) -> Result<Engine, JsValue> {
-        // Initialize magic bitboards for O(1) slider attacks
-        // crate::tiles::magic::init();
+    #[wasm_bindgen]
+    pub fn from_icn(icn_string: &str, config: JsValue) -> Result<Engine, JsValue> {
+        let options: JsEngineConfig = serde_wasm_bindgen::from_value(config)?;
 
-        let js_game: JsFullGame = serde_wasm_bindgen::from_value(json_state)?;
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn_string);
 
-        // If this looks like a fresh game, clear any persistent search/TT state.
-        if js_game.move_history.is_empty() && js_game.fullmove_number <= 1 {
-            crate::search::reset_search_state();
-        }
+        let strength_level = options.strength_level;
 
-        let variant = js_game
-            .variant
-            .as_deref()
-            .map(Variant::parse)
-            .unwrap_or(Variant::Classical);
-
-        // Apply world bounds from playableRegion if provided
-        if let Some(wb) = &js_game.world_bounds {
-            let left = wb.left.parse::<i64>().unwrap_or(-1_000_000_000_000_000);
-            let right = wb.right.parse::<i64>().unwrap_or(1_000_000_000_000_000);
-            let bottom = wb.bottom.parse::<i64>().unwrap_or(-1_000_000_000_000_000);
-            let top = wb.top.parse::<i64>().unwrap_or(1_000_000_000_000_000);
-            set_world_bounds(left, right, bottom, top);
-        } else {
-            // Always reset to defaults based on variant to prevent world borders from
-            // leaking from previous games in the same worker (e.g. SPRT).
-            let (left, right, bottom, top) = variant.get_default_bounds();
-            set_world_bounds(left, right, bottom, top);
-        }
-
-        // Build starting GameState from JS board
-        let mut board = Board::new();
-        let mut white_has_royal = false;
-        let mut black_has_royal = false;
-        for p in &js_game.board.pieces {
-            let x: i64 =
-                p.x.parse()
-                    .map_err(|_| JsValue::from_str("Invalid X coordinate"))?;
-            let y: i64 =
-                p.y.parse()
-                    .map_err(|_| JsValue::from_str("Invalid Y coordinate"))?;
-
-            let piece_type = p.piece_type.parse::<PieceType>().unwrap_or(PieceType::Pawn);
-
-            let color = p
-                .player
-                .parse::<PlayerColor>()
-                .unwrap_or(PlayerColor::White);
-
-            if piece_type.is_royal() {
-                match color {
-                    PlayerColor::White => white_has_royal = true,
-                    PlayerColor::Black => black_has_royal = true,
-                    _ => {}
-                }
-            }
-
-            board.set_piece(x, y, Piece::new(piece_type, color));
-        }
-
-        // Starting side (color that moved first) as reported by JS. The engine
-        // will reconstruct the current side-to-move by replaying move_history.
-        let js_turn = js_game
-            .turn
-            .parse::<PlayerColor>()
-            .unwrap_or(PlayerColor::White);
-
-        // Parse initial special rights (castling + pawn double-move)
-        let mut special_rights = FxHashSet::default();
-        for sr in js_game.special_rights {
-            let parts: Vec<&str> = sr.split(',').collect();
-            if parts.len() == 2
-                && let (Ok(x), Ok(y)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>())
-            {
-                special_rights.insert(Coordinate::new(x, y));
-            }
-        }
-
-        // Parse en passant directly as i64 (used only when there is no move history)
-        let parsed_en_passant = if let Some(ep) = js_game.en_passant {
-            let sq_parts: Vec<&str> = ep.square.split(',').collect();
-            let pawn_parts: Vec<&str> = ep.pawn_square.split(',').collect();
-
-            if sq_parts.len() == 2 && pawn_parts.len() == 2 {
-                if let (Ok(sq_x), Ok(sq_y), Ok(pawn_x), Ok(pawn_y)) = (
-                    sq_parts[0].parse::<i64>(),
-                    sq_parts[1].parse::<i64>(),
-                    pawn_parts[0].parse::<i64>(),
-                    pawn_parts[1].parse::<i64>(),
-                ) {
-                    Some(EnPassantState {
-                        square: Coordinate::new(sq_x, sq_y),
-                        pawn_square: Coordinate::new(pawn_x, pawn_y),
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        let clock = if let (Some(wtime), Some(btime)) = (options.wtime, options.btime) {
+            Some(JsClock {
+                wtime,
+                btime,
+                winc: options.winc.unwrap_or(0),
+                binc: options.binc.unwrap_or(0),
+            })
         } else {
             None
         };
-
-        // Parse game rules from JS
-        let game_rules = if let Some(js_rules) = js_game.game_rules {
-            use game::{GameRules, PromotionRanks, WinCondition};
-
-            let promotion_ranks = js_rules.promotion_ranks.map(|pr| PromotionRanks {
-                white: pr
-                    .white
-                    .iter()
-                    .filter_map(|s| s.parse::<i64>().ok())
-                    .collect(),
-                black: pr
-                    .black
-                    .iter()
-                    .filter_map(|s| s.parse::<i64>().ok())
-                    .collect(),
-            });
-
-            let (white_win_condition, black_win_condition) =
-                if let Some(wc) = js_rules.win_conditions {
-                    let parsed_white: Vec<WinCondition> =
-                        wc.white.iter().filter_map(|s| s.parse().ok()).collect();
-                    let parsed_black: Vec<WinCondition> =
-                        wc.black.iter().filter_map(|s| s.parse().ok()).collect();
-
-                    (
-                        WinCondition::select(&parsed_white, black_has_royal),
-                        WinCondition::select(&parsed_black, white_has_royal),
-                    )
-                } else {
-                    (
-                        if black_has_royal {
-                            WinCondition::Checkmate
-                        } else {
-                            WinCondition::AllPiecesCaptured
-                        },
-                        if white_has_royal {
-                            WinCondition::Checkmate
-                        } else {
-                            WinCondition::AllPiecesCaptured
-                        },
-                    )
-                };
-
-            let mut rules = GameRules {
-                promotion_ranks: promotion_ranks.unwrap_or_else(|| PromotionRanks {
-                    white: vec![],
-                    black: vec![],
-                }),
-                promotion_types: None,
-                promotions_allowed: js_rules.promotions_allowed,
-                move_rule_limit: js_rules.move_rule,
-                white_win_condition,
-                black_win_condition,
-            };
-            rules.init_promotion_types();
-            rules
-        } else {
-            game::GameRules::default()
-        };
-
-        // Precompute effective promotion ranks and dynamic back ranks once per
-        // game from promotion_ranks. For standard chess this yields promo
-        // ranks 8/1 and back ranks 1/8.
-        let (white_promo_rank, black_promo_rank, white_back_rank, black_back_rank) = {
-            let ranks = &game_rules.promotion_ranks;
-            let white_promo = ranks
-                .white
-                .iter()
-                .copied()
-                .max()
-                .unwrap_or(2_000_000_000_000_000);
-            let black_promo = ranks
-                .black
-                .iter()
-                .copied()
-                .min()
-                .unwrap_or(-2_000_000_000_000_000);
-
-            // White's home side is near Black's promotion ranks, and vice versa.
-            let wb = if black_promo == -2_000_000_000_000_000 {
-                1
-            } else {
-                black_promo
-            }; // white back rank
-            let bb = if white_promo == 2_000_000_000_000_000 {
-                8
-            } else {
-                white_promo
-            }; // black back rank
-
-            (white_promo, black_promo, wb, bb)
-        };
-
-        let spatial_indices = SpatialIndices::new(&board);
-
-        let mut game = GameState {
-            board,
-            // Start with current turn; replayed history ensures correct side-to-move.
-            turn: js_turn,
-            special_rights,
-            en_passant: None,
-            halfmove_clock: js_game.halfmove_clock,
-            fullmove_number: 1,
-            material_score: 0,
-            game_rules,
-            variant: js_game.variant.as_deref().map(crate::Variant::parse),
-            hash: 0, // Will be computed below
-            hash_stack: Vec::with_capacity(js_game.move_history.len().saturating_add(8)),
-            null_moves: 0,
-            white_piece_count: 0,
-            black_piece_count: 0,
-            white_pawn_count: 0,
-            black_pawn_count: 0,
-            starting_white_pieces: 0,
-            starting_black_pieces: 0,
-            white_pieces: Vec::new(),
-            black_pieces: Vec::new(),
-            spatial_indices,
-            starting_squares: FxHashSet::default(),
-            white_back_rank,
-            black_back_rank,
-            white_promo_rank,
-            black_promo_rank,
-            white_king_pos: None,
-            black_king_pos: None,
-            check_squares_white: FxHashSet::default(),
-            check_squares_black: FxHashSet::default(),
-            slider_rays_white: [None; 8],
-            slider_rays_black: [None; 8],
-            discovered_check_squares_white: FxHashSet::default(),
-            discovered_check_squares_black: FxHashSet::default(),
-            pawn_hash: 0,
-            white_nonpawn_hash: 0,
-            black_nonpawn_hash: 0,
-            minor_hash: 0,
-            material_hash: 0,
-            repetition: 0,
-            white_non_pawn_material: false,
-            black_non_pawn_material: false,
-            effective_castling_rights: 0,
-            castling_partner_counts: [0; 4],
-            pinned_white: rustc_hash::FxHashMap::default(),
-            pinned_black: rustc_hash::FxHashMap::default(),
-            checkers_count_white: 0,
-            checkers_count_black: 0,
-            move_history: Vec::with_capacity(js_game.move_history.len().saturating_add(8)),
-            plies_from_null: 0,
-            total_phase: 0,
-        };
-
-        game.material_score = calculate_initial_material(&game.board);
-        game.recompute_piece_counts(); // Rebuild piece lists and counts
-        game.init_starting_piece_counts(); // Cache starting non-pawn piece counts for phase detection
-        game.init_starting_squares();
-        game.recompute_hash();
-
-        // Helper to parse "x,y" into (i64, i64)
-        fn parse_coords(coord_str: &str) -> Option<(i64, i64)> {
-            let parts: Vec<&str> = coord_str.split(',').collect();
-            if parts.len() != 2 {
-                return None;
-            }
-            let x = parts[0].parse::<i64>().ok()?;
-            let y = parts[1].parse::<i64>().ok()?;
-            Some((x, y))
-        }
-
-        game.en_passant = parsed_en_passant;
-
-        if js_game.move_history.is_empty() {
-            game.turn = js_turn;
-        } else {
-            // Replay the full move history from the start position.
-            // Like UCI: just apply moves directly by coordinates, no legal move generation needed.
-            for hist in &js_game.move_history {
-                if let (Some((from_x, from_y)), Some((to_x, to_y))) =
-                    (parse_coords(&hist.from), parse_coords(&hist.to))
-                {
-                    let promo = hist.promotion.as_deref();
-                    game.make_move_coords(from_x, from_y, to_x, to_y, promo);
-                }
-            }
-        }
-
-        // Optional clock information (similar to UCI wtime/btime/winc/binc).
-        let clock = js_game.clock;
-        let strength_level = js_game.strength_level;
 
         Ok(Engine {
             game,

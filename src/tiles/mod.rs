@@ -249,11 +249,11 @@ impl Tile {
     /// Get piece at local index, if any.
     #[inline]
     pub fn get_piece(&self, idx: usize) -> Option<Piece> {
-        let packed = self.piece[idx];
-        if packed == 0 {
-            None
+        let bit = 1u64 << idx;
+        if (self.occ_all & bit) != 0 {
+            Some(Piece::from_packed(self.piece[idx]))
         } else {
-            Some(Piece::from_packed(packed))
+            None
         }
     }
 
@@ -651,12 +651,7 @@ impl<'a> Iterator for TilePieceIter<'a> {
         }
         let idx = self.bits.trailing_zeros() as usize;
         self.bits &= self.bits - 1; // Clear lowest bit
-        let packed = self.piece[idx];
-        if packed != 0 {
-            Some((idx, Piece::from_packed(packed)))
-        } else {
-            self.next() // Skip if somehow piece array is inconsistent
-        }
+        Some((idx, Piece::from_packed(self.piece[idx])))
     }
 }
 
@@ -717,14 +712,12 @@ impl<'a> Iterator for TileTablePieceIter<'a> {
 
                 if let Some(bucket_idx) = self.current_bucket_idx {
                     let bucket = &self.table.buckets[bucket_idx];
+                    let local_x = (local_idx % 8) as i64;
+                    let local_y = (local_idx / 8) as i64;
+                    let world_x = bucket.cx * TILE_SIZE + local_x;
+                    let world_y = bucket.cy * TILE_SIZE + local_y;
                     let packed = bucket.tile.piece[local_idx];
-                    if packed != 0 {
-                        let local_x = (local_idx % 8) as i64;
-                        let local_y = (local_idx / 8) as i64;
-                        let world_x = bucket.cx * TILE_SIZE + local_x;
-                        let world_y = bucket.cy * TILE_SIZE + local_y;
-                        return Some((world_x, world_y, Piece::from_packed(packed)));
-                    }
+                    return Some((world_x, world_y, Piece::from_packed(packed)));
                 }
                 continue;
             }
@@ -777,14 +770,12 @@ impl<'a> Iterator for TileTableColorIter<'a> {
 
                 if let Some(bucket_idx) = self.current_bucket_idx {
                     let bucket = &self.table.buckets[bucket_idx];
+                    let local_x = (local_idx % 8) as i64;
+                    let local_y = (local_idx / 8) as i64;
+                    let world_x = bucket.cx * TILE_SIZE + local_x;
+                    let world_y = bucket.cy * TILE_SIZE + local_y;
                     let packed = bucket.tile.piece[local_idx];
-                    if packed != 0 {
-                        let local_x = (local_idx % 8) as i64;
-                        let local_y = (local_idx / 8) as i64;
-                        let world_x = bucket.cx * TILE_SIZE + local_x;
-                        let world_y = bucket.cy * TILE_SIZE + local_y;
-                        return Some((world_x, world_y, Piece::from_packed(packed)));
-                    }
+                    return Some((world_x, world_y, Piece::from_packed(packed)));
                 }
                 continue;
             }

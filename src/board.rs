@@ -227,7 +227,6 @@ impl PieceType {
         }
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn from_site_code(code: &str) -> Self {
         match code {
             "VO" => PieceType::Void,

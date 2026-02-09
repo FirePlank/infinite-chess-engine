@@ -1,6 +1,4 @@
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::Variant;
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::evaluation::calculate_initial_material;
 
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
@@ -106,8 +104,7 @@ impl Default for PromotionRanks {
 }
 
 /// Game rules that can vary between chess variants
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GameRules {
     pub promotion_ranks: PromotionRanks,
     #[serde(skip)]
@@ -123,7 +120,6 @@ pub struct GameRules {
     #[serde(skip)]
     pub black_win_condition: WinCondition,
 }
-
 
 impl GameRules {
     /// Convert promotions_allowed strings to PieceTypes once
@@ -2759,8 +2755,7 @@ impl GameState {
     }
 
     /// Make a move given just from/to coordinates and optional promotion.
-    /// Like UCI - we trust the input is valid and just execute it directly.
-    /// This is much faster than generating all legal moves for history replay.
+    /// We trust the input is valid and execute directly.
     pub fn make_move_coords(
         &mut self,
         from_x: i64,
@@ -2787,7 +2782,7 @@ impl GameState {
         if piece.piece_type().is_royal() {
             let dx = to_x - from_x;
             if dx.abs() > 1 {
-                // Use spatial indices to find castling partner - O(log n) instead of O(distance)
+                // Use spatial indices to find castling partner
                 let partner_dir = if dx > 0 { 1i64 } else { -1i64 };
                 if let Some(row_pieces) = self.spatial_indices.rows.get(&from_y) {
                     // Find nearest piece past king's destination
@@ -2796,7 +2791,7 @@ impl GameState {
                     {
                         let partner = Piece::from_packed(packed);
                         let partner_coord = Coordinate::new(partner_x, from_y);
-                        // Accept any non-pawn, non-royal piece with special rights as a castling partner
+
                         if partner.color() == piece.color()
                             && partner.piece_type() != PieceType::Pawn
                             && !partner.piece_type().is_royal()
@@ -3582,7 +3577,6 @@ impl GameState {
         nodes
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     pub fn setup_position_from_icn(&mut self, position_icn: &str) {
         self.board = Board::new();
         self.special_rights.clear();
@@ -3592,42 +3586,63 @@ impl GameState {
         self.fullmove_number = 1;
         self.material_score = 0;
 
-        // Step 1: Strip [...] metadata tags
-        let content = if let Some(idx) = position_icn.rfind(']') {
-            &position_icn[idx + 1..]
-        } else {
-            position_icn
-        };
+        let mut content = position_icn.trim();
 
-        let content = content.trim();
+        // Scan for Variant Tag [Variant "Name"]
+        while content.starts_with('[') {
+            if let Some(end) = content.find(']') {
+                let tag = &content[1..end];
+                if tag.starts_with("Variant \"")
+                    && let Some(v_end) = tag[9..].find('"')
+                {
+                    let v_name = &tag[9..9 + v_end];
+                    self.variant = Some(Variant::parse(v_name));
+                }
+                content = content[end + 1..].trim();
+            } else {
+                break;
+            }
+        }
+
         if content.is_empty() {
             return;
         }
 
         // Tokenize by whitespace
         let tokens: Vec<&str> = content.split_whitespace().collect();
+        let mut moves_to_play = Vec::new();
+        let mut wc_list = Vec::new();
+        let mut pieces_token = None;
 
-        // Handle the case where it's JUST pieces
-        if tokens.len() == 1 {
+        // Handle the case where it's just pieces
+        if tokens.len() == 1 && !tokens[0].contains('>') {
             self.parse_icn_pieces(tokens[0]);
             self.finalize_setup();
             return;
         }
-
-        let mut wc_list = Vec::new();
-        let mut pieces_token = None;
 
         for token in tokens {
             if token == "-" {
                 continue;
             }
 
-            // identify token by structure
+            if token.contains('>') {
+                for m in token.split('|') {
+                    if !m.is_empty() {
+                        moves_to_play.push(m);
+                    }
+                }
+                continue;
+            }
+
+            // Identify token by structure
             if token == "w" {
                 self.turn = PlayerColor::White;
             } else if token == "b" {
                 self.turn = PlayerColor::Black;
-            } else if token.contains('/') {
+            } else if token.contains('/')
+                && token.chars().next().is_some_and(|c| c.is_ascii_digit())
+            {
                 // Clocks: halfmove/limit
                 let parts: Vec<&str> = token.split('/').collect();
                 if let Some(hm_str) = parts.first() {
@@ -3648,7 +3663,7 @@ impl GameState {
                     if parts.is_empty() {
                         continue;
                     }
-
+                    // Parse promotion logic
                     if let Ok(rank) = parts[0].parse::<i64>() {
                         if idx == 0 {
                             self.white_promo_rank = rank;
@@ -3757,9 +3772,39 @@ impl GameState {
         self.game_rules.black_win_condition = WinCondition::select(&wc_list, white_has_royal);
 
         self.finalize_setup();
+
+        for move_str in moves_to_play {
+            let clean_move = move_str.trim_start_matches(|c: char| c.is_alphabetic() && c != '>');
+            let parts: Vec<&str> = clean_move.split('>').collect();
+            if parts.len() == 2 {
+                let from_str = parts[0];
+                let mut to_str = parts[1];
+                let mut promotion = None;
+
+                if let Some(idx) = to_str.find('=') {
+                    promotion = Some(&to_str[idx + 1..]);
+                    to_str = &to_str[..idx];
+                }
+
+                let parse_coord = |s: &str| -> Option<(i64, i64)> {
+                    let p: Vec<&str> = s.split(',').collect();
+                    if p.len() != 2 {
+                        return None;
+                    }
+                    let y_part =
+                        p[1].trim_matches(|c| c == '+' || c == '!' || c == '#' || c == '?');
+                    Some((p[0].parse().ok()?, y_part.parse().ok()?))
+                };
+
+                if let (Some((fx, fy)), Some((tx, ty))) =
+                    (parse_coord(from_str), parse_coord(to_str))
+                {
+                    self.make_move_coords(fx, fy, tx, ty, promotion);
+                }
+            }
+        }
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     fn parse_icn_pieces(&mut self, piece_segment: &str) {
         for piece_def in piece_segment.split('|') {
             if piece_def.is_empty() {
@@ -3822,7 +3867,6 @@ impl GameState {
         }
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
     fn finalize_setup(&mut self) {
         // Calculate initial material
         self.material_score = calculate_initial_material(&self.board);
@@ -3830,6 +3874,12 @@ impl GameState {
         // Rebuild piece lists and counts
         self.recompute_piece_counts();
 
+        // Cache starting non-pawn piece counts for phase detection
+        self.init_starting_piece_counts();
+
+        // Initialize starting squares
+        self.init_starting_squares();
+        
         // Compute initial hash
         self.recompute_hash();
 

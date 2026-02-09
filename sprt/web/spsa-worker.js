@@ -8,7 +8,7 @@
  */
 
 import init, { Engine } from './pkg-spsa/hydrochess.js';
-import { getVariantData } from './variants.js';
+import { getVariantData, generateSetupICN } from './variants.js';
 
 let wasmReady = false;
 
@@ -166,23 +166,31 @@ async function playSingleGame(thetaPlus, thetaMinus, plusPlaysWhite, timePerMove
         const isPlusTurn = (isWhiteTurn === plusPlaysWhite);
         const paramsToUse = isPlusTurn ? thetaPlus : thetaMinus;
 
-        // Create engine with full game state
-        const gameInput = clonePosition(startPosition);
-        gameInput.move_history = moveHistory.slice();
+        // Build ICN string from initial position and move history using the shared helper.
+        // This ensures dynamic promotion ranks, world bounds, and move rule limits.
+        const icnString = generateSetupICN(
+            variantName,
+            startPosition.turn,
+            halfmoveClock,
+            fullmoveNumber,
+            moveHistory
+        );
 
-        // Debug: log every 10th move to track progress
-        if (i % 10 === 0) {
-            console.log(`[Game] Move ${i}, pieces: ${position.board.pieces.length}`);
-        }
+        const engineConfig = {
+            wtime: timePerMove, // Use timePerMove as base clock if no complex TC
+            btime: timePerMove,
+            winc: 0,
+            binc: 0
+        };
 
-        const engine = new Engine(gameInput);
+        const engine = Engine.from_icn(icnString, engineConfig);
 
         // Apply search params if engine supports it
         if (typeof engine.set_search_params === 'function') {
             engine.set_search_params(JSON.stringify(paramsToUse));
         }
 
-        const move = engine.get_best_move_with_time(timePerMove, true);
+        const move = engine.get_best_move_with_time(0, true);
         engine.free();
 
         if (!move || !move.from || !move.to) {

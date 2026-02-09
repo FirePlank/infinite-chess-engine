@@ -102,3 +102,6 @@ flake.lock
 
 # Engine NNUE files
 *.bin
+
+# Worktrees
+.nnue-worktree/
