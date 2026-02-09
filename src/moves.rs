@@ -20,6 +20,7 @@ pub struct MoveGenContext<'a> {
     pub game_rules: &'a GameRules,
     pub indices: &'a SpatialIndices,
     pub enemy_king_pos: Option<&'a Coordinate>,
+    pub pinned: &'a FxHashMap<Coordinate, (i64, i64)>,
 }
 
 // World border for infinite chess.
@@ -47,6 +48,7 @@ pub struct SlidingMoveContext<'a> {
     pub indices: &'a SpatialIndices,
     pub enemy_king_pos: Option<&'a Coordinate>,
     pub visited_targets: Option<&'a std::cell::RefCell<Vec<(Coordinate, u8)>>>,
+    pub pinned: &'a FxHashMap<Coordinate, (i64, i64)>,
 }
 
 /// Update world borders from JS playableRegion (left, right, bottom, top).
@@ -382,6 +384,7 @@ pub fn is_piece_attacking_square(
         game_rules,
         indices,
         enemy_king_pos: None,
+        pinned: &FxHashMap::default(),
     };
     get_pseudo_legal_moves_for_piece_into(board, piece, from, &ctx, &mut moves);
     moves.iter().any(|m| m.to.x == to.x && m.to.y == to.y)
@@ -512,6 +515,9 @@ impl SpatialIndices {
         let d2 = x + y;
         Self::insert_sorted(self.diag1.entry(d1).or_default(), x, packed);
         Self::insert_sorted(self.diag2.entry(d2).or_default(), x, packed);
+
+        // Invalidate slider cache when anything changes
+        // self.slider_cache.borrow_mut().clear();
     }
 
     /// Incrementally remove a piece at (x, y) from the indices.
@@ -543,6 +549,9 @@ impl SpatialIndices {
                 self.diag2.remove(&d2);
             }
         }
+
+        // Invalidate slider cache when anything changes
+        // self.slider_cache.borrow_mut().clear();
     }
 
     /// Helper to find nearest piece in a direction from SpatialIndices.
@@ -928,6 +937,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -942,6 +952,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -957,6 +968,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -969,6 +981,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -984,6 +997,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -999,6 +1013,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1015,6 +1030,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1027,6 +1043,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1765,6 +1782,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1779,6 +1797,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1794,6 +1813,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1806,6 +1826,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1821,6 +1842,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1836,6 +1858,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: None,
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1852,6 +1875,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -1864,6 +1888,7 @@ fn generate_quiets_for_piece(
                     indices,
                     enemy_king_pos,
                     visited_targets: Some(&visited),
+                    pinned: ctx.pinned,
                 },
                 out,
             );
@@ -2441,6 +2466,13 @@ fn generate_sliding_moves_impl(
                 continue;
             }
 
+            // Pin check: if this piece is pinned, it can only move along the pin ray
+            if let Some(&(px, py)) = ctx.pinned.get(from) {
+                if dir_x * py != dir_y * px {
+                    continue;
+                }
+            }
+
             let is_vertical = dir_x == 0;
             let is_horizontal = dir_y == 0;
 
@@ -2489,17 +2521,38 @@ fn generate_sliding_moves_impl(
                 dist_counts.clear();
                 royal_dists.clear();
 
-                // 1. Direct Ray iteration (O(pieces_on_line))
+                // 1. Direct Ray iteration (O(log pieces_on_line + pieces_near_slider))
                 if is_horizontal {
                     if let Some(pieces_on_row) = indices.rows.get(&from.y) {
-                        for &(px, packed) in pieces_on_row {
+                        let pos = pieces_on_row.binary_search_by_key(&from.x, |(c, _)| *c);
+                        let idx = match pos {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        };
+
+                        let (start, end, rev) = if dir_x > 0 {
+                            (
+                                if pos.is_ok() { idx + 1 } else { idx },
+                                pieces_on_row.len(),
+                                false,
+                            )
+                        } else {
+                            (0, idx, true)
+                        };
+
+                        for i in 0..(end - start) {
+                            let real_idx = if rev { end - 1 - i } else { start + i };
+                            let &(px, packed) = &pieces_on_row[real_idx];
                             let dx = px - from.x;
-                            if dx == 0 || dx.signum() != dir_x.signum() {
-                                continue;
-                            }
                             let piece_dist = dx.abs();
+
+                            // Optimization: Stop once we are beyond max_dist and the known closest blocker
                             if piece_dist > max_dist && piece_dist != closest_dist {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let p = Piece::from_packed(packed);
@@ -2507,10 +2560,13 @@ fn generate_sliding_moves_impl(
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
                             let is_target_royal = p.piece_type().is_royal();
 
-                            // Friendly pieces only act as "targets" (interceptions) within short range
                             if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
                             {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let base_wiggle = if is_enemy {
@@ -2537,14 +2593,34 @@ fn generate_sliding_moves_impl(
                     }
                 } else if is_vertical {
                     if let Some(pieces_on_col) = indices.cols.get(&from.x) {
-                        for &(py, packed) in pieces_on_col {
+                        let pos = pieces_on_col.binary_search_by_key(&from.y, |(c, _)| *c);
+                        let idx = match pos {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        };
+
+                        let (start, end, rev) = if dir_y > 0 {
+                            (
+                                if pos.is_ok() { idx + 1 } else { idx },
+                                pieces_on_col.len(),
+                                false,
+                            )
+                        } else {
+                            (0, idx, true)
+                        };
+
+                        for i in 0..(end - start) {
+                            let real_idx = if rev { end - 1 - i } else { start + i };
+                            let &(py, packed) = &pieces_on_col[real_idx];
                             let dy = py - from.y;
-                            if dy == 0 || dy.signum() != dir_y.signum() {
-                                continue;
-                            }
                             let piece_dist = dy.abs();
+
                             if piece_dist > max_dist && piece_dist != closest_dist {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let p = Piece::from_packed(packed);
@@ -2554,7 +2630,11 @@ fn generate_sliding_moves_impl(
 
                             if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
                             {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let base_wiggle = if is_enemy {
@@ -2593,14 +2673,34 @@ fn generate_sliding_moves_impl(
                     };
 
                     if let Some(pieces_on_diag) = diag_map.get(&diag_key) {
-                        for &(px, packed) in pieces_on_diag {
+                        let pos = pieces_on_diag.binary_search_by_key(&from.x, |(c, _)| *c);
+                        let idx = match pos {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        };
+
+                        let (start, end, rev) = if dir_x > 0 {
+                            (
+                                if pos.is_ok() { idx + 1 } else { idx },
+                                pieces_on_diag.len(),
+                                false,
+                            )
+                        } else {
+                            (0, idx, true)
+                        };
+
+                        for i in 0..(end - start) {
+                            let real_idx = if rev { end - 1 - i } else { start + i };
+                            let &(px, packed) = &pieces_on_diag[real_idx];
                             let dx = px - from.x;
-                            if dx == 0 || dx.signum() != dir_x.signum() {
-                                continue;
-                            }
                             let piece_dist = dx.abs();
+
                             if piece_dist > max_dist && piece_dist != closest_dist {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let p = Piece::from_packed(packed);
@@ -2610,7 +2710,11 @@ fn generate_sliding_moves_impl(
 
                             if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
                             {
-                                continue;
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
                             }
 
                             let base_wiggle = if is_enemy {
@@ -3720,6 +3824,7 @@ mod tests {
                 indices: &indices,
                 enemy_king_pos: None,
                 visited_targets: None,
+                pinned: &FxHashMap::default(),
             },
             &mut moves,
         );
@@ -3748,6 +3853,7 @@ mod tests {
                 indices: &indices,
                 enemy_king_pos: None,
                 visited_targets: None,
+                pinned: &FxHashMap::default(),
             },
             &mut moves,
         );
@@ -3937,6 +4043,7 @@ mod tests {
             game_rules: &rules,
             indices: &indices,
             enemy_king_pos: Some(&Coordinate::new(5, 8)),
+            pinned: &FxHashMap::default(),
         };
 
         let moves = get_legal_moves(&board, PlayerColor::White, &ctx);
@@ -3964,6 +4071,7 @@ mod tests {
             game_rules: &rules,
             indices: &indices,
             enemy_king_pos: None,
+            pinned: &FxHashMap::default(),
         };
 
         let mut captures = MoveList::new();
@@ -4048,6 +4156,7 @@ mod tests {
             game_rules: &game.game_rules,
             indices: &game.spatial_indices,
             enemy_king_pos: game.black_king_pos.as_ref(),
+            pinned: &FxHashMap::default(),
         };
 
         let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
@@ -4088,6 +4197,7 @@ mod tests {
             game_rules: &rules,
             indices: &indices,
             enemy_king_pos: None,
+            pinned: &FxHashMap::default(),
         };
 
         let mut moves = MoveList::new();

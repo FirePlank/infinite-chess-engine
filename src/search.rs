@@ -4727,7 +4727,19 @@ fn quiescence(
         game.get_evasion_moves_into(&mut tactical_moves);
     } else {
         // Normal quiescence: generate captures only
+        let king_pos = if game.turn == PlayerColor::White {
+            game.white_king_pos
+        } else {
+            game.black_king_pos
+        };
+        let pinned = if let Some(kp) = king_pos {
+            game.compute_pins(&kp, game.turn)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+
         let ctx = MoveGenContext {
+            pinned: &pinned,
             special_rights: &game.special_rights,
             en_passant: &game.en_passant,
             game_rules: &game.game_rules,

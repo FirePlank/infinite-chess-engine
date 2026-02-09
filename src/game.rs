@@ -606,6 +606,60 @@ impl GameState {
         self.recompute_correction_hashes();
     }
 
+    /// Compute pinned pieces for a specific king position.
+    /// Returns a map of pinned piece coordinate -> pin direction (dx, dy).
+    /// Used by move generation to ensure pinned pieces only move along the pin ray.
+    pub fn compute_pins(
+        &self,
+        king_pos: &Coordinate,
+        us: PlayerColor,
+    ) -> rustc_hash::FxHashMap<Coordinate, (i64, i64)> {
+        let mut pinned = rustc_hash::FxHashMap::default();
+        let them = us.opponent();
+
+        // 8 directions for slider rays
+        const DIRECTIONS: [(i64, i64); 8] = [
+            (0, 1),
+            (0, -1),
+            (1, 0),
+            (-1, 0),
+            (1, 1),
+            (-1, 1),
+            (1, -1),
+            (-1, -1),
+        ];
+        use crate::attacks::{is_diag_slider, is_ortho_slider};
+
+        for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
+            let is_ortho = dir_idx < 4;
+
+            // Find first blocker
+            if let Some((bx, by)) = self.find_first_blocker_on_ray(king_pos.x, king_pos.y, *dx, *dy)
+            {
+                if let Some(p1) = self.board.get_piece(bx, by) {
+                    if p1.color() == us {
+                        // Potential pin. Check if a slider is behind it.
+                        // Continue ray from blocker
+                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
+                            if let Some(p2) = self.board.get_piece(bx2, by2) {
+                                if p2.color() == them {
+                                    // Check if it attacks along this ray
+                                    let pt2 = p2.piece_type();
+                                    if (is_ortho && is_ortho_slider(pt2))
+                                        || (!is_ortho && is_diag_slider(pt2))
+                                    {
+                                        pinned.insert(Coordinate::new(bx, by), (*dx, *dy));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pinned
+    }
+
     /// Precompute check squares for both kings.
     /// For each king, stores the (x, y, piece_type) tuples for squares from which
     /// knights and pawns can give check. Also computes slider rays for O(1) slider check.
@@ -1604,7 +1658,20 @@ impl GameState {
             return out;
         }
 
+        let king_pos = if self.turn == PlayerColor::White {
+            self.white_king_pos
+        } else {
+            self.black_king_pos
+        };
+
+        let pinned = if let Some(kp) = king_pos {
+            self.compute_pins(&kp, self.turn)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+
         let ctx = crate::moves::MoveGenContext {
+            pinned: &pinned,
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
             game_rules: &self.game_rules,
@@ -1638,7 +1705,20 @@ impl GameState {
             return;
         }
 
+        let king_pos = if self.turn == PlayerColor::White {
+            self.white_king_pos
+        } else {
+            self.black_king_pos
+        };
+
+        let pinned = if let Some(kp) = king_pos {
+            self.compute_pins(&kp, self.turn)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+
         let ctx = crate::moves::MoveGenContext {
+            pinned: &pinned,
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
             game_rules: &self.game_rules,
@@ -1648,8 +1728,51 @@ impl GameState {
 
         get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
-        if out.is_empty() {
-            get_legal_moves_into(&self.board, self.turn, &ctx, out);
+        // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
+        // When not in check, only (King, Pinned, EP) moves can be illegal.
+        let mut i = 0;
+        while i < out.len() {
+            let m = out[i];
+            let mut illegal = false;
+            let pt = m.piece.piece_type();
+
+            if pt.is_royal() {
+                // King moves: destination must not be attacked
+                use crate::moves::is_square_attacked;
+                if is_square_attacked(
+                    &self.board,
+                    &m.to,
+                    self.turn.opponent(),
+                    &self.spatial_indices,
+                ) {
+                    illegal = true;
+                }
+            } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
+                // Pinned piece: must move along the pin ray
+                let dx = m.to.x - m.from.x;
+                let dy = m.to.y - m.from.y;
+                // Cross product check for collinearity
+                if dx * pdy != dy * pdx {
+                    illegal = true;
+                }
+            } else if let Some(ep) = &self.en_passant
+                && pt == PieceType::Pawn
+                && m.to == ep.square
+            {
+                // En passant: double removal can reveal horizontal check.
+                // Strict check for this rare case.
+                let mut s_mut = self.clone();
+                let _undo = s_mut.make_move(&m);
+                if s_mut.is_move_illegal() {
+                    illegal = true;
+                }
+            }
+
+            if illegal {
+                out.swap_remove(i);
+            } else {
+                i += 1;
+            }
         }
     }
 
@@ -1675,6 +1798,9 @@ impl GameState {
             Some(p) => p,
             None => return,
         };
+
+        // Compute pinned pieces for blocking/capturing moves
+        let pinned = self.compute_pins(&king_sq, our_color);
 
         // Use stack-allocated array for checkers
         let mut checkers: [Coordinate; 16] = [Coordinate::new(0, 0); 16];
@@ -1725,12 +1851,14 @@ impl GameState {
         }
 
         // 1. King escapes (Legal regardless of checker count, as long as target not attacked)
+        let empty_pins = rustc_hash::FxHashMap::default();
         let ctx = crate::moves::MoveGenContext {
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
             game_rules: &self.game_rules,
             indices: &self.spatial_indices,
             enemy_king_pos: self.enemy_king_pos(),
+            pinned: &empty_pins,
         };
         get_pseudo_legal_moves_for_piece_into(&self.board, &king_piece, &king_sq, &ctx, out);
 
@@ -2468,6 +2596,7 @@ impl GameState {
                 game_rules: &s.game_rules,
                 indices: &s.spatial_indices,
                 enemy_king_pos: s.enemy_king_pos(),
+                pinned: &pinned,
             };
             get_pseudo_legal_moves_for_piece_into(&s.board, piece, &from, &ctx, &mut pseudo);
 
@@ -3879,7 +4008,7 @@ impl GameState {
 
         // Initialize starting squares
         self.init_starting_squares();
-        
+
         // Compute initial hash
         self.recompute_hash();
 
