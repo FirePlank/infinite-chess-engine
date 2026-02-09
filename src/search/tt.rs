@@ -151,20 +151,22 @@ impl TTBucket {
     }
 }
 
-// Thread-local Transposition Table using UnsafeCell for performance.
-// Masking is used for fast bucket indexing.
-
-use std::cell::UnsafeCell;
+// Thread-local Transposition Table optimized for speed.
+// Using raw pointers and bit-level management for fast access.
 
 pub struct LocalTranspositionTable {
-    buckets: UnsafeCell<Vec<TTBucket>>,
+    buckets: *mut TTBucket,
+    capacity: usize,
     mask: usize,
     index_bits: u32,
-    generation: UnsafeCell<u8>,
-    used: UnsafeCell<usize>,
+    pub generation: u8,
+    pub used: usize,
+    // Keep the Vec to manage the underlying memory lifecycle
+    _mem_anchor: Vec<TTBucket>,
 }
 
 unsafe impl Sync for LocalTranspositionTable {}
+unsafe impl Send for LocalTranspositionTable {}
 
 impl LocalTranspositionTable {
     pub fn new(size_mb: usize) -> Self {
@@ -180,198 +182,220 @@ impl LocalTranspositionTable {
             bits += 1;
         }
 
+        let mut _mem_anchor = vec![TTBucket::empty(); cap];
+        let buckets = _mem_anchor.as_mut_ptr();
+
         LocalTranspositionTable {
-            buckets: UnsafeCell::new(vec![TTBucket::empty(); cap]),
+            buckets,
+            capacity: cap * ENTRIES_PER_BUCKET,
             mask: cap - 1,
             index_bits: bits,
-            generation: UnsafeCell::new(1),
-            used: UnsafeCell::new(0),
+            generation: 1,
+            used: 0,
+            _mem_anchor,
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn capacity(&self) -> usize {
-        unsafe { (*self.buckets.get()).len() * ENTRIES_PER_BUCKET }
+        self.capacity
     }
-    #[inline]
+
+    #[inline(always)]
     pub fn used_entries(&self) -> usize {
-        unsafe { *self.used.get() }
+        self.used
     }
-    #[inline]
+
+    #[inline(always)]
     pub fn fill_permille(&self) -> u32 {
-        let cap = self.capacity();
-        if cap == 0 {
+        if self.capacity == 0 {
             0
         } else {
-            ((self.used_entries() as u64 * 1000) / cap as u64) as u32
+            ((self.used as u64 * 1000) / self.capacity as u64) as u32
         }
     }
-    #[inline]
-    fn bucket_index(&self, hash: u64) -> usize {
-        (hash as usize) & self.mask
-    }
-    #[inline]
+
+    #[inline(always)]
     fn hash_key16(&self, hash: u64) -> u16 {
         (hash >> self.index_bits) as u16
     }
 
-    #[inline]
+    #[inline(always)]
     #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
     pub fn prefetch_entry(&self, hash: u64) {
         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-        let idx = self.bucket_index(hash);
-        let ptr = unsafe { (*self.buckets.get()).as_ptr().wrapping_add(idx) as *const i8 };
-        unsafe { _mm_prefetch(ptr, _MM_HINT_T0) };
+        let idx = (hash as usize) & self.mask;
+        unsafe {
+            let ptr = self.buckets.add(idx) as *const i8;
+            _mm_prefetch(ptr, _MM_HINT_T0);
+        }
     }
+
+    #[inline(always)]
     #[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
     pub fn prefetch_entry(&self, _hash: u64) {}
 
     pub fn probe_move(&self, hash: u64) -> Option<Move> {
         let key16 = self.hash_key16(hash);
-        let bucket = unsafe { &(&(*self.buckets.get()))[self.bucket_index(hash)] };
-        for e in &bucket.entries {
-            if e.key16 == key16 && !e.is_empty() {
-                return e.best_move();
+        let idx = (hash as usize) & self.mask;
+
+        unsafe {
+            let bucket_ptr = self.buckets.add(idx);
+            let entries = (*bucket_ptr).entries;
+
+            for e in &entries {
+                if e.key16 == key16 && !e.is_empty() {
+                    return e.best_move();
+                }
             }
         }
         None
     }
 
+    #[inline(always)]
     pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
         let key16 = self.hash_key16(params.hash);
-        let bucket = unsafe { &(&(*self.buckets.get()))[self.bucket_index(params.hash)] };
+        let idx = (params.hash as usize) & self.mask;
 
-        for e in &bucket.entries {
-            if e.key16 != key16 || e.is_empty() {
-                continue;
-            }
+        unsafe {
+            let bucket_ptr = self.buckets.add(idx);
+            // Access entries directly without intermediate copy
+            let entries = &(*bucket_ptr).entries;
 
-            let score = value_from_tt(
-                e.score16 as i32,
-                params.ply,
-                params.rule50_count,
-                params.rule_limit,
-            );
-            let mut cutoff = INFINITY + 1;
-
-            if e.depth as usize >= params.depth {
-                let usable = match e.flag() {
-                    TTFlag::Exact => true,
-                    TTFlag::LowerBound if score >= params.beta => true,
-                    TTFlag::UpperBound if score <= params.alpha => true,
-                    _ => false,
-                };
-                if usable {
-                    cutoff = score;
+            for e in entries {
+                if e.key16 != key16 || e.is_empty() {
+                    continue;
                 }
-            }
 
-            return Some(TTProbeResult {
-                cutoff_score: cutoff,
-                tt_score: score,
-                eval: e.eval16 as i32,
-                depth: e.depth,
-                flag: e.flag(),
-                is_pv: e.is_pv(),
-                best_move: e.best_move(),
-            });
+                let score = value_from_tt(
+                    e.score16 as i32,
+                    params.ply,
+                    params.rule50_count,
+                    params.rule_limit,
+                );
+
+                let mut cutoff = INFINITY + 1;
+
+                if e.depth as usize >= params.depth {
+                    let flag = e.flag();
+                    let usable = match flag {
+                        TTFlag::Exact => true,
+                        TTFlag::LowerBound if score >= params.beta => true,
+                        TTFlag::UpperBound if score <= params.alpha => true,
+                        _ => false,
+                    };
+                    if usable {
+                        cutoff = score;
+                    }
+                }
+
+                return Some(TTProbeResult {
+                    cutoff_score: cutoff,
+                    tt_score: score,
+                    eval: e.eval16 as i32,
+                    depth: e.depth,
+                    flag: e.flag(),
+                    is_pv: e.is_pv(),
+                    best_move: e.best_move(),
+                });
+            }
         }
         None
     }
 
     /// Stores results in the TT, replacing existing entries based on
     /// search depth and relative age (generation).
-    pub fn store(&self, params: &TTStoreParams) {
+    #[inline(always)]
+    pub fn store(&mut self, params: &TTStoreParams) {
         let key16 = self.hash_key16(params.hash);
         let adj_score = value_to_tt(params.score, params.ply);
-        let (curr_gen, bucket, used) = unsafe {
-            (
-                *self.generation.get(),
-                &mut (&mut (*self.buckets.get()))[self.bucket_index(params.hash)],
-                self.used.get(),
-            )
-        };
+        let idx = (params.hash as usize) & self.mask;
 
-        let mut replace_idx = 0;
-        let mut worst = i32::MAX;
+        unsafe {
+            let bucket_ptr = self.buckets.add(idx);
+            let entries = &mut (*bucket_ptr).entries;
 
-        for (i, e) in bucket.entries.iter_mut().enumerate() {
-            if e.key16 == key16 && !e.is_empty() {
-                let store_eval = if params.static_eval != INFINITY + 1 {
-                    clamp_to_i16(params.static_eval)
-                } else {
-                    e.eval16
-                };
-                let pv_bonus = if params.flag == TTFlag::Exact || params.is_pv {
-                    2
-                } else {
-                    0
-                };
+            let mut replace_idx = 0;
+            let mut worst = i32::MAX;
 
-                if params.flag == TTFlag::Exact
-                    || (params.depth as i32 + pv_bonus) > (e.depth as i32 - 4)
-                    || e.relative_age(curr_gen) != 0
-                {
-                    let old_move_data = e.move_data;
-                    *e = TTEntry {
-                        key16,
-                        depth: params.depth as u8,
-                        gen_bound: TTEntry::pack_gen_bound(curr_gen, params.is_pv, params.flag),
-                        score16: clamp_to_i16(adj_score),
-                        eval16: store_eval,
-                        move_data: old_move_data,
+            for (i, e) in entries.iter_mut().enumerate() {
+                if e.key16 == key16 && !e.is_empty() {
+                    let store_eval = if params.static_eval != INFINITY + 1 {
+                        clamp_to_i16(params.static_eval)
+                    } else {
+                        e.eval16
                     };
-                    if let Some(m) = &params.best_move {
-                        e.encode_move(m);
+                    let pv_bonus = if params.flag == TTFlag::Exact || params.is_pv {
+                        2
+                    } else {
+                        0
+                    };
+
+                    if params.flag == TTFlag::Exact
+                        || (params.depth as i32 + pv_bonus) > (e.depth as i32 - 4)
+                        || e.relative_age(self.generation) != 0
+                    {
+                        let old_move_data = e.move_data;
+                        *e = TTEntry {
+                            key16,
+                            depth: params.depth as u8,
+                            gen_bound: TTEntry::pack_gen_bound(
+                                self.generation,
+                                params.is_pv,
+                                params.flag,
+                            ),
+                            score16: clamp_to_i16(adj_score),
+                            eval16: store_eval,
+                            move_data: old_move_data,
+                        };
+                        if let Some(m) = &params.best_move {
+                            e.encode_move(m);
+                        }
+                    } else if e.depth >= 5 && e.flag() != TTFlag::Exact {
+                        e.depth = e.depth.saturating_sub(1);
                     }
-                } else if e.depth >= 5 && e.flag() != TTFlag::Exact {
-                    e.depth = e.depth.saturating_sub(1);
+                    return;
                 }
-                return;
+                let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
+                    - (e.relative_age(self.generation) as i32);
+                if priority < worst {
+                    worst = priority;
+                    replace_idx = i;
+                }
             }
-            let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
-                - (e.relative_age(curr_gen) as i32);
-            if priority < worst {
-                worst = priority;
-                replace_idx = i;
+
+            let mut new_e = TTEntry {
+                key16,
+                depth: params.depth as u8,
+                gen_bound: TTEntry::pack_gen_bound(self.generation, params.is_pv, params.flag),
+                score16: clamp_to_i16(adj_score),
+                eval16: clamp_to_i16(params.static_eval),
+                move_data: NO_MOVE,
+            };
+            if let Some(m) = &params.best_move {
+                new_e.encode_move(m);
             }
-        }
 
-        let mut new_e = TTEntry {
-            key16,
-            depth: params.depth as u8,
-            gen_bound: TTEntry::pack_gen_bound(curr_gen, params.is_pv, params.flag),
-            score16: clamp_to_i16(adj_score),
-            eval16: clamp_to_i16(params.static_eval),
-            move_data: NO_MOVE,
-        };
-        if let Some(m) = &params.best_move {
-            new_e.encode_move(m);
-        }
-
-        if bucket.entries[replace_idx].is_empty() {
-            unsafe {
-                *used += 1;
+            if entries[replace_idx].is_empty() {
+                self.used += 1;
             }
-        }
-        bucket.entries[replace_idx] = new_e;
-    }
-
-    pub fn increment_age(&self) {
-        unsafe {
-            *self.generation.get() = (*self.generation.get()).wrapping_add(GENERATION_DELTA);
+            entries[replace_idx] = new_e;
         }
     }
 
-    pub fn clear(&self) {
-        let buckets = unsafe { &mut *self.buckets.get() };
-        for b in buckets {
-            *b = TTBucket::empty();
-        }
+    #[inline(always)]
+    pub fn increment_age(&mut self) {
+        self.generation = self.generation.wrapping_add(GENERATION_DELTA);
+    }
+
+    pub fn clear(&mut self) {
         unsafe {
-            *self.generation.get() = 1;
-            *self.used.get() = 0;
+            for i in 0..=self.mask {
+                *self.buckets.add(i) = TTBucket::empty();
+            }
         }
+        self.generation = 1;
+        self.used = 0;
     }
 }
 
@@ -387,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_tt_basic() {
-        let tt = LocalTranspositionTable::new(1);
+        let mut tt = LocalTranspositionTable::new(1);
         let hash = 0x123456789ABCDEFu64;
         tt.store(&TTStoreParams {
             hash,
@@ -416,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_move_roundtrip() {
-        let tt = LocalTranspositionTable::new(1);
+        let mut tt = LocalTranspositionTable::new(1);
         let hash = 0xABCDEF123456789u64;
         let m = Move {
             from: Coordinate::new(4, 2),

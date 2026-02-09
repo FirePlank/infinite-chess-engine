@@ -27,10 +27,6 @@ required-features = ["parallel_solver"]
 name = "gen_nnue_data"
 required-features = ["parallel_solver"]
 
-[[bin]]
-name = "spsa_engine"
-required-features = ["search_tuning"]
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage)',

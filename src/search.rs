@@ -207,7 +207,7 @@ pub mod tt_defs;
 pub use tt_defs::{TTFlag, TTProbeParams, TTProbeResult, TTStoreParams};
 
 mod tt;
-use tt::LocalTranspositionTable;
+pub use tt::LocalTranspositionTable;
 
 #[cfg(feature = "multithreading")]
 mod shared_tt;
@@ -234,7 +234,6 @@ pub use zobrist::{
 // TT Probe/Store (Dispatch wrapper)
 // ============================================================================
 
-static LOCAL_TT: OnceLock<LocalTranspositionTable> = OnceLock::new();
 #[cfg(feature = "multithreading")]
 static SHARED_TT: OnceLock<SharedTranspositionTable> = OnceLock::new();
 
@@ -286,154 +285,154 @@ impl TranspositionTable {
 
 /// Enum to hold reference to the active TT implementation
 pub enum TranspositionTableRef<'a> {
-    Local(&'a LocalTranspositionTable),
     #[cfg(feature = "multithreading")]
     Shared(&'a SharedTranspositionTable),
+    #[cfg(not(feature = "multithreading"))]
+    #[allow(dead_code)]
+    _Phantom(std::marker::PhantomData<&'a ()>),
 }
 
 impl<'a> TranspositionTableRef<'a> {
     #[inline]
-    pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
+    pub fn probe(&self, _params: &TTProbeParams) -> Option<TTProbeResult> {
         match self {
-            Self::Local(tt) => tt.probe(params),
             #[cfg(feature = "multithreading")]
-            Self::Shared(tt) => tt.probe(params),
+            Self::Shared(tt) => tt.probe(_params),
+            _ => None,
         }
     }
 
     #[inline]
-    pub fn probe_move(&self, hash: u64) -> Option<Move> {
+    pub fn probe_move(&self, _hash: u64) -> Option<Move> {
         match self {
-            Self::Local(tt) => tt.probe_move(hash),
             #[cfg(feature = "multithreading")]
-            Self::Shared(tt) => tt.probe_move(hash),
+            Self::Shared(tt) => tt.probe_move(_hash),
+            _ => None,
         }
     }
 
     #[inline]
-    pub fn store(&self, params: &TTStoreParams) {
+    pub fn store(&self, _params: &TTStoreParams) {
         match self {
-            Self::Local(tt) => tt.store(params),
             #[cfg(feature = "multithreading")]
-            Self::Shared(tt) => tt.store(params),
+            Self::Shared(tt) => tt.store(_params),
+            _ => {}
         }
     }
 
     #[inline]
     pub fn capacity(&self) -> usize {
         match self {
-            Self::Local(tt) => tt.capacity(),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.capacity(),
+            _ => 0,
         }
     }
 
     #[inline]
     pub fn used_entries(&self) -> usize {
         match self {
-            Self::Local(tt) => tt.used_entries(),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.used_entries(),
+            _ => 0,
         }
     }
 
     #[inline]
     pub fn fill_permille(&self) -> u32 {
         match self {
-            Self::Local(tt) => tt.fill_permille(),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.fill_permille(),
+            _ => 0,
         }
     }
 
     #[inline]
     #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
-    pub fn prefetch_entry(&self, hash: u64) {
+    pub fn prefetch_entry(&self, _hash: u64) {
         match self {
-            Self::Local(tt) => tt.prefetch_entry(hash),
             #[cfg(feature = "multithreading")]
-            Self::Shared(tt) => tt.prefetch_entry(hash),
+            Self::Shared(tt) => tt.prefetch_entry(_hash),
+            _ => {}
         }
     }
 
     #[inline]
     pub fn increment_age(&self) {
         match self {
-            Self::Local(tt) => tt.increment_age(),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.increment_age(),
+            _ => {}
         }
     }
 
     #[inline]
     pub fn clear(&self) {
         match self {
-            Self::Local(tt) => tt.clear(),
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.clear(),
+            _ => {}
         }
     }
 }
-
-pub struct GlobalTtHandle;
-
-impl GlobalTtHandle {
-    #[inline]
-    pub fn get(&self) -> Option<TranspositionTableRef<'_>> {
-        #[cfg(feature = "multithreading")]
-        if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-            return SHARED_TT.get().map(TranspositionTableRef::Shared);
-        }
-        LOCAL_TT.get().map(TranspositionTableRef::Local)
-    }
-
-    pub fn get_or_init<F>(&self, _f: F) -> TranspositionTableRef<'_>
-    where
-        F: FnOnce() -> TranspositionTable,
-    {
-        #[cfg(feature = "multithreading")]
-        if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-            let tt = SHARED_TT.get_or_init(|| SharedTranspositionTable::new(64));
-            return TranspositionTableRef::Shared(tt);
-        }
-        let tt = LOCAL_TT.get_or_init(|| LocalTranspositionTable::new(16));
-        TranspositionTableRef::Local(tt)
-    }
-}
-
-pub(crate) static GLOBAL_TT: GlobalTtHandle = GlobalTtHandle;
 
 /// Probe the TT. Dispatch based on thread configuration.
-#[inline]
-pub fn probe_tt_with_shared(_searcher: &Searcher, ctx: &ProbeContext) -> Option<TTProbeResult> {
-    GLOBAL_TT.get().and_then(|tt| {
-        tt.probe(&crate::search::tt_defs::TTProbeParams {
-            hash: ctx.hash,
-            alpha: ctx.alpha,
-            beta: ctx.beta,
-            depth: ctx.depth,
-            ply: ctx.ply,
-            rule50_count: ctx.rule50_count,
-            rule_limit: ctx.rule_limit,
-        })
+#[inline(always)]
+pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<TTProbeResult> {
+    #[cfg(feature = "multithreading")]
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(tt) = SHARED_TT.get() {
+            return tt.probe(&crate::search::tt_defs::TTProbeParams {
+                hash: ctx.hash,
+                alpha: ctx.alpha,
+                beta: ctx.beta,
+                depth: ctx.depth,
+                ply: ctx.ply,
+                rule50_count: ctx.rule50_count,
+                rule_limit: ctx.rule_limit,
+            });
+        }
+    }
+    searcher.tt.probe(&crate::search::tt_defs::TTProbeParams {
+        hash: ctx.hash,
+        alpha: ctx.alpha,
+        beta: ctx.beta,
+        depth: ctx.depth,
+        ply: ctx.ply,
+        rule50_count: ctx.rule50_count,
+        rule_limit: ctx.rule_limit,
     })
 }
 
 /// Store to the TT. Dispatch based on thread configuration.
-#[inline]
-pub fn store_tt_with_shared(_searcher: &mut Searcher, ctx: &StoreContext) {
-    if let Some(tt) = GLOBAL_TT.get() {
-        tt.store(&crate::search::tt_defs::TTStoreParams {
-            hash: ctx.hash,
-            depth: ctx.depth,
-            flag: ctx.flag,
-            score: ctx.score,
-            static_eval: ctx.static_eval,
-            is_pv: ctx.is_pv,
-            best_move: ctx.best_move,
-            ply: ctx.ply,
-        });
+#[inline(always)]
+pub fn store_tt_with_shared(searcher: &mut Searcher, ctx: &StoreContext) {
+    #[cfg(feature = "multithreading")]
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(tt) = SHARED_TT.get() {
+            tt.store(&crate::search::tt_defs::TTStoreParams {
+                hash: ctx.hash,
+                depth: ctx.depth,
+                flag: ctx.flag,
+                score: ctx.score,
+                static_eval: ctx.static_eval,
+                is_pv: ctx.is_pv,
+                best_move: ctx.best_move,
+                ply: ctx.ply,
+            });
+            return;
+        }
     }
+    searcher.tt.store(&crate::search::tt_defs::TTStoreParams {
+        hash: ctx.hash,
+        depth: ctx.depth,
+        flag: ctx.flag,
+        score: ctx.score,
+        static_eval: ctx.static_eval,
+        is_pv: ctx.is_pv,
+        best_move: ctx.best_move,
+        ply: ctx.ply,
+    });
 }
 
 /// Timer abstraction to handle platform differences
@@ -598,9 +597,28 @@ thread_local! {
 }
 
 fn build_search_stats(searcher: &Searcher) -> SearchStats {
-    let (cap, used, fill) = GLOBAL_TT.get().map_or((0, 0, 0), |tt| {
-        (tt.capacity(), tt.used_entries(), tt.fill_permille())
-    });
+    #[cfg(feature = "multithreading")]
+    let (cap, used, fill): (usize, usize, u32) = if let Some(tt) = SHARED_TT.get() {
+        (
+            tt.capacity() as usize,
+            tt.used_entries() as usize,
+            tt.fill_permille() as u32,
+        )
+    } else {
+        (
+            searcher.tt.capacity() as usize,
+            searcher.tt.used_entries() as usize,
+            searcher.tt.fill_permille() as u32,
+        )
+    };
+
+    #[cfg(not(feature = "multithreading"))]
+    let (cap, used, fill): (usize, usize, u32) = (
+        searcher.tt.capacity() as usize,
+        searcher.tt.used_entries() as usize,
+        searcher.tt.fill_permille() as u32,
+    );
+
     SearchStats {
         nodes: searcher.hot.nodes,
         tt_capacity: cap,
@@ -635,7 +653,8 @@ pub fn reset_search_state() {
     crate::evaluation::insufficient_material::clear_material_cache();
 
     // Clear transposition table
-    if let Some(tt) = GLOBAL_TT.get() {
+    #[cfg(feature = "multithreading")]
+    if let Some(tt) = SHARED_TT.get() {
         tt.clear()
     }
 }
@@ -759,6 +778,7 @@ pub struct Searcher {
     pub pawn_history: Box<[[[i32; 256]; 32]; PAWN_HISTORY_SIZE]>,
 
     pub plies_from_null: Box<[u8; MAX_PLY]>,
+    pub tt: LocalTranspositionTable,
 }
 
 impl Searcher {
@@ -898,6 +918,7 @@ impl Searcher {
                 )
                     as *mut [[[i32; 256]; 32]; PAWN_HISTORY_SIZE])
             },
+            tt: LocalTranspositionTable::new(16),
         }
     }
 
@@ -968,9 +989,11 @@ impl Searcher {
 
     /// Start a new search: reset per-search state and increment TT age (or clear if requested).
     pub fn new_search(&mut self) {
-        if let Some(tt) = GLOBAL_TT.get() {
+        #[cfg(feature = "multithreading")]
+        if let Some(tt) = SHARED_TT.get() {
             tt.increment_age();
         }
+        self.tt.increment_age();
 
         // Reset cumulative counters
         self.hot.nodes = 0;
@@ -1017,9 +1040,11 @@ impl Searcher {
     /// Clears TT and resets all history tables to neutral values.
     pub fn clear(&mut self) {
         // Clear transposition table
-        if let Some(tt) = GLOBAL_TT.get() {
+        #[cfg(feature = "multithreading")]
+        if let Some(tt) = SHARED_TT.get() {
             tt.clear();
         }
+        self.tt.clear();
 
         // Reset main history
         for row in self.history.iter_mut() {
@@ -1449,10 +1474,15 @@ impl Searcher {
             }
             seen_hashes.push(hash);
 
-            let tt_move = if let Some(tt) = GLOBAL_TT.get() {
-                tt.probe_move(hash)
+            let tt_move = if let Some(m) = self.tt.probe_move(hash) {
+                Some(m)
             } else {
-                break;
+                #[cfg(feature = "multithreading")]
+                {
+                    SHARED_TT.get().and_then(|tt| tt.probe_move(hash))
+                }
+                #[cfg(not(feature = "multithreading"))]
+                None
             };
 
             if let Some(m) = tt_move {
@@ -1512,10 +1542,15 @@ impl Searcher {
                 }
                 seen_hashes.push(hash);
 
-                let tt_move = if let Some(tt) = GLOBAL_TT.get() {
-                    tt.probe_move(hash)
+                let tt_move = if let Some(m) = self.tt.probe_move(hash) {
+                    Some(m)
                 } else {
-                    break;
+                    #[cfg(feature = "multithreading")]
+                    {
+                        SHARED_TT.get().and_then(|tt| tt.probe_move(hash))
+                    }
+                    #[cfg(not(feature = "multithreading"))]
+                    None
                 };
 
                 if let Some(m) = tt_move {
@@ -1564,7 +1599,14 @@ impl Searcher {
         } else {
             0
         };
-        let tt_fill = GLOBAL_TT.get().map_or(0, |tt| tt.fill_permille());
+        #[cfg(feature = "multithreading")]
+        let tt_fill = if let Some(tt) = SHARED_TT.get() {
+            tt.fill_permille()
+        } else {
+            self.tt.fill_permille()
+        };
+        #[cfg(not(feature = "multithreading"))]
+        let tt_fill = self.tt.fill_permille();
         let score_str = self.format_score(score);
         let pv = self.format_pv(game, depth);
 
@@ -1645,7 +1687,14 @@ impl Searcher {
         } else {
             0
         };
-        let tt_fill = GLOBAL_TT.get().map_or(0, |tt| tt.fill_permille());
+        #[cfg(feature = "multithreading")]
+        let tt_fill = if let Some(tt) = SHARED_TT.get() {
+            tt.fill_permille()
+        } else {
+            self.tt.fill_permille()
+        };
+        #[cfg(not(feature = "multithreading"))]
+        let tt_fill = self.tt.fill_permille();
 
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
@@ -2024,8 +2073,6 @@ pub fn get_best_move_parallel(
     use rustc_hash::FxHashMap;
     use std::sync::{Arc, Mutex};
 
-    GLOBAL_TT.get_or_init(|| TranspositionTable::new(32));
-
     // Clear global stop flag
     GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -2040,8 +2087,7 @@ pub fn get_best_move_parallel(
     USE_SHARED_TT.store(num_threads > 1, std::sync::atomic::Ordering::Relaxed);
 
     if num_threads == 1 {
-        // Single-threaded: use local TT for best performance
-        GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
+        // Local TT is already initialized in Searcher::new (via get_best_move_threaded)
         return get_best_move_threaded(
             game,
             max_depth,
@@ -2053,8 +2099,11 @@ pub fn get_best_move_parallel(
         );
     }
 
-    // Initialize TT - for WASM we don't share it, for native we do
-    GLOBAL_TT.get_or_init(|| TranspositionTable::new(64));
+    // Initialize Shared TT for multithreaded search
+    #[cfg(feature = "multithreading")]
+    {
+        SHARED_TT.get_or_init(|| SharedTranspositionTable::new(64));
+    }
 
     // Shared storage for thread results - all threads contribute to voting
     let results: Arc<Mutex<Vec<ThreadResult>>> =
@@ -2222,9 +2271,15 @@ pub fn get_best_move_parallel(
     let total_nodes: u64 = all_results.iter().map(|r| r.nodes).sum();
 
     // Build stats from aggregated data
-    let (cap, used, fill) = GLOBAL_TT.get().map_or((0, 0, 0), |tt| {
+    let (cap, used, fill) = if let Some(tt) = SHARED_TT.get() {
         (tt.capacity(), tt.used_entries(), tt.fill_permille())
-    });
+    } else {
+        (
+            searcher.tt.capacity(),
+            searcher.tt.used_entries(),
+            searcher.tt.fill_permille(),
+        )
+    };
     let stats = SearchStats {
         nodes: total_nodes,
         tt_capacity: cap,
@@ -2244,8 +2299,7 @@ pub fn get_best_move_parallel(
     silent: bool,
     is_soft_limit: bool,
 ) -> Option<(Move, i32, SearchStats)> {
-    // Init TT if needed
-    GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
+    // Local TT is already initialized in Searcher::new (via get_best_move_threaded)
     get_best_move_threaded(
         game,
         max_depth,
@@ -2464,8 +2518,7 @@ pub(crate) fn get_best_move_limited(
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
 
-        // Ensure TT is initialized
-        GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
+        // Local TT is already initialized in Searcher::new
 
         // Use MultiPV at the root and pick_best selection logic.
         // Automatically normalize site skill (1..MAX_SITE_SKILL) to internal (1..20)
@@ -2856,9 +2909,7 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
     searcher.set_corrhist_mode(game);
     searcher.reset_for_iteration();
     searcher.decay_history();
-    GLOBAL_TT
-        .get_or_init(|| TranspositionTable::new(16))
-        .clear();
+    searcher.tt.clear();
 
     // Generate and filter legal moves
     let moves = game.get_legal_moves();
@@ -3792,9 +3843,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 ^ SIDE_KEY
                 ^ piece_key(p_type, p_color, m.from.x, m.from.y)
                 ^ piece_key(p_type, p_color, m.to.x, m.to.y);
-            if let Some(tt) = GLOBAL_TT.get() {
+            if let Some(m) = searcher.tt.probe_move(hash) {
+                let _ = m; // Prefetch logic could use move hint if supported
+            }
+            #[cfg(feature = "multithreading")]
+            if let Some(tt) = SHARED_TT.get() {
                 tt.prefetch_entry(child_hash);
             }
+            searcher.tt.prefetch_entry(child_hash);
         }
 
         // Incremental NNUE Update
@@ -4474,8 +4530,7 @@ fn quiescence(
     mut alpha: i32,
     beta: i32,
     node_type: NodeType,
-    #[cfg(feature = "nnue")]
-    nnue: Option<&crate::nnue::NnueState>,
+    #[cfg(feature = "nnue")] nnue: Option<&crate::nnue::NnueState>,
 ) -> i32 {
     let is_pv = node_type == NodeType::PV;
     // Check for max ply
@@ -5110,11 +5165,10 @@ mod tests {
 
     #[test]
     fn test_searcher_initialization() {
-        GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
         let searcher = Searcher::new(10000);
 
         assert_eq!(searcher.hot.nodes, 0);
-        assert!(GLOBAL_TT.get().unwrap().capacity() > 0);
+        assert!(searcher.tt.capacity() > 0);
     }
 
     // ======================== History Table Tests ========================
@@ -5371,9 +5425,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tt_integration_via_global() {
-        GLOBAL_TT.get_or_init(|| TranspositionTable::new(16));
-        // We don't need searcher for TT anymore
+    fn test_tt_integration_via_local() {
+        let mut tt = LocalTranspositionTable::new(16);
         let hash = 123456789;
         let depth = 5;
         let score = 1000;
@@ -5384,33 +5437,27 @@ mod tests {
         );
 
         // Store EXACT score using correct TT signature:
-        GLOBAL_TT
-            .get()
-            .unwrap()
-            .store(&crate::search::tt_defs::TTStoreParams {
-                hash,
-                depth,
-                flag: crate::search::tt_defs::TTFlag::Exact,
-                score,
-                static_eval: INFINITY + 1,
-                is_pv: true,
-                best_move: Some(best_move),
-                ply: 0,
-            });
+        tt.store(&crate::search::tt_defs::TTStoreParams {
+            hash,
+            depth,
+            flag: crate::search::tt_defs::TTFlag::Exact,
+            score,
+            static_eval: INFINITY + 1,
+            is_pv: true,
+            best_move: Some(best_move),
+            ply: 0,
+        });
 
         // Probe EXACT score using correct TT signature:
-        let result = GLOBAL_TT
-            .get()
-            .unwrap()
-            .probe(&crate::search::tt_defs::TTProbeParams {
-                hash,
-                alpha: score - 100,
-                beta: score + 100,
-                depth,
-                ply: 0,
-                rule50_count: 0,
-                rule_limit: 100,
-            });
+        let result = tt.probe(&crate::search::tt_defs::TTProbeParams {
+            hash,
+            alpha: score - 100,
+            beta: score + 100,
+            depth,
+            ply: 0,
+            rule50_count: 0,
+            rule_limit: 100,
+        });
         assert!(result.is_some());
         let res = result.unwrap();
         assert_eq!(res.cutoff_score, score);

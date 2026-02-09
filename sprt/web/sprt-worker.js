@@ -528,12 +528,14 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
     // Helper for definitive terminal check (mate/stalemate) to prioritize over adjudication
     const getTerminalResult = (context = "") => {
         try {
-            const gameInput = clonePosition(startPosition);
-            gameInput.move_history = moveHistory.slice();
-            gameInput.halfmove_clock = halfmoveClock;
-            gameInput.fullmove_number = fullmoveNumber;
-
-            const checker = new EngineNew(gameInput);
+            const icnString = generateSetupICN(
+                variantName,
+                startPosition.turn,
+                halfmoveClock,
+                fullmoveNumber,
+                moveHistory
+            );
+            const checker = wasmNew.Engine.from_icn(icnString, {});
             const legal = typeof checker.get_legal_moves_js === 'function' ? checker.get_legal_moves_js() : [];
             const inCheck = typeof checker.is_in_check === 'function' && checker.is_in_check();
             checker.free();
@@ -615,10 +617,10 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             };
 
             let engine;
-            if (engineName === 'new') {
-                engine = wasmNew.Engine.from_icn(icnString, engineConfig);
+            if (typeof EngineClass.from_icn === 'function') {
+                engine = EngineClass.from_icn(icnString, engineConfig);
             } else {
-                // Backward compatibility for EngineOld
+                // Backward compatibility for versions that don't support from_icn
                 const engineInput = clonePosition(startPosition);
                 engineInput.move_history = moveHistory.slice();
                 engineInput.halfmove_clock = halfmoveClock;
@@ -939,12 +941,14 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
             // Check for insufficient material using a fresh game input representing the state AFTER the move
             try {
-                const afterMoveInput = clonePosition(startPosition);
-                afterMoveInput.move_history = moveHistory.slice();
-                afterMoveInput.halfmove_clock = halfmoveClock;
-                afterMoveInput.fullmove_number = fullmoveNumber;
-
-                const checker = new EngineNew(afterMoveInput);
+                const icnString = generateSetupICN(
+                    variantName,
+                    startPosition.turn,
+                    halfmoveClock,
+                    fullmoveNumber,
+                    moveHistory
+                );
+                const checker = wasmNew.Engine.from_icn(icnString, {});
                 const hasSufficientMaterial = typeof checker.is_sufficient_material === 'function'
                     ? checker.is_sufficient_material()
                     : true; // Default to true if function doesn't exist (old engine builds)
