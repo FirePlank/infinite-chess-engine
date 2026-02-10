@@ -19,19 +19,19 @@ import { getVariantData, getAllVariants, generateSetupICN } from './variants.js'
 let wasmReady = false;
 let threadPoolInitialized = false;
 
-async function tryInitThreadPool(count) {
-    if (threadPoolInitialized) return;
-    if (typeof initThreadPool !== 'function') return;
+// async function tryInitThreadPool(count) {
+//     if (threadPoolInitialized) return;
+//     if (typeof initThreadPool !== 'function') return;
 
-    try {
-        console.log(`[sprt-worker] Initializing thread pool with ${count} threads...`);
-        await initThreadPool(count);
-        threadPoolInitialized = true;
-        console.log(`[sprt-worker] Thread pool initialized.`);
-    } catch (e) {
-        console.warn(`[sprt-worker] Failed to initialize thread pool:`, e);
-    }
-}
+//     try {
+//         console.log(`[sprt-worker] Initializing thread pool with ${count} threads...`);
+//         await initThreadPool(count);
+//         threadPoolInitialized = true;
+//         console.log(`[sprt-worker] Thread pool initialized.`);
+//     } catch (e) {
+//         console.warn(`[sprt-worker] Failed to initialize thread pool:`, e);
+//     }
+// }
 
 function getVariantPosition(variantName, clock = null) {
     const variantData = getVariantData(variantName);
@@ -483,7 +483,7 @@ async function ensureInit() {
         await initNew();
 
         // Detect thread support and initialize pool if available
-        await tryInitThreadPool(2);
+        // await tryInitThreadPool(2);
 
         wasmReady = true;
     }

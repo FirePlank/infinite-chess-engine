@@ -3487,10 +3487,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 bonus += rfp_worsening_mult() * futility_mult / 1024;
             }
 
-            let futility_margin = futility_mult * depth as i32 - bonus;
+            // Correction history adjustment: loosen margin when eval is unreliable
+            let corr_adj = (static_eval - raw_eval).abs() / 174665;
+            let futility_margin = futility_mult * depth as i32 - bonus + corr_adj;
 
             if eval - futility_margin >= beta && static_eval >= beta {
-                return (beta + eval) / 2;
+                return (2 * beta + eval) / 3;
             }
         }
 
