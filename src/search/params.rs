@@ -33,6 +33,14 @@ pub const DEFAULT_LMR_HISTORY_THRESH: i32 = 2000;
 pub const DEFAULT_LMR_CUTOFF_THRESH: u8 = 2;
 pub const DEFAULT_LMR_TT_HISTORY_THRESH: i32 = -1000;
 
+// High-precision LMR parameters (scaled by 1024)
+pub const DEFAULT_LMR_SCALE: i32 = 1024;
+pub const DEFAULT_LMR_BASE: i32 = 714;
+pub const DEFAULT_LMR_TT_PV: i32 = 946; // Bonus reduction for PV nodes
+pub const DEFAULT_LMR_CUT_NODE: i32 = 3372; // Bonus reduction for Cut nodes
+pub const DEFAULT_LMR_NO_TT_MOVE: i32 = 997; // Extra if no TT move
+pub const DEFAULT_LMR_TT_CAPTURE: i32 = 1119; // Extra if TT move was capture
+
 // History Leaf Pruning:
 pub const DEFAULT_HLP_MAX_DEPTH: usize = 3;
 pub const DEFAULT_HLP_MIN_MOVES: usize = 4;
@@ -124,6 +132,12 @@ pub struct SearchParams {
     pub lmr_cutoff_thresh: u8,
     pub lmr_tt_history_thresh: i32,
 
+    pub lmr_base: i32,
+    pub lmr_tt_pv: i32,
+    pub lmr_cut_node: i32,
+    pub lmr_no_tt_move: i32,
+    pub lmr_tt_capture: i32,
+
     // History Leaf Pruning
     pub hlp_max_depth: usize,
     pub hlp_min_moves: usize,
@@ -201,6 +215,11 @@ impl Default for SearchParams {
             lmr_history_thresh: DEFAULT_LMR_HISTORY_THRESH,
             lmr_cutoff_thresh: DEFAULT_LMR_CUTOFF_THRESH,
             lmr_tt_history_thresh: DEFAULT_LMR_TT_HISTORY_THRESH,
+            lmr_base: DEFAULT_LMR_BASE,
+            lmr_tt_pv: DEFAULT_LMR_TT_PV,
+            lmr_cut_node: DEFAULT_LMR_CUT_NODE,
+            lmr_no_tt_move: DEFAULT_LMR_NO_TT_MOVE,
+            lmr_tt_capture: DEFAULT_LMR_TT_CAPTURE,
             hlp_max_depth: DEFAULT_HLP_MAX_DEPTH,
             hlp_min_moves: DEFAULT_HLP_MIN_MOVES,
             hlp_history_reduce: DEFAULT_HLP_HISTORY_REDUCE,
@@ -314,6 +333,12 @@ define_accessor!(lmr_divisor, usize, DEFAULT_LMR_DIVISOR);
 define_accessor!(lmr_history_thresh, i32, DEFAULT_LMR_HISTORY_THRESH);
 define_accessor!(lmr_cutoff_thresh, u8, DEFAULT_LMR_CUTOFF_THRESH);
 define_accessor!(lmr_tt_history_thresh, i32, DEFAULT_LMR_TT_HISTORY_THRESH);
+
+define_accessor!(lmr_base, i32, DEFAULT_LMR_BASE);
+define_accessor!(lmr_tt_pv, i32, DEFAULT_LMR_TT_PV);
+define_accessor!(lmr_cut_node, i32, DEFAULT_LMR_CUT_NODE);
+define_accessor!(lmr_no_tt_move, i32, DEFAULT_LMR_NO_TT_MOVE);
+define_accessor!(lmr_tt_capture, i32, DEFAULT_LMR_TT_CAPTURE);
 
 // History Leaf Pruning
 define_accessor!(hlp_max_depth, usize, DEFAULT_HLP_MAX_DEPTH);

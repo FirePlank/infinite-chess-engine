@@ -3,15 +3,16 @@ use crate::evaluation::{evaluate, get_piece_value};
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
 use crate::search::params::{
-    aspiration_fail_mult, aspiration_max_window, aspiration_window, delta_margin,
-    history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf, hlp_history_reduce,
-    hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult, lmr_cutoff_thresh,
-    lmr_divisor, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh, low_depth_probcut_margin,
-    nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
-    pawn_history_bonus_scale, pawn_history_malus_scale, probcut_depth_sub, probcut_divisor,
-    probcut_improving, probcut_margin, probcut_min_depth, razoring_linear, razoring_quad,
-    rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
-    see_capture_hist_div, see_capture_linear, see_quiet_quad,
+    DEFAULT_LMR_SCALE, aspiration_fail_mult, aspiration_max_window, aspiration_window,
+    delta_margin, history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf,
+    hlp_history_reduce, hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult,
+    lmr_base, lmr_cut_node, lmr_cutoff_thresh, lmr_min_depth, lmr_min_moves, lmr_no_tt_move,
+    lmr_tt_capture, lmr_tt_history_thresh, lmr_tt_pv, low_depth_probcut_margin, nmp_base,
+    nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div, pawn_history_bonus_scale,
+    pawn_history_malus_scale, probcut_depth_sub, probcut_divisor, probcut_improving,
+    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, rfp_improving_mult,
+    rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult, see_capture_hist_div,
+    see_capture_linear, see_quiet_quad,
 };
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 // For web WASM (browser), use js_sys::Date for timing
@@ -245,7 +246,7 @@ static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
 fn get_lmr(depth: usize, moves: usize) -> i32 {
     let table = LMR_TABLE.get_or_init(|| {
         let mut table = [[0; 256]; MAX_PLY];
-        let divisor = lmr_divisor() as f32;
+        let divisor = 3.0;
         for (d, row) in table.iter_mut().enumerate() {
             for (m, entry) in row.iter_mut().enumerate() {
                 if d == 0 || m == 0 {
@@ -253,7 +254,7 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
                     continue;
                 }
 
-                let reduction = 1.0 + (m as f32).ln() * (d as f32).ln() / divisor;
+                let reduction = 1382.0 * (m as f32).ln() * (d as f32).ln() / divisor;
                 *entry = reduction as i32;
             }
         }
@@ -262,8 +263,8 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
 
     // Fall back to calculation for values outside the table range
     if moves >= 256 {
-        let divisor = lmr_divisor() as f32;
-        let reduction = 1.0 + (moves as f32).ln() * (depth as f32).ln() / divisor;
+        let divisor = 3.0;
+        let reduction = 1382.0 * (moves as f32).ln() * (depth as f32).ln() / divisor;
         return reduction as i32;
     }
 
@@ -3734,6 +3735,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Main move loop - iterate through staged moves
     while let Some(m) = movegen.next(game, searcher) {
+        // Skip excluded move (for singular extension recursive search)
+        if let Some(excl) = excluded_move {
+            if m.from == excl.from && m.to == excl.to && m.promotion == excl.promotion {
+                continue;
+            }
+        }
+
         // BITBOARD: Fast capture detection
         let captured_piece = game.board.get_piece(m.to.x, m.to.y);
         let is_capture = captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
@@ -3907,113 +3915,82 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if let Some((tt_s_base, singular_depth)) = se_conditions.filter(|_| {
             is_tt_move
                 && !is_pv
-                && !is_capture
-                && !is_promotion
+                && excluded_move.is_none()
                 && depth >= 6 + (tt_pv as usize)
                 && !searcher.is_shuffling(game, &m, ply)
         }) {
             // Singular extension margin with TT Move History adjustment.
-            // Adjust margin based on TT move reliability.
-            // When TT moves are reliable (high ttMoveHistory), we can use a tighter margin
-            // (less extension). When unreliable (low), use a more generous margin.
-            let tt_history_adj = searcher.tt_move_history / 150; // History scaling factor
+            let tt_history_adj = searcher.tt_move_history / 150;
             let singular_beta = tt_s_base - (depth as i32) * 3 + tt_history_adj;
 
-            // Undo the move we just made so we can search alternatives
+            // Undo the TT move so we can search from the current position
             game.undo_move(&m, undo);
 
-            // Do a reduced search excluding the TT move to verify singularity
-            // Create a move generator that skips the TT move
-            let mut se_gen = StagedMoveGen::with_exclusion(
-                None, // No TT move hint for this search
-                ply,
-                depth as i32,
+            // Temporarily restore searcher state at this ply for the recursive search
+            searcher.prev_move_stack[ply] = prev_entry_backup;
+            searcher.move_history[ply] = move_history_backup;
+            searcher.moved_piece_history[ply] = piece_history_backup;
+            searcher.in_check_history[ply] = in_check_backup;
+            searcher.capture_history_stack[ply] = capture_backup;
+
+            // Recursive search excluding the TT move (Stockfish excludedMove pattern)
+            // This searches the full move tree minus the TT move at reduced depth,
+            // providing accurate singularity verification.
+            let se_value = negamax(&mut NegamaxContext {
                 searcher,
                 game,
-                m, // Exclude the current (TT) move
-            );
+                depth: singular_depth,
+                ply,
+                alpha: singular_beta - 1,
+                beta: singular_beta,
+                allow_null: false,
+                node_type: if cut_node {
+                    NodeType::Cut
+                } else {
+                    NodeType::All
+                },
+                was_null_move: false,
+                excluded_move: Some(m),
+                #[cfg(feature = "nnue")]
+                nnue: ctx.nnue,
+            });
 
-            let mut se_best = -INFINITY;
-            let mut se_moves_checked = 0;
-            const SE_MAX_MOVES: usize = 6;
+            // Re-make the TT move and restore state for child search
+            undo = game.make_move(&m);
+            searcher.prev_move_stack[ply] = (from_hash, to_hash);
+            searcher.move_history[ply] = Some(m);
+            searcher.moved_piece_history[ply] = p_type as u8;
+            searcher.in_check_history[ply] = in_check;
+            searcher.capture_history_stack[ply] = is_capture;
 
-            while let Some(se_m) = se_gen.next(game, searcher) {
-                if se_moves_checked >= SE_MAX_MOVES {
-                    break;
-                }
-
-                // Fast legality check
-                let fast_legal = game.is_legal_fast(&se_m, in_check);
-                if let Ok(false) = fast_legal {
-                    continue;
-                }
-
-                let se_undo = game.make_move(&se_m);
-                if fast_legal.is_err() && game.is_move_illegal() {
-                    game.undo_move(&se_m, se_undo);
-                    continue;
-                }
-
-                se_moves_checked += 1;
-
-                let se_score = -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: singular_depth,
-                    ply: ply + 1,
-                    alpha: -singular_beta,
-                    beta: -singular_beta + 1,
-                    allow_null: false,
-                    node_type: NodeType::Cut,
-                    was_null_move: false,
-                    excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: None,
-                });
-
-                game.undo_move(&se_m, se_undo);
-
-                if searcher.hot.stopped {
-                    // Restore searcher state before returning
-                    searcher.prev_move_stack[ply] = prev_entry_backup;
-                    searcher.move_history[ply] = move_history_backup;
-                    searcher.moved_piece_history[ply] = piece_history_backup;
-
-                    return 0;
-                }
-
-                if se_score > se_best {
-                    se_best = se_score;
-                }
-
-                // Early exit if we find a refuter
-                if se_best >= singular_beta {
-                    break;
-                }
+            if searcher.hot.stopped {
+                game.undo_move(&m, undo);
+                searcher.prev_move_stack[ply] = prev_entry_backup;
+                searcher.move_history[ply] = move_history_backup;
+                searcher.moved_piece_history[ply] = piece_history_backup;
+                searcher.in_check_history[ply] = in_check_backup;
+                searcher.capture_history_stack[ply] = capture_backup;
+                return 0;
             }
 
-            // Re-make the TT move since we undid it above
-            let new_undo = game.make_move(&m);
-            // Update undo for later
-            undo = new_undo;
-
-            if se_best < singular_beta {
+            if se_value < singular_beta {
                 // TT move is singular - calculate extension level
                 let corr_val_adj = (static_eval - raw_eval).abs() / 256;
 
-                // Double extension margin: how much below singular_beta for +2 extension
                 let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_val_adj;
-                // Triple extension margin: how much below for +3 extension
                 let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_val_adj;
 
                 extension = 1;
-                if se_best < singular_beta - double_margin {
+                if se_value < singular_beta - double_margin {
                     extension = 2;
                 }
-                if se_best < singular_beta - triple_margin && is_pv {
+                if se_value < singular_beta - triple_margin && is_pv {
                     extension = 3;
                 }
-            } else if se_best >= beta && !is_pv && !is_decisive(se_best) {
+
+                // Depth++ after detecting singularity
+                depth += 1;
+            } else if se_value >= beta && !is_pv && !is_decisive(se_value) {
                 // Multi-cut: alternatives also beat beta, prune the whole subtree
                 let penalty = (-400 - 100 * depth as i32).max(-4000);
                 let max_tt_hist = 8192;
@@ -4024,10 +4001,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.prev_move_stack[ply] = prev_entry_backup;
                 searcher.move_history[ply] = move_history_backup;
                 searcher.moved_piece_history[ply] = piece_history_backup;
-                return se_best;
+                searcher.in_check_history[ply] = in_check_backup;
+                searcher.capture_history_stack[ply] = capture_backup;
+                return se_value;
             } else if tt_value.is_some_and(|v| v >= beta) {
                 // Negative extension: TT move is assumed to fail high but wasn't singular
-                // Reduce depth to favor other moves
                 extension = -3;
             } else if cut_node {
                 // On cut nodes, if TT move isn't assumed to fail high, reduce it
@@ -4072,47 +4050,73 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_capture
                 && !(gives_check && (p_type == PieceType::Queen || p_type == PieceType::Amazon))
             {
-                reduction = get_lmr(depth, legal_moves);
+                let lmr_scale = DEFAULT_LMR_SCALE;
 
-                // Reduce more when position is not improving
-                if !improving {
-                    reduction += 1;
+                // Base reduction from table (scaled by 1024 internally)
+                let mut r = get_lmr(depth, legal_moves);
+
+                // Base offset
+                r += lmr_base();
+
+                // PV Node adjustments
+                if tt_pv {
+                    r += lmr_tt_pv();
                 }
 
-                // History-adjusted LMR
+                // Cut Node adjustments
+                if cut_node {
+                    r += lmr_cut_node();
+                    if tt_move.is_none() {
+                        r += lmr_no_tt_move();
+                    }
+                }
+
+                // TT Capture adjustment
+                if tt_capture {
+                    r += lmr_tt_capture();
+                }
+
+                // History adjustment
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
-                reduction -= (hist_score + pawn_score) / 4096;
+
+                r -= (hist_score + pawn_score * 2) * 512 / 8192;
+
+                // Move count adjustment
+                r -= (legal_moves as i32) * 73;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
-                reduction -= (correction.abs() / 30370).clamp(0, 2);
+                r -= (correction.abs() / 30370).clamp(0, 2048); // Cap at 2.0 depth
+
+                // Improving adjustment
+                if !improving {
+                    r += lmr_scale; // +1 depth
+                }
+
+                // TT Move History adjustment
+                if searcher.tt_move_history < lmr_tt_history_thresh() {
+                    r -= lmr_scale; // -1 depth
+                }
 
                 // Shuffle penalty
                 if searcher.is_shuffling(game, &m, ply) {
-                    reduction += 1;
+                    r += lmr_scale;
                 }
 
-                // Increase reduction if next ply has a lot of fail highs
-                // We use a simpler version: add 1 to reduction when many cutoffs
+                // Cutoff count adjustment
                 if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > lmr_cutoff_thresh() {
-                    reduction += 1;
+                    r += lmr_scale;
                     if all_node {
-                        reduction += 1;
+                        r += lmr_scale;
                     }
                 }
 
-                // TT Move History adjustment:
-                // If TT moves have been unreliable (low tt_move_history), reduce less
-                // since the move ordering from TT may not be trustworthy.
-                if searcher.tt_move_history < lmr_tt_history_thresh() && reduction > 0 {
-                    reduction -= 1;
-                }
-
-                // Ensure reduction stays in valid range [0, depth-2]
-                reduction = reduction.clamp(0, (depth as i32) - 2);
+                // Final depth calculation
+                let r_depth = (r / lmr_scale).clamp(0, (depth as i32) - 2);
+                reduction = r_depth;
             }
 
             // Base child depth after LMR (with singular extension if applicable)
