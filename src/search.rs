@@ -3736,10 +3736,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Main move loop - iterate through staged moves
     while let Some(m) = movegen.next(game, searcher) {
         // Skip excluded move (for singular extension recursive search)
-        if let Some(excl) = excluded_move {
-            if m.from == excl.from && m.to == excl.to && m.promotion == excl.promotion {
-                continue;
-            }
+        if let Some(excl) = excluded_move
+            && m.from == excl.from
+            && m.to == excl.to
+            && m.promotion == excl.promotion
+        {
+            continue;
         }
 
         // BITBOARD: Fast capture detection
@@ -4333,8 +4335,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if !is_capture {
                 // History bonus for quiet cutoff move, with maluses for previously searched quiets
                 let idx = hash_move_dest(&m);
-                let bonus = history_bonus_base() * depth as i32 - history_bonus_sub();
-                let adj = bonus.min(history_bonus_cap());
+                let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
                 let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                 searcher.update_history(m.piece.piece_type(), idx, bonus);
@@ -4368,8 +4370,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.killers[ply][1] = searcher.killers[ply][0];
                 searcher.killers[ply][0] = Some(m);
 
-                // Countermove heuristic: on a quiet beta cutoff, record this move
-                // as the countermove to the move that led into this node.
+                // Countermove heuristic
                 if ply > 0 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
@@ -4378,8 +4379,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     }
                 }
 
-                // Continuation history update:
+                // Continuation history update
+                // Only update offsets 1-2 when in check (deeper offsets are noisy)
                 for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
+                    if in_check && plies_ago > 1 {
+                        break;
+                    }
                     if ply > plies_ago
                         && let Some(ref prev_move) = searcher.move_history[ply - plies_ago - 1]
                     {
@@ -4398,6 +4403,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                                 let entry = &mut searcher.cont_history[prev_cap][prev_ic]
                                     [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
+                                let adj = bonus.min(history_bonus_cap());
                                 if is_best {
                                     *entry += adj - *entry * adj / max_history;
                                 } else {
