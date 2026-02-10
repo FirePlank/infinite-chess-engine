@@ -635,25 +635,15 @@ impl GameState {
 
             // Find first blocker
             if let Some((bx, by)) = self.find_first_blocker_on_ray(king_pos.x, king_pos.y, *dx, *dy)
+                && self.board.is_occupied_by_color(bx, by, us)
+                && let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
+                && let Some(p2) = self.board.get_piece(bx2, by2)
+                && p2.color() == them
             {
-                if let Some(p1) = self.board.get_piece(bx, by) {
-                    if p1.color() == us {
-                        // Potential pin. Check if a slider is behind it.
-                        // Continue ray from blocker
-                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy) {
-                            if let Some(p2) = self.board.get_piece(bx2, by2) {
-                                if p2.color() == them {
-                                    // Check if it attacks along this ray
-                                    let pt2 = p2.piece_type();
-                                    if (is_ortho && is_ortho_slider(pt2))
-                                        || (!is_ortho && is_diag_slider(pt2))
-                                    {
-                                        pinned.insert(Coordinate::new(bx, by), (*dx, *dy));
-                                    }
-                                }
-                            }
-                        }
-                    }
+                // Check if it attacks along this ray
+                let pt2 = p2.piece_type();
+                if (is_ortho && is_ortho_slider(pt2)) || (!is_ortho && is_diag_slider(pt2)) {
+                    pinned.insert(Coordinate::new(bx, by), (*dx, *dy));
                 }
             }
         }
@@ -1013,10 +1003,7 @@ impl GameState {
         let dist = dx.abs().max(dy.abs());
         if dist <= 1 {
             // Target is adjacent, check if occupied by friendly
-            if let Some(p) = self.board.get_piece(to.x, to.y) {
-                return p.color() != self.turn; // Can capture enemy
-            }
-            return true;
+            return !self.board.is_occupied_by_color(to.x, to.y, self.turn);
         }
         // Use find_first_blocker_on_ray to check path
         if let Some((bx, by)) = self.find_first_blocker_on_ray(from.x, from.y, step_x, step_y) {
@@ -1050,10 +1037,7 @@ impl GameState {
         let step_y = dy.signum();
         let dist = dx.abs();
         if dist <= 1 {
-            if let Some(p) = self.board.get_piece(to.x, to.y) {
-                return p.color() != self.turn;
-            }
-            return true;
+            return !self.board.is_occupied_by_color(to.x, to.y, self.turn);
         }
         if let Some((bx, by)) = self.find_first_blocker_on_ray(from.x, from.y, step_x, step_y) {
             let blocker_dist = (bx - from.x).abs();
@@ -1998,9 +1982,7 @@ impl GameState {
                         } else {
                             block_coord
                         };
-                        if let Some(p) = self.board.get_piece(bx, by)
-                            && p.color() == our_color
-                        {
+                        if self.board.is_occupied_by_color(bx, by, our_color) {
                             continue;
                         }
 
@@ -2063,13 +2045,8 @@ impl GameState {
             let can_king = attacks_like_king(pt);
 
             // Helper to check if target is valid for blocking (empty or enemy)
-            let can_block_at = |tx: i64, ty: i64| -> bool {
-                if let Some(target_p) = s.board.get_piece(tx, ty) {
-                    target_p.color() != our_color
-                } else {
-                    true
-                }
-            };
+            let can_block_at =
+                |tx: i64, ty: i64| -> bool { !s.board.is_occupied_by_color(tx, ty, our_color) };
 
             // Helper to check if a target square is on the check blocking path
             // For knightrider checkers, use the pre-computed knight hop path

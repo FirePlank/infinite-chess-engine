@@ -2467,10 +2467,10 @@ fn generate_sliding_moves_impl(
             }
 
             // Pin check: if this piece is pinned, it can only move along the pin ray
-            if let Some(&(px, py)) = ctx.pinned.get(from) {
-                if dir_x * py != dir_y * px {
-                    continue;
-                }
+            if let Some(&(px, py)) = ctx.pinned.get(from)
+                && dir_x * py != dir_y * px
+            {
+                continue;
             }
 
             let is_vertical = dir_x == 0;

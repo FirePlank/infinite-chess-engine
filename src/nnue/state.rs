@@ -136,13 +136,12 @@ impl NnueState {
             }
 
             // 5. Handle castling rook
-            if (m.to.x - m.from.x).abs() > 1 {
-                if let Some(rook_from) = m.rook_coord {
-                    if let Some(rook) = tmp.board.remove_piece(&rook_from.x, &rook_from.y) {
-                        let rook_to_x = m.from.x + if m.to.x > m.from.x { 1 } else { -1 };
-                        tmp.board.set_piece(rook_to_x, m.from.y, rook);
-                    }
-                }
+            if (m.to.x - m.from.x).abs() > 1
+                && let Some(rook_from) = m.rook_coord
+                && let Some(rook) = tmp.board.remove_piece(&rook_from.x, &rook_from.y)
+            {
+                let rook_to_x = m.from.x + if m.to.x > m.from.x { 1 } else { -1 };
+                tmp.board.set_piece(rook_to_x, m.from.y, rook);
             }
 
             // 6. Update side to move (from_position uses gs.turn for perspective)

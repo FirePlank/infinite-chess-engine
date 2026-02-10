@@ -160,10 +160,9 @@ pub fn evaluate(gs: &GameState) -> i32 {
     // Scale output to centipawns
     // The quantization scales are applied to convert back to float-like range
     let scale = weights.scales.s_out * weights.scales.s_h2 * weights.scales.s_h1;
-    let score_cp = ((raw_output as f32) * scale) as i32;
 
     // Network output is already from STM perspective (friendly/enemy swap above)
-    score_cp
+    ((raw_output as f32) * scale) as i32
 }
 
 /// Evaluate with explicit state (for incremental updates).
@@ -198,10 +197,9 @@ pub fn evaluate_with_state(gs: &GameState, state: &NnueState) -> i32 {
     let raw_output = forward_head(weights, &head_input);
 
     let scale = weights.scales.s_out * weights.scales.s_h2 * weights.scales.s_h1;
-    let score_cp = ((raw_output as f32) * scale) as i32;
 
     // Network output is already from STM perspective (friendly/enemy swap above)
-    score_cp
+    ((raw_output as f32) * scale) as i32
 }
 
 #[cfg(test)]

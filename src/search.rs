@@ -614,9 +614,9 @@ fn build_search_stats(searcher: &Searcher) -> SearchStats {
 
     #[cfg(not(feature = "multithreading"))]
     let (cap, used, fill): (usize, usize, u32) = (
-        searcher.tt.capacity() as usize,
-        searcher.tt.used_entries() as usize,
-        searcher.tt.fill_permille() as u32,
+        searcher.tt.capacity(),
+        searcher.tt.used_entries(),
+        searcher.tt.fill_permille(),
     );
 
     SearchStats {
