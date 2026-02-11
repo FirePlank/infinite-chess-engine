@@ -3,16 +3,15 @@ use crate::evaluation::{evaluate, get_piece_value};
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
 use crate::search::params::{
-    DEFAULT_LMR_SCALE, aspiration_fail_mult, aspiration_max_window, aspiration_window,
-    delta_margin, history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf,
-    hlp_history_reduce, hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult,
-    lmr_base, lmr_cut_node, lmr_cutoff_thresh, lmr_min_depth, lmr_min_moves, lmr_no_tt_move,
-    lmr_tt_capture, lmr_tt_history_thresh, lmr_tt_pv, low_depth_probcut_margin, nmp_base,
-    nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div, pawn_history_bonus_scale,
-    pawn_history_malus_scale, probcut_depth_sub, probcut_divisor, probcut_improving,
-    probcut_margin, probcut_min_depth, razoring_linear, razoring_quad, rfp_improving_mult,
-    rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult, see_capture_hist_div,
-    see_capture_linear, see_quiet_quad,
+    aspiration_fail_mult, aspiration_max_window, aspiration_window, delta_margin,
+    history_bonus_base, history_bonus_cap, history_bonus_sub, hlp_history_leaf, hlp_history_reduce,
+    hlp_max_depth, hlp_min_moves, iir_min_depth, lmp_base, lmp_depth_mult, lmr_cutoff_thresh,
+    lmr_divisor, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh, low_depth_probcut_margin,
+    nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
+    pawn_history_bonus_scale, pawn_history_malus_scale, probcut_depth_sub, probcut_divisor,
+    probcut_improving, probcut_margin, probcut_min_depth, razoring_linear, razoring_quad,
+    rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
+    see_capture_hist_div, see_capture_linear, see_quiet_quad,
 };
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 // For web WASM (browser), use js_sys::Date for timing
@@ -246,7 +245,7 @@ static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
 fn get_lmr(depth: usize, moves: usize) -> i32 {
     let table = LMR_TABLE.get_or_init(|| {
         let mut table = [[0; 256]; MAX_PLY];
-        let divisor = 3.0;
+        let divisor = lmr_divisor() as f32;
         for (d, row) in table.iter_mut().enumerate() {
             for (m, entry) in row.iter_mut().enumerate() {
                 if d == 0 || m == 0 {
@@ -254,7 +253,7 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
                     continue;
                 }
 
-                let reduction = 1382.0 * (m as f32).ln() * (d as f32).ln() / divisor;
+                let reduction = 1.0 + (m as f32).ln() * (d as f32).ln() / divisor;
                 *entry = reduction as i32;
             }
         }
@@ -263,8 +262,8 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
 
     // Fall back to calculation for values outside the table range
     if moves >= 256 {
-        let divisor = 3.0;
-        let reduction = 1382.0 * (moves as f32).ln() * (depth as f32).ln() / divisor;
+        let divisor = lmr_divisor() as f32;
+        let reduction = 1.0 + (moves as f32).ln() * (depth as f32).ln() / divisor;
         return reduction as i32;
     }
 
@@ -4054,73 +4053,45 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_capture
                 && !(gives_check && (p_type == PieceType::Queen || p_type == PieceType::Amazon))
             {
-                let lmr_scale = DEFAULT_LMR_SCALE;
+                reduction = get_lmr(depth, legal_moves);
 
-                // Base reduction from table (scaled by 1024 internally)
-                let mut r = get_lmr(depth, legal_moves);
-
-                // Base offset
-                r += lmr_base();
-
-                // PV Node adjustments
-                if tt_pv {
-                    r += lmr_tt_pv();
+                // Reduce more when position is not improving
+                if !improving {
+                    reduction += 1;
                 }
 
-                // Cut Node adjustments
-                if cut_node {
-                    r += lmr_cut_node();
-                    if tt_move.is_none() {
-                        r += lmr_no_tt_move();
-                    }
-                }
-
-                // TT Capture adjustment
-                if tt_capture {
-                    r += lmr_tt_capture();
-                }
-
-                // History adjustment
+                // History-adjusted LMR
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
-
-                r -= (hist_score + pawn_score * 2) * 512 / 8192;
-
-                // Move count adjustment
-                r -= (legal_moves as i32) * 73;
+                reduction -= (hist_score + pawn_score) / 4096;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
-                r -= (correction.abs() / 30370).clamp(0, 2048); // Cap at 2.0 depth
-
-                // Improving adjustment
-                if !improving {
-                    r += lmr_scale; // +1 depth
-                }
-
-                // TT Move History adjustment
-                if searcher.tt_move_history < lmr_tt_history_thresh() {
-                    r -= lmr_scale; // -1 depth
-                }
+                reduction -= (correction.abs() / 30370).clamp(0, 2);
 
                 // Shuffle penalty
                 if searcher.is_shuffling(game, &m, ply) {
-                    r += lmr_scale;
+                    reduction += 1;
                 }
 
-                // Cutoff count adjustment
+                // Increase reduction if next ply has a lot of fail highs
                 if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > lmr_cutoff_thresh() {
-                    r += lmr_scale;
+                    reduction += 1;
                     if all_node {
-                        r += lmr_scale;
+                        reduction += 1;
                     }
                 }
 
-                // Final depth calculation
-                let r_depth = (r / lmr_scale).clamp(0, (depth as i32) - 2);
-                reduction = r_depth;
+                // If TT moves have been unreliable (low tt_move_history), reduce less
+                // since the move ordering from TT may not be trustworthy.
+                if searcher.tt_move_history < lmr_tt_history_thresh() && reduction > 0 {
+                    reduction -= 1;
+                }
+
+                // Ensure reduction stays in valid range [0, depth-2]
+                reduction = reduction.clamp(0, (depth as i32) - 2);
             }
 
             // Base child depth after LMR (with singular extension if applicable)
