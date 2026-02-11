@@ -4229,7 +4229,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // (matching the existing beta-cutoff update pattern)
                     // Update continuation histories at ply offsets -1, -2, -3, -4, -5, -6
                     // (matching the new 6-lookup pattern)
-                    for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
+                    const CONT_HISTORY_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
+
+                    for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
                         if ply > plies_ago
                             && let Some(prev_move) = searcher.move_history[ply - plies_ago - 1]
                         {
@@ -4247,8 +4249,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                                 let entry = &mut searcher.cont_history[prev_cap][prev_ic]
                                     [prev_piece][prev_to_hash][cf_hash][ct_hash];
+
+                                let weight = CONT_HISTORY_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
+                                let adj = (lmr_bonus * weight) / 1024;
+
                                 // Use gravity-based update: entry += bonus - entry * bonus / max
-                                *entry += lmr_bonus - *entry * lmr_bonus / max_history;
+                                *entry += adj - *entry * adj / max_history;
                             }
                         }
                     }
@@ -4354,7 +4360,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // Continuation history update
                 // Only update offsets 1-2 when in check (deeper offsets are noisy)
-                for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
+                const CONT_HISTORY_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
+
+                for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
                     if in_check && plies_ago > 1 {
                         break;
                     }
@@ -4376,7 +4384,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                                 let entry = &mut searcher.cont_history[prev_cap][prev_ic]
                                     [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
-                                let adj = bonus.min(history_bonus_cap());
+
+                                let weight = CONT_HISTORY_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
+                                let raw_adj = bonus.min(history_bonus_cap());
+                                let adj = (raw_adj * weight) / 1024;
+
                                 if is_best {
                                     *entry += adj - *entry * adj / max_history;
                                 } else {
