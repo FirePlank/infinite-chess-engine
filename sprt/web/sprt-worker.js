@@ -493,6 +493,9 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
     if (typeof wasmNew.reset_engine_state === 'function') {
         wasmNew.reset_engine_state();
     }
+    if (typeof wasmOld.reset_engine_state === 'function') {
+        wasmOld.reset_engine_state();
+    }
     const startPosition = getVariantPosition(variantName);
     let position = clonePosition(startPosition);
     const newColor = newPlaysWhite ? 'w' : 'b';
