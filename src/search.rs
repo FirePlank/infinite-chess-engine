@@ -751,6 +751,7 @@ pub struct Searcher {
     // Stacks to track node state for history updates
     pub in_check_history: Vec<bool>,
     pub capture_history_stack: Vec<bool>,
+    pub tt_pv_stack: Vec<bool>,
 
     /// TT Move History: tracks reliability of TT moves.
     /// Positive values = TT moves tend to be best moves.
@@ -838,6 +839,9 @@ impl Searcher {
                         as *mut [[(u8, i16, i16); 256]; 256],
                 )
             },
+            in_check_history: vec![false; MAX_PLY],
+            capture_history_stack: vec![false; MAX_PLY],
+            tt_pv_stack: vec![false; MAX_PLY],
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
             best_move_root: None,
@@ -851,8 +855,6 @@ impl Searcher {
             move_buffers,
             move_history: vec![None; MAX_PLY],
             moved_piece_history: vec![0; MAX_PLY],
-            in_check_history: vec![false; MAX_PLY],
-            capture_history_stack: vec![false; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
                     vec![0i32; 32 * 32 * 32 * 32 * 2 * 2].into_boxed_slice(),
@@ -3382,15 +3384,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     } else {
         false
     };
-
     // Use TT value to improve position evaluation
+    let excluded_move = ctx.excluded_move;
     let mut eval = static_eval;
-    if !in_check && let Some(tt_s) = tt_value {
-        let fails_high = tt_s >= beta;
-        if (tt_data_bound == TTFlag::LowerBound && fails_high)
-            || (tt_data_bound == TTFlag::UpperBound && !fails_high)
-            || tt_data_bound == TTFlag::Exact
-        {
+    if excluded_move.is_none()
+        && tt_hit_node
+        && let Some(tt_s) = tt_value
+    {
+        let tt_better = if tt_s > eval {
+            (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+        } else {
+            (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+        };
+        if tt_better {
             eval = tt_s;
         }
     }
@@ -3407,7 +3413,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // TT Cutoff
-    let excluded_move = ctx.excluded_move;
     if !is_pv
         && excluded_move.is_none()
         && tt_hit_node
@@ -3447,7 +3452,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Determine if this node is a TT PV node
-    let tt_pv = is_pv || (tt_hit_node && tt_pv);
+    let mut tt_pv = is_pv || (tt_hit_node && tt_pv);
+    searcher.tt_pv_stack[ply] = tt_pv;
 
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
@@ -3455,10 +3461,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Pre-move pruning techniques
         // =================================================================
 
-        // Razoring: if static eval is very low, drop to qsearch
-        if !is_pv
-            && static_eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
-        {
+        // Razoring: if eval is really low, drop to qsearch
+        if !is_pv && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32 {
             #[cfg(feature = "nnue")]
             return quiescence(searcher, game, ply, alpha, beta, node_type, ctx.nnue);
             #[cfg(not(feature = "nnue"))]
@@ -3470,7 +3474,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && depth < rfp_max_depth()
             && (tt_move.is_none() || tt_capture)
             && !is_loss(beta)
-            && !is_win(static_eval)
+            && !is_win(eval)
         {
             let futility_mult = if tt_hit_node {
                 rfp_mult_tt()
@@ -3490,7 +3494,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let corr_adj = (static_eval - raw_eval).abs() / 174665;
             let futility_margin = futility_mult * depth as i32 - bonus + corr_adj;
 
-            if eval - futility_margin >= beta && static_eval >= beta {
+            // Use refined eval for margin check and return value
+            if eval - futility_margin >= beta && eval >= beta {
                 return (2 * beta + eval) / 3;
             }
         }
@@ -4434,6 +4439,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         best_score = (best_score * depth as i32 + beta) / (depth as i32 + 1);
     }
 
+    // ttPv propagation on fail-low: if no move improved alpha and parent was ttPv, mark this as ttPv
+    // This improves search stability by guarding future nodes on this path.
+    if best_score <= alpha_orig && ply > 0 && searcher.tt_pv_stack[ply - 1] {
+        tt_pv = true;
+    }
+
     // Store in TT with correct flag based on original alpha/beta (per Wikipedia pseudocode)
     // - UPPERBOUND: best_score <= alpha_orig (failed low, didn't improve alpha)
     // - LOWERBOUND: best_score >= beta_orig (failed high, caused beta cutoff)
@@ -4453,7 +4464,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             flag: tt_data_bound,
             score: best_score,
             static_eval: raw_eval,
-            is_pv,
+            is_pv: tt_pv,
             best_move,
             ply,
         },
