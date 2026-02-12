@@ -4830,6 +4830,15 @@ fn quiescence(
     let mut legal_moves = 0;
     let delta_margin = delta_margin();
 
+    let prev_sq = if ply > 0 {
+        searcher
+            .move_history
+            .get(ply - 1)
+            .and_then(|m| m.as_ref().map(|mv| mv.to))
+    } else {
+        None
+    };
+
     for m in &tactical_moves {
         // Compute essential move properties
         let gives_check = StagedMoveGen::move_gives_check_fast(game, m);
@@ -4837,11 +4846,14 @@ fn quiescence(
         let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
 
         // Skip remaining quiet moves
-        if !in_check && legal_moves > 2 && !is_capture && !gives_check {
+        // Exception: Recaptures of the square where the opponent just moved
+        let is_recapture = prev_sq.is_some_and(|sq| sq == m.to);
+
+        if !in_check && legal_moves > 2 && !is_capture && !gives_check && !is_recapture {
             continue;
         }
 
-        if !in_check && !is_loss(best_value) {
+        if !in_check && !is_loss(best_value) && !is_recapture {
             let see_gain = static_exchange_eval(game, m);
             if see_gain < 0 {
                 continue;
