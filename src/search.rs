@@ -4475,6 +4475,70 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         searcher.tt_move_history += delta - searcher.tt_move_history * delta.abs() / max_tt_history;
     }
 
+    // Fail-low bonus: reward opponent's previous move that caused this node to fail low.
+    // When no move improved alpha (best_score <= alpha_orig) and we have legal moves,
+    // the opponent's last move was good — reward it in the history tables.
+    if best_score <= alpha_orig && legal_moves > 0 && ply > 0 {
+        let prior_capture = searcher.capture_history_stack[ply - 1];
+
+        // Only reward quiet moves for now
+        if !prior_capture && let Some(prev_move) = searcher.move_history[ply - 1] {
+            let prev_pt = searcher.moved_piece_history[ply - 1] as usize;
+            if prev_pt < 32 {
+                let standard_bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+                let bonus = standard_bonus / 2;
+                let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+
+                // Update continuation history for opponent's previous move
+                // We use the same weights as the standard update for consistency
+                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                let prev_from_hash = hash_coord_32(prev_move.from.x, prev_move.from.y);
+
+                const CONT_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
+                for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
+                    if in_check && plies_ago > 1 {
+                        break;
+                    }
+                    // Ancestor at (ply-1) - plies_ago
+                    if let Some(tp) = (ply - 1).checked_sub(plies_ago)
+                        && let Some(ref ancestor_move) = searcher.move_history[tp]
+                    {
+                        let anc_piece = searcher.moved_piece_history[tp] as usize;
+                        if anc_piece < 32 {
+                            let anc_to = hash_coord_32(ancestor_move.to.x, ancestor_move.to.y);
+                            let anc_ic = searcher.in_check_history[tp] as usize;
+                            let anc_cap = searcher.capture_history_stack[tp] as usize;
+
+                            let weight = CONT_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
+                            let adj = bonus * weight / 1024;
+                            let clamped = adj.clamp(-max_h, max_h);
+
+                            let entry = &mut searcher.cont_history[anc_cap][anc_ic][anc_piece]
+                                [anc_to][prev_from_hash][prev_to_hash];
+                            *entry += clamped - *entry * clamped.abs() / max_h;
+                        }
+                    }
+                }
+
+                // Update main history for opponent's previous move
+                let prev_idx = hash_move_dest(&prev_move);
+                let hist_adj = bonus.clamp(-max_h, max_h);
+                let entry = &mut searcher.history[prev_pt][prev_idx];
+                *entry += hist_adj - *entry * hist_adj.abs() / max_h;
+
+                // Update pawn history for non-pawn, non-promotion opponent moves
+                if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
+                    let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+                    let pawn_adj =
+                        (bonus * params::DEFAULT_PAWN_HISTORY_BONUS_SCALE).clamp(-max_h, max_h);
+                    let pentry = &mut searcher.pawn_history[ph_idx][prev_pt][prev_idx];
+                    *pentry += pawn_adj - *pentry * pawn_adj.abs() / max_h;
+                }
+            }
+        }
+    }
+
     // Update correction history when conditions are met:
     // - Not in check
     // - Best move is quiet or doesn't exist
