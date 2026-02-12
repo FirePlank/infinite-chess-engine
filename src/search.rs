@@ -4421,16 +4421,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Checkmate, stalemate, or loss by capture-based variants
     if legal_moves == 0 {
-        // Determine if this is a loss:
-        // 1. In check AND must escape check (our win condition is checkmate) → checkmate
-        // 2. No pieces left (relevant for allpiecescaptured variants) → loss
         let checkmate = in_check && game.must_escape_check();
         let no_pieces = !game.has_pieces(game.turn);
         if checkmate || no_pieces {
-            return -MATE_VALUE + ply as i32;
+            best_score = -MATE_VALUE + ply as i32;
         } else {
-            return 0; // Stalemate
+            best_score = 0; // Stalemate
         }
+        best_move = None;
     }
 
     // Adjust best value for fail high cases
@@ -4456,11 +4454,18 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     } else {
         TTFlag::Exact
     };
+
+    let tt_store_depth = if legal_moves == 0 {
+        (depth + 6).min(MAX_PLY - 1)
+    } else {
+        depth
+    };
+
     store_tt_with_shared(
         searcher,
         &StoreContext {
             hash,
-            depth,
+            depth: tt_store_depth,
             flag: tt_data_bound,
             score: best_score,
             static_eval: raw_eval,
