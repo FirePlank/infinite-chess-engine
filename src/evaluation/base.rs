@@ -371,6 +371,30 @@ const QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
 const MG_OUTPOST_BONUS: i32 = 20;
 const EG_OUTPOST_BONUS: i32 = 50;
 
+// Passed Pawn Detail (MG/EG tapered arrays by relative rank 0-5)
+// Rank 0 is far, Rank 5 is near promotion.
+const CANDIDATE_PASSER_BONUS: [i32; 6] = [5, 10, 20, 35, 60, 100];
+
+// PASSED_PAWN_ADV_BONUS[canAdvance][safeAdvance][rank]
+const PASSED_PAWN_ADV_BONUS: [[[i32; 6]; 2]; 2] = [
+    // cannot advance
+    [
+        [2, 4, 8, 15, 30, 60],    // unsafe
+        [5, 10, 20, 40, 70, 120], // safe
+    ],
+    // can advance
+    [
+        [8, 15, 30, 55, 100, 180],   // unsafe
+        [15, 30, 60, 110, 200, 350], // safe
+    ],
+];
+
+const PASSED_FRIENDLY_KING_DIST: [i32; 6] = [1, 2, 3, 5, 8, 12];
+const PASSED_ENEMY_KING_DIST: [i32; 6] = [1, 2, 3, 4, 6, 9];
+
+const MG_PASSED_SAFE_PATH_BONUS: i32 = 40;
+const EG_PASSED_SAFE_PATH_BONUS: i32 = 80;
+
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
     // Check for insufficient material draw
@@ -1110,6 +1134,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         black_pawns.sort_unstable();
 
                         let total_pieces = white_non_pawn_non_royal + black_non_pawn_non_royal;
+
                         let multiplier_q = if total_pieces >= 10 {
                             10
                         } else if total_pieces <= 5 {
@@ -2485,10 +2510,10 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 #[allow(clippy::too_many_arguments)]
 /// Core pawn structure computation. Called on cache miss.
 fn compute_pawn_structure_traced<T: EvaluationTracer>(
-    _game: &GameState,
+    game: &GameState,
     phase: i32,
-    _white_king: &Option<Coordinate>,
-    _black_king: &Option<Coordinate>,
+    white_king: &Option<Coordinate>,
+    black_king: &Option<Coordinate>,
     tracer: &mut T,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -2499,10 +2524,12 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut w_doubled = 0;
     let mut b_doubled = 0;
-    let mut w_passed = 0;
-    let mut b_passed = 0;
+    let mut w_passed_score = 0;
+    let mut b_passed_score = 0;
     let mut w_connected = 0;
     let mut b_connected = 0;
+    let mut w_candidate = 0;
+    let mut b_candidate = 0;
 
     // White Doubled Pawns
     let mut i = 0;
@@ -2536,28 +2563,108 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         i = j;
     }
 
+    // White Pawns: Passed, Candidate, Connected
     for &(wx, wy) in white_pawns {
         let mut is_passed = true;
+        let mut is_candidate = false;
+        let mut stoppers = 0;
+        let mut attackers = 0;
+        let mut defenders = 0;
+
+        // Relative rank 0 to 5 (assuming 6 ranks is "near promotion")
+        // For an infinite board, we'll anchor to the promotion rank.
+        let w_promo = game.white_promo_rank;
+        let dist_to_promo = (w_promo - wy).max(1);
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+
         for dx in -1..=1 {
             let target_file = wx + dx;
+
+            // Check for enemy pawns blocking or on adjacent files
             let start = black_pawns.partition_point(|&(bx, _)| bx < target_file);
             let mut k = start;
             while k < black_pawns.len() && black_pawns[k].0 == target_file {
-                if black_pawns[k].1 > wy {
+                let by = black_pawns[k].1;
+                if by > wy {
                     is_passed = false;
-                    break;
+                    stoppers += 1;
+                    if dx == 0 {
+                        // Directly in front
+                    } else {
+                        // Lever/Attack square
+                        attackers += 1;
+                    }
                 }
                 k += 1;
             }
-            if !is_passed {
-                break;
+
+            // Check for friendly support (for candidate detection)
+            if dx != 0 {
+                let start_f = white_pawns.partition_point(|&(fx, _)| fx < target_file);
+                let mut kf = start_f;
+                while kf < white_pawns.len() && white_pawns[kf].0 == target_file {
+                    if white_pawns[kf].1 < wy {
+                        defenders += 1;
+                    }
+                    kf += 1;
+                }
             }
         }
 
         if is_passed {
-            w_passed += taper(10, 18);
+            // 1. Can Advance
+            let next_y = wy + 1;
+            let can_advance = game.board.get_piece(wx, next_y).is_none();
+
+            // 2. Safe Advance
+            let safe_advance = !black_pawns.binary_search(&(wx - 1, next_y + 1)).is_ok()
+                && !black_pawns.binary_search(&(wx + 1, next_y + 1)).is_ok();
+
+            // 3. King Distances
+            let mut friendly_king_bonus = 0;
+            let mut enemy_king_penalty = 0;
+            if let Some(wk) = white_king {
+                let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as usize;
+                friendly_king_bonus = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            }
+            if let Some(bk) = black_king {
+                let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as usize;
+                enemy_king_penalty = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            }
+
+            // 4. Safe Promotion Path
+            let mut safe_path = true;
+            for cur_y in (wy + 1)..w_promo {
+                if game.board.get_piece(wx, cur_y).is_some()
+                    || black_pawns.binary_search(&(wx - 1, cur_y + 1)).is_ok()
+                    || black_pawns.binary_search(&(wx + 1, cur_y + 1)).is_ok()
+                {
+                    safe_path = false;
+                    break;
+                }
+            }
+            let safe_path_bonus = if safe_path {
+                taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+            } else {
+                0
+            };
+
+            let base_bonus =
+                PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
+            w_passed_score +=
+                base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+        } else {
+            // Check for candidate passer: no blockers on file, but attackers on adjacent files.
+            if stoppers > 0 && attackers == stoppers && defenders >= attackers {
+                is_candidate = true;
+            }
+
+            if is_candidate {
+                w_candidate += CANDIDATE_PASSER_BONUS[rel_rank];
+            }
         }
 
+        // Connectivity
         if white_pawns.binary_search(&(wx - 1, wy - 1)).is_ok()
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
@@ -2565,27 +2672,90 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         }
     }
 
-    // For black pawns
+    // Black Pawns: Passed, Candidate, Connected
     for &(bx, by) in black_pawns {
         let mut is_passed = true;
+        let mut is_candidate = false;
+        let mut stoppers = 0;
+        let mut attackers = 0;
+        let mut defenders = 0;
+
+        let b_promo = game.black_promo_rank;
+        let dist_to_promo = (by - b_promo).max(1);
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+
         for dx in -1..=1 {
             let target_file = bx + dx;
             let start = white_pawns.partition_point(|&(wx, _)| wx < target_file);
             let mut k = start;
             while k < white_pawns.len() && white_pawns[k].0 == target_file {
-                if white_pawns[k].1 < by {
+                let wy = white_pawns[k].1;
+                if wy < by {
                     is_passed = false;
-                    break;
+                    stoppers += 1;
+                    if dx != 0 {
+                        attackers += 1;
+                    }
                 }
                 k += 1;
             }
-            if !is_passed {
-                break;
+
+            if dx != 0 {
+                let start_f = black_pawns.partition_point(|&(fx, _)| fx < target_file);
+                let mut kf = start_f;
+                while kf < black_pawns.len() && black_pawns[kf].0 == target_file {
+                    if black_pawns[kf].1 > by {
+                        defenders += 1;
+                    }
+                    kf += 1;
+                }
             }
         }
 
         if is_passed {
-            b_passed += taper(10, 18);
+            let next_y = by - 1;
+            let can_advance = game.board.get_piece(bx, next_y).is_none();
+            let safe_advance = !white_pawns.binary_search(&(bx - 1, next_y - 1)).is_ok()
+                && !white_pawns.binary_search(&(bx + 1, next_y - 1)).is_ok();
+
+            let mut friendly_king_bonus = 0;
+            let mut enemy_king_penalty = 0;
+            if let Some(bk) = black_king {
+                let d = (bx - bk.x).abs().max((by - bk.y).abs()) as usize;
+                friendly_king_bonus = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            }
+            if let Some(wk) = white_king {
+                let d = (bx - wk.x).abs().max((by - wk.y).abs()) as usize;
+                enemy_king_penalty = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            }
+
+            let mut safe_path = true;
+            for cur_y in b_promo..by {
+                if game.board.get_piece(bx, cur_y).is_some()
+                    || white_pawns.binary_search(&(bx - 1, cur_y - 1)).is_ok()
+                    || white_pawns.binary_search(&(bx + 1, cur_y - 1)).is_ok()
+                {
+                    safe_path = false;
+                    break;
+                }
+            }
+            let safe_path_bonus = if safe_path {
+                taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+            } else {
+                0
+            };
+
+            let base_bonus =
+                PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
+            b_passed_score +=
+                base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+        } else {
+            if stoppers > 0 && attackers == stoppers && defenders >= attackers {
+                is_candidate = true;
+            }
+            if is_candidate {
+                b_candidate += CANDIDATE_PASSER_BONUS[rel_rank];
+            }
         }
 
         if black_pawns.binary_search(&(bx - 1, by + 1)).is_ok()
@@ -2596,10 +2766,12 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     }
 
     tracer.record("Pawn: Doubled", w_doubled.abs(), b_doubled.abs());
-    tracer.record("Pawn: Passed", w_passed, b_passed);
+    tracer.record("Pawn: Passed", w_passed_score, b_passed_score);
+    tracer.record("Pawn: Candidate", w_candidate, b_candidate);
     tracer.record("Pawn: Connected", w_connected, b_connected);
 
-    (w_doubled + w_passed + w_connected) - (b_doubled + b_passed + b_connected)
+    (w_doubled + w_passed_score + w_candidate + w_connected)
+        - (b_doubled + b_passed_score + b_candidate + b_connected)
 }
 
 pub fn count_pawns_on_file(
@@ -3175,6 +3347,69 @@ mod tests {
             score_supported - score_no_support,
             EG_OUTPOST_BONUS,
             "Bonus should match EG_OUTPOST_BONUS in endgame"
+        );
+    }
+
+    #[test]
+    fn test_candidate_passer_bonus() {
+        let mut game = Box::new(GameState::new());
+        game.board = Board::new();
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // Candidate Passer Setup:
+        // White Pawn at (4, 4)
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        // Black Pawn stopping it on adjacent file: (3, 5) or (5, 5)
+        game.board
+            .set_piece(3, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        // White support to balance the stopper
+        game.board
+            .set_piece(5, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
+
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+
+        let score = evaluate_pawn_structure(&game);
+
+        // Candidate bonus for rel_rank 3 (wy=4, dist=4, rel_rank=2 or 3 depending on clamp)
+        // should be positive.
+        assert!(score > 0, "Candidate passer should provide positive score");
+    }
+
+    #[test]
+    fn test_passed_pawn_advancement() {
+        let mut game = Box::new(GameState::new());
+        game.board = Board::new();
+        game.white_promo_rank = 8;
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(10, 10, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // Case 1: Passed pawn at (4, 4) - can advance, but not safely (controlled by black pawn)
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.board
+            .set_piece(3, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Attacks (4, 5)
+
+        game.recompute_piece_counts();
+        clear_pawn_cache();
+        let score_unsafe = evaluate_pawn_structure(&game);
+
+        // Case 2: Make it safe (remove black pawn)
+        game.board.remove_piece(&3, &6);
+        game.recompute_piece_counts();
+        clear_pawn_cache();
+        let score_safe = evaluate_pawn_structure(&game);
+
+        assert!(
+            score_safe > score_unsafe,
+            "Safe-to-advance passed pawn should score higher than unsafe"
         );
     }
 }
