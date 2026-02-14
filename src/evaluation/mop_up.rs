@@ -417,19 +417,21 @@ fn evaluate_mop_up_core(
             let dist = pdx.abs().max(pdy.abs()); // Chebyshev distance
 
             // Heavy proximity bonus to ensure short-range pieces engage
+            // Continuous smoothing:
+            // dist 0..3: 160 -> 130
+            // dist 3..10: 130 -> 60
+            // dist 10..25: 60 -> 15
+            // dist > 25: Penalty
             if dist <= 3 {
-                short_range_bonus += 160; // Very close - huge bonus
-            } else if dist <= 6 {
-                short_range_bonus += 100; // Close
+                short_range_bonus += 160 - (dist as i32 * 10);
             } else if dist <= 10 {
-                short_range_bonus += 60; // Medium
-            } else if dist <= 15 {
-                short_range_bonus += 30; // Far but approaching
+                // Map 4..10 -> 120..60
+                short_range_bonus += 130 - ((dist - 3) as i32 * 10);
             } else if dist <= 25 {
-                short_range_bonus += 15; // Very far
+                // Map 11..25 -> 57..15
+                short_range_bonus += 60 - ((dist - 10) as i32 * 3);
             } else {
-                // PENALTY for being too far - knight is useless here
-                short_range_bonus -= 80; // Doubled penalty
+                short_range_bonus -= 80;
             }
         }
     }
@@ -484,19 +486,10 @@ fn evaluate_mop_up_core(
         if is_overwhelming {
             // Precise cage logic for high-material endgames
             if bitboard_caged {
-                cage_score = if reached_area <= 5 {
-                    500
-                } else if reached_area <= 10 {
-                    360
-                } else if reached_area <= 16 {
-                    240
-                } else if reached_area <= 40 {
-                    160
-                } else if reached_area <= 100 {
-                    80
-                } else {
-                    40
-                };
+                // Continuous smoothing for cage area:
+                // 5 -> 500, 100 -> 80 decay
+                // Formula: 600 / (1 + area/4) clamped to reasonable bounds
+                cage_score = (2500 / (reached_area + 4).max(1) as i32).clamp(40, 500);
             }
             if macro_box {
                 cage_score = if macro_area <= 100 { 70 } else { 30 };

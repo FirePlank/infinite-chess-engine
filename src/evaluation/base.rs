@@ -274,18 +274,10 @@ const PAWN_FAR_FROM_PROMO_PENALTY: i32 = 50; // Flat penalty for back pawns (no 
 // Minimum starting square penalty for minors
 const MIN_DEVELOPMENT_PENALTY: i32 = 6; // Moderate - not too aggressive
 
-// King exposure: penalize kings with too many open directions
-
 // King defender bonuses/penalties
 // Low-value pieces near own king = good (defense)
 // High-value pieces near own king = bad (should be attacking)
 const KING_DEFENDER_VALUE_THRESHOLD: i32 = 400; // Pieces below this value are defensive
-
-// ==================== Game Phase ====================
-
-// Development thresholds - for attack scaling only
-const UNDEVELOPED_MINORS_THRESHOLD: i32 = 2;
-const DEVELOPMENT_PHASE_ATTACK_SCALE: i32 = 50;
 
 // ==================== Game Phase ====================
 
@@ -1109,24 +1101,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Pawn Advancement Calculation
                         if white_max_y != i64::MIN {
-                            let dist = w_promo - white_max_y;
-                            w_pawn_bonus += if dist <= 1 {
-                                500
-                            } else if dist <= 2 {
-                                350
-                            } else {
-                                ((10 - dist.min(10)) as i32) * 40
-                            };
+                            let dist = (w_promo - white_max_y).max(1) as i32;
+                            // Continuous piecewise linear: matches 500 at dist=1, 350 at dist=2, then transitions to (10-dist)*40.
+                            w_pawn_bonus += (500 - (dist - 1) * 150).max((10 - dist) * 40).max(0);
                         }
                         if black_min_y != i64::MAX {
-                            let dist = black_min_y - b_promo;
-                            b_pawn_bonus += if dist <= 1 {
-                                500
-                            } else if dist <= 2 {
-                                350
-                            } else {
-                                ((10 - dist.min(10)) as i32) * 40
-                            };
+                            let dist = (black_min_y - b_promo).max(1) as i32;
+                            b_pawn_bonus += (500 - (dist - 1) * 150).max((10 - dist) * 40).max(0);
                         }
 
                         // Sort pawns for efficient structure evaluation (O(P log P))
@@ -1134,14 +1115,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         black_pawns.sort_unstable();
 
                         let total_pieces = white_non_pawn_non_royal + black_non_pawn_non_royal;
-
-                        let multiplier_q = if total_pieces >= 10 {
-                            10
-                        } else if total_pieces <= 5 {
-                            100
-                        } else {
-                            100 - (total_pieces - 5) * 18
-                        };
+                        let multiplier_q = (190 - 18 * total_pieces).clamp(10, 100);
 
                         let w_adv = (w_pawn_bonus * multiplier_q / 100) + w_pawn_penalty;
                         let b_adv = (b_pawn_bonus * multiplier_q / 100) + b_pawn_penalty;
@@ -1203,26 +1177,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             mop_up_applied = true;
                         }
 
-                        // Defense urgency (pre-calculated)
-                        let calc_urgency = |tp: i32, has_q: bool| {
-                            if tp >= 80 {
-                                100
-                            } else if tp >= 55 {
-                                85
-                            } else if tp >= 40 {
-                                70
-                            } else if has_q {
-                                60
-                            } else if tp >= 25 {
-                                50
-                            } else if tp >= 10 {
-                                30
-                            } else {
-                                10
-                            }
-                        };
-                        let w_urgency = calc_urgency(black_threat_points, b_has_queen_threat);
-                        let b_urgency = calc_urgency(w_threat_points, w_has_queen_threat);
+                        // Defense urgency
+                        let calc_urgency = |tp: i32| (10 + tp + (tp / 4)).min(100);
+                        let w_urgency = calc_urgency(black_threat_points);
+                        let b_urgency = calc_urgency(w_threat_points);
 
                         // Attack scale calculation (Finalized from Readiness loop counts)
                         let w_attack_ready = compute_attack_readiness_optimized(
@@ -1357,15 +1315,13 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 
     let cloud_center = metrics.cloud_center;
 
-    let white_attack_ready = if metrics.white_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
-        white_attack_ready.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
-    } else {
-        white_attack_ready
+    let white_attack_ready = {
+        let cap = (100 - metrics.white_undeveloped * 25).clamp(30, 100);
+        white_attack_ready.min(cap)
     };
-    let black_attack_ready = if metrics.black_undeveloped >= UNDEVELOPED_MINORS_THRESHOLD {
-        black_attack_ready.min(DEVELOPMENT_PHASE_ATTACK_SCALE)
-    } else {
-        black_attack_ready
+    let black_attack_ready = {
+        let cap = (100 - metrics.black_undeveloped * 25).clamp(30, 100);
+        black_attack_ready.min(cap)
     };
 
     for &(x, y, piece) in piece_list {
@@ -1820,14 +1776,14 @@ fn compute_attack_bonus_optimized(
 
     const ATTACK_BONUS_PER_OPEN_RAY: i32 = 10;
     let diag_bonus = if our_diag_count > 0 && open_diag_rays > 0 {
-        let mult = if our_diag_count >= 2 { 115 } else { 100 };
+        let mult = 100 + (our_diag_count - 1).max(0) * 15;
         open_diag_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
     };
 
     let ortho_bonus = if our_ortho_count > 0 && open_ortho_rays > 0 {
-        let mult = if our_ortho_count >= 2 { 115 } else { 100 };
+        let mult = 100 + (our_ortho_count - 1).max(0) * 15;
         open_ortho_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
@@ -2282,23 +2238,10 @@ fn evaluate_king_shelter(
     let mut tied_defender_penalty: i32 = 0;
 
     let blocker_reduction_pct = |v: i32, d: i32| {
-        let val_pct = if v <= 100 {
-            80
-        } else if v <= 300 {
-            60
-        } else if v <= 500 {
-            40
-        } else if v <= 700 {
-            20
-        } else {
-            0
-        };
-        let dist_mult = match d {
-            1 => 100,
-            2 => 75,
-            3 => 50,
-            _ => 30,
-        };
+        // Continuous linear: 80% at v=100, 60% at v=300, 40% at v=500, 20% at v=700, 0% at v>=900
+        let val_pct = (90 - v / 10).clamp(0, 80);
+        // Continuous linear: 100% at d=1, 75% at d=2, 50% at d=3, 30% at d>=4
+        let dist_mult = (125 - d * 25).clamp(30, 100);
         val_pct * dist_mult / 100
     };
 
@@ -2617,8 +2560,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             let can_advance = game.board.get_piece(wx, next_y).is_none();
 
             // 2. Safe Advance
-            let safe_advance = !black_pawns.binary_search(&(wx - 1, next_y + 1)).is_ok()
-                && !black_pawns.binary_search(&(wx + 1, next_y + 1)).is_ok();
+            let safe_advance = black_pawns.binary_search(&(wx - 1, next_y + 1)).is_err()
+                && black_pawns.binary_search(&(wx + 1, next_y + 1)).is_err();
 
             // 3. King Distances
             let mut friendly_king_bonus = 0;
@@ -2715,8 +2658,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         if is_passed {
             let next_y = by - 1;
             let can_advance = game.board.get_piece(bx, next_y).is_none();
-            let safe_advance = !white_pawns.binary_search(&(bx - 1, next_y - 1)).is_ok()
-                && !white_pawns.binary_search(&(bx + 1, next_y - 1)).is_ok();
+            let safe_advance = white_pawns.binary_search(&(bx - 1, next_y - 1)).is_err()
+                && white_pawns.binary_search(&(bx + 1, next_y - 1)).is_err();
 
             let mut friendly_king_bonus = 0;
             let mut enemy_king_penalty = 0;
