@@ -94,19 +94,19 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
     // 1. Gather sliders from SpatialIndices (only pieces on the 4 lines through target)
     if let Some(row) = indices.rows.get(&ty) {
-        for &(x, packed) in row.iter() {
+        for (x, packed) in row {
             add_piece!(x, ty, packed);
         }
     }
     if let Some(col) = indices.cols.get(&tx) {
-        for &(y, packed) in col.iter() {
+        for (y, packed) in col {
             if y != ty {
                 add_piece!(tx, y, packed);
             }
         }
     }
     if let Some(diag) = indices.diag1.get(&d1) {
-        for &(x, packed) in diag.iter() {
+        for (x, packed) in diag {
             let y = x - d1;
             if x != tx && y != ty {
                 add_piece!(x, y, packed);
@@ -114,7 +114,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
     }
     if let Some(diag) = indices.diag2.get(&d2) {
-        for &(x, packed) in diag.iter() {
+        for (x, packed) in diag {
             let y = d2 - x;
             if x != tx && y != ty && (x - y) != d1 {
                 add_piece!(x, y, packed);

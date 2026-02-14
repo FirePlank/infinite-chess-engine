@@ -2846,9 +2846,9 @@ pub fn is_clear_line_between_fast(
                 (to.x, from.x)
             };
             // Binary search for first piece with x > min_x
-            let start = row.partition_point(|(x, _)| *x <= min_x);
+            let start = row.coords.partition_point(|x| *x <= min_x);
             // Check if any piece exists before max_x
-            if start < row.len() && row[start].0 < max_x {
+            if start < row.len() && row.coords[start] < max_x {
                 return false;
             }
         }
@@ -2864,9 +2864,9 @@ pub fn is_clear_line_between_fast(
                 (to.y, from.y)
             };
             // Binary search for first piece with y > min_y
-            let start = col.partition_point(|(y, _)| *y <= min_y);
+            let start = col.coords.partition_point(|y| *y <= min_y);
             // Check if any piece exists before max_y
-            if start < col.len() && col[start].0 < max_y {
+            if start < col.len() && col.coords[start] < max_y {
                 return false;
             }
         }
@@ -2882,8 +2882,8 @@ pub fn is_clear_line_between_fast(
             } else {
                 (to.x, from.x)
             };
-            let start = diag.partition_point(|(x, _)| *x <= min_x);
-            if start < diag.len() && diag[start].0 < max_x {
+            let start = diag.coords.partition_point(|x| *x <= min_x);
+            if start < diag.len() && diag.coords[start] < max_x {
                 return false;
             }
         }
@@ -2898,8 +2898,8 @@ pub fn is_clear_line_between_fast(
         } else {
             (to.x, from.x)
         };
-        let start = diag.partition_point(|(x, _)| *x <= min_x);
-        if start < diag.len() && diag[start].0 < max_x {
+        let start = diag.coords.partition_point(|x| *x <= min_x);
+        if start < diag.len() && diag.coords[start] < max_x {
             return false;
         }
     }

@@ -874,7 +874,7 @@ impl GameState {
         if dx == 0 {
             // Vertical ray (N or S) - use cols[start_x] to get all y coords
             if let Some(col_vec) = self.spatial_indices.cols.get(&start_x)
-                && let Some((found_y, _packed)) = SpatialIndices::find_nearest(col_vec, start_y, dy)
+                && let Some((found_y, _packed)) = col_vec.find_nearest(start_y, dy)
             {
                 return Some((start_x, found_y));
             }
@@ -884,7 +884,7 @@ impl GameState {
                 .spatial_indices
                 .rows
                 .get(&start_y)
-                .and_then(|row_vec| SpatialIndices::find_nearest(row_vec, start_x, dx))
+                .and_then(|row_vec| row_vec.find_nearest(start_x, dx))
             {
                 return Some((found_x, start_y));
             }
@@ -897,9 +897,7 @@ impl GameState {
                 // Main diagonal (NE or SW: dx == dy) - use diag1
                 if let Some(diag_vec) = self.spatial_indices.diag1.get(&diag_key) {
                     // diag1 is indexed by x, so search for x in direction dx
-                    if let Some((found_x, _packed)) =
-                        SpatialIndices::find_nearest(diag_vec, start_x, dx)
-                    {
+                    if let Some((found_x, _packed)) = diag_vec.find_nearest(start_x, dx) {
                         // Reconstruct y from x: on main diagonal, x - y = diag_key
                         let found_y = found_x - diag_key;
                         return Some((found_x, found_y));
@@ -909,9 +907,7 @@ impl GameState {
                 // Anti-diagonal (NW or SE: dx != dy) - use diag2
                 if let Some(anti_vec) = self.spatial_indices.diag2.get(&anti_key) {
                     // diag2 is indexed by x, search in direction dx
-                    if let Some((found_x, _packed)) =
-                        SpatialIndices::find_nearest(anti_vec, start_x, dx)
-                    {
+                    if let Some((found_x, _packed)) = anti_vec.find_nearest(start_x, dx) {
                         // Reconstruct y from x: on anti-diagonal, x + y = anti_key
                         let found_y = anti_key - found_x;
                         return Some((found_x, found_y));
@@ -1937,7 +1933,9 @@ impl GameState {
             };
 
             if let Some(vec) = line_vec {
-                for &(coord, packed) in vec {
+                for i in 0..vec.len() {
+                    let coord = vec.coords[i];
+                    let packed = vec.pieces[i];
                     let piece = Piece::from_packed(packed);
                     if piece.color() != our_color || piece.piece_type() != PieceType::Huygen {
                         continue;
@@ -1998,7 +1996,8 @@ impl GameState {
 
                         // Blocker check (ignore checker since it's the checker)
                         let dir_to_block = (block_coord - our_huygen_coord).signum();
-                        for &(other_coord, _) in vec {
+                        for j in 0..vec.len() {
+                            let other_coord = vec.coords[j];
                             if other_coord == our_huygen_coord || other_coord == checker_coord {
                                 continue;
                             }
@@ -2242,7 +2241,8 @@ impl GameState {
                         // Horizontal move
                         if let Some(vec) = row_pieces {
                             let dir = d_x.signum();
-                            for &(coord, _) in vec {
+                            for k in 0..vec.len() {
+                                let coord = vec.coords[k];
                                 let dp = (coord - from.x) * dir;
                                 if dp > 0 && dp < dist && is_prime_fast(dp) {
                                     blocked = true;
@@ -2254,7 +2254,8 @@ impl GameState {
                         // Vertical move
                         if let Some(vec) = col_pieces {
                             let dir = d_y.signum();
-                            for &(coord, _) in vec {
+                            for k in 0..vec.len() {
+                                let coord = vec.coords[k];
                                 let dp = (coord - from.y) * dir;
                                 if dp > 0 && dp < dist && is_prime_fast(dp) {
                                     blocked = true;
@@ -2546,7 +2547,8 @@ impl GameState {
 
                         let mut blocked = false;
                         if let Some(vec) = line_vec {
-                            for &(coord, _) in vec {
+                            for k in 0..vec.len() {
+                                let coord = vec.coords[k];
                                 let d = (coord - our_coord) * dir;
                                 if d > 0 && d < dist && is_prime_fast(d) {
                                     blocked = true;
@@ -2892,9 +2894,7 @@ impl GameState {
                 let partner_dir = if dx > 0 { 1i64 } else { -1i64 };
                 if let Some(row_pieces) = self.spatial_indices.rows.get(&from_y) {
                     // Find nearest piece past king's destination
-                    if let Some((partner_x, packed)) =
-                        SpatialIndices::find_nearest(row_pieces, to_x, partner_dir)
-                    {
+                    if let Some((partner_x, packed)) = row_pieces.find_nearest(to_x, partner_dir) {
                         let partner = Piece::from_packed(packed);
                         let partner_coord = Coordinate::new(partner_x, from_y);
 

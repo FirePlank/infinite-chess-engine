@@ -360,7 +360,7 @@ pub fn is_piece_attacking_square(
 
         if let Some(vec) = line_vec {
             // Check all pieces between Huygen and target for blockers at prime distances
-            for &(coord, _packed) in vec {
+            for (coord, _packed) in vec {
                 let d = (coord - our_coord) * sign; // Distance in direction of target
                 if d <= 0 || d >= dist {
                     continue; // Not between Huygen and target
@@ -390,16 +390,116 @@ pub fn is_piece_attacking_square(
     moves.iter().any(|m| m.to.x == to.x && m.to.y == to.y)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SpatialLine {
+    pub coords: Vec<i64>,
+    pub pieces: Vec<u8>,
+}
+
+impl<'a> IntoIterator for &'a SpatialLine {
+    type Item = (i64, u8);
+    type IntoIter = std::iter::Zip<
+        std::iter::Cloned<std::slice::Iter<'a, i64>>,
+        std::iter::Cloned<std::slice::Iter<'a, u8>>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.coords.iter().cloned().zip(self.pieces.iter().cloned())
+    }
+}
+
+impl SpatialLine {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            coords: Vec::with_capacity(8),
+            pieces: Vec::with_capacity(8),
+        }
+    }
+
+    #[inline]
+    pub fn insert(&mut self, coord: i64, val: u8) {
+        match self.coords.binary_search(&coord) {
+            Ok(pos) => self.pieces[pos] = val,
+            Err(pos) => {
+                self.coords.insert(pos, coord);
+                self.pieces.insert(pos, val);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn remove(&mut self, coord: i64) {
+        if let Ok(pos) = self.coords.binary_search(&coord) {
+            self.coords.remove(pos);
+            self.pieces.remove(pos);
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.coords.is_empty()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.coords.len()
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> (i64, u8) {
+        (self.coords[index], self.pieces[index])
+    }
+
+    #[inline]
+    pub fn binary_search(&self, coord: i64) -> Result<usize, usize> {
+        self.coords.binary_search(&coord)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (i64, u8)> + '_ {
+        self.coords.iter().copied().zip(self.pieces.iter().copied())
+    }
+
+    /// Find nearest piece in a direction.
+    /// Returns (coord, packed_piece) if found.
+    #[inline]
+    pub fn find_nearest(&self, from: i64, direction: i64) -> Option<(i64, u8)> {
+        let len = self.coords.len();
+        if len == 0 {
+            return None;
+        }
+
+        if direction > 0 {
+            // Look forward: Find first element > from
+            // partition_point returns the index of the first element where the predicate is false.
+            // Predicate: x <= from. False means x > from.
+            let idx = self.coords.partition_point(|&c| c <= from);
+            if idx < len {
+                return Some((self.coords[idx], self.pieces[idx]));
+            }
+        } else {
+            // Look backward: Find last element < from
+            // partition_point returns the index of the first element where the predicate is false.
+            // Predicate: x < from. False means x >= from.
+            let idx = self.coords.partition_point(|&c| c < from);
+            if idx > 0 {
+                return Some((self.coords[idx - 1], self.pieces[idx - 1]));
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpatialIndices {
-    /// Row index: y -> [(x, packed_piece), ...] sorted by x
-    pub rows: FxHashMap<i64, Vec<(i64, u8)>>,
-    /// Column index: x -> [(y, packed_piece), ...] sorted by y
-    pub cols: FxHashMap<i64, Vec<(i64, u8)>>,
-    /// Diagonal (x-y constant): key -> [(x, packed_piece), ...] sorted by x
-    pub diag1: FxHashMap<i64, Vec<(i64, u8)>>,
-    /// Anti-diagonal (x+y constant): key -> [(x, packed_piece), ...] sorted by x
-    pub diag2: FxHashMap<i64, Vec<(i64, u8)>>,
+    /// Row index: y -> SpatialLine sorted by x
+    pub rows: FxHashMap<i64, SpatialLine>,
+    /// Column index: x -> SpatialLine sorted by y
+    pub cols: FxHashMap<i64, SpatialLine>,
+    /// Diagonal (x-y constant): key -> SpatialLine sorted by x
+    pub diag1: FxHashMap<i64, SpatialLine>,
+    /// Anti-diagonal (x+y constant): key -> SpatialLine sorted by x
+    pub diag2: FxHashMap<i64, SpatialLine>,
     /// Lazily-populated slider interception cache.
     /// Key: (x, y, dir_index) where dir_index encodes the 8 cardinal/diagonal directions.
     /// Value: Sorted list of valid interception distances for that slider position/direction.
@@ -418,10 +518,10 @@ pub struct SpatialIndices {
 
 impl SpatialIndices {
     pub fn new(board: &Board) -> Self {
-        let mut rows: FxHashMap<i64, Vec<(i64, u8)>> = FxHashMap::default();
-        let mut cols: FxHashMap<i64, Vec<(i64, u8)>> = FxHashMap::default();
-        let mut diag1: FxHashMap<i64, Vec<(i64, u8)>> = FxHashMap::default();
-        let mut diag2: FxHashMap<i64, Vec<(i64, u8)>> = FxHashMap::default();
+        let mut rows: FxHashMap<i64, SpatialLine> = FxHashMap::default();
+        let mut cols: FxHashMap<i64, SpatialLine> = FxHashMap::default();
+        let mut diag1: FxHashMap<i64, SpatialLine> = FxHashMap::default();
+        let mut diag2: FxHashMap<i64, SpatialLine> = FxHashMap::default();
 
         // Fairy piece flags: [0] = white, [1] = black
         let mut has_huygen = [false, false];
@@ -441,10 +541,11 @@ impl SpatialIndices {
                 let ly = (idx / 8) as i64;
                 let x = cx * 8 + lx;
                 let y = cy * 8 + ly;
-                rows.entry(y).or_default().push((x, packed));
-                cols.entry(x).or_default().push((y, packed));
-                diag1.entry(x - y).or_default().push((x, packed));
-                diag2.entry(x + y).or_default().push((x, packed));
+
+                rows.entry(y).or_default().insert(x, packed);
+                cols.entry(x).or_default().insert(y, packed);
+                diag1.entry(x - y).or_default().insert(x, packed);
+                diag2.entry(x + y).or_default().insert(x, packed);
 
                 // Track fairy piece existence for O(1) early-exit in attack detection
                 let piece = Piece::from_packed(packed);
@@ -462,20 +563,6 @@ impl SpatialIndices {
             }
         }
 
-        // Sort vectors by coordinate for binary search
-        for list in rows.values_mut() {
-            list.sort_by_key(|(coord, _)| *coord);
-        }
-        for list in cols.values_mut() {
-            list.sort_by_key(|(coord, _)| *coord);
-        }
-        for list in diag1.values_mut() {
-            list.sort_by_key(|(coord, _)| *coord);
-        }
-        for list in diag2.values_mut() {
-            list.sort_by_key(|(coord, _)| *coord);
-        }
-
         SpatialIndices {
             rows,
             cols,
@@ -488,33 +575,15 @@ impl SpatialIndices {
         }
     }
 
-    #[inline]
-    fn insert_sorted(vec: &mut Vec<(i64, u8)>, coord: i64, packed: u8) {
-        match vec.binary_search_by_key(&coord, |(c, _)| *c) {
-            Ok(pos) => {
-                // Update existing entry with new piece
-                vec[pos].1 = packed;
-            }
-            Err(pos) => vec.insert(pos, (coord, packed)),
-        }
-    }
-
-    #[inline]
-    fn remove_sorted(vec: &mut Vec<(i64, u8)>, coord: i64) {
-        if let Ok(pos) = vec.binary_search_by_key(&coord, |(c, _)| *c) {
-            vec.remove(pos);
-        }
-    }
-
     /// Incrementally add a piece at (x, y) to the indices.
     pub fn add(&mut self, x: i64, y: i64, packed: u8) {
-        Self::insert_sorted(self.rows.entry(y).or_default(), x, packed);
-        Self::insert_sorted(self.cols.entry(x).or_default(), y, packed);
+        self.rows.entry(y).or_default().insert(x, packed);
+        self.cols.entry(x).or_default().insert(y, packed);
 
         let d1 = x - y;
         let d2 = x + y;
-        Self::insert_sorted(self.diag1.entry(d1).or_default(), x, packed);
-        Self::insert_sorted(self.diag2.entry(d2).or_default(), x, packed);
+        self.diag1.entry(d1).or_default().insert(x, packed);
+        self.diag2.entry(d2).or_default().insert(x, packed);
 
         // Invalidate slider cache when anything changes
         // self.slider_cache.borrow_mut().clear();
@@ -523,13 +592,13 @@ impl SpatialIndices {
     /// Incrementally remove a piece at (x, y) from the indices.
     pub fn remove(&mut self, x: i64, y: i64) {
         if let Some(v) = self.rows.get_mut(&y) {
-            Self::remove_sorted(v, x);
+            v.remove(x);
             if v.is_empty() {
                 self.rows.remove(&y);
             }
         }
         if let Some(v) = self.cols.get_mut(&x) {
-            Self::remove_sorted(v, y);
+            v.remove(y);
             if v.is_empty() {
                 self.cols.remove(&x);
             }
@@ -537,14 +606,14 @@ impl SpatialIndices {
 
         let d1 = x - y;
         if let Some(v) = self.diag1.get_mut(&d1) {
-            Self::remove_sorted(v, x);
+            v.remove(x);
             if v.is_empty() {
                 self.diag1.remove(&d1);
             }
         }
         let d2 = x + y;
         if let Some(v) = self.diag2.get_mut(&d2) {
-            Self::remove_sorted(v, x);
+            v.remove(x);
             if v.is_empty() {
                 self.diag2.remove(&d2);
             }
@@ -552,31 +621,6 @@ impl SpatialIndices {
 
         // Invalidate slider cache when anything changes
         // self.slider_cache.borrow_mut().clear();
-    }
-
-    /// Helper to find nearest piece in a direction from SpatialIndices.
-    /// Returns (coord, packed_piece) if found.
-    #[inline]
-    pub fn find_nearest(vec: &[(i64, u8)], from: i64, direction: i64) -> Option<(i64, u8)> {
-        let pos = vec.binary_search_by_key(&from, |(c, _)| *c);
-        let idx = match pos {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-
-        if direction > 0 {
-            // Look forward
-            let next_idx = if pos.is_ok() { idx + 1 } else { idx };
-            if next_idx < vec.len() {
-                return Some(vec[next_idx]);
-            }
-        } else {
-            // Look backward
-            if idx > 0 {
-                return Some(vec[idx - 1]);
-            }
-        }
-        None
     }
 
     /// Find first blocker on a ray starting from (from_x, from_y) in direction (dx, dy).
@@ -592,7 +636,8 @@ impl SpatialIndices {
         let is_horizontal = dy == 0;
         let is_diag1 = dx == dy; // Moving along x-y = const
 
-        let line_vec = if is_vertical {
+        // Helper to find nearest in the right map
+        let line = if is_vertical {
             self.cols.get(&from_x)
         } else if is_horizontal {
             self.rows.get(&from_y)
@@ -602,37 +647,30 @@ impl SpatialIndices {
             self.diag2.get(&(from_x + from_y))
         };
 
-        let vec = line_vec?;
-        let search_val = if is_vertical { from_y } else { from_x };
-        let step_dir = if is_vertical { dy } else { dx };
+        if let Some(spatial_line) = line {
+            let search_val = if is_vertical { from_y } else { from_x };
+            let step_dir = if is_vertical { dy } else { dx };
 
-        if let Some((coord, packed)) = Self::find_nearest(vec, search_val, step_dir) {
-            let piece = Piece::from_packed(packed);
-            let key = if is_vertical {
-                from_x
-            } else if is_horizontal {
-                from_y
-            } else if is_diag1 {
-                from_x - from_y
-            } else {
-                from_x + from_y
-            };
+            if let Some((coord, packed)) = spatial_line.find_nearest(search_val, step_dir) {
+                let piece = Piece::from_packed(packed);
 
-            // Convert back to x, y
-            let (vx, vy) = if is_vertical {
-                (from_x, coord)
-            } else if is_horizontal {
-                (coord, from_y)
-            } else if is_diag1 {
-                (coord, coord - key)
-            } else {
-                (coord, key - coord)
-            };
+                // Convert back to x, y
+                let (vx, vy) = if is_vertical {
+                    (from_x, coord)
+                } else if is_horizontal {
+                    (coord, from_y)
+                } else if is_diag1 {
+                    let key = from_x - from_y;
+                    (coord, coord - key)
+                } else {
+                    let key = from_x + from_y;
+                    (coord, key - coord)
+                };
 
-            Some((vx, vy, piece))
-        } else {
-            None
+                return Some((vx, vy, piece));
+            }
         }
+        None
     }
 }
 
@@ -1201,7 +1239,7 @@ pub fn is_square_attacked(
             let val = if dx == 0 { target.y } else { target.x };
             let step_dir = if dx == 0 { dy } else { dx };
 
-            if let Some((_, packed)) = SpatialIndices::find_nearest(vec, val, step_dir) {
+            if let Some((_, packed)) = vec.find_nearest(val, step_dir) {
                 let piece = Piece::from_packed(packed);
                 if piece.color() == attacker_color && matches_mask(piece.piece_type(), type_mask) {
                     return true;
@@ -1267,7 +1305,7 @@ pub fn is_square_attacked(
             };
             if let Some(vec) = line_vec {
                 // First pass: find any Huygens of attacker color in this direction
-                for &(coord, packed) in vec {
+                for (coord, packed) in vec.iter() {
                     let piece = Piece::from_packed(packed);
                     if piece.piece_type() != PieceType::Huygen || piece.color() != attacker_color {
                         continue;
@@ -1306,7 +1344,7 @@ pub fn is_square_attacked(
                     let mut blocked = false;
 
                     // Check all pieces in the line between Huygens and target
-                    for &(other_coord, _other_packed) in vec {
+                    for (other_coord, _other_packed) in vec.iter() {
                         // Calculate distance from HUYGENS to this piece
                         let dist_from_huygen = other_coord - huygen_coord;
 
@@ -1580,9 +1618,7 @@ fn generate_castling_moves(
                     let mut clear = true;
                     if let Some(row_pieces) = indices.rows.get(&from.y) {
                         // Find nearest piece in direction from king
-                        if let Some((nearest_x, _)) =
-                            SpatialIndices::find_nearest(row_pieces, from.x, dir)
-                        {
+                        if let Some((nearest_x, _)) = row_pieces.find_nearest(from.x, dir) {
                             // Path is clear only if no piece between king and rook
                             // nearest_x should equal coord.x (the rook) for clear path
                             if (dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x)
@@ -2238,9 +2274,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_y, _)) = indices
                                 .cols
                                 .get(&px)
-                                .and_then(|pieces| {
-                                    SpatialIndices::find_nearest(pieces, sy, (py - sy).signum())
-                                })
+                                .and_then(|pieces| pieces.find_nearest(sy, (py - sy).signum()))
                                 .filter(|&(ny, _)| ny == py)
                         {
                             // Check visited targets (Vertical alignment = 1)
@@ -2297,9 +2331,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_x, _)) = indices
                                 .rows
                                 .get(&py)
-                                .and_then(|pieces| {
-                                    SpatialIndices::find_nearest(pieces, sx, (px - sx).signum())
-                                })
+                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
                                 .filter(|&(nx, _)| nx == px)
                         {
                             // Check visited targets (Horizontal alignment = 2)
@@ -2363,9 +2395,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_x, _)) = indices
                                 .diag1
                                 .get(&s_diag_diff)
-                                .and_then(|pieces| {
-                                    SpatialIndices::find_nearest(pieces, sx, (px - sx).signum())
-                                })
+                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
                                 .filter(|&(nx, _)| nx == px)
                         {
                             add_dist(dist_counts, d, max_dist);
@@ -2393,9 +2423,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_x, _)) = indices
                                 .diag2
                                 .get(&s_diag_sum)
-                                .and_then(|pieces| {
-                                    SpatialIndices::find_nearest(pieces, sx, (px - sx).signum())
-                                })
+                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
                                 .filter(|&(nx, _)| nx == px)
                         {
                             add_dist(dist_counts, d, max_dist);
@@ -2524,7 +2552,7 @@ fn generate_sliding_moves_impl(
                 // 1. Direct Ray iteration (O(log pieces_on_line + pieces_near_slider))
                 if is_horizontal {
                     if let Some(pieces_on_row) = indices.rows.get(&from.y) {
-                        let pos = pieces_on_row.binary_search_by_key(&from.x, |(c, _)| *c);
+                        let pos = pieces_on_row.coords.binary_search(&from.x);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -2542,7 +2570,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let &(px, packed) = &pieces_on_row[real_idx];
+                            let px = pieces_on_row.coords[real_idx];
+                            let packed = pieces_on_row.pieces[real_idx];
                             let dx = px - from.x;
                             let piece_dist = dx.abs();
 
@@ -2593,7 +2622,7 @@ fn generate_sliding_moves_impl(
                     }
                 } else if is_vertical {
                     if let Some(pieces_on_col) = indices.cols.get(&from.x) {
-                        let pos = pieces_on_col.binary_search_by_key(&from.y, |(c, _)| *c);
+                        let pos = pieces_on_col.coords.binary_search(&from.y);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -2611,7 +2640,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let &(py, packed) = &pieces_on_col[real_idx];
+                            let py = pieces_on_col.coords[real_idx];
+                            let packed = pieces_on_col.pieces[real_idx];
                             let dy = py - from.y;
                             let piece_dist = dy.abs();
 
@@ -2673,7 +2703,7 @@ fn generate_sliding_moves_impl(
                     };
 
                     if let Some(pieces_on_diag) = diag_map.get(&diag_key) {
-                        let pos = pieces_on_diag.binary_search_by_key(&from.x, |(c, _)| *c);
+                        let pos = pieces_on_diag.coords.binary_search(&from.x);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -2691,7 +2721,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let &(px, packed) = &pieces_on_diag[real_idx];
+                            let px = pieces_on_diag.coords[real_idx];
+                            let packed = pieces_on_diag.pieces[real_idx];
                             let dx = px - from.x;
                             let piece_dist = dx.abs();
 
@@ -2905,8 +2936,7 @@ fn find_blocker_via_indices(
         let step_dir = if is_vertical { dir_y } else { dir_x };
 
         // Use the new find_nearest helper
-        if let Some((next_coord, packed)) = SpatialIndices::find_nearest(vec, search_val, step_dir)
-        {
+        if let Some((next_coord, packed)) = vec.find_nearest(search_val, step_dir) {
             let dist = (next_coord - search_val).abs();
 
             // Verify this is actually in the correct direction
@@ -3045,16 +3075,18 @@ fn find_huygen_blocker(
 
     if let Some(vec) = line_vec {
         // Binary search for our position in the sorted list
-        match vec.binary_search_by_key(&our_coord, |(c, _)| *c) {
+        match vec.coords.binary_search(&our_coord) {
             Ok(idx) => {
                 // Found our position, iterate in the direction to find first blocker at prime distance
                 if (is_horizontal && dir_x > 0) || (!is_horizontal && dir_y > 0) {
                     // Positive direction: iterate forward from idx + 1
-                    for (coord, packed) in vec.iter().skip(idx + 1) {
+                    for i in (idx + 1)..vec.len() {
+                        let coord = vec.coords[i];
+                        let packed = vec.pieces[i];
                         let dist = coord - our_coord;
                         // O(1) prime check
                         if is_prime_fast(dist) {
-                            let p = Piece::from_packed(*packed);
+                            let p = Piece::from_packed(packed);
                             // Void blocks like friendly
                             let effective_color = if p.piece_type() == PieceType::Void {
                                 our_color
@@ -3066,11 +3098,13 @@ fn find_huygen_blocker(
                     }
                 } else {
                     // Negative direction: iterate backward from idx - 1
-                    for (coord, packed) in vec.iter().take(idx).rev() {
+                    for i in (0..idx).rev() {
+                        let coord = vec.coords[i];
+                        let packed = vec.pieces[i];
                         let dist = our_coord - coord;
                         // O(1) prime check
                         if is_prime_fast(dist) {
-                            let p = Piece::from_packed(*packed);
+                            let p = Piece::from_packed(packed);
                             let effective_color = if p.piece_type() == PieceType::Void {
                                 our_color
                             } else {
@@ -3382,7 +3416,7 @@ fn generate_castling_moves_into(
                 if let Some((nearest_x, _)) = indices
                     .rows
                     .get(&from.y)
-                    .and_then(|row| SpatialIndices::find_nearest(row, from.x, dir))
+                    .and_then(|row| row.find_nearest(from.x, dir))
                     && ((dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x))
                 {
                     clear = false;
@@ -3549,39 +3583,50 @@ mod tests {
 
     #[test]
     fn test_spatial_indices_find_nearest_forward() {
-        let vec = vec![(0, 1), (5, 2), (10, 3), (20, 4)];
+        let mut line = SpatialLine::new();
+        line.insert(0, 1);
+        line.insert(5, 2);
+        line.insert(10, 3);
+        line.insert(20, 4);
 
         // Find nearest forward from position 3
-        let result = SpatialIndices::find_nearest(&vec, 3, 1);
+        let result = line.find_nearest(3, 1);
         assert_eq!(result, Some((5, 2)), "Should find piece at coord 5");
 
         // Find nearest forward from position 10
-        let result = SpatialIndices::find_nearest(&vec, 10, 1);
+        let result = line.find_nearest(10, 1);
         assert_eq!(result, Some((20, 4)), "Should find piece at coord 20");
     }
 
     #[test]
     fn test_spatial_indices_find_nearest_backward() {
-        let vec = vec![(0, 1), (5, 2), (10, 3), (20, 4)];
+        let mut line = SpatialLine::new();
+        line.insert(0, 1);
+        line.insert(5, 2);
+        line.insert(10, 3);
+        line.insert(20, 4);
 
         // Find nearest backward from position 7
-        let result = SpatialIndices::find_nearest(&vec, 7, -1);
+        let result = line.find_nearest(7, -1);
         assert_eq!(result, Some((5, 2)), "Should find piece at coord 5");
 
         // Find nearest backward from position 0
-        let result = SpatialIndices::find_nearest(&vec, 0, -1);
+        let result = line.find_nearest(0, -1);
         assert_eq!(result, None, "No piece before 0");
     }
 
     #[test]
     fn test_spatial_indices_find_nearest_at_extreme_distance() {
         // Test with large coordinates (infinite chess scale)
-        let vec = vec![(-1_000_000, 1), (0, 2), (1_000_000, 3)];
+        let mut line = SpatialLine::new();
+        line.insert(-1_000_000, 1);
+        line.insert(0, 2);
+        line.insert(1_000_000, 3);
 
-        let result = SpatialIndices::find_nearest(&vec, 0, 1);
+        let result = line.find_nearest(0, 1);
         assert_eq!(result, Some((1_000_000, 3)), "Should find distant piece");
 
-        let result = SpatialIndices::find_nearest(&vec, 0, -1);
+        let result = line.find_nearest(0, -1);
         assert_eq!(
             result,
             Some((-1_000_000, 1)),
@@ -3638,7 +3683,7 @@ mod tests {
         assert_eq!(row.len(), 2, "Row should have 2 pieces");
 
         // Find nearest from rook position toward king
-        let result = SpatialIndices::find_nearest(row, 0, 1);
+        let result = row.find_nearest(0, 1);
         assert_eq!(
             result.map(|(c, _)| c),
             Some(1000),
