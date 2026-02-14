@@ -2075,16 +2075,10 @@ pub fn evaluate_bishop(
     };
 
     // Check left support
-    let left_support_idx = my_pawns.partition_point(|p| p.0 < x - 1);
-    let has_left_support = left_support_idx < my_pawns.len()
-        && my_pawns[left_support_idx].0 == x - 1
-        && my_pawns[left_support_idx].1 == support_y;
+    let has_left_support = my_pawns.binary_search(&(x - 1, support_y)).is_ok();
 
     // Check right support
-    let right_support_idx = my_pawns.partition_point(|p| p.0 < x + 1);
-    let has_right_support = right_support_idx < my_pawns.len()
-        && my_pawns[right_support_idx].0 == x + 1
-        && my_pawns[right_support_idx].1 == support_y;
+    let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
         bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
@@ -2126,16 +2120,10 @@ fn evaluate_knight(
     };
 
     // Check left support
-    let left_support_idx = my_pawns.partition_point(|p| p.0 < x - 1);
-    let has_left_support = left_support_idx < my_pawns.len()
-        && my_pawns[left_support_idx].0 == x - 1
-        && my_pawns[left_support_idx].1 == support_y;
+    let has_left_support = my_pawns.binary_search(&(x - 1, support_y)).is_ok();
 
     // Check right support
-    let right_support_idx = my_pawns.partition_point(|p| p.0 < x + 1);
-    let has_right_support = right_support_idx < my_pawns.len()
-        && my_pawns[right_support_idx].0 == x + 1
-        && my_pawns[right_support_idx].1 == support_y;
+    let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
         bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
@@ -2576,14 +2564,25 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             }
 
             // 4. Safe Promotion Path
-            let mut safe_path = true;
-            for cur_y in (wy + 1)..w_promo {
-                if game.board.get_piece(wx, cur_y).is_some()
-                    || black_pawns.binary_search(&(wx - 1, cur_y + 1)).is_ok()
-                    || black_pawns.binary_search(&(wx + 1, cur_y + 1)).is_ok()
-                {
-                    safe_path = false;
-                    break;
+            let mut safe_path = is_clear_line_between_fast(
+                &game.spatial_indices,
+                &Coordinate::new(wx, wy),
+                &Coordinate::new(wx, w_promo),
+            );
+            if safe_path {
+                // Check for attacking black pawns on adjacent files in rank range [wy+2, w_promo]
+                for dx in &[-1, 1] {
+                    let target_file = wx + dx;
+                    let start = black_pawns.partition_point(|&(bx, by)| {
+                        bx < target_file || (bx == target_file && by < wy + 2)
+                    });
+                    if start < black_pawns.len()
+                        && black_pawns[start].0 == target_file
+                        && black_pawns[start].1 <= w_promo
+                    {
+                        safe_path = false;
+                        break;
+                    }
                 }
             }
             let safe_path_bonus = if safe_path {
@@ -2672,14 +2671,26 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                 enemy_king_penalty = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
             }
 
-            let mut safe_path = true;
-            for cur_y in b_promo..by {
-                if game.board.get_piece(bx, cur_y).is_some()
-                    || white_pawns.binary_search(&(bx - 1, cur_y - 1)).is_ok()
-                    || white_pawns.binary_search(&(bx + 1, cur_y - 1)).is_ok()
-                {
-                    safe_path = false;
-                    break;
+            // 4. Safe Promotion Path
+            let mut safe_path = is_clear_line_between_fast(
+                &game.spatial_indices,
+                &Coordinate::new(bx, by),
+                &Coordinate::new(bx, b_promo),
+            );
+            if safe_path {
+                // Check for attacking white pawns on adjacent files in rank range [b_promo-1, by-2]
+                for dx in &[-1, 1] {
+                    let target_file = bx + dx;
+                    let start = white_pawns.partition_point(|&(wx, wy_)| {
+                        wx < target_file || (wx == target_file && wy_ < b_promo - 1)
+                    });
+                    if start < white_pawns.len()
+                        && white_pawns[start].0 == target_file
+                        && white_pawns[start].1 <= by - 2
+                    {
+                        safe_path = false;
+                        break;
+                    }
                 }
             }
             let safe_path_bonus = if safe_path {
