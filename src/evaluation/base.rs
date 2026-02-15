@@ -2107,7 +2107,7 @@ fn evaluate_knight(
     );
 
     // Outpost Bonus: precise pawn support
-    let (my_pawns, _) = if color == PlayerColor::White {
+    let (my_pawns, _enemy_pawns) = if color == PlayerColor::White {
         (white_pawns, black_pawns)
     } else {
         (black_pawns, white_pawns)
@@ -2461,6 +2461,10 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     let mut b_connected = 0;
     let mut w_candidate = 0;
     let mut b_candidate = 0;
+    let mut w_isolated = 0;
+    let mut b_isolated = 0;
+    let mut w_backward = 0;
+    let mut b_backward = 0;
 
     // White Doubled Pawns
     let mut i = 0;
@@ -2494,13 +2498,38 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         i = j;
     }
 
-    // White Pawns: Passed, Candidate, Connected
+    // White Pawns: Passed, Candidate, Connected, Isolated, Backward
     for &(wx, wy) in white_pawns {
         let mut is_passed = true;
         let mut is_candidate = false;
         let mut stoppers = 0;
         let mut attackers = 0;
         let mut defenders = 0;
+
+        // Structure checks
+        let left_idx = white_pawns.partition_point(|&(x, _)| x < wx - 1);
+        let has_left_neighbor = left_idx < white_pawns.len() && white_pawns[left_idx].0 == wx - 1;
+
+        let right_idx = white_pawns.partition_point(|&(x, _)| x < wx + 1);
+        let has_right_neighbor =
+            right_idx < white_pawns.len() && white_pawns[right_idx].0 == wx + 1;
+
+        if !has_left_neighbor && !has_right_neighbor {
+            w_isolated -= taper(10, 20);
+        } else {
+            let is_behind_left = !has_left_neighbor || white_pawns[left_idx].1 > wy;
+            let is_behind_right = !has_right_neighbor || white_pawns[right_idx].1 > wy;
+
+            if is_behind_left && is_behind_right {
+                let stop_sq_blocked = game.board.is_occupied(wx, wy + 1);
+                let stop_sq_attacked = black_pawns.binary_search(&(wx - 1, wy + 2)).is_ok()
+                    || black_pawns.binary_search(&(wx + 1, wy + 2)).is_ok();
+
+                if stop_sq_blocked || stop_sq_attacked {
+                    w_backward -= taper(8, 12);
+                }
+            }
+        }
 
         // Relative rank 0 to 5 (assuming 6 ranks is "near promotion")
         // For an infinite board, we'll anchor to the promotion rank.
@@ -2610,17 +2639,67 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         if white_pawns.binary_search(&(wx - 1, wy - 1)).is_ok()
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
-            w_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
+            // Boost connectivity if also a candidate/passed
+            let bonus = if is_passed {
+                (taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS) * 3) / 2
+            } else {
+                taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS)
+            };
+            w_connected += bonus;
         }
     }
 
-    // Black Pawns: Passed, Candidate, Connected
+    // Black Pawns: Passed, Candidate, Connected, Isolated, Backward
     for &(bx, by) in black_pawns {
         let mut is_passed = true;
         let mut is_candidate = false;
         let mut stoppers = 0;
         let mut attackers = 0;
         let mut defenders = 0;
+
+        // Structure checks
+        let left_idx = black_pawns.partition_point(|&(x, _)| x < bx - 1);
+        let has_left_neighbor = left_idx < black_pawns.len() && black_pawns[left_idx].0 == bx - 1;
+
+        let right_idx = black_pawns.partition_point(|&(x, _)| x < bx + 1);
+        let has_right_neighbor =
+            right_idx < black_pawns.len() && black_pawns[right_idx].0 == bx + 1;
+
+        if !has_left_neighbor && !has_right_neighbor {
+            b_isolated -= taper(10, 20);
+        } else {
+            let mut is_behind_left = true;
+            if has_left_neighbor {
+                let next_idx = black_pawns.partition_point(|&(x, _)| x < bx);
+                if next_idx > left_idx {
+                    let last_y = black_pawns[next_idx - 1].1;
+                    if last_y >= by {
+                        is_behind_left = false;
+                    }
+                }
+            }
+
+            let mut is_behind_right = true;
+            if has_right_neighbor {
+                let next_idx = black_pawns.partition_point(|&(x, _)| x < bx + 2);
+                if next_idx > right_idx {
+                    let last_y = black_pawns[next_idx - 1].1;
+                    if last_y >= by {
+                        is_behind_right = false;
+                    }
+                }
+            }
+
+            if is_behind_left && is_behind_right {
+                let stop_sq_blocked = game.board.is_occupied(bx, by - 1);
+                let stop_sq_attacked = white_pawns.binary_search(&(bx - 1, by - 2)).is_ok()
+                    || white_pawns.binary_search(&(bx + 1, by - 2)).is_ok();
+
+                if stop_sq_blocked || stop_sq_attacked {
+                    b_backward -= taper(8, 12);
+                }
+            }
+        }
 
         let b_promo = game.black_promo_rank;
         let dist_to_promo = (by - b_promo).max(1);
@@ -2715,7 +2794,13 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         if black_pawns.binary_search(&(bx - 1, by + 1)).is_ok()
             || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
         {
-            b_connected += taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS);
+            // Boost connectivity if also a candidate/passed
+            let bonus = if is_passed {
+                (taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS) * 3) / 2
+            } else {
+                taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS)
+            };
+            b_connected += bonus;
         }
     }
 
@@ -2723,9 +2808,11 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
     tracer.record("Pawn: Passed", w_passed_score, b_passed_score);
     tracer.record("Pawn: Candidate", w_candidate, b_candidate);
     tracer.record("Pawn: Connected", w_connected, b_connected);
+    tracer.record("Pawn: Isolated", w_isolated.abs(), b_isolated.abs());
+    tracer.record("Pawn: Backward", w_backward.abs(), b_backward.abs());
 
-    (w_doubled + w_passed_score + w_candidate + w_connected)
-        - (b_doubled + b_passed_score + b_candidate + b_connected)
+    (w_doubled + w_passed_score + w_candidate + w_connected + w_isolated + w_backward)
+        - (b_doubled + b_passed_score + b_candidate + b_connected + b_isolated + b_backward)
 }
 
 pub fn count_pawns_on_file(
@@ -3364,6 +3451,74 @@ mod tests {
         assert!(
             score_safe > score_unsafe,
             "Safe-to-advance passed pawn should score higher than unsafe"
+        );
+    }
+
+    #[test]
+    fn test_backward_isolated_penalties() {
+        let mut game = Box::new(GameState::new());
+        game.board = Board::new();
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // Case 1: Connected Pawns (Good)
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.board
+            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+        let score_good = evaluate_pawn_structure(&game);
+
+        // Case 2: Isolated Pawn (Bad)
+        game.board = Board::new();
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White)); // No neighbors
+        game.board
+            .set_piece(8, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+        let score_isolated = evaluate_pawn_structure(&game);
+
+        // Case 3: Backward Pawn (Bad)
+        game.board = Board::new();
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+        game.board
+            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.board
+            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.board
+            .set_piece(3, 6, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+        let score_backward = evaluate_pawn_structure(&game);
+
+        // Expect: Connected > Backward
+        assert!(
+            score_good > score_backward,
+            "Backward pawn should score lower than free connected. Good: {}, Backward: {}",
+            score_good,
+            score_backward
+        );
+
+        // Expect: Connected > Isolated
+        assert!(
+            score_good > score_isolated,
+            "Isolated pawn should score lower than connected. Good: {}, Isolated: {}",
+            score_good,
+            score_isolated
         );
     }
 }
