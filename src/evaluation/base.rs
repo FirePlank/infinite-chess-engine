@@ -368,19 +368,19 @@ const EG_OUTPOST_BONUS: i32 = 50;
 
 // Passed Pawn Detail (MG/EG tapered arrays by relative rank 0-5)
 // Rank 0 is far, Rank 5 is near promotion.
-const CANDIDATE_PASSER_BONUS: [i32; 6] = [5, 10, 20, 35, 60, 100];
+const CANDIDATE_PASSER_BONUS: [i32; 6] = [3, 7, 14, 25, 40, 70];
 
 // PASSED_PAWN_ADV_BONUS[canAdvance][safeAdvance][rank]
 const PASSED_PAWN_ADV_BONUS: [[[i32; 6]; 2]; 2] = [
     // cannot advance
     [
-        [2, 4, 8, 15, 30, 60],    // unsafe
-        [5, 10, 20, 40, 70, 120], // safe
+        [1, 3, 6, 10, 20, 40],  // unsafe
+        [3, 7, 14, 28, 50, 85], // safe
     ],
     // can advance
     [
-        [8, 15, 30, 55, 100, 180],   // unsafe
-        [15, 30, 60, 110, 200, 350], // safe
+        [5, 10, 20, 40, 70, 125],   // unsafe
+        [10, 20, 40, 75, 140, 240], // safe
     ],
 ];
 
