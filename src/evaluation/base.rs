@@ -2162,7 +2162,7 @@ fn evaluate_leaper_positioning(
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate_king_shelter(
-    _game: &GameState,
+    game: &GameState,
     king: &Coordinate,
     color: PlayerColor,
     phase: i32,
@@ -2241,19 +2241,62 @@ fn evaluate_king_shelter(
         val_pct * dist_mult / 100
     };
 
+    // Bounds for world border check (treat as friendly blocker)
+    let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
+
+    let get_border_dist = |dx: i64, dy: i64| -> i32 {
+        let mut d = i64::MAX;
+        if dx > 0 {
+            d = d.min(max_x.saturating_sub(king.x).saturating_add(1));
+        }
+        if dx < 0 {
+            d = d.min(king.x.saturating_sub(min_x).saturating_add(1));
+        }
+        if dy > 0 {
+            d = d.min(max_y.saturating_sub(king.y).saturating_add(1));
+        }
+        if dy < 0 {
+            d = d.min(king.y.saturating_sub(min_y).saturating_add(1));
+        }
+        d.clamp(0, 100) as i32
+    };
+
     // Diagonal Rays (Indices 0..4)
-    for (dist, val, c) in &king_rays[0..4] {
+    for (i, (dist, val, c)) in king_rays[0..4].iter().enumerate() {
         let (dist, val, c) = (*dist, *val, *c);
         let mut blocker: Option<(i32, i32)> = None;
         let mut enemy_blocked = false;
 
-        if dist <= 8 {
-            if c == color {
+        let (dx, dy) = DIAG_DIRS[i];
+        let border_dist = get_border_dist(dx, dy);
+        let is_border_closest = border_dist < dist;
+        let actual_dist = if is_border_closest { border_dist } else { dist };
+
+        if actual_dist <= 8 {
+            if is_border_closest {
+                // Border acts as a low-value friendly piece at distance 1 (perfect blocker)
+                blocker = Some((0, 1));
+            } else if c == color {
                 blocker = Some((val, dist));
                 if val >= 600 {
                     tied_defender_penalty += 10;
                 }
-            } else if c != PlayerColor::Neutral {
+            } else if c == PlayerColor::Neutral {
+                // Neutral pieces (Void/Obstacle)
+                // Void -> Perfect blocker (dist 1) like world border
+                // Obstacle -> Normal blocker (actual dist), value 0 is good but decays with distance
+                let tx = king.x + dx * dist as i64;
+                let ty = king.y + dy * dist as i64;
+                if let Some(p) = game.board.get_piece(tx, ty) {
+                    if p.piece_type() == PieceType::Void {
+                        blocker = Some((0, 1));
+                    } else {
+                        blocker = Some((0, dist));
+                    }
+                } else {
+                    blocker = Some((0, dist));
+                }
+            } else {
                 enemy_blocked = true;
             }
         }
@@ -2268,18 +2311,37 @@ fn evaluate_king_shelter(
     }
 
     // Ortho Rays (Indices 4..8)
-    for (dist, val, c) in &king_rays[4..8] {
+    for (i, (dist, val, c)) in king_rays[4..8].iter().enumerate() {
         let (dist, val, c) = (*dist, *val, *c);
         let mut blocker: Option<(i32, i32)> = None;
         let mut enemy_blocked = false;
 
-        if dist <= 8 {
-            if c == color {
+        let (dx, dy) = ORTHO_DIRS[i];
+        let border_dist = get_border_dist(dx, dy);
+        let is_border_closest = border_dist < dist;
+        let actual_dist = if is_border_closest { border_dist } else { dist };
+
+        if actual_dist <= 8 {
+            if is_border_closest {
+                blocker = Some((0, 1));
+            } else if c == color {
                 blocker = Some((val, dist));
                 if val >= 600 {
                     tied_defender_penalty += 12;
                 }
-            } else if c != PlayerColor::Neutral {
+            } else if c == PlayerColor::Neutral {
+                let tx = king.x + dx * dist as i64;
+                let ty = king.y + dy * dist as i64;
+                if let Some(p) = game.board.get_piece(tx, ty) {
+                    if p.piece_type() == PieceType::Void {
+                        blocker = Some((0, 1));
+                    } else {
+                        blocker = Some((0, dist));
+                    }
+                } else {
+                    blocker = Some((0, dist));
+                }
+            } else {
                 enemy_blocked = true;
             }
         }
@@ -3047,16 +3109,8 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece};
-    use crate::game::GameState;
 
-    fn create_test_game() -> GameState {
-        let mut game = GameState::new();
-        game.board = Board::new();
-        game.white_promo_rank = 8;
-        game.black_promo_rank = 1;
-        game
-    }
+    use crate::game::GameState;
 
     #[test]
     fn test_is_between() {
@@ -3070,46 +3124,48 @@ mod tests {
 
     #[test]
     fn test_is_clear_line_between() {
-        let mut board = Board::new();
+        let mut game = GameState::new();
         let from = Coordinate::new(1, 1);
         let to = Coordinate::new(1, 8);
 
         // Empty board should have clear line
-        assert!(is_clear_line_between(&board, &from, &to));
+        assert!(is_clear_line_between(&game.board, &from, &to));
 
         // Add blocker
-        board.set_piece(1, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        assert!(!is_clear_line_between(&board, &from, &to));
+        let icn = "w (8;q|1|q) P1,4";
+        game.setup_position_from_icn(icn);
+        assert!(!is_clear_line_between(&game.board, &from, &to));
     }
 
     #[test]
     fn test_is_clear_line_diagonal() {
-        let mut board = Board::new();
+        let mut game = GameState::new();
         let from = Coordinate::new(1, 1);
         let to = Coordinate::new(5, 5);
 
-        assert!(is_clear_line_between(&board, &from, &to));
+        assert!(is_clear_line_between(&game.board, &from, &to));
 
-        board.set_piece(3, 3, Piece::new(PieceType::Bishop, PlayerColor::Black));
-        assert!(!is_clear_line_between(&board, &from, &to));
+        let icn = "w (8;q|1;q) b3,3|";
+        game.setup_position_from_icn(icn);
+        assert!(!is_clear_line_between(&game.board, &from, &to));
     }
 
     #[test]
     fn test_calculate_initial_material() {
-        let mut board = Board::new();
+        let mut game = GameState::new();
 
         // Empty board = 0
-        assert_eq!(calculate_initial_material(&board), 0);
+        assert_eq!(calculate_initial_material(&game.board), 0);
 
         // Add white queen
-        board.set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-
-        assert_eq!(calculate_initial_material(&board), 1350); // Queen = 1350 in infinite chess
+        let icn1 = "w (8;q|1;q) Q4,1";
+        game.setup_position_from_icn(icn1);
+        assert_eq!(calculate_initial_material(&game.board), 1350); // Queen = 1350 in infinite chess
 
         // Add black queen - should cancel out
-        board.set_piece(4, 8, Piece::new(PieceType::Queen, PlayerColor::Black));
-
-        assert_eq!(calculate_initial_material(&board), 0);
+        let icn2 = "w (8;q|1|q) Q4,1|q4,8";
+        game.setup_position_from_icn(icn2);
+        assert_eq!(calculate_initial_material(&game.board), 0);
     }
 
     #[test]
@@ -3120,14 +3176,9 @@ mod tests {
 
     #[test]
     fn test_evaluate_returns_value() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let mut game = GameState::new();
+        let icn = "w (8;q|1;q) K5,1|k5,8";
+        game.setup_position_from_icn(icn);
 
         let score = evaluate(&game);
         // K vs K should be close to 0
@@ -3136,13 +3187,9 @@ mod tests {
 
     #[test]
     fn test_count_pawns_on_file() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = GameState::new();
+        let icn = "w (8;q|1;q) K5,1|k5,8|P4,2|P4,3|p4,7";
+        game.setup_position_from_icn(icn);
 
         let w_pawns = vec![(4, 1), (4, 3)];
         let b_pawns = vec![(4, 7)];
@@ -3153,18 +3200,9 @@ mod tests {
 
     #[test]
     fn test_evaluate_pawn_structure() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // Doubled pawns for white
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let mut game = GameState::new();
+        let icn = "w (8;q|1;q) K5,1|k5,8|P4,2|P4,3";
+        game.setup_position_from_icn(icn);
 
         let score = evaluate_pawn_structure(&game);
         // Doubled pawns should give penalty (White has doubled pawns = negative score)
@@ -3179,32 +3217,16 @@ mod tests {
     #[test]
     fn test_king_safety_penalties() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        // White King at (0,0)
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(10, 10, Piece::new(PieceType::King, PlayerColor::Black));
+        // White King at (0,0), Black King (10,10), Rooks, White Queen at (0,1)
+        let icn_near = "w (8;q|1;q) K0,0|k10,10|R5,0|r5,9|Q0,1";
+        game.setup_position_from_icn(icn_near);
 
-        // Add some sufficient material to avoid draw (0)
-        game.board
-            .set_piece(5, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(5, 9, Piece::new(PieceType::Rook, PlayerColor::Black));
-
-        // White Queen at home near its king (good/neutral)
-        game.board
-            .set_piece(0, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.material_score = 0; // Rook vs Rook balanced
         let score_near = evaluate_inner(&game);
 
         // White Queen far away from its king
-        game.board.remove_piece(&0, &1);
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.material_score = 0;
+        let icn_far = "w (8;q|1;q) K0,0|k10,10|R5,0|r5,9|Q5,5";
+        game.setup_position_from_icn(icn_far);
+
         let score_far = evaluate_inner(&game);
 
         assert!(score_far != score_near);
@@ -3213,13 +3235,8 @@ mod tests {
     #[test]
     fn test_pawn_structure_caching() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let icn = "w (8;q|1;q) K5,1|k5,8|P4,4|p4,5";
+        game.setup_position_from_icn(icn);
 
         clear_pawn_cache();
         let eval1 = evaluate_inner(&game);
@@ -3235,14 +3252,8 @@ mod tests {
     #[test]
     fn test_evaluate_bishop_diagonal() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Bishop, PlayerColor::White));
-        game.recompute_piece_counts();
+        let icn = "w (8;q|1;q) K0,0|k7,7|B4,4";
+        game.setup_position_from_icn(icn);
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
@@ -3267,14 +3278,8 @@ mod tests {
     #[test]
     fn test_evaluate_rook_open_file() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.recompute_piece_counts();
+        let icn = "w (8;q|1;q) K0,0|k7,7|R4,1";
+        game.setup_position_from_icn(icn);
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
@@ -3296,14 +3301,8 @@ mod tests {
     #[test]
     fn test_evaluate_queen_central() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
+        let icn = "w (8;q|1;q) K0,0|k7,7|Q4,4";
+        game.setup_position_from_icn(icn);
 
         let wk = Some(Coordinate::new(0, 0));
         let bk = Some(Coordinate::new(7, 7));
@@ -3325,26 +3324,16 @@ mod tests {
     #[test]
     fn test_pawn_structure_isolated_pawn() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
         // Isolated white pawn on d-file
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let isolated_icn = "w (8;q|1;q) K5,1|k5,8|P4,4";
+        game.setup_position_from_icn(isolated_icn);
 
         clear_pawn_cache();
         let isolated_score = evaluate_pawn_structure(&game);
 
         // Add supporting pawns
-        game.board
-            .set_piece(3, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
+        let supported_icn = "w (8;q|1;q) K5,1|k5,8|P4,4|P3,3|P5,3";
+        game.setup_position_from_icn(supported_icn);
         game.recompute_hash();
 
         clear_pawn_cache();
@@ -3360,25 +3349,16 @@ mod tests {
     #[test]
     fn test_outpost_bonus() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
-
-        // White Knight at (4,4)
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
 
         // Case 1: No support
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let icn_no_support = "w (8;q|1;q) K0,0|k0,10|N4,4";
+        game.setup_position_from_icn(icn_no_support);
+
         let score_no_support = evaluate_knight(4, 4, PlayerColor::White, None, 0, &[], &[]);
 
         // Case 2: Support from pawn at (3,3) (White pawn at y-1 supports y)
-        game.board
-            .set_piece(3, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
+        let icn_supported = "w (8;q|1;q) K0,0|k0,10|N4,4|P3,3";
+        game.setup_position_from_icn(icn_supported);
         // Mock pawn list
         let white_pawns = vec![(3, 3)];
 
@@ -3402,25 +3382,13 @@ mod tests {
     #[test]
     fn test_candidate_passer_bonus() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
 
         // Candidate Passer Setup:
         // White Pawn at (4, 4)
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
         // Black Pawn stopping it on adjacent file: (3, 5) or (5, 5)
-        game.board
-            .set_piece(3, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
         // White support to balance the stopper
-        game.board
-            .set_piece(5, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let icn = "w (8;q|1;q) K0,0|k0,10|P4,4|p3,5|P5,3";
+        game.setup_position_from_icn(icn);
         clear_pawn_cache();
 
         let score = evaluate_pawn_structure(&game);
@@ -3433,26 +3401,18 @@ mod tests {
     #[test]
     fn test_passed_pawn_advancement() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
         game.white_promo_rank = 8;
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(10, 10, Piece::new(PieceType::King, PlayerColor::Black));
 
         // Case 1: Passed pawn at (4, 4) - can advance, but not safely (controlled by black pawn)
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(3, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Attacks (4, 5)
+        let unsafe_icn = "w (8;q|1;q) K0,0|k10,10|P4,4|p3,6";
+        game.setup_position_from_icn(unsafe_icn);
 
-        game.recompute_piece_counts();
         clear_pawn_cache();
         let score_unsafe = evaluate_pawn_structure(&game);
 
         // Case 2: Make it safe (remove black pawn)
-        game.board.remove_piece(&3, &6);
-        game.recompute_piece_counts();
+        let safe_icn = "w (8;q|1;q) K0,0|k10,10|P4,4";
+        game.setup_position_from_icn(safe_icn);
         clear_pawn_cache();
         let score_safe = evaluate_pawn_structure(&game);
 
@@ -3465,50 +3425,24 @@ mod tests {
     #[test]
     fn test_backward_isolated_penalties() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
 
         // Case 1: Connected Pawns (Good)
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let connected_icn = "w (8;q|1;q) K0,0|k0,10|P4,4|P5,5";
+        game.setup_position_from_icn(connected_icn);
+
         clear_pawn_cache();
         let score_good = evaluate_pawn_structure(&game);
 
         // Case 2: Isolated Pawn (Bad)
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White)); // No neighbors
-        game.board
-            .set_piece(8, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let isolated_icn = "w (8;q|1;q) K0,0|k0,10|P4,4|P8,4";
+        game.setup_position_from_icn(isolated_icn);
+
         clear_pawn_cache();
         let score_isolated = evaluate_pawn_structure(&game);
 
         // Case 3: Backward Pawn (Bad)
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(3, 6, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let backward_icn = "w (8;q|1;q) K0,0|k0,10|P4,4|P5,5|p3,6";
+        game.setup_position_from_icn(backward_icn);
         game.recompute_hash();
         clear_pawn_cache();
         let score_backward = evaluate_pawn_structure(&game);
@@ -3533,27 +3467,17 @@ mod tests {
     #[test]
     fn test_king_open_file_penalty() {
         let mut game = Box::new(GameState::new());
-        game.board = Board::new();
         // Setup King on open file (0,0)
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+        let open_icn = "w (8;q|1;q) K0,0|k0,10|P5,5";
+        game.setup_position_from_icn(open_icn);
 
-        // Add a pawn far away so it's not isolated king entirely, but file 0 is open
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
-
-        game.recompute_piece_counts();
-        game.recompute_hash();
         clear_pawn_cache();
 
         let score_open = evaluate(&game);
 
         // Setup King with pawn shield on file 0
-        game.board
-            .set_piece(0, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
+        let closed_icn = "w (8;q|1;q) K0,0|k0,10|P5,5|P0,1";
+        game.setup_position_from_icn(closed_icn);
         game.recompute_hash();
         clear_pawn_cache();
 
