@@ -105,9 +105,9 @@ cargo llvm-cov --lib
 
 ---
 
-## 5. Multi-threaded Build (Lazy SMP)
+## 5. Multi-threaded Build
 
-The engine supports parallel search (Lazy SMP) in WebAssembly. This requires a nightly Rust toolchain and specific compilation flags to enable shared memory and atomics.
+The engine supports parallel search in WebAssembly. This requires a nightly Rust toolchain and specific compilation flags to enable shared memory and atomics.
 
 ### Setup for Multithreading
 

@@ -1,6 +1,6 @@
 # HydroChess WASM
 
-A high-performance Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https://www.infinitechess.org/) variants.
+A high-performance Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https://www.infinitechess.org/).
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -18,28 +18,11 @@ A high-performance Rust chess engine compiled to WebAssembly, designed for [Infi
 
 ## ✨ Features
 
-### Search
-- **Iterative deepening** with aspiration windows
-- **Alpha-beta pruning** with principal variation search
-- **Null move pruning** and **late move reductions (LMR)**
-- **Transposition table** with Zobrist hashing
-- **Killer moves** and **history heuristic** for move ordering
-- **Quiescence search** for tactical accuracy
-- **Static Exchange Evaluation (SEE)** for capture pruning
-- **Lazy SMP Multithreading**: Scalable parallel search with runtime implementation dispatch
-
-### Evaluation
-- Material counting with tuned piece values
-- Piece-square considerations for positional play
-- King safety evaluation
-- Pawn structure analysis (isolated, doubled, passed pawns)
-- Endgame detection with specialized mop-up evaluation
-- Insufficient material draw detection
-
-### Infinite Chess Support
-- **Coordinate-based board**: Arbitrary positions (not limited to 8x8)
-- **Fairy pieces**: Amazon, Chancellor, Archbishop, Centaur, Hawk, Knightrider, Rose, Huygen, and more
-- **Variant-specific evaluation**: Chess, Confined Classical, Obstocean, Pawn Horde
+- **Infinite Architecture**: Coordinate-based board supporting arbitrary world sizes and non-standard geometries.
+- **Advanced Search**: Iterative deepening PVS with Aspiration Windows, Null Move Pruning, LMR, history-based move ordering, and more.
+- **Evaluation**: Modular **HCE** (Material, Cloud Centrality, Pawn Advancement, King Safety, etc.) with experimental **NNUE** support.
+- **Scalable Performance**: High-performance Rust core with **Lazy SMP** multithreading.
+- **Variants & Fairy Pieces**: Full support for all fairy pieces and unique infinite chess variants.
 
 ---
 
@@ -86,7 +69,7 @@ const engine = Engine.from_icn(icnString, engineConfig);
 
 // Get best move
 const result = engine.get_best_move();
-// Returns: { from: "1,2", to: "1,4", promotion: null, eval: 34, depth: 12 }
+// Example result: { from: "1,2", to: "1,4", promotion: null, eval: 34, depth: 12 }
 
 // Get best move with time limit (milliseconds)
 const result = engine.get_best_move_with_time(500);
@@ -95,7 +78,7 @@ const result = engine.get_best_move_with_time(500);
 const moves = engine.get_legal_moves_js();
 ```
 
-### Multithreaded usage (Lazy SMP)
+### Multithreaded usage
 
 To use parallel search, you must initialize the WASM module's thread pool:
 

@@ -130,7 +130,6 @@ npm run dev
 4. **Open** `http://localhost:3000` and configure your test:
    - Use `all` preset for most changes
    - Mode: `Gainer` (proving improvement) or `Non-Regression` (proving no regression)
-   - Time: 200ms is a good starting point
 
 5. **Wait for result**:
    - ✅ **PASSED**: Your change is an improvement (or at least not worse)
