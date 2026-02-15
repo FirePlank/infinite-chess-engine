@@ -488,9 +488,19 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut white_bishop_colors = (false, false);
     let mut black_bishops = 0;
     let mut black_bishop_colors = (false, false);
-    let mut cloud_sum_x: i64 = 0;
-    let mut cloud_sum_y: i64 = 0;
+    let mut cloud_sum_dx: i64 = 0;
+    let mut cloud_sum_dy: i64 = 0;
     let mut cloud_count: i64 = 0;
+
+    let (ref_x, ref_y) = match (white_king, black_king) {
+        (Some(wk), Some(bk)) => (
+            wk.x / 2 + bk.x / 2 + (wk.x % 2 + bk.x % 2) / 2,
+            wk.y / 2 + bk.y / 2 + (wk.y % 2 + bk.y % 2) / 2,
+        ),
+        (Some(wk), None) => (wk.x, wk.y),
+        (None, Some(bk)) => (bk.x, bk.y),
+        (None, None) => (0, 0),
+    };
 
     // Slider counts for attack bonus (white, black)
     let mut w_diag_count = 0;
@@ -643,20 +653,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 if pt != PieceType::Pawn {
                                     let cw = get_centrality_weight(pt);
                                     if cw > 0 {
-                                        let rx = match (white_king, black_king) {
-                                            (Some(wk), Some(bk)) => (wk.x + bk.x) / 2,
-                                            (Some(wk), None) => wk.x,
-                                            (None, Some(bk)) => bk.x,
-                                            (None, None) => 0,
-                                        };
-                                        let ry = match (white_king, black_king) {
-                                            (Some(wk), Some(bk)) => (wk.y + bk.y) / 2,
-                                            (Some(wk), None) => wk.y,
-                                            (None, Some(bk)) => bk.y,
-                                            (None, None) => 0,
-                                        };
-                                        let dx = x - rx;
-                                        let dy = y - ry;
+                                        let dx = x - ref_x;
+                                        let dy = y - ref_y;
                                         let cdx = dx.clamp(
                                             -CLOUD_CENTER_MAX_SKEW_DIST,
                                             CLOUD_CENTER_MAX_SKEW_DIST,
@@ -665,8 +663,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             -CLOUD_CENTER_MAX_SKEW_DIST,
                                             CLOUD_CENTER_MAX_SKEW_DIST,
                                         );
-                                        cloud_sum_x += cw * (rx + cdx);
-                                        cloud_sum_y += cw * (ry + cdy);
+                                        cloud_sum_dx += cw * cdx;
+                                        cloud_sum_dy += cw * cdy;
                                         cloud_count += cw;
                                     }
                                 }
@@ -1095,8 +1093,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         let final_phase = phase.min(MAX_PHASE);
                         let cloud_center = if cloud_count > 0 {
                             Some(Coordinate {
-                                x: cloud_sum_x / cloud_count,
-                                y: cloud_sum_y / cloud_count,
+                                x: ref_x + cloud_sum_dx / cloud_count,
+                                y: ref_y + cloud_sum_dy / cloud_count,
                             })
                         } else {
                             None
@@ -1104,12 +1102,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Pawn Advancement Calculation
                         if white_max_y != i64::MIN {
-                            let dist = (w_promo - white_max_y).max(1) as i32;
+                            let dist = (w_promo - white_max_y).clamp(1, 100) as i32;
                             // Continuous piecewise linear: matches 500 at dist=1, 350 at dist=2, then transitions to (10-dist)*40.
                             w_pawn_bonus += (500 - (dist - 1) * 150).max((10 - dist) * 40).max(0);
                         }
                         if black_min_y != i64::MAX {
-                            let dist = (black_min_y - b_promo).max(1) as i32;
+                            let dist = (black_min_y - b_promo).clamp(1, 100) as i32;
                             b_pawn_bonus += (500 - (dist - 1) * 150).max((10 - dist) * 40).max(0);
                         }
 

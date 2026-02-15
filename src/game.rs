@@ -378,8 +378,8 @@ impl GameState {
             starting_squares: FxHashSet::default(),
             white_back_rank: 1,
             black_back_rank: 8,
-            white_promo_rank: 2_000_000_000_000_000,
-            black_promo_rank: -2_000_000_000_000_000,
+            white_promo_rank: i64::MIN,
+            black_promo_rank: i64::MAX,
             white_king_pos: None,
             black_king_pos: None,
             check_squares_white: FxHashSet::default(),
@@ -3979,6 +3979,51 @@ impl GameState {
 
         // Rebuild piece lists and counts
         self.recompute_piece_counts();
+
+        let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
+
+        // Filter special rights outside world bounds
+        self.special_rights
+            .retain(|c| c.x >= min_x && c.x <= max_x && c.y >= min_y && c.y <= max_y);
+
+        // Filter en passant outside world bounds
+        if let Some(ep) = self.en_passant
+            && (ep.square.x < min_x
+                || ep.square.x > max_x
+                || ep.square.y < min_y
+                || ep.square.y > max_y
+                || ep.pawn_square.x < min_x
+                || ep.pawn_square.x > max_x
+                || ep.pawn_square.y < min_y
+                || ep.pawn_square.y > max_y)
+        {
+            self.en_passant = None;
+        }
+
+        // Auto-detect back ranks based on King positions
+        if let Some(wk) = self.white_king_pos {
+            self.white_back_rank = wk.y;
+        }
+        if let Some(bk) = self.black_king_pos {
+            self.black_back_rank = bk.y;
+        }
+
+        // Validate promotion ranks against world bounds
+        if self.white_promo_rank < min_y || self.white_promo_rank > max_y {
+            self.white_promo_rank = i64::MIN;
+        }
+        if self.black_promo_rank < min_y || self.black_promo_rank > max_y {
+            self.black_promo_rank = i64::MAX;
+        }
+
+        self.game_rules
+            .promotion_ranks
+            .white
+            .retain(|&r| r >= min_y && r <= max_y);
+        self.game_rules
+            .promotion_ranks
+            .black
+            .retain(|&r| r >= min_y && r <= max_y);
 
         // Cache starting non-pawn piece counts for phase detection
         self.init_starting_piece_counts();
