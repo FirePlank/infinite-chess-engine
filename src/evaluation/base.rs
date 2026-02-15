@@ -335,6 +335,9 @@ const EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
 const MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
 const EG_KING_PAWN_AHEAD_PENALTY: i32 = 5;
 
+const MG_KING_OPEN_FILE_PENALTY: i32 = 25;
+const EG_KING_OPEN_FILE_PENALTY: i32 = 10;
+
 // Structural
 const MG_CONNECTED_PAWN_BONUS: i32 = 8;
 const EG_CONNECTED_PAWN_BONUS: i32 = 15; // Chains critical in EG
@@ -2191,7 +2194,9 @@ fn evaluate_king_shelter(
         // Find range of pawns on this file
         let start = pawns.partition_point(|p| p.0 < x);
         let mut k = start;
+        let mut on_file_count = 0;
         while k < pawns.len() && pawns[k].0 == x {
+            on_file_count += 1;
             let py = pawns[k].1;
             if is_white {
                 if py > king.y {
@@ -2205,6 +2210,11 @@ fn evaluate_king_shelter(
                 has_pawn_behind = true;
             }
             k += 1;
+        }
+
+        // King on Open File Penalty (No friendly pawns on file)
+        if dx == 0 && on_file_count == 0 {
+            safety -= taper(MG_KING_OPEN_FILE_PENALTY, EG_KING_OPEN_FILE_PENALTY);
         }
     }
 
@@ -3519,6 +3529,44 @@ mod tests {
             "Isolated pawn should score lower than connected. Good: {}, Isolated: {}",
             score_good,
             score_isolated
+        );
+    }
+
+    #[test]
+    fn test_king_open_file_penalty() {
+        let mut game = Box::new(GameState::new());
+        game.board = Board::new();
+        // Setup King on open file (0,0)
+        game.board
+            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
+        game.board
+            .set_piece(0, 10, Piece::new(PieceType::King, PlayerColor::Black));
+
+        // Add a pawn far away so it's not isolated king entirely, but file 0 is open
+        game.board
+            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
+
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+
+        let score_open = evaluate(&game);
+
+        // Setup King with pawn shield on file 0
+        game.board
+            .set_piece(0, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
+        game.recompute_piece_counts();
+        game.recompute_hash();
+        clear_pawn_cache();
+
+        let score_closed = evaluate(&game);
+
+        // Closed (shielded) should be inherently safer than Open
+        assert!(
+            score_closed > score_open,
+            "Shielded king should score higher than open file king. Open: {}, Closed: {}",
+            score_open,
+            score_closed
         );
     }
 }
