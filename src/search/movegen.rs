@@ -91,27 +91,29 @@ pub struct StagedMoveGen {
     // Flags
     skip_quiets: bool,
     excluded_move: Option<Move>,
+
+    // Pre-calculated continuation history pointers for the current ply
+    cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize); 6]>,
 }
 
-/// Partial insertion sort - sorts moves with score >= limit to the front in descending order.
-/// Performs partial insertion sort.
+/// Sorts moves with score >= limit to the front in descending order.
+/// Uses slice::sort_unstable_by for O(N log N) performance.
 #[inline]
 fn partial_insertion_sort(moves: &mut [ScoredMove], limit: i32) {
-    let mut sorted_end = 0;
-    for i in 0..moves.len() {
-        if moves[i].score >= limit {
-            let tmp = moves[i];
-            moves[i] = moves[sorted_end];
-
-            // Insertion sort into sorted portion
-            let mut j = sorted_end;
-            while j > 0 && moves[j - 1].score < tmp.score {
-                moves[j] = moves[j - 1];
-                j -= 1;
+    if limit == i32::MIN {
+        // Sort everything
+        moves.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+    } else {
+        // Partition moves >= limit to the front
+        let mut left = 0;
+        for i in 0..moves.len() {
+            if moves[i].score >= limit {
+                moves.swap(i, left);
+                left += 1;
             }
-            moves[j] = tmp;
-            sorted_end += 1;
         }
+        // Sort only the high-scoring segment
+        moves[0..left].sort_unstable_by(|a, b| b.score.cmp(&a.score));
     }
 }
 
@@ -220,6 +222,7 @@ impl StagedMoveGen {
             killer2,
             skip_quiets: false,
             excluded_move: None,
+            cont_history_indices: smallvec::SmallVec::new(),
         }
     }
 
@@ -462,24 +465,32 @@ impl StagedMoveGen {
     /// Score quiet move using history heuristics (includes killer/countermove bonuses)
     fn score_quiet(&self, game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         let mut score: i32 = DEFAULT_SORT_QUIET;
-        let ply = self.ply;
 
         // Killer bonus (integrated into scoring, not separate stages)
-        if Self::moves_match(m, &self.killer1) {
-            return sort_killer1();
+        // Check killers via exact match (cheap)
+        if let Some(k1) = self.killer1 {
+            if m.from == k1.from && m.to == k1.to && m.promotion == k1.promotion {
+                return sort_killer1();
+            }
         }
-        if Self::moves_match(m, &self.killer2) {
-            return sort_killer2();
+        if let Some(k2) = self.killer2 {
+            if m.from == k2.from && m.to == k2.to && m.promotion == k2.promotion {
+                return sort_killer2();
+            }
         }
 
         // Countermove bonus
         if self.ply > 0 && self.prev_from_hash < 256 && self.prev_to_hash < 256 {
-            let (cm_piece, cm_to_x, cm_to_y) =
-                searcher.countermoves[self.prev_from_hash][self.prev_to_hash];
-            if cm_piece != 0
-                && cm_piece == m.piece.piece_type() as u8
-                && cm_to_x == m.to.x as i16
-                && cm_to_y == m.to.y as i16
+            let entry = unsafe {
+                searcher
+                    .countermoves
+                    .get_unchecked(self.prev_from_hash)
+                    .get_unchecked(self.prev_to_hash)
+            };
+            if entry.0 != 0
+                && entry.0 == m.piece.piece_type() as u8
+                && entry.1 == m.to.x as i16
+                && entry.2 == m.to.y as i16
             {
                 score += sort_countermove();
             }
@@ -487,35 +498,44 @@ impl StagedMoveGen {
 
         // Main history: 2 * mainHistory[us][move]
         let idx = hash_move_dest(m);
-        let pt_idx = m.piece.piece_type() as usize;
-        if pt_idx < searcher.history.len() {
-            score += 2 * searcher.history[pt_idx][idx];
+        let pt_idx = m.piece.piece_type() as usize; // Safe cast
+
+        unsafe {
+            if pt_idx < 32 {
+                // Bounds check for safety, though piece type should be valid
+                let val = *searcher.history.get_unchecked(pt_idx).get_unchecked(idx);
+                score += 2 * val;
+            }
         }
 
         // Pawn history: 2 * pawnHistory[pawn_hash % SIZE][piece][to]
         let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
-        score += 2 * searcher.pawn_history[ph_idx][pt_idx][idx];
+        unsafe {
+            let val = *searcher
+                .pawn_history
+                .get_unchecked(ph_idx)
+                .get_unchecked(pt_idx)
+                .get_unchecked(idx);
+            score += 2 * val;
+        }
 
-        // Continuation history
+        // Continuation history - Optimized using pre-calculated indices
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
 
-        for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
-            if let Some(prev_move) = ply
-                .checked_sub(plies_ago + 1)
-                .and_then(|i| searcher.move_history.get(i).copied().flatten())
-                && let Some(&prev_piece) = searcher.moved_piece_history.get(ply - plies_ago - 1)
-            {
-                let prev_piece = prev_piece as usize;
-                if prev_piece < 32 {
-                    let prev_to_h = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                    let prev_ic = searcher.in_check_history[ply - plies_ago - 1] as usize;
-                    let prev_cap = searcher.capture_history_stack[ply - plies_ago - 1] as usize;
-
-                    let val = searcher.cont_history[prev_cap][prev_ic][prev_piece][prev_to_h]
-                        [cur_from_hash][cur_to_hash];
-                    score += val;
-                }
+        for &(prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
+            unsafe {
+                // Access: cont_history[prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
+                // Using unchecked for speed as indices are pre-validated
+                let val = *searcher
+                    .cont_history
+                    .get_unchecked(prev_cap)
+                    .get_unchecked(prev_ic)
+                    .get_unchecked(prev_piece)
+                    .get_unchecked(prev_to_h)
+                    .get_unchecked(cur_from_hash)
+                    .get_unchecked(cur_to_hash);
+                score += val;
             }
         }
 
@@ -525,14 +545,13 @@ impl StagedMoveGen {
         }
 
         // Low ply history
-        if ply < LOW_PLY_HISTORY_SIZE {
+        if self.ply < LOW_PLY_HISTORY_SIZE {
             let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
-            if let Some(val) = searcher
-                .low_ply_history
-                .get(ply)
-                .and_then(|row| row.get(move_hash))
-            {
-                score += 8 * val / (1 + ply as i32);
+            unsafe {
+                if let Some(row) = searcher.low_ply_history.get(self.ply) {
+                    let val = *row.get_unchecked(move_hash);
+                    score += 8 * val / (1 + self.ply as i32);
+                }
             }
         }
 
@@ -795,6 +814,33 @@ impl StagedMoveGen {
                     }
 
                     let quiet_start = self.moves.len();
+
+                    // Pre-calculate history indices
+                    if self.cont_history_indices.is_empty() {
+                        let ply = self.ply;
+                        for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
+                            if let Some(prev_idx) = ply.checked_sub(plies_ago + 1) {
+                                if let Some(Some(prev_move)) = searcher.move_history.get(prev_idx) {
+                                    if let Some(&prev_piece) =
+                                        searcher.moved_piece_history.get(prev_idx)
+                                    {
+                                        let prev_piece = prev_piece as usize;
+                                        if prev_piece < 32 {
+                                            let prev_to_h =
+                                                hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                            let prev_ic =
+                                                searcher.in_check_history[prev_idx] as usize;
+                                            let prev_cap =
+                                                searcher.capture_history_stack[prev_idx] as usize;
+                                            self.cont_history_indices
+                                                .push((prev_cap, prev_ic, prev_piece, prev_to_h));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     self.generate_quiets(game, searcher);
                     self.end_generated = self.moves.len();
 

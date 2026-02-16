@@ -422,7 +422,8 @@ impl TileTable {
     pub fn get_tile(&self, cx: i64, cy: i64) -> Option<&Tile> {
         let mut idx = Self::hash(cx, cy);
         for _ in 0..TILE_TABLE_CAPACITY {
-            let bucket = &self.buckets[idx];
+            // Unsafe: idx is masked by TILE_TABLE_MASK
+            let bucket = unsafe { self.buckets.get_unchecked(idx) };
             match bucket.state {
                 BucketState::Empty => return None,
                 BucketState::Occupied => {
@@ -442,12 +443,13 @@ impl TileTable {
     pub fn get_tile_mut(&mut self, cx: i64, cy: i64) -> Option<&mut Tile> {
         let mut idx = Self::hash(cx, cy);
         for _ in 0..TILE_TABLE_CAPACITY {
-            let bucket = &self.buckets[idx];
+            // Unsafe: idx is masked by TILE_TABLE_MASK
+            let bucket = unsafe { self.buckets.get_unchecked(idx) };
             match bucket.state {
                 BucketState::Empty => return None,
                 BucketState::Occupied => {
                     if bucket.cx == cx && bucket.cy == cy {
-                        return Some(&mut self.buckets[idx].tile);
+                        return Some(unsafe { &mut self.buckets.get_unchecked_mut(idx).tile });
                     }
                 }
                 BucketState::Tombstone => {}
@@ -463,9 +465,13 @@ impl TileTable {
         let mut idx = Self::hash(cx, cy);
 
         loop {
-            match self.buckets[idx].state {
+            // Unsafe: idx is masked by TILE_TABLE_MASK
+            let bucket = unsafe { self.buckets.get_unchecked(idx) };
+            match bucket.state {
                 BucketState::Empty | BucketState::Tombstone => {
-                    self.buckets[idx] = Bucket {
+                    // We found a slot, get mutable reference safely (or use unchecked_mut)
+                    let bucket_mut = unsafe { self.buckets.get_unchecked_mut(idx) };
+                    *bucket_mut = Bucket {
                         cx,
                         cy,
                         state: BucketState::Occupied,
@@ -473,11 +479,11 @@ impl TileTable {
                     };
                     self.count += 1;
                     self.occ_mask[idx / 64] |= 1u64 << (idx % 64);
-                    return &mut self.buckets[idx].tile;
+                    return &mut bucket_mut.tile;
                 }
                 BucketState::Occupied => {
-                    if self.buckets[idx].cx == cx && self.buckets[idx].cy == cy {
-                        return &mut self.buckets[idx].tile;
+                    if bucket.cx == cx && bucket.cy == cy {
+                        return unsafe { &mut self.buckets.get_unchecked_mut(idx).tile };
                     }
                 }
             }
@@ -493,11 +499,15 @@ impl TileTable {
         let start_idx = idx;
 
         loop {
-            match self.buckets[idx].state {
+            // Unsafe: idx is masked by TILE_TABLE_MASK
+            let bucket = unsafe { self.buckets.get_unchecked(idx) };
+            match bucket.state {
                 BucketState::Occupied => {
-                    if self.buckets[idx].cx == cx && self.buckets[idx].cy == cy {
-                        self.buckets[idx].state = BucketState::Tombstone;
-                        self.buckets[idx].tile.clear();
+                    if bucket.cx == cx && bucket.cy == cy {
+                        // Found logic
+                        let bucket_mut = unsafe { self.buckets.get_unchecked_mut(idx) };
+                        bucket_mut.state = BucketState::Tombstone;
+                        bucket_mut.tile.clear();
                         self.count -= 1;
                         self.occ_mask[idx / 64] &= !(1u64 << (idx % 64));
                         return;
