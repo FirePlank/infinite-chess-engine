@@ -307,9 +307,7 @@ impl PieceType {
 // Piece - Packed representation (1 byte)
 
 /// Packed piece representation: encodes both piece type and color in a single byte.
-///
-/// Encoding: `packed = color * NUM_PIECE_TYPES + piece_type`
-/// Matches the infinitechess.org JS encoding.
+/// Encoding: `packed = (color << 5) | piece_type`
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Piece(u8);
@@ -356,7 +354,7 @@ impl<'de> Deserialize<'de> for Piece {
 impl Piece {
     #[inline]
     pub fn new(piece_type: PieceType, color: PlayerColor) -> Self {
-        Piece((color as u8) * NUM_PIECE_TYPES + (piece_type as u8))
+        Piece((color as u8) << 5 | (piece_type as u8))
     }
 
     #[inline(always)]
@@ -371,12 +369,12 @@ impl Piece {
 
     #[inline(always)]
     pub fn piece_type(&self) -> PieceType {
-        PieceType::from_u8(self.0 % NUM_PIECE_TYPES)
+        PieceType::from_u8(self.0 & 31)
     }
 
     #[inline(always)]
     pub fn color(&self) -> PlayerColor {
-        PlayerColor::from_u8(self.0 / NUM_PIECE_TYPES)
+        PlayerColor::from_u8(self.0 >> 5)
     }
 }
 
@@ -656,12 +654,18 @@ mod tests {
 
     #[test]
     fn test_piece_packed_values() {
-        // Test that packed values match JS encoding: color * NUM_TYPES + type
+        // Test packed values match bitwise encoding: (color << 5) | type
         let white_pawn = Piece::new(PieceType::Pawn, PlayerColor::White);
-        assert_eq!(white_pawn.packed(), 22 + 21); // White=1, Pawn=21
+        // White=1, Pawn=21. (1 << 5) | 21 = 32 | 21 = 53
+        assert_eq!(white_pawn.packed(), (1 << 5) | 21);
 
         let black_king = Piece::new(PieceType::King, PlayerColor::Black);
-        assert_eq!(black_king.packed(), 2 * 22 + 2); // Black=2, King=2
+        // Black=2, King=2. (2 << 5) | 2 = 64 | 2 = 66
+        assert_eq!(black_king.packed(), (2 << 5) | 2);
+
+        // Neutral=0, Void=0. 0 | 0 = 0
+        let neutral_void = Piece::new(PieceType::Void, PlayerColor::Neutral);
+        assert_eq!(neutral_void.packed(), 0);
     }
 
     #[test]
