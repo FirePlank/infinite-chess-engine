@@ -468,15 +468,19 @@ impl StagedMoveGen {
 
         // Killer bonus (integrated into scoring, not separate stages)
         // Check killers via exact match (cheap)
-        if let Some(k1) = self.killer1 {
-            if m.from == k1.from && m.to == k1.to && m.promotion == k1.promotion {
-                return sort_killer1();
-            }
+        if let Some(k1) = self.killer1
+            && m.from == k1.from
+            && m.to == k1.to
+            && m.promotion == k1.promotion
+        {
+            return sort_killer1();
         }
-        if let Some(k2) = self.killer2 {
-            if m.from == k2.from && m.to == k2.to && m.promotion == k2.promotion {
-                return sort_killer2();
-            }
+        if let Some(k2) = self.killer2
+            && m.from == k2.from
+            && m.to == k2.to
+            && m.promotion == k2.promotion
+        {
+            return sort_killer2();
         }
 
         // Countermove bonus
@@ -819,23 +823,19 @@ impl StagedMoveGen {
                     if self.cont_history_indices.is_empty() {
                         let ply = self.ply;
                         for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
-                            if let Some(prev_idx) = ply.checked_sub(plies_ago + 1) {
-                                if let Some(Some(prev_move)) = searcher.move_history.get(prev_idx) {
-                                    if let Some(&prev_piece) =
-                                        searcher.moved_piece_history.get(prev_idx)
-                                    {
-                                        let prev_piece = prev_piece as usize;
-                                        if prev_piece < 32 {
-                                            let prev_to_h =
-                                                hash_coord_32(prev_move.to.x, prev_move.to.y);
-                                            let prev_ic =
-                                                searcher.in_check_history[prev_idx] as usize;
-                                            let prev_cap =
-                                                searcher.capture_history_stack[prev_idx] as usize;
-                                            self.cont_history_indices
-                                                .push((prev_cap, prev_ic, prev_piece, prev_to_h));
-                                        }
-                                    }
+                            if let Some(prev_idx) = ply.checked_sub(plies_ago + 1)
+                                && let Some(Some(prev_move)) = searcher.move_history.get(prev_idx)
+                                && let Some(&prev_piece) =
+                                    searcher.moved_piece_history.get(prev_idx)
+                            {
+                                let prev_piece = prev_piece as usize;
+                                if prev_piece < 32 {
+                                    let prev_to_h = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                    let prev_ic = searcher.in_check_history[prev_idx] as usize;
+                                    let prev_cap =
+                                        searcher.capture_history_stack[prev_idx] as usize;
+                                    self.cont_history_indices
+                                        .push((prev_cap, prev_ic, prev_piece, prev_to_h));
                                 }
                             }
                         }
