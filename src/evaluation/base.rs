@@ -531,9 +531,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
     // King Safety Arrays
     // [0..4] = Diag, [4..8] = Ortho
-    // Stores: (distance, piece_value, piece_color)
-    let mut w_king_rays = [(i32::MAX, 0, PlayerColor::Neutral); 8];
-    let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral); 8];
+    // Stores: (distance, piece_value, piece_color, piece_type)
+    let mut w_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
 
     let mut w_king_ring_covered = false;
     let mut b_king_ring_covered = false;
@@ -818,6 +818,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         } else if dx == 0 && dy != 0 {
@@ -827,6 +828,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         }
@@ -844,6 +846,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         }
@@ -876,6 +879,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         } else if dx == 0 && dy != 0 {
@@ -885,6 +889,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         } else if adx == ady && dist > 0 {
@@ -900,6 +905,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                     dist as i32,
                                                     get_piece_value(pt),
                                                     piece.color(),
+                                                    pt,
                                                 );
                                             }
                                         }
@@ -1185,13 +1191,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Attack scale calculation (Finalized from Readiness loop counts)
                         let w_attack_ready = compute_attack_readiness_optimized(
-                            game,
-                            black_king.as_ref(),
+                            &b_king_rays,
+                            black_king.is_some(),
                             w_sliders_in_zone,
                         );
                         let b_attack_ready = compute_attack_readiness_optimized(
-                            game,
-                            white_king.as_ref(),
+                            &w_king_rays,
+                            white_king.is_some(),
                             b_sliders_in_zone,
                         );
 
@@ -1605,40 +1611,29 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 }
 
 fn compute_attack_readiness_optimized(
-    game: &GameState,
-    enemy_king: Option<&Coordinate>,
+    enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    has_enemy_king: bool,
     sliders_in_zone: i32,
 ) -> i32 {
-    let Some(ek) = enemy_king else { return 50 };
+    if !has_enemy_king {
+        return 50;
+    }
 
-    // 1. Count open rays around enemy king (O(K))
+    // 1. Count open rays around enemy king (O(1))
     let mut open_diag_rays = 0;
     let mut open_ortho_rays = 0;
 
-    for &(dx, dy) in &DIAG_DIRS {
-        let mut is_open = true;
-        for step in 1..=6 {
-            if game.board.is_occupied(ek.x + dx * step, ek.y + dy * step) {
-                is_open = false;
-                break;
-            }
-        }
-        if is_open {
+    for i in 0..4 {
+        if enemy_king_rays[i].0 > 6 {
             open_diag_rays += 1;
         }
     }
-    for &(dx, dy) in &ORTHO_DIRS {
-        let mut is_open = true;
-        for step in 1..=6 {
-            if game.board.is_occupied(ek.x + dx * step, ek.y + dy * step) {
-                is_open = false;
-                break;
-            }
-        }
-        if is_open {
+    for i in 4..8 {
+        if enemy_king_rays[i].0 > 6 {
             open_ortho_rays += 1;
         }
     }
+
     let total_open_rays = open_diag_rays + open_ortho_rays;
     if total_open_rays <= 2 {
         return 40;
@@ -1673,8 +1668,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     metrics: &KingSafetyMetrics,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
-    w_king_rays: &[(i32, i32, PlayerColor); 8],
-    b_king_rays: &[(i32, i32, PlayerColor); 8],
+    w_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     w_ring_covered: bool,
     b_ring_covered: bool,
 ) -> i32 {
@@ -1712,13 +1707,13 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     }
 
     // Attack bonuses (using counts)
-    if let Some(bk) = black_king {
+    if black_king.is_some() {
         // White attacks Black
-        w_attack += compute_attack_bonus_optimized(game, bk, metrics.white_slider_counts);
+        w_attack += compute_attack_bonus_optimized(&b_king_rays, metrics.white_slider_counts);
     }
-    if let Some(wk) = white_king {
+    if white_king.is_some() {
         // Black attacks White
-        b_attack += compute_attack_bonus_optimized(game, wk, metrics.black_slider_counts);
+        b_attack += compute_attack_bonus_optimized(&w_king_rays, metrics.black_slider_counts);
     }
 
     tracer.record("King: Shelter", w_safety, b_safety);
@@ -1728,8 +1723,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
 }
 
 fn compute_attack_bonus_optimized(
-    game: &GameState,
-    enemy_king: &Coordinate,
+    enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     slider_counts: (i32, i32), // (diag, ortho)
 ) -> i32 {
     let (our_diag_count, our_ortho_count) = slider_counts;
@@ -1741,35 +1735,15 @@ fn compute_attack_bonus_optimized(
     let mut open_ortho_rays = 0;
 
     if our_diag_count > 0 {
-        for &(dx, dy) in &DIAG_DIRS {
-            let mut is_open = true;
-            for step in 1..=5 {
-                if game
-                    .board
-                    .is_occupied(enemy_king.x + dx * step, enemy_king.y + dy * step)
-                {
-                    is_open = false;
-                    break;
-                }
-            }
-            if is_open {
+        for i in 0..4 {
+            if enemy_king_rays[i].0 > 5 {
                 open_diag_rays += 1;
             }
         }
     }
     if our_ortho_count > 0 {
-        for &(dx, dy) in &ORTHO_DIRS {
-            let mut is_open = true;
-            for step in 1..=5 {
-                if game
-                    .board
-                    .is_occupied(enemy_king.x + dx * step, enemy_king.y + dy * step)
-                {
-                    is_open = false;
-                    break;
-                }
-            }
-            if is_open {
+        for i in 4..8 {
+            if enemy_king_rays[i].0 > 5 {
                 open_ortho_rays += 1;
             }
         }
@@ -2162,14 +2136,14 @@ fn evaluate_leaper_positioning(
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate_king_shelter(
-    game: &GameState,
+    _game: &GameState,
     king: &Coordinate,
     color: PlayerColor,
     phase: i32,
     defense_urgency: i32,
     has_enemy_queen_possible: bool,
     pawns: &[(i64, i64)], // Pre-sorted by (x, y)
-    king_rays: &[(i32, i32, PlayerColor); 8],
+    king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     has_ring_cover: bool,
 ) -> i32 {
     let taper =
@@ -2262,8 +2236,8 @@ fn evaluate_king_shelter(
     };
 
     // Diagonal Rays (Indices 0..4)
-    for (i, (dist, val, c)) in king_rays[0..4].iter().enumerate() {
-        let (dist, val, c) = (*dist, *val, *c);
+    for (i, (dist, val, c, pt)) in king_rays[0..4].iter().enumerate() {
+        let (dist, val, c, pt) = (*dist, *val, *c, *pt);
         let mut blocker: Option<(i32, i32)> = None;
         let mut enemy_blocked = false;
 
@@ -2284,15 +2258,8 @@ fn evaluate_king_shelter(
             } else if c == PlayerColor::Neutral {
                 // Neutral pieces (Void/Obstacle)
                 // Void -> Perfect blocker (dist 1) like world border
-                // Obstacle -> Normal blocker (actual dist), value 0 is good but decays with distance
-                let tx = king.x + dx * dist as i64;
-                let ty = king.y + dy * dist as i64;
-                if let Some(p) = game.board.get_piece(tx, ty) {
-                    if p.piece_type() == PieceType::Void {
-                        blocker = Some((0, 1));
-                    } else {
-                        blocker = Some((0, dist));
-                    }
+                if pt == PieceType::Void {
+                    blocker = Some((0, 1));
                 } else {
                     blocker = Some((0, dist));
                 }
@@ -2311,8 +2278,8 @@ fn evaluate_king_shelter(
     }
 
     // Ortho Rays (Indices 4..8)
-    for (i, (dist, val, c)) in king_rays[4..8].iter().enumerate() {
-        let (dist, val, c) = (*dist, *val, *c);
+    for (i, (dist, val, c, pt)) in king_rays[4..8].iter().enumerate() {
+        let (dist, val, c, pt) = (*dist, *val, *c, *pt);
         let mut blocker: Option<(i32, i32)> = None;
         let mut enemy_blocked = false;
 
@@ -2330,14 +2297,8 @@ fn evaluate_king_shelter(
                     tied_defender_penalty += 12;
                 }
             } else if c == PlayerColor::Neutral {
-                let tx = king.x + dx * dist as i64;
-                let ty = king.y + dy * dist as i64;
-                if let Some(p) = game.board.get_piece(tx, ty) {
-                    if p.piece_type() == PieceType::Void {
-                        blocker = Some((0, 1));
-                    } else {
-                        blocker = Some((0, dist));
-                    }
+                if pt == PieceType::Void {
+                    blocker = Some((0, 1));
                 } else {
                     blocker = Some((0, dist));
                 }
