@@ -2459,8 +2459,8 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         );
     }
 
-    // 2-Bucket cache probe
-    let idx = (pawn_hash as usize) % PAWN_CACHE_SIZE;
+    // Fast 2-Bucket cache probe using bitwise mask
+    let idx = (pawn_hash as usize) & (PAWN_CACHE_SIZE - 1);
     let cached = PAWN_CACHE.with(|cache| {
         let bucket = cache.borrow()[idx];
         if bucket.entries[0].hash == pawn_hash {

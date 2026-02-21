@@ -242,7 +242,8 @@ pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
 pub fn hash_move_dest(m: &Move) -> usize {
     let x = m.to.x as u64;
     let y = m.to.y as u64;
-    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9136a9a9f9065e33);
+    // Parallel multiplier mix for better distribution on infinite board
+    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
     ((h ^ (h >> 32)) & 0xFF) as usize
 }
 
@@ -251,16 +252,17 @@ pub fn hash_move_dest(m: &Move) -> usize {
 pub fn hash_move_from(m: &Move) -> usize {
     let x = m.from.x as u64;
     let y = m.from.y as u64;
-    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9136a9a9f9065e33);
+    // Standardized parallel mix
+    let h = x.wrapping_mul(0x517cc1b727220a95) ^ y.wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
     ((h ^ (h >> 32)) & 0xFF) as usize
 }
 
 /// Hash coordinate to 32-size index (for continuation history)
 #[inline]
 pub fn hash_coord_32(x: i64, y: i64) -> usize {
-    let ux = x.wrapping_abs() as u64;
-    let uy = y.wrapping_abs() as u64;
-    ((ux ^ uy) & 0x1F) as usize
+    let h = (x as u64).wrapping_mul(0x517cc1b727220a95)
+        ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
+    ((h ^ (h >> 32)) & 0x1F) as usize
 }
 
 /// Hash move for low-ply history table (1024 entries)

@@ -407,13 +407,19 @@ impl TileTable {
     }
 
     /// Hash tile coordinates to bucket index.
-    #[inline]
+    #[inline(always)]
     fn hash(cx: i64, cy: i64) -> usize {
-        // FxHash-style mixing for (cx, cy)
-        let mut h = cx as u64;
-        h = h.wrapping_mul(0x517cc1b727220a95);
-        h ^= cy as u64;
-        h = h.wrapping_mul(0x517cc1b727220a95);
+        const P1: u64 = 0x517cc1b727220a95; // FxHash prime
+        const P2: u64 = 0x9e3779b185ebca87; // Golden ratio prime
+
+        let h1 = (cx as u64).wrapping_mul(P1);
+        let h2 = (cy as u64).wrapping_mul(P2).rotate_left(32);
+
+        let mut h = h1 ^ h2;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0x319642b7d2d84941);
+        h ^= h >> 33;
+
         (h as usize) & TILE_TABLE_MASK
     }
 
