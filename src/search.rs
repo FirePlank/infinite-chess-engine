@@ -1135,7 +1135,7 @@ impl Searcher {
         let clamped = bonus.clamp(-max_h, max_h);
 
         let entry = &mut self.history[piece as usize][idx];
-        *entry += clamped - *entry * clamped.abs() / max_h;
+        *entry += clamped - ((*entry * clamped.abs()) >> 14);
     }
 
     /// Update pawn history for moves that caused beta cutoff.
@@ -1151,7 +1151,7 @@ impl Searcher {
         let clamped = bonus.clamp(-max_h, max_h);
         let ph_idx = (pawn_hash & PAWN_HISTORY_MASK) as usize;
         let entry = &mut self.pawn_history[ph_idx][piece as usize][to_hash];
-        *entry += clamped - *entry * clamped.abs() / max_h;
+        *entry += clamped - ((*entry * clamped.abs()) >> 14);
     }
 
     /// Update low ply history for moves that caused beta cutoff at low plies.
@@ -1163,7 +1163,7 @@ impl Searcher {
             let clamped = bonus.clamp(-max_h, max_h);
             let idx = move_hash & LOW_PLY_HISTORY_MASK;
             let entry = &mut self.low_ply_history[ply][idx];
-            *entry += clamped - *entry * clamped.abs() / max_h;
+            *entry += clamped - ((*entry * clamped.abs()) >> 14);
         }
     }
 
@@ -4001,9 +4001,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             } else if se_value >= beta && !is_pv && !is_decisive(se_value) {
                 // Multi-cut: alternatives also beat beta, prune the whole subtree
                 let penalty = (-400 - 100 * depth as i32).max(-4000);
-                let max_tt_hist = 8192;
                 searcher.tt_move_history +=
-                    penalty - searcher.tt_move_history * penalty.abs() / max_tt_hist;
+                    penalty - ((searcher.tt_move_history * penalty.abs()) >> 13);
 
                 game.undo_move(&m, undo);
                 searcher.prev_move_stack[ply] = prev_entry_backup;
@@ -4228,7 +4227,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // This is roughly 1/3 of the beta-cutoff bonus, appropriate since
                     // "failed high after reduction" is a weaker signal than "caused cutoff"
                     let lmr_bonus = 100 * depth as i32;
-                    let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                     // Update continuation histories at ply offsets -1, -2, -4
                     // (matching the existing beta-cutoff update pattern)
@@ -4259,7 +4257,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let adj = (lmr_bonus * weight) / 1024;
 
                                 // Use gravity-based update: entry += bonus - entry * bonus / max
-                                *entry += adj - *entry * adj / max_history;
+                                *entry += adj - ((*entry * adj) >> 14);
                             }
                         }
                     }
@@ -4321,7 +4319,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let idx = hash_move_dest(&m);
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
-                let max_history: i32 = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                 searcher.update_history(m.piece.piece_type(), idx, bonus);
                 searcher.update_pawn_history(
@@ -4395,9 +4392,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let adj = (raw_adj * weight) / 1024;
 
                                 if is_best {
-                                    *entry += adj - *entry * adj / max_history;
+                                    *entry += adj - ((*entry * adj) >> 14);
                                 } else {
-                                    *entry += -adj - *entry * adj / max_history;
+                                    *entry += -adj - ((*entry * adj) >> 14);
                                 }
                             }
                         }
@@ -4408,14 +4405,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = 8 * (depth * depth) as i32;
                 let e =
                     &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
-                *e += bonus - *e * bonus / params::DEFAULT_HISTORY_MAX_GRAVITY;
+                *e += bonus - ((*e * bonus) >> 14);
             }
             break;
         } else if let Some(cap_type) = captured_type {
             // Penalize captures that didn't cause a cutoff
             let malus = 2 * depth as i32;
             let e = &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
-            *e += -malus - *e * malus / params::DEFAULT_HISTORY_MAX_GRAVITY;
+            *e += -malus - ((*e * malus) >> 14);
         }
     }
 
@@ -4484,11 +4481,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             .as_ref()
             .is_some_and(|tm| tm.from == bm.from && tm.to == bm.to);
 
-        // Gravity-based update: bonus = delta - entry * delta / max
-        // Limit bonus magnitude and scale by depth:
+        // Limit bonus magnitude and scale by depth
         let delta: i32 = if tt_move_matched { 809 } else { -865 };
-        let max_tt_history = 8192;
-        searcher.tt_move_history += delta - searcher.tt_move_history * delta.abs() / max_tt_history;
+        searcher.tt_move_history += delta - ((searcher.tt_move_history * delta.abs()) >> 13);
     }
 
     // Fail-low bonus: reward opponent's previous move that caused this node to fail low.
@@ -4532,7 +4527,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                             let entry = &mut searcher.cont_history[anc_cap][anc_ic][anc_piece]
                                 [anc_to][prev_from_hash][prev_to_hash];
-                            *entry += clamped - *entry * clamped.abs() / max_h;
+                            *entry += clamped - ((*entry * clamped.abs()) >> 14);
                         }
                     }
                 }
@@ -4541,7 +4536,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let prev_idx = hash_move_dest(&prev_move);
                 let hist_adj = bonus.clamp(-max_h, max_h);
                 let entry = &mut searcher.history[prev_pt][prev_idx];
-                *entry += hist_adj - *entry * hist_adj.abs() / max_h;
+                *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
 
                 // Update pawn history for non-pawn, non-promotion opponent moves
                 if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
@@ -4549,7 +4544,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let pawn_adj =
                         (bonus * params::DEFAULT_PAWN_HISTORY_BONUS_SCALE).clamp(-max_h, max_h);
                     let pentry = &mut searcher.pawn_history[ph_idx][prev_pt][prev_idx];
-                    *pentry += pawn_adj - *pentry * pawn_adj.abs() / max_h;
+                    *pentry += pawn_adj - ((*pentry * pawn_adj.abs()) >> 14);
                 }
             }
         }
