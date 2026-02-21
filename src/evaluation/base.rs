@@ -3,13 +3,39 @@ use crate::game::GameState;
 
 use std::cell::RefCell;
 
-// Direct-mapped pawn structure cache: index -> (pawn_hash, score)
-// Size power of 2 for fast modulo
-const PAWN_CACHE_SIZE: usize = 16384;
+// 2-Bucket LRU pawn structure cache
+const PAWN_CACHE_SIZE: usize = 16384; // 16384 buckets * 2 entries = 32768 entries
+
+#[derive(Clone, Copy)]
+struct PawnCacheEntry {
+    hash: u64,
+    score: i32,
+}
+
+#[derive(Clone, Copy)]
+struct PawnCacheBucket {
+    entries: [PawnCacheEntry; 2],
+}
+
+impl Default for PawnCacheBucket {
+    fn default() -> Self {
+        PawnCacheBucket {
+            entries: [
+                PawnCacheEntry {
+                    hash: u64::MAX,
+                    score: 0,
+                },
+                PawnCacheEntry {
+                    hash: u64::MAX,
+                    score: 0,
+                },
+            ],
+        }
+    }
+}
 
 thread_local! {
-    // Array of (hash, score). Initialize with MAX which is unlikely to valid hash.
-    static PAWN_CACHE: RefCell<Vec<(u64, i32)>> = RefCell::new(vec![(u64::MAX, 0); PAWN_CACHE_SIZE]);
+    static PAWN_CACHE: RefCell<Vec<PawnCacheBucket>> = RefCell::new(vec![PawnCacheBucket::default(); PAWN_CACHE_SIZE]);
     // Reusable buffer for piece list to avoid allocation
     pub(crate) static EVAL_PIECE_LIST: RefCell<Vec<(i64, i64, crate::board::Piece)>> = RefCell::new(Vec::with_capacity(64));
     pub(crate) static EVAL_WHITE_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
@@ -22,7 +48,7 @@ thread_local! {
 pub fn clear_pawn_cache() {
     PAWN_CACHE.with(|cache| {
         // Fast clear using fill
-        cache.borrow_mut().fill((u64::MAX, 0));
+        cache.borrow_mut().fill(PawnCacheBucket::default());
     });
 }
 
@@ -2433,12 +2459,14 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         );
     }
 
-    // Direct mapped cache probe
+    // 2-Bucket cache probe
     let idx = (pawn_hash as usize) % PAWN_CACHE_SIZE;
     let cached = PAWN_CACHE.with(|cache| {
-        let entry = cache.borrow()[idx];
-        if entry.0 == pawn_hash {
-            Some(entry.1)
+        let bucket = cache.borrow()[idx];
+        if bucket.entries[0].hash == pawn_hash {
+            Some(bucket.entries[0].score)
+        } else if bucket.entries[1].hash == pawn_hash {
+            Some(bucket.entries[1].score)
         } else {
             None
         }
@@ -2461,9 +2489,15 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         black_rq,
     );
 
-    // Direct mapped cache store
+    // 2-Bucket cache store (LRU: new item goes to front, old item moves to back)
     PAWN_CACHE.with(|cache| {
-        cache.borrow_mut()[idx] = (pawn_hash, score);
+        let mut cache_mut = cache.borrow_mut();
+        let bucket = &mut cache_mut[idx];
+        bucket.entries[1] = bucket.entries[0];
+        bucket.entries[0] = PawnCacheEntry {
+            hash: pawn_hash,
+            score,
+        };
     });
 
     score
