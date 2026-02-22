@@ -22,11 +22,11 @@ fn evaluate_inner(game: &GameState) -> i32 {
             base::EVAL_PIECE_LIST.with(|pl_cell| {
                 base::EVAL_WHITE_RQ.with(|wrq_cell| {
                     base::EVAL_BLACK_RQ.with(|brq_cell| {
-                        let mut white_pawns = wp_cell.borrow_mut();
-                        let mut black_pawns = bp_cell.borrow_mut();
-                        let mut heavy_pieces = pl_cell.borrow_mut();
-                        let mut white_rq = wrq_cell.borrow_mut();
-                        let mut black_rq = brq_cell.borrow_mut();
+                        let white_pawns = unsafe { &mut *wp_cell.get() };
+                        let black_pawns = unsafe { &mut *bp_cell.get() };
+                        let heavy_pieces = unsafe { &mut *pl_cell.get() };
+                        let white_rq = unsafe { &mut *wrq_cell.get() };
+                        let black_rq = unsafe { &mut *brq_cell.get() };
 
                         white_pawns.clear();
                         black_pawns.clear();
@@ -106,8 +106,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                         &wk,
                                         &bk,
                                         base::MAX_PHASE,
-                                        &white_pawns,
-                                        &black_pawns,
+                                        white_pawns,
+                                        black_pawns,
                                     )
                                 }
                                 PieceType::Queen | PieceType::RoyalQueen => base::evaluate_queen(
@@ -118,8 +118,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                     &wk,
                                     &bk,
                                     base::MAX_PHASE,
-                                    &white_pawns,
-                                    &black_pawns,
+                                    white_pawns,
+                                    black_pawns,
                                 ),
                                 PieceType::Bishop => base::evaluate_bishop(
                                     game,
@@ -129,8 +129,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                     &wk,
                                     &bk,
                                     base::MAX_PHASE,
-                                    &white_pawns,
-                                    &black_pawns,
+                                    white_pawns,
+                                    black_pawns,
                                 ),
                                 _ => 0,
                             };
@@ -181,14 +181,14 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             &wk,
                             &bk,
                             &mut base::NoTrace,
-                            &white_pawns,
-                            &black_pawns,
-                            &white_rq,
-                            &black_rq,
+                            white_pawns,
+                            black_pawns,
+                            white_rq,
+                            black_rq,
                         );
 
                         // 5. optimized race_eval
-                        score += race_eval_optimized(game, &white_pawns, &black_pawns);
+                        score += race_eval_optimized(game, white_pawns, black_pawns);
                     });
                 });
             });

@@ -8,6 +8,7 @@
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::evaluation::base::get_piece_value;
 use crate::game::GameState;
+use arrayvec::ArrayVec;
 
 // ==================== Constants ====================
 
@@ -41,8 +42,8 @@ pub fn evaluate(game: &GameState) -> i32 {
     let mut score = 0;
 
     // 1. Gather Piece Lists
-    let mut white_pawns: Vec<Coordinate> = Vec::with_capacity(56);
-    let mut black_pieces: Vec<(Coordinate, PieceType)> = Vec::with_capacity(16);
+    let mut white_pawns: ArrayVec<Coordinate, 64> = ArrayVec::new();
+    let mut black_pieces: ArrayVec<(Coordinate, PieceType), 16> = ArrayVec::new();
     let mut black_king_pos = Coordinate::new(5, 8); // Default fallback
 
     // Map for quick lookup of pawn locations

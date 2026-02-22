@@ -1,7 +1,8 @@
-﻿use crate::board::{Board, Coordinate, PieceType, PlayerColor};
+﻿use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 
-use std::cell::RefCell;
+use smallvec::SmallVec;
+use std::cell::UnsafeCell;
 
 // 2-Bucket LRU pawn structure cache
 const PAWN_CACHE_SIZE: usize = 16384; // 16384 buckets * 2 entries = 32768 entries
@@ -35,20 +36,20 @@ impl Default for PawnCacheBucket {
 }
 
 thread_local! {
-    static PAWN_CACHE: RefCell<Vec<PawnCacheBucket>> = RefCell::new(vec![PawnCacheBucket::default(); PAWN_CACHE_SIZE]);
+    static PAWN_CACHE: UnsafeCell<Vec<PawnCacheBucket>> = UnsafeCell::new(vec![PawnCacheBucket::default(); PAWN_CACHE_SIZE]);
     // Reusable buffer for piece list to avoid allocation
-    pub(crate) static EVAL_PIECE_LIST: RefCell<Vec<(i64, i64, crate::board::Piece)>> = RefCell::new(Vec::with_capacity(64));
-    pub(crate) static EVAL_WHITE_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
-    pub(crate) static EVAL_BLACK_PAWNS: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(32));
-    pub(crate) static EVAL_WHITE_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
-    pub(crate) static EVAL_BLACK_RQ: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::with_capacity(16));
+    pub(crate) static EVAL_PIECE_LIST: UnsafeCell<SmallVec<[(i64, i64, Piece); 128]>> = UnsafeCell::new(SmallVec::new());
+    pub(crate) static EVAL_WHITE_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
+    pub(crate) static EVAL_BLACK_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
+    pub(crate) static EVAL_WHITE_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
+    pub(crate) static EVAL_BLACK_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
 }
 
 /// Clear the pawn structure cache.
 pub fn clear_pawn_cache() {
     PAWN_CACHE.with(|cache| {
         // Fast clear using fill
-        cache.borrow_mut().fill(PawnCacheBucket::default());
+        unsafe { (&mut *cache.get()).fill(PawnCacheBucket::default()) };
     });
 }
 
@@ -606,11 +607,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
             EVAL_BLACK_PAWNS.with(|black_pawns_cell| {
                 EVAL_WHITE_RQ.with(|white_rq_cell| {
                     EVAL_BLACK_RQ.with(|black_rq_cell| {
-                        let mut piece_list = piece_list_cell.borrow_mut();
-                        let mut white_pawns = white_pawns_cell.borrow_mut();
-                        let mut black_pawns = black_pawns_cell.borrow_mut();
-                        let mut white_rq = white_rq_cell.borrow_mut();
-                        let mut black_rq = black_rq_cell.borrow_mut();
+                        let piece_list = unsafe { &mut *piece_list_cell.get() };
+                        let white_pawns = unsafe { &mut *white_pawns_cell.get() };
+                        let black_pawns = unsafe { &mut *black_pawns_cell.get() };
+                        let white_rq = unsafe { &mut *white_rq_cell.get() };
+                        let black_rq = unsafe { &mut *black_rq_cell.get() };
 
                         piece_list.clear();
                         white_pawns.clear();
@@ -1234,7 +1235,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 &black_king,
                                 final_phase,
                                 tracer,
-                                &piece_list,
+                                piece_list,
                                 PieceMetrics {
                                     white_undeveloped,
                                     black_undeveloped,
@@ -1246,8 +1247,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 },
                                 w_attack_ready,
                                 b_attack_ready,
-                                &white_pawns,
-                                &black_pawns,
+                                white_pawns,
+                                black_pawns,
                             );
 
                             // King Safety
@@ -1264,8 +1265,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 final_phase,
                                 tracer,
                                 &ks_metrics,
-                                &white_pawns,
-                                &black_pawns,
+                                white_pawns,
+                                black_pawns,
                                 &w_king_rays,
                                 &b_king_rays,
                                 w_king_ring_covered,
@@ -1278,10 +1279,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 &white_king,
                                 &black_king,
                                 tracer,
-                                &white_pawns,
-                                &black_pawns,
-                                &white_rq,
-                                &black_rq,
+                                white_pawns,
+                                black_pawns,
+                                white_rq,
+                                black_rq,
                             );
 
                             // Interaction Threats (Result from merged loop)
@@ -1735,11 +1736,11 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     // Attack bonuses (using counts)
     if black_king.is_some() {
         // White attacks Black
-        w_attack += compute_attack_bonus_optimized(&b_king_rays, metrics.white_slider_counts);
+        w_attack += compute_attack_bonus_optimized(b_king_rays, metrics.white_slider_counts);
     }
     if white_king.is_some() {
         // Black attacks White
-        b_attack += compute_attack_bonus_optimized(&w_king_rays, metrics.black_slider_counts);
+        b_attack += compute_attack_bonus_optimized(w_king_rays, metrics.black_slider_counts);
     }
 
     tracer.record("King: Shelter", w_safety, b_safety);
@@ -2361,10 +2362,10 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
         EVAL_BLACK_PAWNS.with(|bp_cell| {
             EVAL_WHITE_RQ.with(|wrq_cell| {
                 EVAL_BLACK_RQ.with(|brq_cell| {
-                    let mut wp = wp_cell.borrow_mut();
-                    let mut bp = bp_cell.borrow_mut();
-                    let mut wrq = wrq_cell.borrow_mut();
-                    let mut brq = brq_cell.borrow_mut();
+                    let wp = unsafe { &mut *wp_cell.get() };
+                    let bp = unsafe { &mut *bp_cell.get() };
+                    let wrq = unsafe { &mut *wrq_cell.get() };
+                    let brq = unsafe { &mut *brq_cell.get() };
                     wp.clear();
                     bp.clear();
                     wrq.clear();
@@ -2418,10 +2419,10 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                         &game.white_king_pos,
                         &game.black_king_pos,
                         &mut NoTrace,
-                        &wp,
-                        &bp,
-                        &wrq,
-                        &brq,
+                        wp,
+                        bp,
+                        wrq,
+                        brq,
                     )
                 })
             })
@@ -2462,7 +2463,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     // Fast 2-Bucket cache probe using bitwise mask
     let idx = (pawn_hash as usize) & (PAWN_CACHE_SIZE - 1);
     let cached = PAWN_CACHE.with(|cache| {
-        let bucket = cache.borrow()[idx];
+        let bucket = unsafe { (&*cache.get())[idx] };
         if bucket.entries[0].hash == pawn_hash {
             Some(bucket.entries[0].score)
         } else if bucket.entries[1].hash == pawn_hash {
@@ -2491,7 +2492,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 
     // 2-Bucket cache store (LRU: new item goes to front, old item moves to back)
     PAWN_CACHE.with(|cache| {
-        let mut cache_mut = cache.borrow_mut();
+        let cache_mut = unsafe { &mut *cache.get() };
         let bucket = &mut cache_mut[idx];
         bucket.entries[1] = bucket.entries[0];
         bucket.entries[0] = PawnCacheEntry {

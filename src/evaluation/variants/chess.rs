@@ -3,6 +3,7 @@
 
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;
+use arrayvec::ArrayVec;
 
 // Constants
 
@@ -227,7 +228,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     let mut w_pawn_files = 0u8;
     let mut b_pawn_files = 0u8;
-    let mut pawns = Vec::with_capacity(16);
+    let mut pawns: ArrayVec<(i64, i64, bool), 16> = ArrayVec::new();
 
     // Tracker for king safety
     let mut w_king_attackers = 0;
