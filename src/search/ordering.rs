@@ -46,7 +46,7 @@ pub fn score_move(
         let cap_hist =
             searcher.capture_history[m.piece.piece_type() as usize][target.piece_type() as usize];
 
-        score += mvv_lva + (cap_hist / 16);
+        score += mvv_lva + (cap_hist / 8);
         if is_winning {
             score += sort_winning_capture();
         } else {

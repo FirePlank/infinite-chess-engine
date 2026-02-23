@@ -465,7 +465,7 @@ impl StagedMoveGen {
             let hist_idx = hash_move_dest(m);
             let history_score = searcher.history[pt_idx][hist_idx];
 
-            10 * victim_val - attacker_val + (cap_hist / 16) + (history_score / 8)
+            10 * victim_val - attacker_val + (cap_hist / 8) + (history_score / 8)
         } else {
             0
         }
