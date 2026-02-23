@@ -5,7 +5,7 @@ This directory contains standalone utility scripts and tools for development, de
 ## List of Binaries
 
 ### 1. Helpmate Solver (`helpmate_solver.rs`)
-A high-performance solver for Helpmate problems in Infinite Chess. It uses parallel search and specialized optimizations to solve problems significantly faster than general-purpose engines.
+A high-performance solver for Helpmate problems in Infinite Chess. It utilizes the **DF-PN (Depth-First Proof-Number Search)** algorithm, which is specialized for helpmates, alongside parallel search and tailored prunings for high performance.
 
 **Usage:**
 ```bash

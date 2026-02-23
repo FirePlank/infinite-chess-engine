@@ -19,61 +19,31 @@ use std::time::Instant;
 // ============================================================================
 
 mod parallel_tt {
-    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    const ENTRIES_PER_BUCKET: usize = 8;
+    pub const PN_INF: u32 = 1_000_000_000;
+    const ENTRIES_PER_BUCKET: usize = 4;
 
-    #[derive(Clone, Copy, Debug)]
-    #[repr(C)]
     pub struct TTEntry {
-        pub key: u64,
-        pub score: i32,
-        pub from_x: i16,
-        pub from_y: i16,
-        pub to_x: i16,
-        pub to_y: i16,
-        pub depth: u8,
-        pub generation: u8,
+        pub key: AtomicU64,
+        pub data1: AtomicU64,
+        pub data2: AtomicU64,
+        pub data3: AtomicU64,
     }
 
     impl TTEntry {
-        pub const fn empty() -> Self {
+        pub fn new() -> Self {
             TTEntry {
-                key: 0,
-                score: 0,
-                from_x: 0,
-                from_y: 0,
-                to_x: 0,
-                to_y: 0,
-                depth: 0,
-                generation: 0,
+                key: AtomicU64::new(0),
+                data1: AtomicU64::new(2013265922), // Pack 1 and 1 as default PN/DN
+                data2: AtomicU64::new(0),
+                data3: AtomicU64::new(0),
             }
-        }
-
-        #[inline]
-        pub fn is_empty(&self) -> bool {
-            self.key == 0
         }
     }
 
     pub struct TTBucket {
         pub entries: [TTEntry; ENTRIES_PER_BUCKET],
-        pub lock: AtomicBool,
-    }
-
-    impl TTBucket {
-        pub fn lock(&self) {
-            while self
-                .lock
-                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                std::hint::spin_loop();
-            }
-        }
-        pub fn unlock(&self) {
-            self.lock.store(false, Ordering::Release);
-        }
     }
 
     pub struct TranspositionTable {
@@ -92,8 +62,12 @@ mod parallel_tt {
             let mut buckets = Vec::with_capacity(num_buckets);
             for _ in 0..num_buckets {
                 buckets.push(TTBucket {
-                    entries: [TTEntry::empty(); ENTRIES_PER_BUCKET],
-                    lock: AtomicBool::new(false),
+                    entries: [
+                        TTEntry::new(),
+                        TTEntry::new(),
+                        TTEntry::new(),
+                        TTEntry::new(),
+                    ],
                 });
             }
             TranspositionTable {
@@ -107,51 +81,66 @@ mod parallel_tt {
             (hash as usize) & self.mask
         }
 
-        pub fn probe(&self, hash: u64, depth: i32) -> Option<(i32, Option<(i16, i16, i16, i16)>)> {
+        pub fn probe(&self, hash: u64) -> Option<(u32, u32, Option<(i16, i16, i16, i16)>, u32)> {
             let bucket = &self.buckets[self.bucket_idx(hash)];
-            bucket.lock();
-            let mut res = None;
+
             for e in &bucket.entries {
-                if e.key == hash && !e.is_empty() {
-                    if e.depth as i32 >= depth {
-                        res = Some((e.score, Some((e.from_x, e.from_y, e.to_x, e.to_y))));
+                let key = e.key.load(Ordering::Relaxed);
+                if key == 0 {
+                    continue;
+                }
+
+                let d1 = e.data1.load(Ordering::Relaxed);
+                let d2 = e.data2.load(Ordering::Relaxed);
+                let d3 = e.data3.load(Ordering::Relaxed);
+
+                if (key ^ d1 ^ d2 ^ d3) == hash {
+                    let pn = (d1 & 0xFFFFFFFF) as u32;
+                    let dn = ((d1 >> 32) & 0xFFFFFFFF) as u32;
+                    let from_x = (d2 & 0xFFFF) as i16;
+                    let from_y = ((d2 >> 16) & 0xFFFF) as i16;
+                    let to_x = ((d2 >> 32) & 0xFFFF) as i16;
+                    let to_y = ((d2 >> 48) & 0xFFFF) as i16;
+
+                    let move_coords = if from_x == 0 && from_y == 0 && to_x == 0 && to_y == 0 {
+                        None
                     } else {
-                        res = Some((i32::MIN, Some((e.from_x, e.from_y, e.to_x, e.to_y))));
-                    }
-                    break;
+                        Some((from_x, from_y, to_x, to_y))
+                    };
+
+                    let depth = (d3 & 0xFFFFFFFF) as u32;
+                    return Some((pn, dn, move_coords, depth));
                 }
             }
-            bucket.unlock();
-            res
+            None
         }
 
-        pub fn store(&self, hash: u64, depth: i32, score: i32, m: Option<&Move>, generation: u8) {
+        pub fn store(
+            &self,
+            hash: u64,
+            pn: u32,
+            dn: u32,
+            depth: u32,
+            m: Option<(i16, i16, i16, i16)>,
+        ) {
             let bucket = &self.buckets[self.bucket_idx(hash)];
-            bucket.lock();
 
             let mut replace_idx = 0;
             let mut found_slot = false;
+
             for (i, e) in bucket.entries.iter().enumerate() {
-                if e.key == hash && !e.is_empty() {
-                    // Match found! Only overwrite if NEW is 'better'
-                    let old_is_mate = e.score >= MATE_VALUE - 1000;
-                    let new_is_mate = score >= MATE_VALUE - 1000;
-
-                    if old_is_mate && !new_is_mate {
-                        bucket.unlock();
-                        return; // Protect mate score
-                    }
-
-                    if (depth as u8) < e.depth && e.generation == generation && !new_is_mate {
-                        bucket.unlock();
-                        return; // Don't downgrade depth in same generation
-                    }
-
+                let key = e.key.load(Ordering::Relaxed);
+                if key == 0 {
                     replace_idx = i;
                     found_slot = true;
                     break;
                 }
-                if e.is_empty() {
+
+                let d1 = e.data1.load(Ordering::Relaxed);
+                let d2 = e.data2.load(Ordering::Relaxed);
+                let d3 = e.data3.load(Ordering::Relaxed);
+
+                if (key ^ d1 ^ d2 ^ d3) == hash {
                     replace_idx = i;
                     found_slot = true;
                     break;
@@ -159,43 +148,47 @@ mod parallel_tt {
             }
 
             if !found_slot {
-                let mut worst_v = i32::MAX;
+                let mut min_work_depth = u32::MAX;
+                let mut replace_candidate = (hash as usize >> 32) % ENTRIES_PER_BUCKET;
                 for (i, e) in bucket.entries.iter().enumerate() {
-                    let mut v =
-                        (e.depth as i32) - (generation.wrapping_sub(e.generation) as i32 * 10);
-                    // Strictly protect mate scores
-                    if e.score >= MATE_VALUE - 1000 {
-                        v += 10000;
-                    }
-                    if v < worst_v {
-                        worst_v = v;
-                        replace_idx = i;
+                    let e_d3 = e.data3.load(Ordering::Relaxed);
+                    let e_depth = (e_d3 & 0xFFFFFFFF) as u32;
+
+                    if e_depth < min_work_depth {
+                        min_work_depth = e_depth;
+                        replace_candidate = i;
                     }
                 }
+                replace_idx = replace_candidate;
             }
 
-            let entry = unsafe {
-                let ptr = bucket.entries.as_ptr() as *mut TTEntry;
-                &mut *ptr.add(replace_idx)
+            let entry = &bucket.entries[replace_idx];
+
+            let (from_x, from_y, to_x, to_y) = if let Some((fx, fy, tx, ty)) = m {
+                (
+                    fx as u16 as u64,
+                    fy as u16 as u64,
+                    tx as u16 as u64,
+                    ty as u16 as u64,
+                )
+            } else {
+                (0, 0, 0, 0)
             };
 
-            entry.key = hash;
-            entry.score = score;
-            entry.depth = depth as u8;
-            entry.generation = generation;
-            if let Some(m) = m {
-                entry.from_x = m.from.x as i16;
-                entry.from_y = m.from.y as i16;
-                entry.to_x = m.to.x as i16;
-                entry.to_y = m.to.y as i16;
-            } else {
-                entry.from_x = 0;
-                entry.from_y = 0;
-                entry.to_x = 0;
-                entry.to_y = 0;
-            }
+            let d1 = (pn as u64) | ((dn as u64) << 32);
+            let d2 = from_x | (from_y << 16) | (to_x << 32) | (to_y << 48);
+            let d3 = depth as u64;
+            let new_key = hash ^ d1 ^ d2 ^ d3;
 
-            bucket.unlock();
+            // Invalidate key first
+            entry.key.store(0, Ordering::Relaxed);
+
+            entry.data1.store(d1, Ordering::Relaxed);
+            entry.data2.store(d2, Ordering::Relaxed);
+            entry.data3.store(d3, Ordering::Relaxed);
+
+            // Write key last
+            entry.key.store(new_key, Ordering::Release);
         }
     }
 }
@@ -208,13 +201,10 @@ struct HelpmateSolver {
     tt: parallel_tt::TranspositionTable,
     nodes: AtomicU64,
     found_mate: AtomicBool,
-    best_score: AtomicI32,
     target_depth: u32,
     target_mated_side: PlayerColor,
-    generation: u8,
-    history: Vec<AtomicI32>,
     killers: Vec<[AtomicU64; 2]>,
-    iteration_depth: AtomicI32,
+    history: Vec<AtomicI32>,
 }
 
 impl HelpmateSolver {
@@ -233,52 +223,344 @@ impl HelpmateSolver {
             target_mated_side,
             nodes: AtomicU64::new(0),
             found_mate: AtomicBool::new(false),
-            best_score: AtomicI32::new(-INFINITY),
-            generation: 0,
             history,
             killers,
-            iteration_depth: AtomicI32::new(0),
         }
     }
 
     fn solve(&mut self, state: &mut GameState) -> Option<i32> {
         self.found_mate.store(false, Ordering::SeqCst);
-        self.best_score.store(-INFINITY, Ordering::SeqCst);
 
         // Force Hash Consistency at Root
         state.recompute_hash();
 
-        let target = self.target_depth as i32;
-        let mut best = -INFINITY;
         let start = Instant::now();
 
-        // Iterative deepening (for move ordering and PV consistency)
-        for depth in 1..=target {
-            self.iteration_depth.store(depth as i32, Ordering::Relaxed);
-            self.generation = self.generation.wrapping_add(1);
-            let score = self.parallel_root_search(state, depth);
-            best = score;
+        // Iterative Deepening DFS
+        for current_target in 1..=self.target_depth {
+            // Pre-collect work items to avoid Sync issues with GameState capture
+            let moves = self.generate_helpmate_moves(state, current_target as i32);
+            let work_items: Vec<(GameState, Move)> = moves
+                .iter()
+                .filter_map(|m| {
+                    let mut local_state = state.clone();
+                    let _undo = local_state.make_move(m);
+                    if local_state.is_move_illegal() {
+                        return None;
+                    }
+                    Some((local_state, *m))
+                })
+                .collect();
 
-            let elapsed = start.elapsed().as_secs_f64().max(0.001);
+            if work_items.is_empty() {
+                continue;
+            }
+
+            let results: Vec<(u32, u32, Move)> = work_items
+                .into_par_iter()
+                .map(|(mut local_state, m)| {
+                    let (rpn, rdn) = self.mid_node(
+                        &mut local_state,
+                        parallel_tt::PN_INF,
+                        parallel_tt::PN_INF,
+                        1,
+                        current_target,
+                    );
+                    (rpn, rdn, m)
+                })
+                .collect();
+
+            // Aggregate results for root PN/DN
+            let mut min_pn = parallel_tt::PN_INF;
+            let mut sum_dn: u64 = 0;
+            let mut best_move = None;
+
+            for (rpn, rdn, m) in results {
+                if rpn < min_pn {
+                    min_pn = rpn;
+                    best_move = Some(m);
+                }
+                sum_dn += rdn as u64;
+            }
+            let pn = min_pn;
+            let dn = sum_dn.min(parallel_tt::PN_INF as u64) as u32;
+
             let nodes = self.nodes.load(Ordering::Relaxed);
-            let nps = nodes as f64 / elapsed;
-
+            let elapsed = start.elapsed().as_secs_f64().max(0.001);
             println!(
-                "info depth {} {} nodes {} time {:.2}s nps {:.0}",
-                depth,
-                format_score(score),
+                "info depth {} nodes {} time {:.2}s nps {:.0} pn {} dn {}",
+                current_target,
                 nodes,
                 elapsed,
-                nps
+                nodes as f64 / elapsed,
+                pn,
+                dn
             );
 
-            if score >= MATE_VALUE - target {
+            if pn == 0 {
+                if let Some(m) = best_move {
+                    let hash = state.hash;
+                    self.tt.store(
+                        hash,
+                        0,
+                        parallel_tt::PN_INF,
+                        current_target,
+                        Some((
+                            m.from.x as i16,
+                            m.from.y as i16,
+                            m.to.x as i16,
+                            m.to.y as i16,
+                        )),
+                    );
+                }
                 self.found_mate.store(true, Ordering::SeqCst);
+                return Some(MATE_VALUE);
+            }
+
+            if elapsed > 300.0 {
                 break;
             }
         }
 
-        if best > -INFINITY { Some(best) } else { None }
+        None
+    }
+
+    fn mid_node(
+        &self,
+        state: &mut GameState,
+        pn_limit: u32,
+        dn_limit: u32,
+        ply: u32,
+        max_plies: u32,
+    ) -> (u32, u32) {
+        self.nodes.fetch_add(1, Ordering::Relaxed);
+
+        if self.found_mate.load(Ordering::Relaxed) {
+            return (0, parallel_tt::PN_INF);
+        }
+
+        // Helpmate is purely cooperative -> Every node behaves as an OR node.
+        // PN = min(child PN), DN = sum(child DN)
+        let depth_left = max_plies.saturating_sub(ply);
+
+        let hash = state.hash;
+        let mut tt_move_coords = None;
+        if let Some((pn, dn, move_coords, cached_depth)) = self.tt.probe(hash) {
+            tt_move_coords = move_coords;
+            let use_bounds = cached_depth >= depth_left || pn == 0;
+            if use_bounds {
+                if pn >= pn_limit || dn >= dn_limit {
+                    return (pn, dn);
+                }
+            }
+        }
+
+        let target_king_pos = match self.target_mated_side {
+            PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
+            _ => Coordinate::new(0, 0),
+        };
+
+        // Isolation Pruning: If king is too far from any piece, mate is impossible.
+        if ply > 0 && self.is_king_isolated(state, target_king_pos, depth_left as i32) {
+            let res = (parallel_tt::PN_INF, 0);
+            self.tt.store(hash, res.0, res.1, depth_left, None);
+            return res;
+        }
+
+        if ply >= max_plies {
+            let score = self.terminal_score(state, ply);
+            let (pn, dn) = if score >= MATE_VALUE - 1000 {
+                (0, parallel_tt::PN_INF)
+            } else {
+                (parallel_tt::PN_INF, 0)
+            };
+            self.tt.store(hash, pn, dn, depth_left, None);
+            return (pn, dn);
+        }
+
+        // Depth 1 Optimization: specialized mating search
+        if ply + 1 == max_plies && state.turn != self.target_mated_side {
+            if let Some((_score, m)) = self.find_mating_move(state, ply) {
+                let res = (0, parallel_tt::PN_INF);
+                self.tt.store(
+                    hash,
+                    res.0,
+                    res.1,
+                    depth_left,
+                    Some((
+                        m.from.x as i16,
+                        m.from.y as i16,
+                        m.to.x as i16,
+                        m.to.y as i16,
+                    )),
+                );
+                return res;
+            } else {
+                // If we checked all moves and found no mate involved, we failed.
+                let res = (parallel_tt::PN_INF, 0);
+                self.tt.store(hash, res.0, res.1, depth_left, None);
+                return res;
+            }
+        }
+
+        let moves = self.generate_helpmate_moves(state, depth_left as i32);
+        if moves.is_empty() {
+            let score = self.terminal_score(state, ply);
+            let (pn, dn) = if score >= MATE_VALUE - 1000 {
+                (0, parallel_tt::PN_INF)
+            } else {
+                (parallel_tt::PN_INF, 0)
+            };
+            self.tt.store(hash, pn, dn, depth_left, None);
+            return (pn, dn);
+        }
+
+        let ply_idx = (ply as usize).min(63);
+        let k1 = self.killers[ply_idx][0].load(Ordering::Relaxed);
+        let k2 = self.killers[ply_idx][1].load(Ordering::Relaxed);
+
+        let mut scored_moves: Vec<(Move, i32)> = moves
+            .into_iter()
+            .map(|m| {
+                let mut score = 0;
+                let m_val = (m.from.x as u16 as u64)
+                    | ((m.from.y as u16 as u64) << 16)
+                    | ((m.to.x as u16 as u64) << 32)
+                    | ((m.to.y as u16 as u64) << 48);
+
+                if let Some((fx, fy, tx, ty)) = tt_move_coords {
+                    if m.from.x as i16 == fx
+                        && m.from.y as i16 == fy
+                        && m.to.x as i16 == tx
+                        && m.to.y as i16 == ty
+                    {
+                        score += 10_000_000;
+                    }
+                }
+                if m_val == k1 {
+                    score += 5_000_000;
+                } else if m_val == k2 {
+                    score += 4_000_000;
+                }
+
+                let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.x as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.y as u32)) as usize)
+                    & 32767;
+                score += self.history[h_idx].load(Ordering::Relaxed);
+
+                (m, score)
+            })
+            .collect();
+        scored_moves.sort_unstable_by_key(|(_, s)| -s);
+
+        let mut total_dn: u64 = 0;
+        let mut best_pn = parallel_tt::PN_INF;
+
+        for (i_usize, (m, _)) in scored_moves.clone().into_iter().enumerate() {
+            let undo = state.make_move(&m);
+            if state.is_move_illegal() {
+                state.undo_move(&m, undo);
+                continue;
+            }
+
+            let child_hash = state.hash;
+            let child_depth_left = depth_left.saturating_sub(1);
+            let i_u32 = i_usize as u32;
+
+            let (mut cpn, mut cdn) =
+                if let Some((tt_pn, tt_dn, _, cached_depth)) = self.tt.probe(child_hash) {
+                    if cached_depth >= child_depth_left || tt_pn == 0 {
+                        (tt_pn, tt_dn)
+                    } else {
+                        let init_pn = 1 + i_u32 * i_u32 * 10;
+                        (init_pn, 1)
+                    }
+                } else {
+                    let init_pn = 1 + i_u32 * i_u32 * 10;
+                    (init_pn, 1)
+                };
+
+            if cpn > 0 && cpn < parallel_tt::PN_INF && cdn < parallel_tt::PN_INF {
+                let (new_cpn, new_cdn) = self.mid_node(
+                    state,
+                    parallel_tt::PN_INF,
+                    parallel_tt::PN_INF,
+                    ply + 1,
+                    max_plies,
+                );
+                cpn = new_cpn;
+                cdn = new_cdn;
+            }
+
+            state.undo_move(&m, undo);
+            total_dn += cdn as u64;
+
+            if cpn < best_pn {
+                best_pn = cpn;
+            }
+
+            if cpn == 0 {
+                let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.x as u32))
+                    .wrapping_mul(31)
+                    ^ (m.to.y as u32)) as usize)
+                    & 32767;
+                self.history[h_idx].fetch_add(100, Ordering::Relaxed);
+
+                let m_val = (m.from.x as u16 as u64)
+                    | ((m.from.y as u16 as u64) << 16)
+                    | ((m.to.x as u16 as u64) << 32)
+                    | ((m.to.y as u16 as u64) << 48);
+                if self.killers[ply_idx][0].load(Ordering::Relaxed) != m_val {
+                    self.killers[ply_idx][1].store(
+                        self.killers[ply_idx][0].load(Ordering::Relaxed),
+                        Ordering::Relaxed,
+                    );
+                    self.killers[ply_idx][0].store(m_val, Ordering::Relaxed);
+                }
+
+                self.tt.store(
+                    hash,
+                    0,
+                    parallel_tt::PN_INF,
+                    depth_left,
+                    Some((
+                        m.from.x as i16,
+                        m.from.y as i16,
+                        m.to.x as i16,
+                        m.to.y as i16,
+                    )),
+                );
+                return (0, parallel_tt::PN_INF);
+            }
+
+            if self.found_mate.load(Ordering::Relaxed) {
+                return (0, parallel_tt::PN_INF);
+            }
+        }
+
+        if total_dn == 0 && best_pn == parallel_tt::PN_INF {
+            let res = (parallel_tt::PN_INF, 0);
+            self.tt.store(hash, res.0, res.1, depth_left, None);
+            return res;
+        }
+
+        let final_dn = total_dn.min(parallel_tt::PN_INF as u64) as u32;
+        let res = (best_pn, final_dn);
+
+        let best_move_coords = if let Some((_, _, m, _)) = self.tt.probe(hash) {
+            m
+        } else {
+            None
+        };
+        self.tt
+            .store(hash, res.0, res.1, depth_left, best_move_coords);
+        res
     }
 
     fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
@@ -398,87 +680,6 @@ impl HelpmateSolver {
             }
         }
         moves
-    }
-
-    fn parallel_root_search(&self, state: &mut GameState, depth: i32) -> i32 {
-        // Use custom generator
-        let moves = self.generate_helpmate_moves(state, depth);
-
-        if moves.is_empty() {
-            return self.terminal_score(state, 0);
-        }
-
-        let work_items: Vec<_> = moves
-            .iter()
-            .filter_map(|m| {
-                let mut local_state = state.clone();
-                let _undo = local_state.make_move(m);
-                if local_state.is_move_illegal() {
-                    return None;
-                }
-                Some((local_state, *m))
-            })
-            .collect();
-
-        if work_items.is_empty() {
-            // In root, if no moves that are legal, check terminal state
-            return self.terminal_score(state, 0);
-        }
-
-        let results: Vec<(i32, Move)> = work_items
-            .into_par_iter()
-            .map(|(mut local_state, m)| {
-                if self.found_mate.load(Ordering::Relaxed) {
-                    return (-INFINITY, m);
-                }
-                let score = self.search_sequential(&mut local_state, depth - 1, 1);
-                (score, m)
-            })
-            .collect();
-
-        let mut best_score = -INFINITY;
-        let mut best_move = None;
-
-        for (score, m) in results {
-            if score > best_score {
-                best_score = score;
-                best_move = Some(m);
-            }
-        }
-
-        self.tt.store(
-            state.hash
-                ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
-                    .wrapping_mul(0x9E3779B97F4A7C15),
-            depth,
-            best_score,
-            best_move.as_ref(),
-            self.generation,
-        );
-
-        best_score
-    }
-
-    #[inline(always)]
-    fn score_to_tt(score: i32, ply: u32) -> i32 {
-        if score >= MATE_VALUE - 1000 {
-            score + ply as i32
-        } else if score <= -MATE_VALUE + 1000 {
-            score - ply as i32
-        } else {
-            score
-        }
-    }
-
-    #[inline(always)]
-    fn score_from_tt(val: i32, ply: u32) -> i32 {
-        if val >= MATE_VALUE - 1000 {
-            val - ply as i32
-        } else if val <= -MATE_VALUE + 1000 {
-            val + ply as i32
-        } else {
-            val
-        }
     }
 
     fn find_mating_move(&self, state: &mut GameState, ply: u32) -> Option<(i32, Move)> {
@@ -638,269 +839,17 @@ impl HelpmateSolver {
         true
     }
 
-    fn search_sequential(&self, state: &mut GameState, depth: i32, ply: u32) -> i32 {
-        self.nodes.fetch_add(1, Ordering::Relaxed);
-
-        if self.found_mate.load(Ordering::Relaxed) {
-            return -INFINITY;
-        }
-
-        let hash = state.hash
-            ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
-                .wrapping_mul(0x9E3779B97F4A7C15);
-
-        if let Some((raw_score, _)) = self.tt.probe(hash, depth) {
-            if raw_score != i32::MIN {
-                let tt_score = Self::score_from_tt(raw_score, ply);
-                if tt_score < MATE_VALUE - 1000 {
-                    return tt_score;
-                }
-            }
-        }
-
-        // Get TT move for ordering (probe at depth 0 to always get move hint)
-        let tt_move = self.tt.probe(hash, 0).and_then(|(_, m)| m);
-
-        if depth <= 0 {
-            return self.terminal_score(state, ply);
-        }
-
-        let target_king_pos = match self.target_mated_side {
-            PlayerColor::White => state.white_king_pos.unwrap_or(Coordinate::new(0, 0)),
-            PlayerColor::Black => state.black_king_pos.unwrap_or(Coordinate::new(0, 0)),
-            _ => Coordinate::new(0, 0),
-        };
-
-        // Isolation Pruning
-        // If the King is too far from ANY piece (friend or foe), mate is impossible.
-        if self.is_king_isolated(state, target_king_pos, depth) {
-            return -INFINITY + ply as i32 + 1000;
-        }
-
-        // Leaf Node Optimization
-        if depth == 1 && state.turn != self.target_mated_side {
-            if let Some((score, best_move)) = self.find_mating_move(state, ply) {
-                // Found mate! Store the mating move in TT for PV extraction.
-                self.tt.store(
-                    hash,
-                    depth,
-                    Self::score_to_tt(score, ply),
-                    Some(&best_move),
-                    self.generation,
-                );
-                return score;
-            }
-            // If we checked all moves and found no mate involved, we failed.
-            // We return a "not mated" score.
-            let s = -INFINITY + ply as i32;
-            self.tt.store(
-                hash,
-                depth,
-                Self::score_to_tt(s, ply),
-                None,
-                self.generation,
-            );
-            return s;
-        }
-
-        let moves = self.generate_helpmate_moves(state, depth);
-        if moves.is_empty() {
-            return self.terminal_score(state, ply);
-        }
-
-        let opp_king = if state.turn == PlayerColor::White {
-            state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
-        } else {
-            state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
-        };
-
-        // Score and Order
-        let ply_idx = (ply as usize).min(63);
-        let k1_val = self.killers[ply_idx][0].load(Ordering::Relaxed);
-        let k2_val = self.killers[ply_idx][1].load(Ordering::Relaxed);
-
-        let mut scored_moves: SmallVec<[(Move, i32); 64]> = moves
-            .iter()
-            .map(|m| {
-                let mut score = 0;
-                let dist = (m.to.x - opp_king.x).abs().max((m.to.y - opp_king.y).abs());
-                let target_dist = (m.to.x - target_king_pos.x)
-                    .abs()
-                    .max((m.to.y - target_king_pos.y).abs());
-
-                // Atomic Killers check
-                let m_val = (m.from.x as u16 as u64)
-                    | ((m.from.y as u16 as u64) << 16)
-                    | ((m.to.x as u16 as u64) << 32)
-                    | ((m.to.y as u16 as u64) << 48);
-                if m_val == k1_val {
-                    score += 900_000;
-                } else if m_val == k2_val {
-                    score += 800_000;
-                }
-
-                if state.turn == self.target_mated_side {
-                    if target_dist <= 2 {
-                        score += 50_000;
-                    }
-                } else {
-                    if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
-                        state, m,
-                    ) {
-                        score += 1_000_000;
-                    }
-                    if target_dist <= 2 {
-                        score += 30_000;
-                    }
-                    if dist <= 2 {
-                        score += 20_000;
-                    }
-                }
-
-                if let Some((fx, fy, tx, ty)) = tt_move {
-                    if m.from.x as i16 == fx
-                        && m.from.y as i16 == fy
-                        && m.to.x as i16 == tx
-                        && m.to.y as i16 == ty
-                    {
-                        score += 2_000_000;
-                    }
-                }
-
-                let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
-                    .wrapping_mul(31)
-                    ^ (m.to.x as u32))
-                    .wrapping_mul(31)
-                    ^ (m.to.y as u32)) as usize)
-                    & 32767;
-                let h_score = self.history[h_idx].load(Ordering::Relaxed);
-                score += h_score.min(200_000);
-
-                (*m, score)
-            })
-            .collect();
-
-        scored_moves.sort_unstable_by_key(|(_, s)| -s);
-
-        let mut best_score = -INFINITY;
-        let mut best_move = None;
-        let mut searched_count = 0;
-        let mut real_legal = false;
-
-        for (m, _score) in scored_moves {
-            // Depth 2: Mated side moves, then mating side must check. Prioritize moves near target king.
-            if depth == 2 && state.turn == self.target_mated_side {
-                let king_dist = (m.to.x - target_king_pos.x)
-                    .abs()
-                    .max((m.to.y - target_king_pos.y).abs());
-
-                // If this is a king move that escapes too far, skip
-                if m.piece.piece_type() == hydrochess_wasm::board::PieceType::King && king_dist > 3
-                {
-                    continue;
-                }
-            }
-
-            let undo = state.make_move(&m);
-            if state.is_move_illegal() {
-                state.undo_move(&m, undo);
-                continue;
-            }
-            real_legal = true;
-            searched_count += 1;
-
-            let score = self.search_sequential(state, depth - 1, ply + 1);
-            state.undo_move(&m, undo);
-
-            if score > best_score {
-                best_score = score;
-                best_move = Some(m);
-            }
-
-            if score >= MATE_VALUE - ply as i32 {
-                self.found_mate.store(true, Ordering::SeqCst);
-                break;
-            }
-        }
-
-        if searched_count == 0 {
-            if real_legal {
-                // We had legal moves but pruned them all. This is a search failure, not a mate.
-                let s = -INFINITY + ply as i32;
-                self.tt.store(
-                    hash,
-                    depth,
-                    Self::score_to_tt(s, ply),
-                    None,
-                    self.generation,
-                );
-                return s;
-            } else {
-                let s = self.terminal_score(state, ply);
-                self.tt.store(
-                    hash,
-                    depth,
-                    Self::score_to_tt(s, ply),
-                    None,
-                    self.generation,
-                );
-                return s;
-            }
-        }
-
-        self.tt.store(
-            hash,
-            depth,
-            Self::score_to_tt(best_score, ply),
-            best_move.as_ref(),
-            self.generation,
-        );
-
-        if let Some(ref m) = best_move {
-            // Update history (atomic)
-            let h_idx = (((((m.from.x as u32).wrapping_mul(31) ^ (m.from.y as u32))
-                .wrapping_mul(31)
-                ^ (m.to.x as u32))
-                .wrapping_mul(31)
-                ^ (m.to.y as u32)) as usize)
-                & 32767;
-            self.history[h_idx].fetch_add(depth * depth, Ordering::Relaxed);
-
-            // Update killers (atomic)
-            if ply_idx < 64 {
-                let m_val = (m.from.x as u16 as u64)
-                    | ((m.from.y as u16 as u64) << 16)
-                    | ((m.to.x as u16 as u64) << 32)
-                    | ((m.to.y as u16 as u64) << 48);
-                let k = &self.killers[ply_idx];
-                if k[0].load(Ordering::Relaxed) != m_val {
-                    k[1].store(k[0].load(Ordering::Relaxed), Ordering::Relaxed);
-                    k[0].store(m_val, Ordering::Relaxed);
-                }
-            }
-        }
-        best_score
-    }
-
-    fn extract_pv(&self, state: &mut GameState, _target_score: i32) -> Vec<Move> {
+    fn extract_pv(&self, state: &mut GameState) -> Vec<Move> {
         let mut pv = Vec::new();
         let mut current_state = state.clone();
 
-        for ply in 0..self.target_depth {
-            let hash = current_state.hash
-                ^ (self.iteration_depth.load(Ordering::Relaxed) as u64)
-                    .wrapping_mul(0x9E3779B97F4A7C15);
-            let res = self.tt.probe(hash, 0);
+        for _ in 0..self.target_depth {
+            let hash = current_state.hash;
+            let res = self.tt.probe(hash);
 
-            if let Some((raw_score, move_coords)) = res {
-                // If the score is no longer a mate or is just i32::MIN, we lost the thread
-                if raw_score == i32::MIN {
-                    break;
-                }
-
-                let actual_score = Self::score_from_tt(raw_score, ply);
-                if actual_score < MATE_VALUE - 1000 {
-                    // This entry is not a mate, don't follow it for PV
+            if let Some((pn, _dn, move_coords, _depth)) = res {
+                // If this node is proven (PN=0), follow the move that proved it
+                if pn != 0 {
                     break;
                 }
 
@@ -926,8 +875,7 @@ impl HelpmateSolver {
 
                     if let Some(m) = found_move {
                         pv.push(m);
-                        // If this move just delivered mate, we are done
-                        if self.terminal_score(&mut current_state, ply + 1) >= MATE_VALUE - 1000 {
+                        if self.terminal_score(&mut current_state, 0) >= MATE_VALUE - 1000 {
                             break;
                         }
                     } else {
@@ -947,16 +895,6 @@ impl HelpmateSolver {
 // ============================================================================
 // UTILITIES & MAIN
 // ============================================================================
-
-fn format_score(score: i32) -> String {
-    if score >= MATE_VALUE - 1000 {
-        format!("mate {}", (MATE_VALUE - score + 1) / 2)
-    } else if score <= -INFINITY + 1000 {
-        "score fail".to_string()
-    } else {
-        format!("cp {}", score)
-    }
-}
 
 struct Args {
     icn: String,
@@ -1101,11 +1039,8 @@ fn main() {
 
     if let Some(score) = result {
         if score >= MATE_VALUE - 1000 {
-            let pv = solver.extract_pv(&mut game, score);
-            println!(
-                "\n=== RESULT ===\n✓ FOUND HELPMATE in {} plies!",
-                MATE_VALUE - score
-            );
+            let pv = solver.extract_pv(&mut game);
+            println!("\n=== RESULT ===\n✓ FOUND HELPMATE in {} plies!", pv.len());
             let pv_str: Vec<_> = pv
                 .iter()
                 .map(|m| format!("({},{})->({},{})", m.from.x, m.from.y, m.to.x, m.to.y))
