@@ -752,6 +752,7 @@ pub struct Searcher {
     pub in_check_history: Vec<bool>,
     pub capture_history_stack: Vec<bool>,
     pub tt_pv_stack: Vec<bool>,
+    pub stat_score_stack: Vec<i32>,
 
     /// TT Move History: tracks reliability of TT moves.
     /// Positive values = TT moves tend to be best moves.
@@ -844,6 +845,7 @@ impl Searcher {
             tt_pv_stack: vec![false; MAX_PLY],
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
+            stat_score_stack: vec![0; MAX_PLY],
             best_move_root: None,
             prev_score: 0,
             noise_amp: 0,
@@ -1031,6 +1033,9 @@ impl Searcher {
 
         // Reset TT move history - hits on the old TT are no longer relevant
         self.tt_move_history = 0;
+
+        // Reset StatScore stack
+        self.stat_score_stack.fill(0);
 
         // Fill lowPlyHistory with 97 at the start of iterative deepening
         // (not 0, to give a small positive bias to moves that haven't been seen)
@@ -3215,6 +3220,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Initialize cutoff count for grandchild ply
     if ply + 2 < MAX_PLY {
         searcher.cutoff_cnt[ply + 2] = 0;
+        searcher.stat_score_stack[ply + 2] = 0;
+    }
+    if ply + 4 < MAX_PLY {
+        searcher.stat_score_stack[ply + 4] = 0;
     }
 
     // Update plies_from_null stack (for is_shuffling detection)
@@ -3364,6 +3373,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let adjusted = searcher.adjusted_eval(game, raw, ply, prev_move_idx);
         (adjusted, raw)
     };
+
+    // Apply StatScore bonus from parent move success (Evaluation Smoothing)
+    if ply > 0 {
+        let history_bonus = -searcher.stat_score_stack[ply - 1] / 512;
+        static_eval += history_bonus;
+    }
 
     // Apply deterministic search noise at low plies for SPRT
     if searcher.noise_amp > 0 && ply < LOW_PLY_HISTORY_SIZE {
@@ -4313,6 +4328,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if (extension < 2 || is_pv) && ply < MAX_PLY {
                 searcher.cutoff_cnt[ply] = searcher.cutoff_cnt[ply].saturating_add(1);
             }
+
+            // Record StatScore for this node to influence child evaluation
+            let hist_idx = hash_move_dest(&m);
+            searcher.stat_score_stack[ply] =
+                searcher.history[m.piece.piece_type() as usize][hist_idx];
 
             if !is_capture {
                 // History bonus for quiet cutoff move, with maluses for previously searched quiets

@@ -446,7 +446,7 @@ impl StagedMoveGen {
         }
     }
 
-    /// Score capture: 10 * VictimValue - AttackerValue + CaptureHistory
+    /// Score capture: 10 * VictimValue - AttackerValue + CaptureHistory + StatScore
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             let victim_val = get_piece_value(target.piece_type());
@@ -462,7 +462,10 @@ impl StagedMoveGen {
                 .copied()
                 .unwrap_or(0);
 
-            10 * victim_val - attacker_val + (cap_hist / 16)
+            let hist_idx = hash_move_dest(m);
+            let history_score = searcher.history[pt_idx][hist_idx];
+
+            10 * victim_val - attacker_val + (cap_hist / 16) + (history_score / 8)
         } else {
             0
         }
