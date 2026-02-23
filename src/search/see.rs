@@ -63,6 +63,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     struct PieceInfo {
         x: i64,
         y: i64,
+        value: i32,
         piece_type: PieceType,
         color: PlayerColor,
         alive: bool,
@@ -81,10 +82,12 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         ($x:expr, $y:expr, $packed:expr) => {
             if !pieces.is_full() {
                 let p = crate::board::Piece::from_packed($packed);
+                let pt = p.piece_type();
                 pieces.push(PieceInfo {
                     x: $x,
                     y: $y,
-                    piece_type: p.piece_type(),
+                    value: get_piece_value(pt),
+                    piece_type: pt,
                     color: p.color(),
                     alive: true,
                 });
@@ -205,10 +208,6 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
     let target_x = m.to.x;
     let target_y = m.to.y;
-
-    // Current occupant on the target square: type and color.
-    let mut occ_type = pieces[to_idx].piece_type;
-    let mut _occ_color = pieces[to_idx].color;
 
     // Swap list of gains.
     let mut gain: [i32; 32] = [0; 32];
@@ -437,7 +436,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             if !can_attack(p, tx, ty, pieces) {
                 continue;
             }
-            let val = get_piece_value(p.piece_type);
+            let val = p.value;
             if val < best_val {
                 best_val = val;
                 best_idx = Some(i);
@@ -448,7 +447,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     }
 
     // Initialize swap-list with value of the initially captured piece.
-    gain[0] = get_piece_value(occ_type);
+    gain[0] = pieces[to_idx].value;
 
     // Side to move at the root.
     let mut side = game.turn;
@@ -463,8 +462,8 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         None => return gain[0],
     };
 
-    occ_type = pieces[attacker_idx].piece_type;
-    _occ_color = pieces[attacker_idx].color;
+    // Current occupant value on target square
+    let mut occ_val = pieces[attacker_idx].value;
     pieces[attacker_idx].alive = false; // attacker now sits on target, but we model it abstractly
 
     // Alternating sequence of recaptures.
@@ -478,13 +477,12 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
         if let Some(att_idx) = least_valuable_attacker(&pieces, side, target_x, target_y) {
             // Next capture: side captures the current occupant on target.
-            let captured_val = get_piece_value(occ_type);
+            let captured_val = occ_val;
             gain[depth] = captured_val - gain[depth - 1];
 
-            // Update occupant to the capturing piece and remove it from its
+            // Update occupant value to the capturing piece and remove it from its
             // original square for future x-ray style attacks.
-            occ_type = pieces[att_idx].piece_type;
-            _occ_color = pieces[att_idx].color;
+            occ_val = pieces[att_idx].value;
             pieces[att_idx].alive = false;
 
             depth += 1;
