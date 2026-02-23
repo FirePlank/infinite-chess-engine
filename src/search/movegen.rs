@@ -446,17 +446,23 @@ impl StagedMoveGen {
         }
     }
 
-    /// Score capture: captureHistory + 7 * PieceValue
+    /// Score capture: 10 * VictimValue - AttackerValue + CaptureHistory
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             let victim_val = get_piece_value(target.piece_type());
+            let attacker_val = get_piece_value(m.piece.piece_type());
+
+            let pt_idx = m.piece.piece_type() as usize;
+            let target_idx = target.piece_type() as usize;
+
             let cap_hist = searcher
                 .capture_history
-                .get(m.piece.piece_type() as usize)
-                .and_then(|row| row.get(target.piece_type() as usize))
+                .get(pt_idx)
+                .and_then(|row| row.get(target_idx))
                 .copied()
                 .unwrap_or(0);
-            cap_hist + 7 * victim_val
+
+            10 * victim_val - attacker_val + (cap_hist / 16)
         } else {
             0
         }
@@ -762,7 +768,7 @@ impl StagedMoveGen {
                     while self.cur < self.end_captures {
                         let sm = self.moves[self.cur];
 
-                        if super::see_ge(game, &sm.m, -sm.score / 18) {
+                        if super::see_ge(game, &sm.m, -18) {
                             self.cur += 1;
                             return Some(sm.m);
                         } else {

@@ -42,17 +42,16 @@ pub fn score_move(
         // SEE threshold check
         let is_winning = super::see_ge(game, m, see_winning_threshold());
 
-        score += mvv_lva;
+        // Capture history
+        let cap_hist =
+            searcher.capture_history[m.piece.piece_type() as usize][target.piece_type() as usize];
+
+        score += mvv_lva + (cap_hist / 16);
         if is_winning {
             score += sort_winning_capture();
         } else {
             score += DEFAULT_SORT_LOSING_CAPTURE;
         }
-
-        // Capture history
-        let cap_hist =
-            searcher.capture_history[m.piece.piece_type() as usize][target.piece_type() as usize];
-        score += cap_hist / 16;
     } else {
         // Quiet move scoring
 
