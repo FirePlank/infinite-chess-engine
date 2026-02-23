@@ -317,12 +317,24 @@ impl HelpmateSolver {
         let min_y = tk.y.min(ok.y) - (ml * 2 + b) as i64;
         let max_y = tk.y.max(ok.y) + (ml * 2 + b) as i64;
 
+        let us_king = if state.turn == PlayerColor::White {
+            state.white_king_pos
+        } else {
+            state.black_king_pos
+        };
+        let pinned = if let Some(kp) = us_king {
+            state.compute_pins(&kp, state.turn)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+
         let ctx = hydrochess_wasm::moves::MoveGenContext {
             special_rights: &state.special_rights,
             en_passant: &state.en_passant,
             game_rules: &state.game_rules,
             indices: &state.spatial_indices,
             enemy_king_pos: Some(&ok),
+            pinned: &pinned,
         };
 
         let is_white = state.turn == PlayerColor::White;
@@ -499,6 +511,17 @@ impl HelpmateSolver {
         let pieces: Vec<_> = state.board.iter_pieces_by_color(is_white).collect();
         let mut piece_buf = MoveList::new();
 
+        let us_king = if state.turn == PlayerColor::White {
+            state.white_king_pos
+        } else {
+            state.black_king_pos
+        };
+        let pinned = if let Some(kp) = us_king {
+            state.compute_pins(&kp, state.turn)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+
         for (px, py, piece) in pieces {
             let in_z = px >= min_x && px <= max_x && py >= min_y && py <= max_y;
             if !in_z {
@@ -516,7 +539,6 @@ impl HelpmateSolver {
 
             piece_buf.clear();
 
-            // Scope to restrict borrow
             {
                 let ctx = hydrochess_wasm::moves::MoveGenContext {
                     special_rights: &state.special_rights,
@@ -524,6 +546,7 @@ impl HelpmateSolver {
                     game_rules: &state.game_rules,
                     indices: &state.spatial_indices,
                     enemy_king_pos: Some(&ok),
+                    pinned: &pinned,
                 };
 
                 hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
@@ -533,7 +556,7 @@ impl HelpmateSolver {
                     &ctx,
                     &mut piece_buf,
                 );
-            } // ctx is dropped here, state borrow ends
+            }
 
             let len = piece_buf.len();
             for i in 0..len {
@@ -551,93 +574,7 @@ impl HelpmateSolver {
                         continue;
                     }
 
-                    let mut opponent_moves = MoveList::new();
-
-                    let op_tk = if state.turn == PlayerColor::White {
-                        state.black_king_pos.unwrap_or(Coordinate::new(0, 0))
-                    } else {
-                        state.white_king_pos.unwrap_or(Coordinate::new(0, 0))
-                    };
-
-                    let mut found_legal = false;
-                    let is_white_turn = state.turn == PlayerColor::White;
-                    if let Some(kpos) = if is_white_turn {
-                        state.white_king_pos
-                    } else {
-                        state.black_king_pos
-                    } {
-                        if let Some(kpiece) = state.board.get_piece(kpos.x, kpos.y) {
-                            opponent_moves.clear();
-                            // Scope to restrict borrow
-                            {
-                                let op_ctx = hydrochess_wasm::moves::MoveGenContext {
-                                    special_rights: &state.special_rights,
-                                    en_passant: &state.en_passant,
-                                    game_rules: &state.game_rules,
-                                    indices: &state.spatial_indices,
-                                    enemy_king_pos: Some(&op_tk),
-                                };
-                                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
-                                    &state.board,
-                                    &kpiece,
-                                    &kpos,
-                                    &op_ctx,
-                                    &mut opponent_moves,
-                                );
-                            }
-
-                            for om in &opponent_moves {
-                                let ou = state.make_move(om);
-                                if !state.is_move_illegal() {
-                                    found_legal = true;
-                                    state.undo_move(om, ou);
-                                    break;
-                                }
-                                state.undo_move(om, ou);
-                            }
-                        }
-                    }
-
-                    if !found_legal {
-                        let op_pieces: Vec<_> =
-                            state.board.iter_pieces_by_color(is_white_turn).collect();
-
-                        'outer: for (px, py, piece) in op_pieces {
-                            if piece.piece_type() == hydrochess_wasm::board::PieceType::King {
-                                continue;
-                            } // Already checked
-
-                            opponent_moves.clear();
-                            {
-                                let op_ctx = hydrochess_wasm::moves::MoveGenContext {
-                                    special_rights: &state.special_rights,
-                                    en_passant: &state.en_passant,
-                                    game_rules: &state.game_rules,
-                                    indices: &state.spatial_indices,
-                                    enemy_king_pos: Some(&op_tk),
-                                };
-                                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
-                                    &state.board,
-                                    &piece,
-                                    &Coordinate::new(px, py),
-                                    &op_ctx,
-                                    &mut opponent_moves,
-                                );
-                            }
-
-                            for om in &opponent_moves {
-                                let ou = state.make_move(om);
-                                if !state.is_move_illegal() {
-                                    found_legal = true;
-                                    state.undo_move(om, ou);
-                                    break 'outer;
-                                }
-                                state.undo_move(om, ou);
-                            }
-                        }
-                    }
-
-                    if !found_legal && state.is_in_check() {
+                    if state.is_in_check() && !state.has_legal_evasions() {
                         state.undo_move(m, undo);
                         return Some((MATE_VALUE - (ply + 1) as i32, *m));
                     }
@@ -668,14 +605,14 @@ impl HelpmateSolver {
                 let max_x = target_pos.x + threshold;
 
                 // Use binary search to find starting index
-                let start_idx = row.partition_point(|(x, _)| *x < min_x);
+                let start_idx = row.coords.partition_point(|x| *x < min_x);
 
-                for (x, packed) in &row[start_idx..] {
-                    if *x > max_x {
+                for (x, packed) in row.iter().skip(start_idx) {
+                    if x > max_x {
                         break;
                     }
                     // Keep skipping the king itself
-                    let piece = hydrochess_wasm::board::Piece::from_packed(*packed);
+                    let piece = hydrochess_wasm::board::Piece::from_packed(packed);
                     if piece.piece_type() == hydrochess_wasm::board::PieceType::King
                         && piece.color() == self.target_mated_side
                     {
@@ -683,7 +620,7 @@ impl HelpmateSolver {
                     }
 
                     // Found a piece within threshold box!
-                    let dist = (*x - target_pos.x).abs().max((y - target_pos.y).abs());
+                    let dist = (x - target_pos.x).abs().max((y - target_pos.y).abs());
 
                     let effective_dist = match piece.piece_type() {
                         hydrochess_wasm::board::PieceType::Knight => (dist + 1) / 2,
