@@ -722,9 +722,9 @@ pub struct Searcher {
     pub moved_piece_history: Vec<u8>,
 
     #[allow(clippy::type_complexity)]
-    // Continuation history: [is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
-    // Using 32 for piece types to accommodate all types (8*32*32*32*32*4 = 32MB)
-    pub cont_history: Box<[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]>,
+    // Continuation history: [ply_offset_idx][is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
+    // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
+    pub cont_history: Box<[[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -859,9 +859,9 @@ impl Searcher {
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i32; 32 * 32 * 32 * 32 * 2 * 2].into_boxed_slice(),
+                    vec![0i32; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
                 )
-                    as *mut [[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2])
+                    as *mut [[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(
@@ -1068,12 +1068,14 @@ impl Searcher {
         }
 
         // Reset continuation history
-        for c in 0..2 {
-            for ic in 0..2 {
-                for p in 0..32 {
-                    for t in 0..32 {
-                        for f in 0..32 {
-                            self.cont_history[c][ic][p][t][f].fill(0);
+        for idx in 0..3 {
+            for c in 0..2 {
+                for ic in 0..2 {
+                    for p in 0..32 {
+                        for t in 0..32 {
+                            for f in 0..32 {
+                                self.cont_history[idx][c][ic][p][t][f].fill(0);
+                            }
                         }
                     }
                 }
@@ -4238,41 +4240,29 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // 2. Scaled down: LMR re-search is weaker signal than beta-cutoff (~1/3 bonus)
                 // 3. Quiets only: continuation history only helps quiet move ordering
                 if reduction > 0 && !is_capture && !is_promotion {
-                    // Depth-scaled bonus: ~100 * depth (compared to ~300 * depth for cutoffs)
-                    // This is roughly 1/3 of the beta-cutoff bonus, appropriate since
-                    // "failed high after reduction" is a weaker signal than "caused cutoff"
                     let lmr_bonus = 100 * depth as i32;
+                    let offsets = [1usize, 2, 4];
+                    const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
 
-                    // Update continuation histories at ply offsets -1, -2, -4
-                    // (matching the existing beta-cutoff update pattern)
-                    // Update continuation histories at ply offsets -1, -2, -3, -4, -5, -6
-                    // (matching the new 6-lookup pattern)
-                    const CONT_HISTORY_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
-
-                    for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
-                        if ply > plies_ago
-                            && let Some(prev_move) = searcher.move_history[ply - plies_ago - 1]
+                    for (idx, &plies_ago) in offsets.iter().enumerate() {
+                        if ply >= plies_ago
+                            && let Some(prev_move) = searcher.move_history[ply - plies_ago]
                         {
-                            let prev_piece =
-                                searcher.moved_piece_history[ply - plies_ago - 1] as usize;
+                            let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
                             if prev_piece < 32 {
                                 let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
                                 let cf_hash = hash_coord_32(m.from.x, m.from.y);
                                 let ct_hash = hash_coord_32(m.to.x, m.to.y);
 
-                                let prev_ic =
-                                    searcher.in_check_history[ply - plies_ago - 1] as usize;
+                                let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                                 let prev_cap =
-                                    searcher.capture_history_stack[ply - plies_ago - 1] as usize;
+                                    searcher.capture_history_stack[ply - plies_ago] as usize;
 
-                                let entry = &mut searcher.cont_history[prev_cap][prev_ic]
+                                let entry = &mut searcher.cont_history[idx][prev_cap][prev_ic]
                                     [prev_piece][prev_to_hash][cf_hash][ct_hash];
 
-                                let weight = CONT_HISTORY_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
-                                let adj = (lmr_bonus * weight) / 1024;
-
-                                // Use gravity-based update: entry += bonus - entry * bonus / max
-                                *entry += adj - ((*entry * adj) >> 14);
+                                let adj = (lmr_bonus * CONT_WEIGHTS[idx]) / 1024;
+                                *entry += adj - ((*entry * adj.abs()) >> 14);
                             }
                         }
                     }
@@ -4381,22 +4371,22 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
                 // Continuation history update
-                // Only update offsets 1-2 when in check (deeper offsets are noisy)
-                const CONT_HISTORY_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
+                // Only update offsets 1, 2, 4
+                let offsets = [1usize, 2, 4];
+                const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
 
-                for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
-                    if in_check && plies_ago > 1 {
+                for (idx, &plies_ago) in offsets.iter().enumerate() {
+                    if in_check && plies_ago > 2 {
                         break;
                     }
-                    if ply > plies_ago
-                        && let Some(ref prev_move) = searcher.move_history[ply - plies_ago - 1]
+                    if ply >= plies_ago
+                        && let Some(ref prev_move) = searcher.move_history[ply - plies_ago]
                     {
-                        let prev_piece = searcher.moved_piece_history[ply - plies_ago - 1] as usize;
+                        let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
                         if prev_piece < 32 {
                             let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                            let prev_ic = searcher.in_check_history[ply - plies_ago - 1] as usize;
-                            let prev_cap =
-                                searcher.capture_history_stack[ply - plies_ago - 1] as usize;
+                            let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
+                            let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                             // Update all searched quiets (best with bonus, others with malus)
                             for quiet in &quiets_searched {
@@ -4404,18 +4394,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let q_to_hash = hash_coord_32(quiet.to.x, quiet.to.y);
                                 let is_best = quiet.from == m.from && quiet.to == m.to;
 
-                                let entry = &mut searcher.cont_history[prev_cap][prev_ic]
+                                let entry = &mut searcher.cont_history[idx][prev_cap][prev_ic]
                                     [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
 
-                                let weight = CONT_HISTORY_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
                                 let raw_adj = bonus.min(history_bonus_cap());
-                                let adj = (raw_adj * weight) / 1024;
+                                let adj = if is_best { raw_adj } else { -raw_adj };
+                                let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
-                                if is_best {
-                                    *entry += adj - ((*entry * adj) >> 14);
-                                } else {
-                                    *entry += -adj - ((*entry * adj) >> 14);
-                                }
+                                // Use gravity-based update
+                                *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
                             }
                         }
                     }
@@ -4522,16 +4509,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
 
                 // Update continuation history for opponent's previous move
-                // We use the same weights as the standard update for consistency
-                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                let prev_from_hash = hash_coord_32(prev_move.from.x, prev_move.from.y);
+                // We use the same offsets (1, 2, 4) relative to the opponent's ply (ply - 1).
+                let opponent_from_hash = hash_coord_32(prev_move.from.x, prev_move.from.y);
+                let opponent_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
 
-                const CONT_WEIGHTS: [i32; 6] = [1133, 683, 312, 582, 149, 474];
-                for (i, &plies_ago) in [0usize, 1, 2, 3, 4, 5].iter().enumerate() {
-                    if in_check && plies_ago > 1 {
+                let offsets = [1usize, 2, 4];
+                const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
+
+                for (idx, &plies_ago) in offsets.iter().enumerate() {
+                    if in_check && plies_ago > 2 {
                         break;
                     }
-                    // Ancestor at (ply-1) - plies_ago
+                    // Current node: ply. Opponent move: ply - 1.
+                    // Ancestor for opponent move at (ply - 1) is at depth (ply - 1) - plies_ago
                     if let Some(tp) = (ply - 1).checked_sub(plies_ago)
                         && let Some(ref ancestor_move) = searcher.move_history[tp]
                     {
@@ -4541,13 +4531,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                             let anc_ic = searcher.in_check_history[tp] as usize;
                             let anc_cap = searcher.capture_history_stack[tp] as usize;
 
-                            let weight = CONT_WEIGHTS[i] + if i < 2 { 88 } else { 0 };
-                            let adj = bonus * weight / 1024;
-                            let clamped = adj.clamp(-max_h, max_h);
+                            let raw_adj = bonus.min(history_bonus_cap());
+                            let adj = raw_adj.clamp(-max_h, max_h);
+                            let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
-                            let entry = &mut searcher.cont_history[anc_cap][anc_ic][anc_piece]
-                                [anc_to][prev_from_hash][prev_to_hash];
-                            *entry += clamped - ((*entry * clamped.abs()) >> 14);
+                            let entry = &mut searcher.cont_history[idx][anc_cap][anc_ic][anc_piece]
+                                [anc_to][opponent_from_hash][opponent_to_hash];
+                            *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
                         }
                     }
                 }

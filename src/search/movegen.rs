@@ -92,8 +92,9 @@ pub struct StagedMoveGen {
     skip_quiets: bool,
     excluded_move: Option<Move>,
 
-    // Pre-calculated continuation history pointers for the current ply
-    cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize); 6]>,
+    // Pre-calculated continuation history pointers for the current ply:
+    // [(idx, prev_cap, prev_ic, prev_piece, prev_to_h)]
+    cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize, usize); 3]>,
 }
 
 /// Sorts moves with score >= limit to the front in descending order.
@@ -536,20 +537,12 @@ impl StagedMoveGen {
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
 
-        for &(prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
-            unsafe {
-                // Access: cont_history[prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
-                // Using unchecked for speed as indices are pre-validated
-                let val = *searcher
-                    .cont_history
-                    .get_unchecked(prev_cap)
-                    .get_unchecked(prev_ic)
-                    .get_unchecked(prev_piece)
-                    .get_unchecked(prev_to_h)
-                    .get_unchecked(cur_from_hash)
-                    .get_unchecked(cur_to_hash);
-                score += val;
-            }
+        const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
+        for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
+            // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
+            let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h]
+                [cur_from_hash][cur_to_hash];
+            score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 
         // Check bonus (if move gives check and SEE >= -75)
@@ -831,8 +824,9 @@ impl StagedMoveGen {
                     // Pre-calculate history indices
                     if self.cont_history_indices.is_empty() {
                         let ply = self.ply;
-                        for &plies_ago in &[0usize, 1, 2, 3, 4, 5] {
-                            if let Some(prev_idx) = ply.checked_sub(plies_ago + 1)
+                        let offsets = [1usize, 2, 4];
+                        for (idx, &plies_ago) in offsets.iter().enumerate() {
+                            if let Some(prev_idx) = ply.checked_sub(plies_ago)
                                 && let Some(Some(prev_move)) = searcher.move_history.get(prev_idx)
                                 && let Some(&prev_piece) =
                                     searcher.moved_piece_history.get(prev_idx)
@@ -844,7 +838,7 @@ impl StagedMoveGen {
                                     let prev_cap =
                                         searcher.capture_history_stack[prev_idx] as usize;
                                     self.cont_history_indices
-                                        .push((prev_cap, prev_ic, prev_piece, prev_to_h));
+                                        .push((idx, prev_cap, prev_ic, prev_piece, prev_to_h));
                                 }
                             }
                         }
