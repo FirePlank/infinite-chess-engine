@@ -71,12 +71,17 @@ impl TTEntry {
     }
 
     #[inline]
-    pub fn best_move(&self) -> Option<Move> {
+    pub fn best_move(&self, hash: u64) -> Option<Move> {
         if self.move_data == NO_MOVE {
             return None;
         }
 
-        let m = self.move_data;
+        let hash_key = hash >> 16;
+        let m = self.move_data ^ hash_key;
+        if m == NO_MOVE {
+            return None;
+        }
+
         let pt = PieceType::from_u8((m & 0x1F) as u8);
         let cl = PlayerColor::from_u8(((m >> 5) & 0x03) as u8);
         let pr = ((m >> 7) & 0x1F) as u8;
@@ -103,7 +108,7 @@ impl TTEntry {
     }
 
     #[inline]
-    fn encode_move(&mut self, m: &Move) -> bool {
+    fn encode_move(&mut self, m: &Move, hash: u64) -> bool {
         if m.from.x < MIN_TT_COORD
             || m.from.x > MAX_TT_COORD
             || m.from.y < MIN_TT_COORD
@@ -121,13 +126,17 @@ impl TTEntry {
         let cl = m.piece.color() as u64;
         let pr = m.promotion.map_or(0, |p| p as u64);
 
-        self.move_data = (pt & 0x1F)
+        let mdata = (pt & 0x1F)
             | ((cl & 0x03) << 5)
             | ((pr & 0x1F) << 7)
             | (pack_coord(m.from.x) << 12)
             | (pack_coord(m.from.y) << 25)
             | (pack_coord(m.to.x) << 38)
             | (pack_coord(m.to.y) << 51);
+
+        let hash_key = hash >> 16;
+        let self_move_data = mdata ^ hash_key;
+        self.move_data = self_move_data;
         true
     }
 }
@@ -241,11 +250,11 @@ impl LocalTranspositionTable {
 
         unsafe {
             let bucket_ptr = self.buckets.add(idx);
-            let entries = (*bucket_ptr).entries;
+            let entries = &(*bucket_ptr).entries;
 
-            for e in &entries {
+            for e in entries {
                 if e.key16 == key16 && !e.is_empty() {
-                    return e.best_move();
+                    return e.best_move(hash);
                 }
             }
         }
@@ -296,7 +305,7 @@ impl LocalTranspositionTable {
                     depth: e.depth,
                     flag: e.flag(),
                     is_pv: e.is_pv(),
-                    best_move: e.best_move(),
+                    best_move: e.best_move(params.hash),
                 });
             }
         }
@@ -349,7 +358,7 @@ impl LocalTranspositionTable {
                             move_data: old_move_data,
                         };
                         if let Some(m) = &params.best_move {
-                            e.encode_move(m);
+                            e.encode_move(m, params.hash);
                         }
                     } else if e.depth >= 5 && e.flag() != TTFlag::Exact {
                         e.depth = e.depth.saturating_sub(1);
@@ -373,7 +382,7 @@ impl LocalTranspositionTable {
                 move_data: NO_MOVE,
             };
             if let Some(m) = &params.best_move {
-                new_e.encode_move(m);
+                new_e.encode_move(m, params.hash);
             }
 
             if entries[replace_idx].is_empty() {
@@ -486,8 +495,8 @@ mod tests {
             promotion: None,
             rook_coord: None,
         };
-        assert!(e.encode_move(&m));
-        let decoded = e.best_move().unwrap();
+        assert!(e.encode_move(&m, 0));
+        let decoded = e.best_move(0).unwrap();
         assert_eq!(decoded.from.x, 4000);
         assert_eq!(decoded.from.y, -4000);
     }

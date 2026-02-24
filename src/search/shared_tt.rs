@@ -43,7 +43,7 @@ impl TTEntry {
     }
 
     #[inline]
-    pub fn read(&self, key16: u16) -> Option<(i32, i32, u8, u8, Option<Move>)> {
+    pub fn read(&self, key16: u16, params_hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
             let meta = std::ptr::read_volatile(self.metadata.get());
             if (meta & 0xFFFF) as u16 != key16 || meta == 0 {
@@ -60,17 +60,23 @@ impl TTEntry {
             let score = (meta >> 32) as u16 as i16 as i32;
             let eval = (meta >> 48) as u16 as i16 as i32;
 
-            let best_move = if mdata == NO_MOVE {
+            // Integrity check: secondary verification by XORing the key into move_data.
+            // This prevents "ABA" tearing where move_data is updated by another thread
+            // but metadata matches a previous state.
+            let hash_key = params_hash >> 16; // Use matching bits from the full hash
+            let decoded_mdata = mdata ^ hash_key;
+
+            let best_move = if decoded_mdata == NO_MOVE {
                 None
             } else {
-                let pt = PieceType::from_u8((mdata & 0x1F) as u8);
-                let cl = PlayerColor::from_u8(((mdata >> 5) & 0x03) as u8);
-                let pr = ((mdata >> 7) & 0x1F) as u8;
+                let pt = PieceType::from_u8((decoded_mdata & 0x1F) as u8);
+                let cl = PlayerColor::from_u8(((decoded_mdata >> 5) & 0x03) as u8);
+                let pr = ((decoded_mdata >> 7) & 0x1F) as u8;
 
-                let fx = unpack_coord(mdata >> 12);
-                let fy = unpack_coord(mdata >> 25);
-                let tx = unpack_coord(mdata >> 38);
-                let ty = unpack_coord(mdata >> 51);
+                let fx = unpack_coord(decoded_mdata >> 12);
+                let fy = unpack_coord(decoded_mdata >> 25);
+                let tx = unpack_coord(decoded_mdata >> 38);
+                let ty = unpack_coord(decoded_mdata >> 51);
 
                 Some(Move {
                     from: Coordinate { x: fx, y: fy },
@@ -99,6 +105,7 @@ impl TTEntry {
         depth: u8,
         gen_bound: u8,
         best_move: &Option<Move>,
+        hash: u64,
     ) {
         let mdata = if let Some(m) = best_move {
             if m.from.x >= MIN_TT_COORD
@@ -133,23 +140,14 @@ impl TTEntry {
             | (((score as u16) as u64) << 32)
             | (((eval as u16) as u64) << 48);
 
+        // XOR the hash key into move_data for integrity
+        let hash_key = hash >> 16;
+        let protected_mdata = mdata ^ hash_key;
+
         unsafe {
-            std::ptr::write_volatile(self.move_data.get(), mdata);
+            std::ptr::write_volatile(self.move_data.get(), protected_mdata);
             std::ptr::write_volatile(self.metadata.get(), meta);
         }
-    }
-
-    #[inline]
-    pub fn raw_key(&self) -> u16 {
-        unsafe { (std::ptr::read_volatile(self.metadata.get()) & 0xFFFF) as u16 }
-    }
-    #[inline]
-    pub fn raw_depth(&self) -> u8 {
-        unsafe { (std::ptr::read_volatile(self.metadata.get()) >> 16) as u8 }
-    }
-    #[inline]
-    pub fn raw_gen_bound(&self) -> u8 {
-        unsafe { (std::ptr::read_volatile(self.metadata.get()) >> 24) as u8 }
     }
 
     #[inline]
@@ -295,7 +293,7 @@ impl SharedTranspositionTable {
     pub fn probe_move(&self, hash: u64) -> Option<Move> {
         let key16 = self.hash_key16(hash);
         for e in &self.buckets[self.bucket_index(hash)].entries {
-            if let Some((_, _, _, _, m)) = e.read(key16) {
+            if let Some((_, _, _, _, m)) = e.read(key16, hash) {
                 return m;
             }
         }
@@ -305,7 +303,7 @@ impl SharedTranspositionTable {
     pub fn probe(&self, params: &TTProbeParams) -> Option<TTProbeResult> {
         let key16 = self.hash_key16(params.hash);
         for e in &self.buckets[self.bucket_index(params.hash)].entries {
-            if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16) {
+            if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16, params.hash) {
                 let score =
                     value_from_tt(score, params.ply, params.rule50_count, params.rule_limit);
                 let flag = TTEntry::flag(gen_bound);
@@ -418,7 +416,10 @@ impl SharedTranspositionTable {
                         | (((store_eval as u16) as u64) << 48);
 
                     unsafe {
-                        std::ptr::write_volatile(e.move_data.get(), mdata_to_write);
+                        std::ptr::write_volatile(
+                            e.move_data.get(),
+                            mdata_to_write ^ (params.hash >> 16),
+                        );
                         std::ptr::write_volatile(e.metadata.get(), new_meta);
                     }
                 }
@@ -457,6 +458,7 @@ impl SharedTranspositionTable {
                 params.depth as u8,
                 TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
                 &params.best_move,
+                params.hash,
             );
         }
     }

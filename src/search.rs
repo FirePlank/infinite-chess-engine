@@ -298,6 +298,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.probe(_params),
+            #[allow(unreachable_patterns)]
             _ => None,
         }
     }
@@ -307,6 +308,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.probe_move(_hash),
+            #[allow(unreachable_patterns)]
             _ => None,
         }
     }
@@ -316,6 +318,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.store(_params),
+            #[allow(unreachable_patterns)]
             _ => {}
         }
     }
@@ -325,6 +328,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.capacity(),
+            #[allow(unreachable_patterns)]
             _ => 0,
         }
     }
@@ -334,6 +338,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.used_entries(),
+            #[allow(unreachable_patterns)]
             _ => 0,
         }
     }
@@ -343,6 +348,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.fill_permille(),
+            #[allow(unreachable_patterns)]
             _ => 0,
         }
     }
@@ -353,6 +359,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.prefetch_entry(_hash),
+            #[allow(unreachable_patterns)]
             _ => {}
         }
     }
@@ -362,6 +369,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.increment_age(),
+            #[allow(unreachable_patterns)]
             _ => {}
         }
     }
@@ -371,6 +379,7 @@ impl<'a> TranspositionTableRef<'a> {
         match self {
             #[cfg(feature = "multithreading")]
             Self::Shared(tt) => tt.clear(),
+            #[allow(unreachable_patterns)]
             _ => {}
         }
     }
@@ -2283,11 +2292,11 @@ pub fn get_best_move_parallel(
     let (cap, used, fill) = if let Some(tt) = SHARED_TT.get() {
         (tt.capacity(), tt.used_entries(), tt.fill_permille())
     } else {
-        (
-            searcher.tt.capacity(),
-            searcher.tt.used_entries(),
-            searcher.tt.fill_permille(),
-        )
+        GLOBAL_SEARCHER.with(|cell| {
+            cell.borrow().as_ref().map_or((0, 0, 0), |s| {
+                (s.tt.capacity(), s.tt.used_entries(), s.tt.fill_permille())
+            })
+        })
     };
     let stats = SearchStats {
         nodes: total_nodes,
