@@ -2,7 +2,6 @@ use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::evaluation::get_piece_value;
 use crate::game::GameState;
 use crate::moves::Move;
-use arrayvec::ArrayVec;
 
 /// Tests if SEE value of move is >= threshold.
 /// Uses early cutoffs to avoid full SEE calculation when possible.
@@ -49,255 +48,248 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     #[derive(Clone, Copy, Debug)]
     struct Attacker {
         value: i32,
-        piece_type: PieceType,
         color: PlayerColor,
         pos: Coordinate,
+        ray_idx: Option<usize>,
     }
 
-    // 1. Gather sliders into sorted rays using SpatialIndices
-    // Rays: 0-3 Ortho (R, B, L, U), 4-7 Diag (UR, DR, DL, UL), 8-15 Knightrider
-    let mut rays: [ArrayVec<Attacker, 16>; 16] = Default::default();
-    let indices = &game.spatial_indices;
-
-    for (r, &(dx, dy)) in crate::attacks::ORTHO_DIRS
-        .iter()
-        .chain(crate::attacks::DIAG_DIRS.iter())
-        .enumerate()
-    {
-        let line = if dx == 0 {
-            indices.cols.get(&target_x)
-        } else if dy == 0 {
-            indices.rows.get(&target_y)
-        } else if dx == dy {
-            indices.diag1.get(&(target_x - target_y))
-        } else {
-            indices.diag2.get(&(target_x + target_y))
-        };
-
-        if let Some(spatial_line) = line {
-            let target_coord = if dx == 0 { target_y } else { target_x };
-            let direction = if dx == 0 { dy } else { dx };
-
-            if direction > 0 {
-                let start_idx = spatial_line.coords.partition_point(|&c| c <= target_coord);
-                for i in start_idx..spatial_line.coords.len().min(start_idx + 16) {
-                    let p = crate::board::Piece::from_packed(spatial_line.pieces[i]);
-                    let px = spatial_line.coords[i];
-                    let py = if dx == 0 {
-                        px
-                    } else if dy == 0 {
-                        target_y
-                    } else if dx == dy {
-                        px - (target_x - target_y)
-                    } else {
-                        (target_x + target_y) - px
-                    };
-                    // Actually, if dx == 0, the coord is y.
-                    let (final_px, final_py) = if dx == 0 { (target_x, px) } else { (px, py) };
-
-                    rays[r].push(Attacker {
-                        value: get_piece_value(p.piece_type()),
-                        piece_type: p.piece_type(),
-                        color: p.color(),
-                        pos: Coordinate::new(final_px, final_py),
-                    });
-                }
-            } else {
-                let end_idx = spatial_line.coords.partition_point(|&c| c < target_coord);
-                let start_idx = end_idx.saturating_sub(16);
-                for i in (start_idx..end_idx).rev() {
-                    let p = crate::board::Piece::from_packed(spatial_line.pieces[i]);
-                    let px = spatial_line.coords[i];
-                    let py = if dx == 0 {
-                        px
-                    } else if dy == 0 {
-                        target_y
-                    } else if dx == dy {
-                        px - (target_x - target_y)
-                    } else {
-                        (target_x + target_y) - px
-                    };
-                    let (final_px, final_py) = if dx == 0 { (target_x, px) } else { (px, py) };
-
-                    rays[r].push(Attacker {
-                        value: get_piece_value(p.piece_type()),
-                        piece_type: p.piece_type(),
-                        color: p.color(),
-                        pos: Coordinate::new(final_px, final_py),
-                    });
-                }
-            }
-        }
-    }
-
-    // 2. Gather leapers using bitboard neighborhood (O(1) area check)
-    let mut leapers: [ArrayVec<Attacker, 24>; 2] = Default::default(); // 0: White, 1: Black
-    let neighborhood = game.board.get_neighborhood(target_x, target_y);
-    let local_idx = crate::tiles::local_index(target_x, target_y);
-
-    use crate::attacks::*;
-    use crate::tiles::masks;
-
-    for (c_idx, color) in [PlayerColor::White, PlayerColor::Black].iter().enumerate() {
-        let is_white = *color == PlayerColor::White;
-        let p_masks = masks::pawn_attacker_masks(is_white);
-        let pawn_bit = 1u32 << (PieceType::Pawn as u8);
-
-        for n in 0..9 {
-            let Some(tile) = neighborhood[n] else {
-                continue;
-            };
-            let (occ, type_mask) = if is_white {
-                (tile.occ_white, tile.type_mask_white)
-            } else {
-                (tile.occ_black, tile.type_mask_black)
-            };
-            if occ == 0 {
-                continue;
-            }
-
-            let masks_to_check = [
-                (masks::KNIGHT_MASKS[local_idx][n], KNIGHT_MASK),
-                (masks::KING_MASKS[local_idx][n], KING_MASK),
-                (masks::CAMEL_MASKS[local_idx][n], CAMEL_MASK),
-                (masks::GIRAFFE_MASKS[local_idx][n], GIRAFFE_MASK),
-                (masks::ZEBRA_MASKS[local_idx][n], ZEBRA_MASK),
-                (masks::HAWK_MASKS[local_idx][n], HAWK_MASK),
-                (p_masks[local_idx][n], pawn_bit),
-            ];
-
-            for (attack_mask, req_mask) in masks_to_check {
-                if (type_mask & req_mask) == 0 {
-                    continue;
-                }
-                let mut bits = occ & attack_mask;
-                while bits != 0 {
-                    let b_idx = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let pt = Piece::from_packed(tile.piece[b_idx]).piece_type();
-                    if matches_mask(pt, req_mask) {
-                        let (lx, ly) = (b_idx % 8, b_idx / 8);
-                        let (cx, cy) = crate::tiles::tile_coords(target_x, target_y);
-                        // Neighbor tile cx,cy adjustment
-                        let n_dx = (n % 3) as i64 - 1;
-                        let n_dy = (n / 3) as i64 - 1;
-                        let px = (cx + n_dx) * 8 + lx as i64;
-                        let py = (cy + n_dy) * 8 + ly as i64;
-
-                        leapers[c_idx].push(Attacker {
-                            value: get_piece_value(pt),
-                            piece_type: pt,
-                            color: *color,
-                            pos: Coordinate::new(px, py),
-                        });
-                    }
-                }
-            }
-        }
-        leapers[c_idx].sort_by_key(|a| a.value);
-    }
-
-    // 2b. Gather Knightriders (8 sliding knight directions)
-    if indices.has_knightrider[0] || indices.has_knightrider[1] {
-        for (i, &(dx, dy)) in crate::attacks::KNIGHTRIDER_DIRS.iter().enumerate() {
-            let mut k = 1i64;
-            loop {
-                let x = target_x + dx * k;
-                let y = target_y + dy * k;
-                if let Some(p) = game.board.get_piece(x, y) {
-                    if p.piece_type() == PieceType::Knightrider {
-                        rays[8 + i].push(Attacker {
-                            value: get_piece_value(p.piece_type()),
-                            piece_type: p.piece_type(),
-                            color: p.color(),
-                            pos: Coordinate::new(x, y),
-                        });
-                    }
-                    break;
-                }
-                k += 1;
-                if k > 20 {
-                    break;
-                }
-            }
-        }
-    }
-
-    // 3. Recapture sequence simulation
+    // 1. Initial State
     let mut gain: [i32; 32] = [0; 32];
     let mut depth = 1;
     gain[0] = get_piece_value(captured.piece_type());
 
     let mut side = game.turn;
     let mut occ_val = get_piece_value(m.piece.piece_type());
-    let mut ray_ptrs = [0usize; 16];
 
-    // Remove moving piece from lists to avoid duplication
-    let mut found_initial = false;
+    // 2. Active Attacker Collection
+    // We use a SmallVec for the active attackers (those we've already found)
+    let mut attackers: smallvec::SmallVec<[Attacker; 32]> = smallvec::SmallVec::new();
+
+    // Directions for 16-ray lazy discovery
+    // 0-3 Ortho, 4-7 Diag, 8-15 Knightrider
+    use crate::attacks::*;
+    let ray_dirs: [(i64, i64); 16] = [
+        (1, 0),
+        (-1, 0),
+        (0, 1),
+        (0, -1),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
+        (1, 2),
+        (1, -2),
+        (2, 1),
+        (2, -1),
+        (-1, 2),
+        (-1, -2),
+        (-2, 1),
+        (-2, -1),
+    ];
+
+    // A. 3x3 Neighborhood Bitboard Scan (Covers all pawns, knights, kings, and exotic leapers)
+    // This is O(1) and covers most tactic-heavy areas.
+    let neighborhood = game.board.get_neighborhood(target_x, target_y);
+    let local_idx = crate::tiles::local_index(target_x, target_y);
+    use crate::tiles::masks;
+
+    for (n, maybe_tile) in neighborhood.iter().enumerate() {
+        let Some(tile) = maybe_tile else { continue };
+        let occ = tile.occ_all;
+        if occ == 0 {
+            continue;
+        }
+
+        let (tx, ty) = crate::tiles::tile_coords(target_x, target_y);
+        let nx = tx + (n as i64 % 3) - 1;
+        let ny = ty + (n as i64 / 3) - 1;
+
+        let masks_to_check = [
+            (masks::KNIGHT_MASKS[local_idx][n], KNIGHT_MASK),
+            (masks::KING_MASKS[local_idx][n], KING_MASK),
+            (masks::CAMEL_MASKS[local_idx][n], CAMEL_MASK),
+            (masks::GIRAFFE_MASKS[local_idx][n], GIRAFFE_MASK),
+            (masks::ZEBRA_MASKS[local_idx][n], ZEBRA_MASK),
+            (masks::HAWK_MASKS[local_idx][n], HAWK_MASK),
+        ];
+
+        for (attack_mask, req_mask) in masks_to_check {
+            let mut bits = occ & attack_mask;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let p = Piece::from_packed(tile.piece[i]);
+                if matches_mask(p.piece_type(), req_mask) {
+                    let pos = Coordinate::new(nx * 8 + (i % 8) as i64, ny * 8 + (i / 8) as i64);
+                    if pos != m.from {
+                        attackers.push(Attacker {
+                            value: get_piece_value(p.piece_type()),
+                            color: p.color(),
+                            pos,
+                            ray_idx: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Special Case: Pawns (they attack differently for White vs Black)
+        for (color, mask) in [
+            (
+                PlayerColor::White,
+                masks::pawn_attacker_masks(true)[local_idx][n],
+            ),
+            (
+                PlayerColor::Black,
+                masks::pawn_attacker_masks(false)[local_idx][n],
+            ),
+        ] {
+            let mut bits = (if color == PlayerColor::White {
+                tile.occ_white
+            } else {
+                tile.occ_black
+            }) & tile.occ_pawns
+                & mask;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let pos = Coordinate::new(nx * 8 + (i % 8) as i64, ny * 8 + (i / 8) as i64);
+                if pos != m.from {
+                    attackers.push(Attacker {
+                        value: get_piece_value(PieceType::Pawn),
+                        color,
+                        pos,
+                        ray_idx: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // B. Lazy Ray Discovery (Sliding Pieces + Distant Knights/Kings)
+    // We only find the FIRST blocker on each ray.
     for r in 0..16 {
-        if let Some(i) = rays[r].iter().position(|a| a.pos == m.from) {
-            rays[r].remove(i);
-            found_initial = true;
-            break;
+        let (dx, dy) = ray_dirs[r];
+        let mut found_pos: Option<(i64, i64, Piece)> = None;
+
+        if r < 8 {
+            // Cardinal/Diagonal via SpatialIndices (Infinite range)
+            found_pos = game
+                .spatial_indices
+                .find_first_blocker(target_x, target_y, dx, dy);
+        } else if game.spatial_indices.has_knightrider[0] || game.spatial_indices.has_knightrider[1]
+        {
+            // Knightrider Rays (Step-based with Tile skipping)
+            let mut k = 1;
+            while k < 128 {
+                // Practical limit for Infinite Chess SEE
+                let x = target_x + dx * k;
+                let y = target_y + dy * k;
+                // Optimization: Tile boundary check
+                if let Some(p) = game.board.get_piece(x, y) {
+                    found_pos = Some((x, y, p));
+                    break;
+                }
+                k += 1;
+            }
         }
-    }
-    if !found_initial {
-        let s_idx = if side == PlayerColor::White { 0 } else { 1 };
-        if let Some(i) = leapers[s_idx].iter().position(|a| a.pos == m.from) {
-            leapers[s_idx].remove(i);
+
+        if let Some((vx, vy, p)) = found_pos {
+            let pos = Coordinate::new(vx, vy);
+            if pos == m.from {
+                continue;
+            }
+
+            let pt = p.piece_type();
+            let dist = (vx - target_x).abs().max((vy - target_y).abs());
+
+            let can_attack = if r < 4 {
+                is_ortho_slider(pt) || (dist == 1 && attacks_like_king(pt))
+            } else if r < 8 {
+                is_diag_slider(pt) || (dist == 1 && attacks_like_king(pt))
+            } else {
+                pt == PieceType::Knightrider || (dist == 1 && attacks_like_knight(pt))
+            };
+
+            if can_attack {
+                // Check if we already found this piece in the 3x3 local scan (to avoid double-counting)
+                if dist > 8 || !attackers.iter().any(|a| a.pos == pos) {
+                    attackers.push(Attacker {
+                        value: get_piece_value(pt),
+                        color: p.color(),
+                        pos,
+                        ray_idx: Some(r),
+                    });
+                }
+            }
         }
     }
 
+    // 3. Recapture Sequence Loop
     loop {
         side = side.opponent();
         if depth >= 32 {
             break;
         }
 
-        let s_idx = if side == PlayerColor::White { 0 } else { 1 };
+        let mut best_i: Option<usize> = None;
         let mut best_val = i32::MAX;
-        let mut best_src: Option<LvaSource> = None;
 
-        enum LvaSource {
-            Ray(usize),
-            Leaper(usize),
-        }
-
-        for r in 0..16 {
-            let ptr = ray_ptrs[r];
-            if ptr < rays[r].len() {
-                let a = &rays[r][ptr];
-                if a.color == side {
-                    let can_attack = if r < 4 {
-                        is_ortho_slider(a.piece_type)
-                    } else if r < 8 {
-                        is_diag_slider(a.piece_type)
-                    } else {
-                        a.piece_type == PieceType::Knightrider
-                    };
-                    if can_attack && a.value < best_val {
-                        best_val = a.value;
-                        best_src = Some(LvaSource::Ray(r));
-                    }
-                }
-            }
-        }
-
-        if !leapers[s_idx].is_empty() {
-            let a = &leapers[s_idx][0];
-            if a.value < best_val {
+        for i in 0..attackers.len() {
+            let a = &attackers[i];
+            if a.color == side && a.value < best_val {
                 best_val = a.value;
-                best_src = Some(LvaSource::Leaper(0));
+                best_i = Some(i);
             }
         }
 
-        if let Some(src) = best_src {
+        if let Some(i) = best_i {
+            let chosen = attackers.swap_remove(i);
             gain[depth] = occ_val - gain[depth - 1];
             occ_val = best_val;
-            match src {
-                LvaSource::Ray(r) => ray_ptrs[r] += 1,
-                LvaSource::Leaper(i) => {
-                    leapers[s_idx].remove(i);
+
+            // X-Ray Discovery!
+            if let Some(r) = chosen.ray_idx {
+                let (dx, dy) = ray_dirs[r];
+                let mut next_blocker: Option<(i64, i64, Piece)> = None;
+
+                if r < 8 {
+                    next_blocker =
+                        game.spatial_indices
+                            .find_first_blocker(chosen.pos.x, chosen.pos.y, dx, dy);
+                } else if game.spatial_indices.has_knightrider[0]
+                    || game.spatial_indices.has_knightrider[1]
+                {
+                    let mut k = 1;
+                    while k < 128 {
+                        let nx = chosen.pos.x + dx * k;
+                        let ny = chosen.pos.y + dy * k;
+                        if let Some(np) = game.board.get_piece(nx, ny) {
+                            next_blocker = Some((nx, ny, np));
+                            break;
+                        }
+                        k += 1;
+                    }
+                }
+
+                if let Some((nx, ny, np)) = next_blocker {
+                    let npt = np.piece_type();
+                    let can_xray = if r < 4 {
+                        is_ortho_slider(npt)
+                    } else if r < 8 {
+                        is_diag_slider(npt)
+                    } else {
+                        npt == PieceType::Knightrider
+                    };
+
+                    if can_xray {
+                        attackers.push(Attacker {
+                            value: get_piece_value(npt),
+                            color: np.color(),
+                            pos: Coordinate::new(nx, ny),
+                            ray_idx: Some(r),
+                        });
+                    }
                 }
             }
             depth += 1;
@@ -306,7 +298,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
     }
 
-    // Negamax the gain list to find optimal outcome
+    // 4. Negamax to find optimal outcome
     while depth > 1 {
         depth -= 1;
         gain[depth - 1] = -std::cmp::max(-gain[depth - 1], gain[depth]);
