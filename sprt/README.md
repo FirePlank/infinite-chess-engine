@@ -56,7 +56,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--concurrency <N>` | `16` | Number of parallel games |
 | `--games <N>` | unlimited | Maximum games to run |
 | `--min-games <N>` | `250` | Minimum games before SPRT can terminate |
-| `--elo0 <F>` | `-5.0` | H0 bound (Elo where new is NOT better) |
+| `--elo0 <F>` | `0.0` | H0 bound (Elo where new is NOT better) |
 | `--elo1 <F>` | `5.0` | H1 bound (Elo where new IS better) |
 | `--alpha <F>` | `0.05` | Type I error rate (false positive) |
 | `--beta <F>` | `0.05` | Type II error rate (false negative) |

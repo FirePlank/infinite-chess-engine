@@ -31,7 +31,7 @@ enum Commands {
         old_bin: String,
 
         /// SPRT bound H0 (Elo difference where new is NOT better)
-        #[arg(long, default_value_t = -5.0)]
+        #[arg(long, default_value_t = 0.0)]
         elo0: f64,
 
         /// SPRT bound H1 (Elo difference where new IS better)
@@ -771,9 +771,9 @@ fn main() {
                     format!("target/release/sprt.{}", ext)
                 };
                 let dst = if ext.is_empty() {
-                    "target/release/sprt_engine".to_string()
+                    "target/release/sprt_new".to_string()
                 } else {
-                    format!("target/release/sprt_engine.{}", ext)
+                    format!("target/release/sprt_new.{}", ext)
                 };
 
                 std::fs::copy(&src, &dst).unwrap_or_else(|e| {
