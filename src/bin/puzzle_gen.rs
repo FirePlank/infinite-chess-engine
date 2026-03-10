@@ -45,7 +45,7 @@ fn is_valid_attack(best_score: i32, second_score: Option<i32>) -> bool {
 }
 
 fn main() {
-    println!("Starting Hyper-Fast Puzzle Generator with Classification Logic...");
+    println!("Starting Puzzle Generator...");
 
     let games_path = Path::new("generated_games.txt");
     if !games_path.exists() {
