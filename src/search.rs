@@ -389,18 +389,18 @@ impl<'a> TranspositionTableRef<'a> {
 #[inline(always)]
 pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<TTProbeResult> {
     #[cfg(feature = "multithreading")]
-    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(tt) = SHARED_TT.get() {
-            return tt.probe(&crate::search::tt_defs::TTProbeParams {
-                hash: ctx.hash,
-                alpha: ctx.alpha,
-                beta: ctx.beta,
-                depth: ctx.depth,
-                ply: ctx.ply,
-                rule50_count: ctx.rule50_count,
-                rule_limit: ctx.rule_limit,
-            });
-        }
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        return tt.probe(&crate::search::tt_defs::TTProbeParams {
+            hash: ctx.hash,
+            alpha: ctx.alpha,
+            beta: ctx.beta,
+            depth: ctx.depth,
+            ply: ctx.ply,
+            rule50_count: ctx.rule50_count,
+            rule_limit: ctx.rule_limit,
+        });
     }
     searcher.tt.probe(&crate::search::tt_defs::TTProbeParams {
         hash: ctx.hash,
@@ -417,20 +417,20 @@ pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<T
 #[inline(always)]
 pub fn store_tt_with_shared(searcher: &mut Searcher, ctx: &StoreContext) {
     #[cfg(feature = "multithreading")]
-    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(tt) = SHARED_TT.get() {
-            tt.store(&crate::search::tt_defs::TTStoreParams {
-                hash: ctx.hash,
-                depth: ctx.depth,
-                flag: ctx.flag,
-                score: ctx.score,
-                static_eval: ctx.static_eval,
-                is_pv: ctx.is_pv,
-                best_move: ctx.best_move,
-                ply: ctx.ply,
-            });
-            return;
-        }
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        tt.store(&crate::search::tt_defs::TTStoreParams {
+            hash: ctx.hash,
+            depth: ctx.depth,
+            flag: ctx.flag,
+            score: ctx.score,
+            static_eval: ctx.static_eval,
+            is_pv: ctx.is_pv,
+            best_move: ctx.best_move,
+            ply: ctx.ply,
+        });
+        return;
     }
     searcher.tt.store(&crate::search::tt_defs::TTStoreParams {
         hash: ctx.hash,
@@ -608,16 +608,12 @@ thread_local! {
 fn build_search_stats(searcher: &Searcher) -> SearchStats {
     #[cfg(feature = "multithreading")]
     let (cap, used, fill): (usize, usize, u32) = if let Some(tt) = SHARED_TT.get() {
-        (
-            tt.capacity() as usize,
-            tt.used_entries() as usize,
-            tt.fill_permille() as u32,
-        )
+        (tt.capacity(), tt.used_entries(), tt.fill_permille())
     } else {
         (
-            searcher.tt.capacity() as usize,
-            searcher.tt.used_entries() as usize,
-            searcher.tt.fill_permille() as u32,
+            searcher.tt.capacity(),
+            searcher.tt.used_entries(),
+            searcher.tt.fill_permille(),
         )
     };
 

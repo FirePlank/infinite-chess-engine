@@ -348,10 +348,8 @@ impl HelpmateSolver {
         if let Some((pn, dn, move_coords, cached_depth)) = self.tt.probe(hash) {
             tt_move_coords = move_coords;
             let use_bounds = cached_depth >= depth_left || pn == 0;
-            if use_bounds {
-                if pn >= pn_limit || dn >= dn_limit {
-                    return (pn, dn);
-                }
+            if use_bounds && (pn >= pn_limit || dn >= dn_limit) {
+                return (pn, dn);
             }
         }
 
@@ -437,14 +435,13 @@ impl HelpmateSolver {
                     | ((m.to.x as u16 as u64) << 32)
                     | ((m.to.y as u16 as u64) << 48);
 
-                if let Some((fx, fy, tx, ty)) = tt_move_coords {
-                    if m.from.x as i16 == fx
-                        && m.from.y as i16 == fy
-                        && m.to.x as i16 == tx
-                        && m.to.y as i16 == ty
-                    {
-                        score += 10_000_000;
-                    }
+                if let Some((fx, fy, tx, ty)) = tt_move_coords
+                    && m.from.x as i16 == fx
+                    && m.from.y as i16 == fy
+                    && m.to.x as i16 == tx
+                    && m.to.y as i16 == ty
+                {
+                    score += 10_000_000;
                 }
                 if m_val == k1 {
                     score += 5_000_000;
@@ -572,10 +569,11 @@ impl HelpmateSolver {
     }
 
     fn terminal_score(&self, state: &mut GameState, ply: u32) -> i32 {
-        if state.is_in_check() && state.turn == self.target_mated_side {
-            if !state.has_legal_evasions() {
-                return MATE_VALUE - ply as i32;
-            }
+        if state.is_in_check()
+            && state.turn == self.target_mated_side
+            && !state.has_legal_evasions()
+        {
+            return MATE_VALUE - ply as i32;
         }
         -INFINITY + ply as i32
     }
@@ -1077,23 +1075,23 @@ fn main() {
     let result = solver.solve(&mut game.clone());
     let elapsed = start.elapsed();
 
-    if let Some(score) = result {
-        if score >= MATE_VALUE - 1000 {
-            let pv = solver.extract_pv(&mut game);
-            println!("\n=== RESULT ===\n✓ FOUND HELPMATE in {} plies!", pv.len());
-            let pv_str: Vec<_> = pv
-                .iter()
-                .map(|m| format!("({},{})->({},{})", m.from.x, m.from.y, m.to.x, m.to.y))
-                .collect();
-            println!("  PV: {}", pv_str.join(" "));
-            println!(
-                "\nTime: {:.2?}\nNodes: {}\nNPS: {:.0}",
-                elapsed,
-                solver.nodes.load(Ordering::Relaxed),
-                solver.nodes.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(0.001)
-            );
-            return;
-        }
+    if let Some(score) = result
+        && score >= MATE_VALUE - 1000
+    {
+        let pv = solver.extract_pv(&mut game);
+        println!("\n=== RESULT ===\n✓ FOUND HELPMATE in {} plies!", pv.len());
+        let pv_str: Vec<_> = pv
+            .iter()
+            .map(|m| format!("({},{})->({},{})", m.from.x, m.from.y, m.to.x, m.to.y))
+            .collect();
+        println!("  PV: {}", pv_str.join(" "));
+        println!(
+            "\nTime: {:.2?}\nNodes: {}\nNPS: {:.0}",
+            elapsed,
+            solver.nodes.load(Ordering::Relaxed),
+            solver.nodes.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(0.001)
+        );
+        return;
     }
 
     println!(

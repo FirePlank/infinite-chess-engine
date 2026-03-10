@@ -531,10 +531,10 @@ impl GameState {
                         if !self.white_royals.contains(&Coordinate::new(x, y)) {
                             self.white_royals.push(Coordinate::new(x, y));
                         }
-                    } else if piece.color() == PlayerColor::Black {
-                        if !self.black_royals.contains(&Coordinate::new(x, y)) {
-                            self.black_royals.push(Coordinate::new(x, y));
-                        }
+                    } else if piece.color() == PlayerColor::Black
+                        && !self.black_royals.contains(&Coordinate::new(x, y))
+                    {
+                        self.black_royals.push(Coordinate::new(x, y));
                     }
                 }
                 self.total_phase += get_piece_phase(piece.piece_type());
@@ -576,7 +576,7 @@ impl GameState {
 
         // Find white castling partners with rights
         if let Some(wk_pos) = self.white_royals.first() {
-            let wk_has_rights = self.special_rights.contains(&wk_pos);
+            let wk_has_rights = self.special_rights.contains(wk_pos);
             for coord in &self.special_rights {
                 if coord.y != wk_pos.y || coord.x == wk_pos.x {
                     continue;
@@ -3153,10 +3153,10 @@ impl GameState {
                     if let Some(idx) = self.white_royals.iter().position(|&p| p == m.to) {
                         self.white_royals.remove(idx);
                     }
-                } else if captured.color() == PlayerColor::Black {
-                    if let Some(idx) = self.black_royals.iter().position(|&p| p == m.to) {
-                        self.black_royals.remove(idx);
-                    }
+                } else if captured.color() == PlayerColor::Black
+                    && let Some(idx) = self.black_royals.iter().position(|&p| p == m.to)
+                {
+                    self.black_royals.remove(idx);
                 }
             }
 

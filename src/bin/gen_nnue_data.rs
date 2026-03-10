@@ -70,7 +70,7 @@ const NEAR_ZONE_BUCKETS: u32 = 289;
 /// Piece codes for RelKP:
 /// - Friendly: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen = 12 codes
 /// - Enemy: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen, King = 13 codes
-/// Total = 25 codes
+///   Total = 25 codes
 const FRIENDLY_PAWN_BASE: u32 = 0; // 0-7: friendly pawn promo bins
 const FRIENDLY_KNIGHT: u32 = 8;
 const FRIENDLY_BISHOP: u32 = 9;
@@ -1134,6 +1134,7 @@ fn main() {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(true)
         .open(&output_path)
         .expect("Failed to open output file");
 
