@@ -584,6 +584,7 @@ impl GameState {
                 if let Some(piece) = self.board.get_piece(coord.x, coord.y)
                     && piece.color() == PlayerColor::White
                     && piece.piece_type() != PieceType::Pawn
+                    && !piece.piece_type().is_royal()
                 {
                     if coord.x > wk_pos.x {
                         self.castling_partner_counts[0] += 1;
@@ -604,7 +605,7 @@ impl GameState {
 
         // Find black castling partners with rights
         if let Some(bk_pos) = self.black_royals.first() {
-            let bk_has_rights = self.special_rights.contains(&bk_pos);
+            let bk_has_rights = self.special_rights.contains(bk_pos);
             for coord in &self.special_rights {
                 if coord.y != bk_pos.y || coord.x == bk_pos.x {
                     continue;
@@ -612,6 +613,7 @@ impl GameState {
                 if let Some(piece) = self.board.get_piece(coord.x, coord.y)
                     && piece.color() == PlayerColor::Black
                     && piece.piece_type() != PieceType::Pawn
+                    && !piece.piece_type().is_royal()
                 {
                     if coord.x > bk_pos.x {
                         self.castling_partner_counts[2] += 1;
@@ -3021,6 +3023,7 @@ impl GameState {
 
                         if partner.color() == piece.color()
                             && partner.piece_type() != PieceType::Pawn
+                            && !partner.piece_type().is_royal()
                             && self.special_rights.contains(&partner_coord)
                         {
                             m.rook_coord = Some(partner_coord);

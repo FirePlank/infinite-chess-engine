@@ -1607,6 +1607,7 @@ fn generate_castling_moves(
             // Must be same color and a valid castling partner (rook-like piece, not pawn)
             if target_piece.color() == piece.color()
                 && target_piece.piece_type() != PieceType::Pawn
+                && !piece.piece_type().is_royal()
             {
                 let dx = coord.x - from.x;
                 let dy = coord.y - from.y;
