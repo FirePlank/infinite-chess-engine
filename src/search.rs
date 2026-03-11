@@ -4187,31 +4187,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Re-search with PV-like search if we're in PV, otherwise same child type
                 let research_type = if is_pv { NodeType::PV } else { child_type };
 
-                // LMR deeper/shallower re-search depth adjustment
-                // If reduced search returned good value, search deeper
-                // If it returned bad value, search shallower
-                let base_depth = (depth as i32) - 1 + extension;
-                let do_deeper_search =
-                    (search_depth as i32) < base_depth && s > (best_score + 43 + 2 * base_depth);
-                let do_shallower_search = s < best_score + 9;
-                let adjusted_depth = (base_depth + (do_deeper_search as i32)
-                    - (do_shallower_search as i32))
-                    .max(0) as usize;
-
-                // TT move extension: prevent dropping to qsearch if TT has decisive/deep info
-                // For PV nodes with the TT move, if about to go to qsearch and:
-                // - TT has mate score with depth > 0, OR
-                // - TT depth > 1
-                // then ensure minimum depth of 1
-                let mut pv_depth = adjusted_depth;
-                if is_pv && is_tt_move && pv_depth == 0 {
-                    let has_decisive =
-                        tt_value.is_some_and(|v| v.abs() > MATE_SCORE) && tt_data_depth > 0;
-                    let has_deep_tt = tt_data_depth > 1;
-                    if has_decisive || has_deep_tt {
-                        pv_depth = 1;
-                    }
-                }
+                let pv_depth = ((depth as i32) - 1 + extension).max(0) as usize;
 
                 s = -negamax(&mut NegamaxContext {
                     searcher,
