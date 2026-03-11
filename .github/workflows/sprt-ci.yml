@@ -220,6 +220,7 @@ jobs:
           path: |
             sprt/results.json
             sprt/sprt-ci.log
+            sprt/game_logs.json
           if-no-files-found: ignore
 
       - name: Write SPRT summary to check

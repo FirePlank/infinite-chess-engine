@@ -4,7 +4,7 @@ use hydrochess_wasm::evaluation::insufficient_material::evaluate_insufficient_ma
 use hydrochess_wasm::game::GameState;
 use hydrochess_wasm::search;
 use indicatif::{ProgressBar, ProgressStyle};
-use rand::Rng;
+use rand::RngExt;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};

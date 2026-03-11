@@ -56,7 +56,7 @@ enum Commands {
 
         /// Maximum games to run (omit for no limit)
         #[arg(long)]
-        games: Option<usize>,
+        max_games: Option<usize>,
 
         /// Minimum games before SPRT can pass/fail
         #[arg(long, default_value_t = 250)]
@@ -73,11 +73,11 @@ enum Commands {
         #[arg(long, default_value_t = 2000)]
         adjudication: i32,
 
-        /// Path to output JSON results (game logs)
+        /// Path to output game ICNs
         #[arg(long)]
-        json: Option<String>,
+        games: Option<String>,
 
-        /// Path to output full results summary
+        /// Path to output results summary
         #[arg(long)]
         results: Option<String>,
 
@@ -754,11 +754,11 @@ fn main() {
             beta,
             tc,
             concurrency,
-            games,
+            max_games,
             min_games,
             variants,
             adjudication,
-            json,
+            games,
             results,
             max_moves,
             search_noise,
@@ -806,7 +806,7 @@ fn main() {
                 tc_fixed_ms: None,
                 tc_max_depth: None,
                 concurrency,
-                max_games: games,
+                max_games,
                 min_games,
                 variants: variants.split(',').map(Variant::parse).collect(),
                 adjudication_threshold: adjudication,
@@ -817,7 +817,7 @@ fn main() {
                 old_strength,
                 verbose,
             };
-            let json_path = json;
+            let games_path = games;
             let results_path = results;
 
             ctrlc::set_handler(move || {
@@ -1026,7 +1026,7 @@ fn main() {
                 );
             }
 
-            if let Some(path) = json_path {
+            if let Some(path) = games_path {
                 let json_data = serde_json::to_string_pretty(&game_logs).unwrap();
                 std::fs::write(path, json_data).expect("Failed to write JSON output");
             }

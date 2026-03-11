@@ -16,7 +16,7 @@ There are two ways to run SPRT: the **native CLI** (recommended) and the **web U
 
 The CLI is built directly into the `sprt` binary. It manages game pairs, subprocess engines, clocks, adjudication, and reports results — no browser needed.
 
-### Step 1: Build the old (baseline) binary
+### Step 1: Build the baseline
 
 Before making your changes, build the current source as the baseline:
 
@@ -54,7 +54,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--old-bin <PATH>` | **required** | Path to the old (baseline) engine binary |
 | `--tc <TC>` | `10+0.1` | Time control: `base+inc` (seconds), `depth N`, or `fixed Ns` |
 | `--concurrency <N>` | `16` | Number of parallel games |
-| `--games <N>` | unlimited | Maximum games to run |
+| `--max-games <N>` | unlimited | Maximum games to run |
 | `--min-games <N>` | `250` | Minimum games before SPRT can terminate |
 | `--elo0 <F>` | `0.0` | H0 bound (Elo where new is NOT better) |
 | `--elo1 <F>` | `5.0` | H1 bound (Elo where new IS better) |
@@ -64,21 +64,22 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
 | `--old-strength <N>` | `3` | Strength level for old engine (1-3) |
-| `--json <PATH>` | — | Write results JSON to file |
-| `--results <PATH>` | — | Write game ICNs to file |
+| `--games <PATH>` | — | Write game ICNs to a JSON |
+| `--results <PATH>` | — | Write results to a JSON |
 | `--variants <LIST>` | all except custom eval | Comma-separated variant list |
 | `--verbose` | off | Print detailed game info |
 
-### Example: Quick Regression Test
+### Example: Small regression test
 
 ```bash
 cargo run --release --bin sprt --features sprt -- run --old-bin target/release/sprt_old \
   --tc 1+0.01 \
   --concurrency 8 \
-  --games 200 \
-  --json results.json \
-  --results games.json
+  --max-games 200 \
+  --games games.json
 ```
+
+Afterwards you can drop the games JSON into [the ICN validator](https://infinitechess.org/icnvalidator) to catch illegal moves or bad terminations, though some expected disagreements can happen in certain insufficient material or Huygen mate cases.
 
 ---
 
@@ -86,7 +87,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 
 For visual feedback and interactive configuration, use the browser-based SPRT.
 
-### Step 1: Build Baseline (WASM)
+### Step 1: Build the baseline
 
 ```bash
 wasm-pack build --target web --out-dir pkg-old
