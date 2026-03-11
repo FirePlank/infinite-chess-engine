@@ -429,58 +429,27 @@ fn count_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::boa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece};
     use crate::game::GameState;
 
     fn create_chess_game() -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
         game.variant = Some(crate::Variant::Chess);
         game
     }
 
     fn setup_standard_chess_opening(game: &mut GameState) {
-        for file in 1..=8 {
-            game.board
-                .set_piece(file, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-            game.board
-                .set_piece(file, 7, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        }
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(8, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(2, 1, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(7, 1, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(3, 1, Piece::new(PieceType::Bishop, PlayerColor::White));
-        game.board
-            .set_piece(6, 1, Piece::new(PieceType::Bishop, PlayerColor::White));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
+        game.setup_position_from_icn(
+            "w (8;q|1;q) R1,1|N2,1|B3,1|Q4,1|K5,1|B6,1|N7,1|R8,1|\
+            P1,2|P2,2|P3,2|P4,2|P5,2|P6,2|P7,2|P8,2|\
+            r1,8|n2,8|b3,8|q4,8|k5,8|b6,8|n7,8|r8,8|\
+            p1,7|p2,7|p3,7|p4,7|p5,7|p6,7|p7,7|p8,7",
+        );
+    }
 
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.board
-            .set_piece(8, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.board
-            .set_piece(2, 8, Piece::new(PieceType::Knight, PlayerColor::Black));
-        game.board
-            .set_piece(7, 8, Piece::new(PieceType::Knight, PlayerColor::Black));
-        game.board
-            .set_piece(3, 8, Piece::new(PieceType::Bishop, PlayerColor::Black));
-        game.board
-            .set_piece(6, 8, Piece::new(PieceType::Bishop, PlayerColor::Black));
-        game.board
-            .set_piece(4, 8, Piece::new(PieceType::Queen, PlayerColor::Black));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-
-        game.recompute_piece_counts();
+    fn create_chess_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_chess_game();
+        game.setup_position_from_icn(icn);
+        game
     }
 
     #[test]
@@ -494,15 +463,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_material_advantage() {
-        let mut game = create_chess_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
+        let mut game = create_chess_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,4");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
         let score = evaluate(&game);
         assert!(
             score > 800,

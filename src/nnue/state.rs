@@ -448,7 +448,7 @@ impl NnueState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
+    use crate::game::GameState;
 
     #[test]
     fn test_accumulator_ops() {
@@ -468,11 +468,11 @@ mod tests {
 
     #[test]
     fn test_from_position_consistency() {
-        let mut gs = GameState::new();
-        gs.white_royals.push(Coordinate::new(4, 0));
-        gs.black_royals.push(Coordinate::new(4, 7));
-        gs.board
-            .set_piece(4, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let gs = {
+            let mut gs = GameState::new();
+            gs.setup_position_from_icn("w (8;q|1;q) K4,0|k4,7|P4,1");
+            gs
+        };
 
         let state = NnueState::from_position(&gs);
         // Bias + feature

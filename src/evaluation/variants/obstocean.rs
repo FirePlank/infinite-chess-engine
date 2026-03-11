@@ -287,27 +287,26 @@ fn race_eval_optimized(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece};
     use crate::game::GameState;
 
     fn create_obstocean_game() -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
         game.variant = Some(crate::Variant::Obstocean);
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
         game
     }
 
+    fn create_obstocean_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_obstocean_game();
+        game.setup_position_from_icn(icn);
+        game
+    }
+
     #[test]
     fn test_evaluate_returns_value() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
         game.recompute_hash();
 
         let score = evaluate(&game);
@@ -316,13 +315,8 @@ mod tests {
 
     #[test]
     fn test_edge_pawn_bonus() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8");
         game.white_promo_rank = 8;
-        game.recompute_piece_counts();
 
         // Test eval_pawn directly (avoids mop-up interference)
         let edge_score = eval_pawn(1, 4, PlayerColor::White, &game);
@@ -339,13 +333,8 @@ mod tests {
 
     #[test]
     fn test_eval_pawn_function() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8");
         game.white_promo_rank = 8;
-        game.recompute_piece_counts();
 
         // Edge file should give big bonus
         let edge_score = eval_pawn(1, 3, PlayerColor::White, &game);
@@ -356,17 +345,9 @@ mod tests {
 
     #[test]
     fn test_race_eval_basic() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // White edge pawn near promotion
-        game.board
-            .set_piece(1, 7, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8|P1,7");
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
-        game.recompute_piece_counts();
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();
@@ -389,13 +370,8 @@ mod tests {
 
     #[test]
     fn test_outside_file_bonus() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8");
         game.white_promo_rank = 8;
-        game.recompute_piece_counts();
 
         // x=0 is "outside" (left of a-file)
         let outside_score = eval_pawn(0, 4, PlayerColor::White, &game);
@@ -410,20 +386,9 @@ mod tests {
 
     #[test]
     fn test_race_eval_both_sides_racing() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // White pawn closer to promotion
-        game.board
-            .set_piece(1, 7, Piece::new(PieceType::Pawn, PlayerColor::White));
-        // Black pawn further from promotion
-        game.board
-            .set_piece(1, 4, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8|P1,7|p1,4");
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
-        game.recompute_piece_counts();
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();
@@ -443,18 +408,9 @@ mod tests {
 
     #[test]
     fn test_evaluate_inner_returns_value() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(3, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,4|p3,5");
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
-        game.recompute_piece_counts();
 
         let score = evaluate_inner(&game);
         // Should return a valid evaluation (not panic or overflow)
@@ -467,20 +423,9 @@ mod tests {
 
     #[test]
     fn test_black_advantage_race() {
-        let mut game = create_obstocean_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // White pawn far from promotion
-        game.board
-            .set_piece(1, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        // Black pawn very close to promotion
-        game.board
-            .set_piece(1, 2, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_obstocean_game_from_icn("w (8;q|1;q) K5,1|k5,8|P1,3|p1,2");
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
-        game.recompute_piece_counts();
 
         let mut w_pawns = Vec::new();
         let mut b_pawns = Vec::new();

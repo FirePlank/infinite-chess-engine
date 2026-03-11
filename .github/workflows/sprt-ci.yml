@@ -208,71 +208,9 @@ jobs:
             --games "$SPRT_CI_GAMES" \
             --min-games "$SPRT_CI_MIN_GAMES" \
             --max-moves 200 \
-            --results sprt/raw_results.json \
+            --results sprt/results.json \
             --json sprt/game_logs.json \
             2>&1 | tee sprt/sprt-ci.log
-
-      - name: Write skipped SPRT result
-        if: steps.check_parent.outputs.has_parent != 'true'
-        run: |
-          cat <<'EOF' > sprt/ci_result.json
-          {
-            "games": 0,
-            "wins": 0,
-            "losses": 0,
-            "draws": 0,
-            "elo": 0,
-            "eloError": 0,
-            "llr": 0,
-            "verdict": "SKIPPED",
-            "logSummary": "No previous commit detected; SPRT comparison skipped."
-          }
-          EOF
-
-      - name: Package SPRT CI result
-        if: steps.check_parent.outputs.has_parent == 'true'
-        run: |
-          python - <<'PY'
-          import json
-          import math
-          from pathlib import Path
-
-          raw_path = Path("sprt/raw_results.json")
-          log_path = Path("sprt/sprt-ci.log")
-          out_path = Path("sprt/ci_result.json")
-
-          raw = json.loads(raw_path.read_text()) if raw_path.exists() else {}
-          log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
-
-          alpha = 0.05
-          beta = 0.05
-          min_games = 250
-          llr = float(raw.get("llr", 0))
-          total_games = int(raw.get("total_games", 0))
-          lower = math.log(beta / (1 - alpha))
-          upper = math.log((1 - beta) / alpha)
-
-          if total_games >= min_games and llr >= upper:
-              verdict = "PASS"
-          elif total_games >= min_games and llr <= lower:
-              verdict = "FAIL"
-          else:
-              verdict = "INCONCLUSIVE"
-
-          result = {
-              "games": total_games,
-              "wins": int(raw.get("wins", 0)),
-              "losses": int(raw.get("losses", 0)),
-              "draws": int(raw.get("draws", 0)),
-              "elo": raw.get("elo", 0),
-              "eloError": raw.get("elo_error", 0),
-              "llr": llr,
-              "verdict": verdict,
-              "logSummary": "\n".join([line for line in log_lines if line.strip()][-20:]),
-          }
-
-          out_path.write_text(json.dumps(result, indent=2) + "\n")
-          PY
 
       - name: Upload SPRT CI result artifact
         if: ${{ always() && !env.ACT }}
@@ -280,38 +218,57 @@ jobs:
         with:
           name: sprt-ci-result
           path: |
-            sprt/ci_result.json
-            sprt/raw_results.json
+            sprt/results.json
             sprt/sprt-ci.log
-            sprt/game_logs.json
           if-no-files-found: ignore
 
       - name: Write SPRT summary to check
         if: always()
         run: |
-          if [ ! -f sprt/ci_result.json ]; then
+          if [ "${{ steps.check_parent.outputs.has_parent }}" != "true" ]; then
+            echo "### SPRT CI (HEAD vs previous commit)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipped: no previous commit available for comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ ! -f sprt/results.json ]; then
             echo "No SPRT CI result found" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           node - <<'EOF'
           const fs = require('fs');
           const path = require('path');
-          const resultPath = path.join(process.cwd(), 'sprt', 'ci_result.json');
+          const resultPath = path.join(process.cwd(), 'sprt', 'results.json');
+          const logPath = path.join(process.cwd(), 'sprt', 'sprt-ci.log');
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
           if (!fs.existsSync(resultPath) || !summaryPath) {
             process.exit(0);
           }
           const data = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+          const logSummary = fs.existsSync(logPath)
+            ? fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-20).join('\n')
+            : '';
+          const alpha = 0.05;
+          const beta = 0.05;
+          const minGames = 250;
+          const llr = typeof data.llr === 'number' ? data.llr : 0;
+          const games = typeof data.total_games === 'number' ? data.total_games : ((data.wins || 0) + (data.losses || 0) + (data.draws || 0));
+          const lowerBound = Math.log(beta / (1 - alpha));
+          const upperBound = Math.log((1 - beta) / alpha);
+          let verdict = 'INCONCLUSIVE';
+          if (games >= minGames && llr >= upperBound) {
+            verdict = 'PASS';
+          } else if (games >= minGames && llr <= lowerBound) {
+            verdict = 'FAIL';
+          }
           const lines = [];
           lines.push('### SPRT CI (HEAD vs previous commit)');
           lines.push('');
-          if (data.verdict) {
-            lines.push(`Verdict: **${data.verdict}**`);
-            lines.push('');
-          }
-          if (typeof data.elo === 'number' && data.games > 0) {
+          lines.push(`Verdict: **${verdict}**`);
+          lines.push('');
+          if (typeof data.elo === 'number' && games > 0) {
             const elo = data.elo;
-            const err = typeof data.eloError === 'number' ? data.eloError : 0;
+            const err = typeof data.elo_error === 'number' ? data.elo_error : 0;
             const lower = elo - err;
             const upper = elo + err;
             let heuristic = 'roughly equal';
@@ -327,19 +284,19 @@ jobs:
             lines.push(`Heuristic verdict (short run): **${heuristic}**`);
             lines.push('');
           }
-          lines.push(`Games: ${data.games}  (W:${data.wins} L:${data.losses} D:${data.draws})`);
-          if (typeof data.elo === 'number' && data.games > 0) {
+          lines.push(`Games: ${games}  (W:${data.wins} L:${data.losses} D:${data.draws})`);
+          if (typeof data.elo === 'number' && games > 0) {
             const eloStr = data.elo >= 0 ? `+${data.elo.toFixed(1)}` : data.elo.toFixed(1);
-            const errStr = typeof data.eloError === 'number' ? data.eloError.toFixed(1) : 'n/a';
+            const errStr = typeof data.elo_error === 'number' ? data.elo_error.toFixed(1) : 'n/a';
             lines.push(`Estimated Elo: ${eloStr} +/- ${errStr}`);
           }
-          if (typeof data.llr === 'number') {
-            lines.push(`LLR: ${data.llr.toFixed(2)}`);
+          if (typeof llr === 'number') {
+            lines.push(`LLR: ${llr.toFixed(2)}`);
           }
           lines.push('');
-          if (data.logSummary) {
+          if (logSummary) {
             lines.push('```text');
-            lines.push(data.logSummary);
+            lines.push(logSummary);
             lines.push('```');
           }
           fs.appendFileSync(summaryPath, lines.join('\n') + '\n');

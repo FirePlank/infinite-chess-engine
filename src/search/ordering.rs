@@ -281,13 +281,17 @@ pub fn hash_move_for_lowply(m: &Move) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
     use crate::moves::Move;
 
     fn create_test_game() -> GameState {
-        let mut game = GameState::new();
-        game.board = Board::new();
+        GameState::new()
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_test_game();
+        game.setup_position_from_icn(icn);
         game
     }
 
@@ -321,15 +325,7 @@ mod tests {
 
     #[test]
     fn test_sort_captures_mvv_lva() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::Black));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let game = create_test_game_from_icn("w (8;q|1;q) q4,4|p5,5|N0,0|P1,1");
 
         let mut moves: MoveList = vec![
             Move::new(

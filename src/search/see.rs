@@ -308,25 +308,24 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
     use crate::moves::Move;
 
     fn create_test_game() -> GameState {
-        let mut game = GameState::new();
-        game.board = Board::new();
+        GameState::new()
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_test_game();
+        game.setup_position_from_icn(icn);
         game
     }
 
     #[test]
     fn test_see_simple_pawn_takes_pawn() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) P4,4|p5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -340,16 +339,8 @@ mod tests {
 
     #[test]
     fn test_see_queen_takes_defended_pawn() {
-        let mut game = create_test_game();
-        // White queen takes black pawn defended by black pawn
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.board
-            .set_piece(6, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Defends 5,5
+        let mut game = create_test_game_from_icn("w (8;q|1;q) Q4,4|p5,5|p6,6");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -368,13 +359,8 @@ mod tests {
 
     #[test]
     fn test_see_rook_takes_rook() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Rook, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R4,1|r4,7");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 1),
@@ -388,13 +374,8 @@ mod tests {
 
     #[test]
     fn test_see_ge_threshold_pass() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Queen, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) P4,4|q5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -409,13 +390,8 @@ mod tests {
 
     #[test]
     fn test_see_ge_threshold_fail() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) Q4,4|p5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -429,11 +405,8 @@ mod tests {
 
     #[test]
     fn test_see_no_capture_returns_zero() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R4,4");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -447,13 +420,8 @@ mod tests {
 
     #[test]
     fn test_see_knight_takes_bishop() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(3, 3, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(4, 5, Piece::new(PieceType::Bishop, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) N3,3|b4,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(3, 3),

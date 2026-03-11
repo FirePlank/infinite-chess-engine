@@ -80,18 +80,16 @@ pub fn evaluate(game: &GameState) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece, PieceType, PlayerColor};
+    use crate::board::{PieceType, PlayerColor};
     use crate::game::GameState;
 
     fn create_test_game() -> GameState {
+        create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8")
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn(icn);
         game
     }
 
@@ -113,32 +111,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_material_advantage() {
-        let mut game = GameState::new();
-        game.board = Board::new();
-
-        // More complex position to avoid lone king detection
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
-
-        // Recalculate material score
-        let mut score = 0i32;
-        for (_, _, piece) in game.board.iter() {
-            let val = game.get_piece_value(piece.piece_type(), piece.color());
-            match piece.color() {
-                PlayerColor::White => score += val,
-                PlayerColor::Black => score -= val,
-                PlayerColor::Neutral => {}
-            }
-        }
-        game.material_score = score;
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,4|r1,8");
 
         let eval = evaluate_wrapper(&game);
         // Just verify we get a reasonable value (queen > rook typically)
@@ -163,11 +136,7 @@ mod tests {
     #[test]
     fn test_evaluate_rule50_damping() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(1, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|R0,0|R1,0");
         game.material_score = 1000;
         game.turn = PlayerColor::White;
         game.game_rules.move_rule_limit = Some(100);

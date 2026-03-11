@@ -4246,14 +4246,12 @@ mod tests {
 
     /// Helper to create a minimal game state for testing
     fn create_test_game() -> GameState {
+        create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8")
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
         let mut game = GameState::new();
-        // Add kings so the position is "legal"
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn(icn);
         game
     }
 
@@ -4363,25 +4361,8 @@ mod tests {
 
     #[test]
     fn test_rose_check_detection() {
-        let mut game = GameState::new();
-        game.board = Board::new();
+        let mut game = create_test_game_from_icn("b (8;q|1;q) RO3,7|k5,8|K5,1");
         game.special_rights.clear();
-        game.turn = PlayerColor::Black;
-
-        // White rose at (3,7)
-        game.board
-            .set_piece(3, 7, Piece::new(PieceType::Rose, PlayerColor::White));
-
-        // Black king at (5,8)
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-
-        // White king somewhere else
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-
-        game.recompute_piece_counts();
-        game.recompute_hash();
 
         // Build spatial indices
         game.spatial_indices = SpatialIndices::new(&game.board);
@@ -4423,26 +4404,9 @@ mod tests {
 
     #[test]
     fn test_distant_slider_block() {
-        let mut game = GameState::new();
-        game.board = Board::new();
+        let mut game =
+            create_test_game_from_icn("w (8;q|1;q) K-4,-2|R7,2|b26,-32|k100,100");
         game.special_rights.clear();
-        game.turn = PlayerColor::White;
-
-        // White King at (-4, -2)
-        game.board
-            .set_piece(-4, -2, Piece::new(PieceType::King, PlayerColor::White));
-        // White Rook at (7, 2)
-        game.board
-            .set_piece(7, 2, Piece::new(PieceType::Rook, PlayerColor::White));
-        // Black Bishop at (26, -32) - giving diagonal check
-        game.board
-            .set_piece(26, -32, Piece::new(PieceType::Bishop, PlayerColor::Black));
-        // Black King
-        game.board
-            .set_piece(100, 100, Piece::new(PieceType::King, PlayerColor::Black));
-
-        game.recompute_piece_counts();
-        game.recompute_hash();
 
         assert!(game.is_in_check(), "White king should be in check");
 
@@ -4543,12 +4507,7 @@ mod tests {
 
     #[test]
     fn test_king_positions_tracked() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(3, 3, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K3,3|k7,7");
 
         assert_eq!(
             game.white_royals.first().copied(),
@@ -4562,15 +4521,7 @@ mod tests {
 
     #[test]
     fn test_royal_centaur_tracked_as_king() {
-        let mut game = GameState::new();
-        game.board.set_piece(
-            4,
-            4,
-            Piece::new(PieceType::RoyalCentaur, PlayerColor::White),
-        );
-        game.board
-            .set_piece(6, 6, Piece::new(PieceType::RoyalQueen, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) RC4,4|rq6,6");
 
         assert_eq!(
             game.white_royals.first().copied(),
@@ -4586,23 +4537,7 @@ mod tests {
 
     #[test]
     fn test_piece_counts_accurate() {
-        let mut game = GameState::new();
-        // Add pieces
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(2, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(3, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
-
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(2, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,1|P3,1|P4,1|k1,8|r2,8");
 
         assert_eq!(game.white_piece_count, 4);
         assert_eq!(game.black_piece_count, 2);
@@ -4612,21 +4547,14 @@ mod tests {
 
     #[test]
     fn test_non_pawn_material_tracked() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K1,1|k1,8");
 
         assert!(
             !game.has_non_pawn_material(PlayerColor::White),
             "Only king = no NPM"
         );
 
-        game.board
-            .set_piece(2, 1, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) K1,1|N2,1|k1,8");
 
         assert!(
             game.has_non_pawn_material(PlayerColor::White),
@@ -4705,10 +4633,7 @@ mod tests {
     #[test]
     fn test_halfmove_clock_increments() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|N4,4");
 
         // Knight move (not pawn, not capture) should increment
         let m = Move {
@@ -4727,10 +4652,7 @@ mod tests {
     #[test]
     fn test_halfmove_clock_resets_on_pawn() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
 
         let m = Move {
             from: Coordinate::new(4, 2),
@@ -4748,12 +4670,7 @@ mod tests {
     #[test]
     fn test_halfmove_clock_resets_on_capture() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(5, 6, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|N4,4|p5,6");
 
         let m = Move {
             from: Coordinate::new(4, 4),
@@ -4771,10 +4688,7 @@ mod tests {
     #[test]
     fn test_halfmove_clock_restored_on_unmake() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|N4,4");
 
         let m = Move {
             from: Coordinate::new(4, 4),
@@ -4794,44 +4708,21 @@ mod tests {
 
     #[test]
     fn test_is_lone_king_endgame_both_have_pieces() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(2, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(2, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,1|k1,8|r2,8");
 
         assert!(!game.is_lone_king_endgame());
     }
 
     #[test]
     fn test_is_lone_king_endgame_white_lone_king() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(2, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K1,1|k1,8|r2,8");
 
         assert!(game.is_lone_king_endgame());
     }
 
     #[test]
     fn test_is_lone_king_endgame_black_lone_king() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(2, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,1|k1,8");
 
         assert!(game.is_lone_king_endgame());
     }
@@ -4840,16 +4731,7 @@ mod tests {
 
     #[test]
     fn test_is_in_check_basic() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(5, 4, Piece::new(PieceType::Rook, PlayerColor::Black)); // Checking white king
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|r5,4");
 
         assert!(
             game.is_in_check(),
@@ -4859,16 +4741,7 @@ mod tests {
 
     #[test]
     fn test_is_in_check_knight() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 3, Piece::new(PieceType::Knight, PlayerColor::Black)); // Checking white king
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|n4,3");
 
         assert!(
             game.is_in_check(),
@@ -4878,17 +4751,7 @@ mod tests {
 
     #[test]
     fn test_is_in_check_no_check() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // Place rook NOT on any line with the king (not same row, column, or diagonal)
-        game.board
-            .set_piece(3, 4, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|r3,4");
 
         assert!(!game.is_in_check(), "White king should not be in check");
     }
@@ -4974,16 +4837,7 @@ mod tests {
 
     #[test]
     fn test_make_undo_move_restores_state() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
 
         let original_hash = game.hash;
         let original_piece_count = game.white_piece_count;
@@ -5034,15 +4888,7 @@ mod tests {
 
     #[test]
     fn test_halfmove_clock_increment() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,4");
 
         let initial_clock = game.halfmove_clock;
 
@@ -5063,16 +4909,8 @@ mod tests {
 
     #[test]
     fn test_halfmove_clock_resets_on_pawn_move() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.turn = PlayerColor::White;
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
         game.halfmove_clock = 10; // Simulate some moves having been made
-        game.recompute_piece_counts();
 
         let mv = Move::new(
             Coordinate::new(4, 2),
@@ -5089,14 +4927,7 @@ mod tests {
 
     #[test]
     fn test_is_repetition_basic() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        let game = create_test_game();
 
         // At ply 0, no repetition initially
         assert!(!game.is_repetition(0));
@@ -5104,14 +4935,7 @@ mod tests {
 
     #[test]
     fn test_has_non_pawn_material() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,4");
 
         assert!(
             game.has_non_pawn_material(PlayerColor::White),
@@ -5125,13 +4949,7 @@ mod tests {
 
     #[test]
     fn test_init_starting_squares() {
-        let mut game = GameState::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(8, 1, Piece::new(PieceType::Rook, PlayerColor::White));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|R1,1|R8,1");
         game.init_starting_squares();
 
         assert!(game.starting_squares.contains(&Coordinate::new(1, 1)));
