@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
@@ -472,6 +472,10 @@ fn play_game(
                 .arg(config.old_strength.to_string());
         }
 
+        if config.verbose {
+            cmd.stderr(Stdio::inherit());
+        }
+
         let output = cmd
             .output()
             .unwrap_or_else(|e| panic!("Failed to execute engine binary {}: {}", bin, e));
@@ -500,7 +504,9 @@ fn play_game(
 
         // Parse score/depth from stderr
         let mut score = None;
-        if let Some(line) = stderr.lines().find(|l| l.contains("score")) {
+        if !config.verbose
+            && let Some(line) = stderr.lines().find(|l| l.contains("score"))
+        {
             let parts: Vec<&str> = line.split_whitespace().collect();
             for i in 0..parts.len() {
                 if parts[i] == "score" && i + 1 < parts.len() {
@@ -729,6 +735,13 @@ fn generate_icn(
     icn
 }
 
+fn print_status_line(previous_len: &mut usize, line: &str) {
+    let clear_width = (*previous_len).max(line.len());
+    print!("\r{:<width$}", line, width = clear_width);
+    std::io::stdout().flush().unwrap();
+    *previous_len = line.len();
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -832,16 +845,10 @@ fn main() {
                 );
             }
 
-            if config.verbose {
-                println!(
-                    "Starting SPRT CLI: elo0={}, elo1={}, tc={}ms+{}ms, concurrency={}",
-                    config.elo0,
-                    config.elo1,
-                    config.tc_base_ms,
-                    config.tc_inc_ms,
-                    config.concurrency
-                );
-            }
+            println!(
+                "Starting SPRT: elo0={}, elo1={}, tc={}, concurrency={}\n",
+                config.elo0, config.elo1, tc, config.concurrency
+            );
 
             let (lower, upper) = (
                 (config.beta / (1.0 - config.alpha)).ln(),
@@ -852,6 +859,7 @@ fn main() {
             let mut draws = 0;
             let mut game_logs = Vec::new();
             let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
+            let mut last_status_len = 0;
 
             let (tx, rx) = std::sync::mpsc::channel();
             let config_clone = config.clone();
@@ -878,10 +886,10 @@ fn main() {
                                     let game_idx_even = pair_idx * 2;
                                     let game_idx_odd = game_idx_even + 1;
 
-                                    if let Some(max_games) = config.max_games {
-                                        if game_idx_even >= max_games {
-                                            break;
-                                        }
+                                    if let Some(max_games) = config.max_games
+                                        && game_idx_even >= max_games
+                                    {
+                                        break;
                                     }
 
                                     let variant = config.variants[pair_idx % config.variants.len()];
@@ -905,7 +913,7 @@ fn main() {
                                             let _ = tx.send(pair_outcomes);
                                             break;
                                         }
-                                        if config.max_games.map_or(true, |max| game_idx_odd < max) {
+                                        if config.max_games.is_none_or(|max| game_idx_odd < max) {
                                             pair_outcomes.push(play_game(
                                                 &config,
                                                 variant,
@@ -915,7 +923,7 @@ fn main() {
                                             ));
                                         }
                                     } else {
-                                        if config.max_games.map_or(true, |max| game_idx_odd < max) {
+                                        if config.max_games.is_none_or(|max| game_idx_odd < max) {
                                             pair_outcomes.push(play_game(
                                                 &config,
                                                 variant,
@@ -973,8 +981,8 @@ fn main() {
 
                 let llr = calculate_llr(wins, losses, draws, config.elo0, config.elo1);
                 let (elo, err) = estimate_elo(wins, losses, draws);
-                print!(
-                    "\rGames: {} | W: {} L: {} D: {} | Elo: {:.1} +/- {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
+                let status_line = format!(
+                    "Games: {} | W: {} L: {} D: {} | Elo: {:.1} +/- {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
                     wins + losses + draws,
                     wins,
                     losses,
@@ -985,7 +993,7 @@ fn main() {
                     lower,
                     upper
                 );
-                std::io::stdout().flush().unwrap();
+                print_status_line(&mut last_status_len, &status_line);
                 if wins + losses + draws >= config.min_games {
                     if llr >= upper {
                         println!("\nSPRT: PASS");
@@ -1000,8 +1008,6 @@ fn main() {
             }
             if USER_STOP.load(Ordering::SeqCst) {
                 println!("\nRun stopped by user.");
-            } else {
-                println!("\nDone.");
             }
 
             println!("\nFinal Summary:");
@@ -1086,13 +1092,18 @@ fn main() {
                     return;
                 }
                 let search_res = if let Some(ft) = fixed_time {
-                    engine.search_native(ft, max_depth, false, noise_amp, seed)
+                    engine.search_native(ft, max_depth, true, noise_amp, seed)
                 } else {
-                    engine.search_native(0, max_depth, false, noise_amp, seed)
+                    engine.search_native(0, max_depth, true, noise_amp, seed)
                 };
                 if let Some((m, score, stats)) = search_res {
                     println!("bestmove {}", move_to_string(&m));
-                    eprintln!("info score {} nodes {}", score, stats.nodes);
+                    let pv = engine.current_pv_native(max_depth.unwrap_or(50));
+                    if pv.is_empty() {
+                        eprintln!("info score {} nodes {}", score, stats.nodes);
+                    } else {
+                        eprintln!("info score {} nodes {} pv {}", score, stats.nodes, pv);
+                    }
                 } else {
                     eprintln!("search returned None for icn: {}", icn);
                     println!("bestmove none");

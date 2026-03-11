@@ -373,6 +373,17 @@ impl Engine {
             )
         }
     }
+
+    pub fn current_pv_native(&mut self, depth: usize) -> String {
+        crate::search::GLOBAL_SEARCHER.with(|cell| {
+            let opt = cell.borrow();
+            if let Some(searcher) = opt.as_ref() {
+                searcher.format_pv(&mut self.game, depth)
+            } else {
+                String::new()
+            }
+        })
+    }
 }
 
 #[wasm_bindgen]
