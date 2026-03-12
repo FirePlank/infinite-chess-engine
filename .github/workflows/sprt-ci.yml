@@ -205,11 +205,11 @@ jobs:
             --old-bin target/release/sprt_old \
             --tc "$SPRT_CI_TC" \
             --concurrency "$SPRT_CI_CONCURRENCY" \
-            --games "$SPRT_CI_GAMES" \
+            --max-games "$SPRT_CI_GAMES" \
             --min-games "$SPRT_CI_MIN_GAMES" \
             --max-moves 200 \
             --results sprt/results.json \
-            --json sprt/game_logs.json \
+            --games sprt/game_logs.json \
             2>&1 | tee sprt/sprt-ci.log
 
       - name: Upload SPRT CI result artifact

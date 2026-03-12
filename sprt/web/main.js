@@ -1011,6 +1011,11 @@ async function runSprt() {
                                 msg.variantName, // Add variant to ICN log
                             );
                             gameLogs.push(icnLog);
+                            if (msg.reason === 'time_forfeit' || msg.reason === 'timeout') {
+                                const timeoutMsg = 'ALERT: Game ' + (msg.gameIndex + 1) + ' lost on time [' + (msg.variantName || 'Classical') + ']';
+                                sprtLog(timeoutMsg);
+                                log(timeoutMsg, 'error');
+                            }
                             // Enable download buttons immediately upon first result
                             downloadGamesTxtBtn.disabled = false;
                             downloadGamesJsonBtn.disabled = false;
@@ -1437,3 +1442,4 @@ window.__sprt_compute_features = async (rawSamples) => {
 };
 
 initWasm();
+

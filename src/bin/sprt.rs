@@ -185,6 +185,8 @@ struct GameOutcome {
     result: GameResult,
     icn: String,
     variant_name: String,
+    game_idx: usize,
+    termination_reason: String,
 }
 
 #[derive(Clone, Copy)]
@@ -378,6 +380,8 @@ fn play_game(
                     &starting_board_setup,
                 ),
                 variant_name: variant.to_str().to_string(),
+                game_idx,
+                termination_reason: $reason.to_string(),
             }
         };
     }
@@ -423,7 +427,6 @@ fn play_game(
 
         //  Engine search
         let is_new_turn = (game.turn == PlayerColor::White) == new_plays_white;
-        let start_time = Instant::now();
 
         let bin = if is_new_turn {
             &config.new_bin
@@ -476,6 +479,7 @@ fn play_game(
             cmd.stderr(Stdio::inherit());
         }
 
+        let start_time = Instant::now();
         let output = cmd
             .output()
             .unwrap_or_else(|e| panic!("Failed to execute engine binary {}: {}", bin, e));
@@ -620,6 +624,8 @@ fn play_game(
                     &starting_board_setup,
                 ),
                 variant_name: variant.to_str().to_string(),
+                game_idx,
+                termination_reason: termination_reason.unwrap_or("engine failure").to_string(),
             };
         }
     }
@@ -857,6 +863,7 @@ fn main() {
             let mut wins = 0;
             let mut losses = 0;
             let mut draws = 0;
+            let mut timeout_losses = 0;
             let mut game_logs = Vec::new();
             let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
             let mut last_status_len = 0;
@@ -958,11 +965,17 @@ fn main() {
             });
 
             for pair_outcomes in rx {
-                if STOP.load(Ordering::SeqCst) {
-                    break;
-                }
-
                 for outcome in pair_outcomes {
+                    if outcome.termination_reason == "timeout" {
+                        timeout_losses += 1;
+                        if config.verbose {
+                            println!(
+                                "\nALERT: Game {} ended by timeout [{}].",
+                                outcome.game_idx, outcome.variant_name
+                            );
+                        }
+                    }
+
                     match outcome.result {
                         GameResult::Win => wins += 1,
                         GameResult::Loss => losses += 1,
@@ -1014,6 +1027,9 @@ fn main() {
             let (elo, err) = estimate_elo(wins, losses, draws);
             println!("  Elo: {:.1} +/- {:.1}", elo, err);
             println!("  Record: {}W - {}L - {}D", wins, losses, draws);
+            if timeout_losses > 0 {
+                println!("  ALERT: {} games ended by timeout", timeout_losses);
+            }
             println!("\nPer-Variant Breakdown:");
             let mut variant_names: Vec<_> = per_variant_stats.keys().collect();
             variant_names.sort();
@@ -1036,6 +1052,7 @@ fn main() {
                     wins: usize,
                     losses: usize,
                     draws: usize,
+                    timeout_losses: usize,
                     elo: f64,
                     elo_error: f64,
                     llr: f64,
@@ -1048,6 +1065,7 @@ fn main() {
                     wins,
                     losses,
                     draws,
+                    timeout_losses,
                     elo: final_elo,
                     elo_error: final_err,
                     llr: final_llr,
@@ -1126,3 +1144,5 @@ fn main() {
         }
     }
 }
+
+
