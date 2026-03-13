@@ -8,13 +8,13 @@ Sequential Probability Ratio Test (SPRT) tool for validating engine strength cha
 
 SPRT is a statistical test used to determine if a change to the engine results in a strength gain, loss, or is neutral. It is used for tuning search algorithms, evaluation terms, and other parameters.
 
-There are two ways to run SPRT: the **native CLI** (recommended) and the **web UI** (visual, browser-based).
+There are two ways to run SPRT: the **native CLI** (lightweight) and the **web UI** (visual).
 
 ---
 
 ## Native CLI
 
-The CLI is built directly into the `sprt` binary. It manages game pairs, subprocess engines, clocks, adjudication, and reports results — no browser needed.
+The CLI is built directly into the `sprt` binary. It manages game pairs, subprocess engines, clocks, adjudication, and reports results.
 
 ### Step 1: Build the baseline
 
@@ -79,7 +79,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
   --games games.json
 ```
 
-Afterwards you can drop the games JSON into [the ICN validator](https://infinitechess.org/icnvalidator) to catch illegal moves or bad terminations, though some expected disagreements can happen in certain insufficient material or Huygen mate cases.
+Afterwards you can drop the games JSON into [the ICN validator](https://infinitechess.org/icnvalidator) to catch illegal moves or bad terminations, though some discrepancies are expected in certain insufficient material and Huygen mate cases.
 
 ---
 

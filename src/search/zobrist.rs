@@ -40,7 +40,7 @@ const EN_PASSANT_KEY_MIXER: u64 = 0xCAFEBABE87654321;
 /// Normalize coordinate for hashing
 #[inline(always)]
 fn normalize_coord(coord: i64) -> u64 {
-    coord as u64
+    ((coord << 1) ^ (coord >> 63)) as u64
 }
 
 /// Hash a coordinate into a u64
@@ -48,22 +48,15 @@ fn normalize_coord(coord: i64) -> u64 {
 pub fn hash_coordinate(x: i64, y: i64) -> u64 {
     let nx = normalize_coord(x);
     let ny = normalize_coord(y);
-
-    // MurmurHash3-style finalizer for good mixing of 64-bit coordinates
-    let mut h = nx ^ (ny.rotate_left(32));
-    h = h.wrapping_mul(0xff51afd7ed558ccd);
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xc4ceb9fe1a85ec53);
-    h ^= h >> 33;
-    h
+    let hx = nx.wrapping_mul(0x9E3779B185EBCA87);
+    let hy = ny.wrapping_mul(0xC2B2AE3D27D4EB4F);
+    hx ^ hy.rotate_left(32) ^ hx.rotate_left(17).wrapping_add(hy)
 }
 
 /// Get the Zobrist key for a piece at a position
 #[inline(always)]
 pub fn piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
-    let coord_hash = hash_coordinate(x, y);
-    let pk = PIECE_KEYS[piece_type as usize][color as usize];
-    coord_hash ^ pk
+    hash_coordinate(x, y) ^ PIECE_KEYS[piece_type as usize][color as usize]
 }
 
 /// Pre-computed keys for effective castling rights
