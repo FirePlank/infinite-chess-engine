@@ -388,6 +388,15 @@ fn play_game(
 
     for ply in 0..config.max_moves {
         if STOP.load(Ordering::SeqCst) {
+            if USER_STOP.load(Ordering::SeqCst) {
+                return GameOutcome {
+                    result: GameResult::Draw, // Dummy result
+                    icn: String::new(),
+                    variant_name: variant.to_str().to_string(),
+                    game_idx,
+                    termination_reason: "interrupted".to_string(),
+                };
+            }
             break;
         }
 
@@ -602,6 +611,16 @@ fn play_game(
                         return game_outcome!(GameResult::Draw, reason, "1/2-1/2");
                     }
                 }
+            }
+
+            if USER_STOP.load(Ordering::SeqCst) {
+                return GameOutcome {
+                    result: GameResult::Draw, // Dummy result
+                    icn: String::new(),
+                    variant_name: variant.to_str().to_string(),
+                    game_idx,
+                    termination_reason: "interrupted".to_string(),
+                };
             }
 
             termination_reason = Some("engine failure");
@@ -966,6 +985,10 @@ fn main() {
 
             for pair_outcomes in rx {
                 for outcome in pair_outcomes {
+                    if outcome.termination_reason == "interrupted" {
+                        continue;
+                    }
+
                     if outcome.termination_reason == "timeout" {
                         timeout_losses += 1;
                         if config.verbose {
