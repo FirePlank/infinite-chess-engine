@@ -17,7 +17,6 @@ use super::{
     hash_move_dest,
 };
 use crate::board::{PieceType, PlayerColor};
-use crate::evaluation::get_piece_value;
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_quiet_moves_into};
 
@@ -450,8 +449,8 @@ impl StagedMoveGen {
     /// Score capture: 10 * VictimValue - AttackerValue + CaptureHistory + StatScore
     fn score_capture(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
         if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
-            let victim_val = get_piece_value(target.piece_type());
-            let attacker_val = get_piece_value(m.piece.piece_type());
+            let victim_val = game.get_piece_value(target.piece_type(), target.color());
+            let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
 
             let pt_idx = m.piece.piece_type() as usize;
             let target_idx = target.piece_type() as usize;
@@ -571,7 +570,7 @@ impl StagedMoveGen {
             let captured_val = game
                 .board
                 .get_piece(m.to.x, m.to.y)
-                .map(|p| get_piece_value(p.piece_type()))
+                .map(|p| game.get_piece_value(p.piece_type(), p.color()))
                 .unwrap_or(0);
             captured_val + (1 << 28)
         } else {
@@ -598,37 +597,40 @@ impl StagedMoveGen {
             return check_squares.contains(&(tx, ty, pt as u8));
         }
 
-        // Get enemy king position
-        let king_pos = match if color == PlayerColor::White {
-            &game.black_king_pos
+        // Get enemy royal positions
+        let royals = if color == PlayerColor::White {
+            &game.black_royals
         } else {
-            &game.white_king_pos
-        } {
-            Some(k) => k,
-            None => return false,
+            &game.white_royals
         };
 
-        let dx = tx - king_pos.x;
-        let dy = ty - king_pos.y;
-        let adx = dx.abs();
-        let ady = dy.abs();
+        if royals.is_empty() {
+            return false;
+        }
 
         use crate::attacks::{DIAG_MASK, KNIGHT_MASK, ORTHO_MASK};
         let pt_bit = 1u32 << (pt as u8);
 
-        // Knight-like check
-        if (pt_bit & KNIGHT_MASK) != 0 && ((adx == 1 && ady == 2) || (adx == 2 && ady == 1)) {
-            return true;
-        }
+        for king_pos in royals {
+            let dx = tx - king_pos.x;
+            let dy = ty - king_pos.y;
+            let adx = dx.abs();
+            let ady = dy.abs();
 
-        // Orthogonal slider check
-        if (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) {
-            return true;
-        }
+            // Knight-like check
+            if (pt_bit & KNIGHT_MASK) != 0 && ((adx == 1 && ady == 2) || (adx == 2 && ady == 1)) {
+                return true;
+            }
 
-        // Diagonal slider check
-        if (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0 {
-            return true;
+            // Orthogonal check (Rook, Queen, etc.)
+            if (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0 {
+                return true;
+            }
+
+            // Diagonal check (Bishop, Queen, etc.)
+            if (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0 {
+                return true;
+            }
         }
 
         false
@@ -638,9 +640,9 @@ impl StagedMoveGen {
         let mut captures = MoveList::new();
 
         let king_pos = if game.turn == PlayerColor::White {
-            game.white_king_pos
+            game.white_royals.first().copied()
         } else {
-            game.black_king_pos
+            game.black_royals.first().copied()
         };
         let pinned = if let Some(kp) = king_pos {
             game.compute_pins(&kp, game.turn)
@@ -671,9 +673,9 @@ impl StagedMoveGen {
         let mut quiets = MoveList::new();
 
         let king_pos = if game.turn == PlayerColor::White {
-            game.white_king_pos
+            game.white_royals.first().copied()
         } else {
-            game.black_king_pos
+            game.black_royals.first().copied()
         };
         let pinned = if let Some(kp) = king_pos {
             game.compute_pins(&kp, game.turn)

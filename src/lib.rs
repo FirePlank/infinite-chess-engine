@@ -42,6 +42,8 @@ pub enum Variant {
     Knightline,
     Obstocean,
     Chess,
+    // Custom variant that uses all fairy leapers
+    ScatteredLeapers,
 }
 
 impl Variant {
@@ -102,6 +104,33 @@ impl Variant {
             Variant::Chess => {
                 "w 0/100 1 (8|1) 1,8,1,8 P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|R1,1+|R8,1+|r1,8+|r8,8+|N2,1|N7,1|n2,8|n7,8|B3,1|B6,1|b3,8|b6,8|Q4,1|q4,8|K5,1+|k5,8+"
             }
+            Variant::ScatteredLeapers => {
+                "w 0/100 1 (8|1) P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|R1,1+|r1,8+|r8,8+|B3,1|B6,1|b3,8|b6,8|GU2,1|gu2,8|K5,1+|k5,8+|gu7,8|P11,1+|P-2,1+|P-5,0+|P14,0+|p-2,8+|p-5,9+|p11,8+|p14,9+|nr4,9|NR4,0|CA9,-2|ca9,11|ca0,11|ze-3,12|ze12,12|ZE12,-3|GI-5,-6|GI14,-6|gi14,15|gi-5,15|ha-1,14|ha10,14|P6,2+|RO7,-6|p8,7+|ZE-3,-3|CA0,-2|GU7,1|R8,1+|HA10,-5|HA-1,-5|ro7,15"
+            }
+        }
+    }
+
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Variant::Classical => "Classical",
+            Variant::ConfinedClassical => "Confined_Classical",
+            Variant::ClassicalPlus => "Classical_Plus",
+            Variant::CoaIP => "CoaIP",
+            Variant::CoaIPHO => "CoaIP_HO",
+            Variant::CoaIPRO => "CoaIP_RO",
+            Variant::CoaIPNO => "CoaIP_NO",
+            Variant::Palace => "Palace",
+            Variant::Pawndard => "Pawndard",
+            Variant::Core => "Core",
+            Variant::Standarch => "Standarch",
+            Variant::SpaceClassic => "Space_Classic",
+            Variant::Space => "Space",
+            Variant::Abundance => "Abundance",
+            Variant::PawnHorde => "Pawn_Horde",
+            Variant::Knightline => "Knightline",
+            Variant::Obstocean => "Obstocean",
+            Variant::Chess => "Chess",
+            Variant::ScatteredLeapers => "Scattered_Leapers",
         }
     }
 
@@ -125,6 +154,7 @@ impl Variant {
             "Knightline" => Variant::Knightline,
             "Obstocean" => Variant::Obstocean,
             "Chess" => Variant::Chess,
+            "Scattered_Leapers" | "Scattered Leapers" => Variant::ScatteredLeapers,
             _ => Variant::Classical, // Default fallback
         }
     }
@@ -185,6 +215,13 @@ pub struct JsMoveWithEval {
     pub promotion: Option<String>,
     pub eval: i32,    // centipawn score from side-to-move's perspective
     pub depth: usize, // depth reached
+}
+
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+#[derive(Serialize)]
+pub struct JsEvalWithFeatures {
+    pub eval: i32,
+    pub features: crate::evaluation::base::EvalFeatures,
 }
 
 /// A single PV line for MultiPV output
@@ -265,7 +302,99 @@ impl Engine {
             strength_level,
         })
     }
+}
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Engine {
+    pub fn new_native(icn_string: &str) -> Engine {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn_string);
+        Engine {
+            game,
+            clock: None,
+            strength_level: None,
+        }
+    }
+
+    pub fn from_icn_native(icn_string: &str, strength_level: Option<u32>) -> Engine {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn_string);
+        Engine {
+            game,
+            clock: None,
+            strength_level,
+        }
+    }
+
+    pub fn set_clock(&mut self, wtime: u64, btime: u64, winc: u64, binc: u64) {
+        self.clock = Some(JsClock {
+            wtime,
+            btime,
+            winc,
+            binc,
+        });
+    }
+
+    pub fn game_mut(&mut self) -> &mut GameState {
+        &mut self.game
+    }
+
+    pub fn search_native(
+        &mut self,
+        time_limit_ms: u32,
+        max_depth: Option<usize>,
+        silent: bool,
+        noise_amp: Option<i32>,
+        seed: Option<u64>,
+    ) -> Option<(crate::moves::Move, i32, crate::search::SearchStats)> {
+        let (opt_time, max_time, is_soft_limit) =
+            if time_limit_ms == 0 && max_depth.is_some() && self.clock.is_none() {
+                (u128::MAX, u128::MAX, true)
+            } else {
+                self.effective_time_limit_ms(time_limit_ms)
+            };
+        let depth = max_depth.unwrap_or(50).clamp(1, 100);
+        let strength = self.strength_level;
+
+        let effective_seed = seed.unwrap_or_else(get_random_seed);
+        crate::search::set_global_params(effective_seed, noise_amp);
+
+        if strength.is_some_and(|s| s < 3) {
+            crate::search::get_best_move_limited(
+                &mut self.game,
+                depth,
+                opt_time,
+                max_time,
+                strength,
+                silent,
+                is_soft_limit,
+            )
+        } else {
+            crate::search::get_best_move_parallel(
+                &mut self.game,
+                depth,
+                opt_time,
+                max_time,
+                silent,
+                is_soft_limit,
+            )
+        }
+    }
+
+    pub fn current_pv_native(&mut self, depth: usize) -> String {
+        crate::search::GLOBAL_SEARCHER.with(|cell| {
+            let opt = cell.borrow();
+            if let Some(searcher) = opt.as_ref() {
+                searcher.format_pv(&mut self.game, depth)
+            } else {
+                String::new()
+            }
+        })
+    }
+}
+
+#[wasm_bindgen]
+impl Engine {
     pub fn get_best_move(&mut self) -> JsValue {
         if let Some((best_move, _eval, _stats)) =
             search::get_best_move(&mut self.game, 50, u128::MAX, false, true)
@@ -281,19 +410,38 @@ impl Engine {
         }
     }
 
-    #[cfg(feature = "eval_tuning")]
+    #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
     #[wasm_bindgen]
     pub fn evaluate_with_features(&mut self) -> JsValue {
         crate::evaluation::reset_eval_features();
+        #[cfg(feature = "nnue")]
+        let eval = crate::evaluation::evaluate(&self.game, None);
+        #[cfg(not(feature = "nnue"))]
         let eval = crate::evaluation::evaluate(&self.game);
         let features = crate::evaluation::snapshot_eval_features();
         serde_wasm_bindgen::to_value(&JsEvalWithFeatures { eval, features }).unwrap()
     }
 
+    /// Set evaluation parameters from a JSON string.
+    /// Only available when the `eval_tuning` feature is enabled.
+    #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+    #[wasm_bindgen]
+    pub fn set_eval_params(&self, json: &str) -> bool {
+        crate::evaluation::set_eval_params_from_json(json)
+    }
+
+    /// Get current evaluation parameters as a JSON string.
+    /// Only available when the `eval_tuning` feature is enabled.
+    #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+    #[wasm_bindgen]
+    pub fn get_eval_params(&self) -> String {
+        crate::evaluation::get_eval_params_as_json()
+    }
+
     /// Set search parameters from a JSON string.
     /// Only available when the `search_tuning` feature is enabled.
     /// Returns true on success, false on parse failure.
-    #[cfg(feature = "search_tuning")]
+    #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
     #[wasm_bindgen]
     pub fn set_search_params(&self, json: &str) -> bool {
         crate::search::params::set_search_params_from_json(json)
@@ -301,7 +449,7 @@ impl Engine {
 
     /// Get current search parameters as a JSON string.
     /// Only available when the `search_tuning` feature is enabled.
-    #[cfg(feature = "search_tuning")]
+    #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
     #[wasm_bindgen]
     pub fn get_search_params(&self) -> String {
         crate::search::params::get_search_params_as_json()
@@ -459,21 +607,20 @@ impl Engine {
         // let legal_moves = self.game.get_legal_moves();
         // web_sys::console::log_1(&format!("Legal moves: {:?}", legal_moves).into());
 
-        let (opt_time, max_time, is_soft_limit) = if time_limit_ms == 0 && max_depth.is_some() {
-            // If explicit depth is requested with 0 time, treat as infinite time (fixed depth search)
-            (u128::MAX, u128::MAX, true)
-        } else {
-            self.effective_time_limit_ms(time_limit_ms)
-        };
+        let (opt_time, max_time, is_soft_limit) =
+            if time_limit_ms == 0 && max_depth.is_some() && self.clock.is_none() {
+                // If explicit depth is requested with 0 time, treat as infinite time (fixed depth search)
+                (u128::MAX, u128::MAX, true)
+            } else {
+                self.effective_time_limit_ms(time_limit_ms)
+            };
         let silent = silent.unwrap_or(false);
         let depth = max_depth.unwrap_or(50).clamp(1, 50);
         let strength = self.strength_level;
 
-        #[allow(unused_variables)]
-        let pre_stats = crate::search::get_current_tt_stats();
-
         #[cfg(target_arch = "wasm32")]
         {
+            let pre_stats = crate::search::get_current_tt_stats();
             if !silent {
                 use crate::log;
                 let variant = self

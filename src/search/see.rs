@@ -1,5 +1,4 @@
 use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
-use crate::evaluation::get_piece_value;
 use crate::game::GameState;
 use crate::moves::Move;
 
@@ -13,8 +12,8 @@ pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
         None => return 0 >= threshold, // No capture: SEE = 0
     };
 
-    let victim_val = get_piece_value(captured.piece_type());
-    let attacker_val = get_piece_value(m.piece.piece_type());
+    let victim_val = game.get_piece_value(captured.piece_type(), captured.color());
+    let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
 
     // Early cutoff 1: if capturing loses material even if undefended, fail
     let swap = victim_val - threshold;
@@ -56,10 +55,10 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     // 1. Initial State
     let mut gain: [i32; 32] = [0; 32];
     let mut depth = 1;
-    gain[0] = get_piece_value(captured.piece_type());
+    gain[0] = game.get_piece_value(captured.piece_type(), captured.color());
 
     let mut side = game.turn;
-    let mut occ_val = get_piece_value(m.piece.piece_type());
+    let mut occ_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
 
     // 2. Active Attacker Collection
     // We use a SmallVec for the active attackers (those we've already found)
@@ -123,7 +122,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                     let pos = Coordinate::new(nx * 8 + (i % 8) as i64, ny * 8 + (i / 8) as i64);
                     if pos != m.from {
                         attackers.push(Attacker {
-                            value: get_piece_value(p.piece_type()),
+                            value: game.get_piece_value(p.piece_type(), p.color()),
                             color: p.color(),
                             pos,
                             ray_idx: None,
@@ -156,7 +155,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                 let pos = Coordinate::new(nx * 8 + (i % 8) as i64, ny * 8 + (i / 8) as i64);
                 if pos != m.from {
                     attackers.push(Attacker {
-                        value: get_piece_value(PieceType::Pawn),
+                        value: game.get_piece_value(PieceType::Pawn, color),
                         color,
                         pos,
                         ray_idx: None,
@@ -215,7 +214,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                 // Check if we already found this piece in the 3x3 local scan (to avoid double-counting)
                 if dist > 8 || !attackers.iter().any(|a| a.pos == pos) {
                     attackers.push(Attacker {
-                        value: get_piece_value(pt),
+                        value: game.get_piece_value(pt, p.color()),
                         color: p.color(),
                         pos,
                         ray_idx: Some(r),
@@ -284,7 +283,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
                     if can_xray {
                         attackers.push(Attacker {
-                            value: get_piece_value(npt),
+                            value: game.get_piece_value(npt, np.color()),
                             color: np.color(),
                             pos: Coordinate::new(nx, ny),
                             ray_idx: Some(r),
@@ -309,25 +308,24 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
     use crate::moves::Move;
 
     fn create_test_game() -> GameState {
-        let mut game = GameState::new();
-        game.board = Board::new();
+        GameState::new()
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_test_game();
+        game.setup_position_from_icn(icn);
         game
     }
 
     #[test]
     fn test_see_simple_pawn_takes_pawn() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) P4,4|p5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -341,16 +339,8 @@ mod tests {
 
     #[test]
     fn test_see_queen_takes_defended_pawn() {
-        let mut game = create_test_game();
-        // White queen takes black pawn defended by black pawn
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
-        game.board
-            .set_piece(6, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Defends 5,5
+        let mut game = create_test_game_from_icn("w (8;q|1;q) Q4,4|p5,5|p6,6");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -369,13 +359,8 @@ mod tests {
 
     #[test]
     fn test_see_rook_takes_rook() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Rook, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R4,1|r4,7");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 1),
@@ -389,13 +374,8 @@ mod tests {
 
     #[test]
     fn test_see_ge_threshold_pass() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Queen, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) P4,4|q5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -410,13 +390,8 @@ mod tests {
 
     #[test]
     fn test_see_ge_threshold_fail() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) Q4,4|p5,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -430,11 +405,8 @@ mod tests {
 
     #[test]
     fn test_see_no_capture_returns_zero() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R4,4");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(4, 4),
@@ -448,13 +420,8 @@ mod tests {
 
     #[test]
     fn test_see_knight_takes_bishop() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(3, 3, Piece::new(PieceType::Knight, PlayerColor::White));
-        game.board
-            .set_piece(4, 5, Piece::new(PieceType::Bishop, PlayerColor::Black));
+        let mut game = create_test_game_from_icn("w (8;q|1;q) N3,3|b4,5");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let m = Move::new(
             Coordinate::new(3, 3),

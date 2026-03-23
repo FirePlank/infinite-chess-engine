@@ -11,7 +11,7 @@ use crate::game::GameState;
 // ============================================================================
 
 /// Number of RelKP buckets per piece code
-const NUM_RELKP_BUCKETS: u32 = 1018;
+pub const NUM_RELKP_BUCKETS: u32 = 1018;
 /// Near zone size (squares within ±8 of king)
 const NEAR_ZONE_SIZE: i64 = 8;
 /// Near zone bucket count: (2*8+1)^2 = 289
@@ -103,7 +103,7 @@ fn promo_dist_bin(pawn_y: i64, pawn_color: PlayerColor, promo_ranks: &[i64]) -> 
 
 /// Compute RelKP bucket from relative coordinates
 #[inline]
-fn relkp_bucket(dx: i64, dy: i64) -> u32 {
+pub fn relkp_bucket(dx: i64, dy: i64) -> u32 {
     if dx.abs() <= NEAR_ZONE_SIZE && dy.abs() <= NEAR_ZONE_SIZE {
         ((dx + NEAR_ZONE_SIZE) + 17 * (dy + NEAR_ZONE_SIZE)) as u32
     } else {
@@ -117,7 +117,7 @@ fn relkp_bucket(dx: i64, dy: i64) -> u32 {
 }
 
 /// Get piece code for RelKP
-fn get_piece_code(
+pub fn get_piece_code(
     piece: Piece,
     is_friendly: bool,
     pawn_y: i64,
@@ -175,8 +175,8 @@ fn get_piece_code(
 /// Build RelKP feature list for a given perspective
 fn build_relkp_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
     let king_pos = match perspective {
-        PlayerColor::White => gs.white_king_pos,
-        PlayerColor::Black => gs.black_king_pos,
+        PlayerColor::White => gs.white_royals.first().copied(),
+        PlayerColor::Black => gs.black_royals.first().copied(),
         _ => None,
     };
 

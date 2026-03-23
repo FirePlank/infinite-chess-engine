@@ -26,7 +26,7 @@ fn get_best_promotion_piece(game_rules: &crate::game::GameRules) -> Option<Piece
     {
         return types
             .iter()
-            .max_by_key(|pt| super::base::get_piece_value(**pt))
+            .max_by_key(|pt| super::base::get_piece_value_base(**pt))
             .copied();
     }
 

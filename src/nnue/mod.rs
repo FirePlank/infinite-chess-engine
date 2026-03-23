@@ -33,8 +33,7 @@ use crate::game::GameState;
 /// - No obstacles, voids, or fairy pieces are present
 #[inline]
 pub fn is_applicable(gs: &GameState) -> bool {
-    // Must have exactly one king per side
-    if gs.white_king_pos.is_none() || gs.black_king_pos.is_none() {
+    if gs.white_royals.is_empty() || gs.black_royals.is_empty() {
         return false;
     }
 
@@ -79,8 +78,8 @@ mod mod_tests {
         // Missing kings
         assert!(!is_applicable(&gs));
 
-        gs.white_king_pos = Some(Coordinate::new(4, 0));
-        gs.black_king_pos = Some(Coordinate::new(4, 7));
+        gs.white_royals.push(Coordinate::new(4, 0));
+        gs.black_royals.push(Coordinate::new(4, 7));
         // Kings present, but board empty
         assert!(is_applicable(&gs));
 
@@ -104,8 +103,8 @@ mod mod_tests {
     #[test]
     fn test_init_state_no_panic() {
         let mut gs = GameState::new();
-        gs.white_king_pos = Some(Coordinate::new(4, 0));
-        gs.black_king_pos = Some(Coordinate::new(4, 7));
+        gs.white_royals.push(Coordinate::new(4, 0));
+        gs.black_royals.push(Coordinate::new(4, 7));
         let _state = init_state(&gs);
     }
 }

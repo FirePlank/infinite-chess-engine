@@ -15,7 +15,7 @@ use hydrochess_wasm::{
     board::{Coordinate, Piece, PieceType, PlayerColor},
     evaluation,
     game::GameState,
-    moves::{Move, MoveGenContext},
+    moves::Move,
     search::{SearchStats, get_best_move},
 };
 use rayon::prelude::*;
@@ -70,7 +70,7 @@ const NEAR_ZONE_BUCKETS: u32 = 289;
 /// Piece codes for RelKP:
 /// - Friendly: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen = 12 codes
 /// - Enemy: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen, King = 13 codes
-/// Total = 25 codes
+///   Total = 25 codes
 const FRIENDLY_PAWN_BASE: u32 = 0; // 0-7: friendly pawn promo bins
 const FRIENDLY_KNIGHT: u32 = 8;
 const FRIENDLY_BISHOP: u32 = 9;
@@ -287,8 +287,8 @@ fn get_piece_code(
 /// Build RelKP feature list for a given perspective
 fn build_relkp_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
     let king_pos = match perspective {
-        PlayerColor::White => gs.white_king_pos,
-        PlayerColor::Black => gs.black_king_pos,
+        PlayerColor::White => gs.white_royals.first().copied(),
+        PlayerColor::Black => gs.black_royals.first().copied(),
         _ => None,
     };
 
@@ -664,8 +664,8 @@ fn build_threat_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
 
 /// Check if position is suitable for NNUE (standard pieces only)
 fn is_nnue_applicable(gs: &GameState) -> bool {
-    // Must have exactly one king per side
-    if gs.white_king_pos.is_none() || gs.black_king_pos.is_none() {
+    // Must have at least one royal piece per side
+    if gs.white_royals.is_empty() || gs.black_royals.is_empty() {
         return false;
     }
 
@@ -746,14 +746,7 @@ impl SampleRecord {
 
 /// Determine game result: +1 = White wins, 0 = Draw, -1 = Black wins
 fn determine_game_result(gs: &GameState) -> i8 {
-    let ctx = MoveGenContext {
-        special_rights: &gs.special_rights,
-        en_passant: &gs.en_passant,
-        game_rules: &gs.game_rules,
-        indices: &gs.spatial_indices,
-        enemy_king_pos: None,
-    };
-    let moves = hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &ctx);
+    let moves = gs.get_legal_moves();
 
     // Filter for strictly legal moves (must not leave king in check)
     let mut has_moves = false;
@@ -788,14 +781,7 @@ fn determine_game_result(gs: &GameState) -> i8 {
 
 /// Check if there is any strictly legal move
 fn has_any_legal_move(gs: &GameState) -> bool {
-    let ctx = MoveGenContext {
-        special_rights: &gs.special_rights,
-        en_passant: &gs.en_passant,
-        game_rules: &gs.game_rules,
-        indices: &gs.spatial_indices,
-        enemy_king_pos: None,
-    };
-    let moves = hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &ctx);
+    let moves = gs.get_legal_moves();
     for m in moves {
         let mut test_gs = gs.clone();
         test_gs.make_move(&m);
@@ -808,15 +794,7 @@ fn has_any_legal_move(gs: &GameState) -> bool {
 
 /// Get weighted random move (higher weight for longer distance moves)
 fn get_weighted_random_move(gs: &GameState, prng: &mut Prng) -> Option<Move> {
-    let ctx = MoveGenContext {
-        special_rights: &gs.special_rights,
-        en_passant: &gs.en_passant,
-        game_rules: &gs.game_rules,
-        indices: &gs.spatial_indices,
-        enemy_king_pos: None,
-    };
-
-    let moves = hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &ctx);
+    let moves = gs.get_legal_moves();
 
     if moves.is_empty() {
         return None;
@@ -896,24 +874,7 @@ fn play_game(
                 Some((m, _, _)) => m,
                 None => {
                     // Fallback to first legal move
-                    let local_ctx = MoveGenContext {
-                        special_rights: &gs.special_rights,
-                        en_passant: &gs.en_passant,
-                        game_rules: &gs.game_rules,
-                        indices: &gs.spatial_indices,
-                        enemy_king_pos: None,
-                    };
-                    let mut fallback = None;
-                    let pseudo_moves =
-                        hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &local_ctx);
-                    for m in pseudo_moves {
-                        let mut test_gs = gs.clone();
-                        test_gs.make_move(&m);
-                        if !test_gs.is_move_illegal() {
-                            fallback = Some(m);
-                            break;
-                        }
-                    }
+                    let fallback = gs.get_legal_moves().into_iter().next();
                     fallback.expect("has_any_legal_move was true but no legal move found")
                 }
             }
@@ -922,48 +883,18 @@ fn play_game(
             if prng.next_f64() < BEST_MOVE_PROB {
                 match get_best_move(&mut gs, selfplay_depth, u128::MAX, true, false) {
                     Some((m, _, _)) => m,
-                    None => {
-                        let local_ctx = MoveGenContext {
-                            special_rights: &gs.special_rights,
-                            en_passant: &gs.en_passant,
-                            game_rules: &gs.game_rules,
-                            indices: &gs.spatial_indices,
-                            enemy_king_pos: None,
-                        };
-                        let mut fallback = None;
-                        let pseudo_moves =
-                            hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &local_ctx);
-                        for m in pseudo_moves {
-                            let mut test_gs = gs.clone();
-                            test_gs.make_move(&m);
-                            if !test_gs.is_move_illegal() {
-                                fallback = Some(m);
-                                break;
-                            }
-                        }
-                        fallback.expect("has_any_legal_move was true but no legal move found")
-                    }
+                    None => gs
+                        .get_legal_moves()
+                        .into_iter()
+                        .next()
+                        .expect("has_any_legal_move was true but no legal move found"),
                 }
             } else {
                 get_weighted_random_move(&gs, &mut prng).unwrap_or_else(|| {
-                    // Fallback to first legal move
-                    let local_ctx = MoveGenContext {
-                        special_rights: &gs.special_rights,
-                        en_passant: &gs.en_passant,
-                        game_rules: &gs.game_rules,
-                        indices: &gs.spatial_indices,
-                        enemy_king_pos: None,
-                    };
-                    let pseudo_moves =
-                        hydrochess_wasm::moves::get_legal_moves(&gs.board, gs.turn, &local_ctx);
-                    for m in pseudo_moves {
-                        let mut test_gs = gs.clone();
-                        test_gs.make_move(&m);
-                        if !test_gs.is_move_illegal() {
-                            return m;
-                        }
-                    }
-                    panic!("has_any_legal_move was true but no legal move found");
+                    gs.get_legal_moves()
+                        .into_iter()
+                        .next()
+                        .expect("has_any_legal_move was true but no legal move found")
                 })
             }
         };
@@ -1203,6 +1134,7 @@ fn main() {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(true)
         .open(&output_path)
         .expect("Failed to open output file");
 

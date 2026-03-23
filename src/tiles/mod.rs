@@ -217,15 +217,12 @@ impl Tile {
 
     /// Remove a piece at local index. Returns the old packed piece code.
     /// Clears all per-piece-type bitboards for consistency.
-    /// NOTE: Type masks are NOT cleared here - they're rebuilt on next set_piece or clear().
-    /// This is safe because type_mask is only used for early-exit optimization, not correctness.
     #[inline]
     pub fn remove_piece(&mut self, idx: usize) -> u8 {
         let bit = 1u64 << idx;
         let old_packed = self.piece[idx];
 
         if old_packed != 0 {
-            // Clear all bitboards unconditionally (cheaper than checking type)
             self.occ_all &= !bit;
             self.occ_white &= !bit;
             self.occ_black &= !bit;
@@ -239,8 +236,6 @@ impl Tile {
             self.occ_diag_sliders &= !bit;
             self.occ_ortho_sliders &= !bit;
             self.piece[idx] = 0;
-            // Note: type_mask is NOT cleared - stale bits are harmless (just skip early-exit)
-            // This avoids expensive O(popcount) rebuild on every remove
         }
 
         old_packed

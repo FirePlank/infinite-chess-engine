@@ -10,7 +10,7 @@
     "tune": "node texel_tuner.js",
     "sprt-ci": "node run_sprt_ci.js",
     "apply-tune": "node apply_tuned_params.js",
-    "spsa": "node spsa.mjs"
+    "spsa": "cargo run --manifest-path ../Cargo.toml --release --bin spsa --features sprt,search_tuning -- run"
   },
   "keywords": [
     "chess",

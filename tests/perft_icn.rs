@@ -189,12 +189,6 @@ pub fn perft(game: &mut GameState, depth: usize) -> PerftStats {
                 if game.is_in_check() {
                     stats.checks += 1;
 
-                    // Optimization: Use has_legal_moves if available, or just get_legal_moves().is_empty()
-                    // But get_legal_moves() is pseudo-legal...
-                    // Wait, get_legal_moves SHOULD return legal moves if strict?
-                    // No, "get_legal_moves returns pseudo-legal moves".
-                    // So we MUST strict check them.
-
                     let opponent_moves = game.get_legal_moves();
                     let mut has_legal = false;
 

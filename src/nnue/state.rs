@@ -113,53 +113,270 @@ impl NnueState {
             None => return,
         };
 
-        // If King moves, rebuild the entire state from scratch.
-        // We manually patch a cloned board rather than calling make_move,
-        // which avoids heavy GameState bookkeeping and potential side-effects.
         if m.piece.piece_type() == crate::board::PieceType::King {
-            let mut tmp = gs.clone();
+            let us = m.piece.color();
+            let them = us.opponent();
 
-            // 1. Remove king from source
-            tmp.board.remove_piece(&m.from.x, &m.from.y);
-
-            // 2. Handle capture at destination
-            tmp.board.remove_piece(&m.to.x, &m.to.y);
-
-            // 3. Place king at destination
-            tmp.board.set_piece(m.to.x, m.to.y, m.piece);
-
-            // 4. Update king position
-            if m.piece.color() == crate::board::PlayerColor::White {
-                tmp.white_king_pos = Some(m.to);
+            let (white_king, black_king) = if us == crate::board::PlayerColor::White {
+                (
+                    m.to,
+                    gs.black_royals
+                        .first()
+                        .copied()
+                        .unwrap_or(crate::board::Coordinate::new(0, 0)),
+                )
             } else {
-                tmp.black_king_pos = Some(m.to);
+                (
+                    gs.white_royals
+                        .first()
+                        .copied()
+                        .unwrap_or(crate::board::Coordinate::new(0, 0)),
+                    m.to,
+                )
+            };
+
+            // Reset the friendly accumulator to bias
+            let friendly_acc = if us == crate::board::PlayerColor::White {
+                &mut self.rel_acc_white
+            } else {
+                &mut self.rel_acc_black
+            };
+            friendly_acc.copy_from_slice(&weights.rel_bias);
+
+            // Re-accumulate all features for the friendly perspective
+            // We iterate manually to handle the "virtual" king move without modifying GameState
+            let white_promo = &gs.game_rules.promotion_ranks.white;
+            let black_promo = &gs.game_rules.promotion_ranks.black;
+
+            let my_king_pos = m.to;
+
+            for (px, py, piece) in gs.board.iter_all_pieces() {
+                let piece_color = piece.color();
+                if piece_color == crate::board::PlayerColor::Neutral {
+                    continue;
+                }
+
+                // Skip the King at its OLD position (it's moving)
+                if piece.piece_type() == crate::board::PieceType::King && piece_color == us {
+                    continue;
+                }
+
+                // If this is a piece being captured, skip it (it won't exist in new state)
+                if px == m.to.x && py == m.to.y {
+                    continue;
+                }
+
+                // If this is an EP capture, skip the captured pawn
+                if let Some(eps) = gs.en_passant
+                    && m.piece.piece_type() == crate::board::PieceType::Pawn
+                    && m.to == eps.square
+                    && px == eps.pawn_square.x
+                    && py == eps.pawn_square.y
+                {
+                    continue;
+                }
+
+                let is_friendly = piece_color == us;
+
+                // Adjust coordinates for perspective
+                let (dx, dy) = if us == crate::board::PlayerColor::White {
+                    (px - my_king_pos.x, py - my_king_pos.y)
+                } else {
+                    (-(px - my_king_pos.x), -(py - my_king_pos.y))
+                };
+
+                let bucket = super::features::relkp_bucket(dx, dy);
+
+                if let Some(code) = super::features::get_piece_code(
+                    piece,
+                    is_friendly,
+                    py,
+                    piece_color,
+                    white_promo,
+                    black_promo,
+                ) {
+                    let feat_id = code * super::features::NUM_RELKP_BUCKETS + bucket;
+
+                    // Add to friendly accumulator
+                    let offset = (feat_id as usize) * super::state::RELKP_DIM;
+                    for (i, v) in friendly_acc.iter_mut().enumerate() {
+                        *v = v.saturating_add(weights.rel_embed[offset + i]);
+                    }
+                }
             }
 
-            // 5. Handle castling rook
+
             if (m.to.x - m.from.x).abs() > 1
                 && let Some(rook_from) = m.rook_coord
-                && let Some(rook) = tmp.board.remove_piece(&rook_from.x, &rook_from.y)
+                && let Some(rook) = gs.board.get_piece(rook_from.x, rook_from.y)
             {
+                let _is_friendly = true; // Rook is same color as King
+
+                // Recalculate what the loop added for the rook
+                let (dx_old, dy_old) = if us == crate::board::PlayerColor::White {
+                    (rook_from.x - my_king_pos.x, rook_from.y - my_king_pos.y)
+                } else {
+                    (
+                        -(rook_from.x - my_king_pos.x),
+                        -(rook_from.y - my_king_pos.y),
+                    )
+                };
+                let bucket_old = super::features::relkp_bucket(dx_old, dy_old);
+                if let Some(code) = super::features::get_piece_code(
+                    rook,
+                    true,
+                    rook_from.y,
+                    us,
+                    white_promo,
+                    black_promo,
+                ) {
+                    let feat_id = code * super::features::NUM_RELKP_BUCKETS + bucket_old;
+                    let offset = (feat_id as usize) * super::state::RELKP_DIM;
+                    for (i, v) in friendly_acc.iter_mut().enumerate() {
+                        *v = v.saturating_sub(weights.rel_embed[offset + i]);
+                    }
+                }
+
+                // Add the rook feature at `rook_to`
                 let rook_to_x = m.from.x + if m.to.x > m.from.x { 1 } else { -1 };
-                tmp.board.set_piece(rook_to_x, m.from.y, rook);
+                let rook_to_y = m.from.y;
+
+                let (dx_new, dy_new) = if us == crate::board::PlayerColor::White {
+                    (rook_to_x - my_king_pos.x, rook_to_y - my_king_pos.y)
+                } else {
+                    (-(rook_to_x - my_king_pos.x), -(rook_to_y - my_king_pos.y))
+                };
+                let bucket_new = super::features::relkp_bucket(dx_new, dy_new);
+                if let Some(code) = super::features::get_piece_code(
+                    rook,
+                    true,
+                    rook_to_y,
+                    us,
+                    white_promo,
+                    black_promo,
+                ) {
+                    let feat_id = code * super::features::NUM_RELKP_BUCKETS + bucket_new;
+                    let offset = (feat_id as usize) * super::state::RELKP_DIM;
+                    for (i, v) in friendly_acc.iter_mut().enumerate() {
+                        *v = v.saturating_add(weights.rel_embed[offset + i]);
+                    }
+                }
+            }
+            
+            // Remove old king pos
+            if let Some(idx) = super::features::relkp_feature_id(
+                them,
+                m.piece,
+                m.from,
+                if them == crate::board::PlayerColor::White {
+                    white_king
+                } else {
+                    black_king
+                }, // Enemy king position (static)
+                gs,
+            ) {
+                // Remove from enemy acc
+                self.remove_feature(weights, idx, them == crate::board::PlayerColor::White);
             }
 
-            // 6. Update side to move (from_position uses gs.turn for perspective)
-            tmp.turn = tmp.turn.opponent();
+            // Add new king pos
+            if let Some(idx) = super::features::relkp_feature_id(
+                them,
+                m.piece,
+                m.to,
+                if them == crate::board::PlayerColor::White {
+                    white_king
+                } else {
+                    black_king
+                },
+                gs,
+            ) {
+                // Add to enemy acc
+                self.add_feature(weights, idx, them == crate::board::PlayerColor::White);
+            }
 
-            *self = NnueState::from_position(&tmp);
+            // Note: If we captured something, we must also remove it from the enemy accumulator
+            // because it's no longer on the board!
+            //
+            // Case A: Standard Capture
+            // Case A: Standard Capture
+            if let Some(captured) = gs.board.get_piece(m.to.x, m.to.y)
+                && let Some(idx) = super::features::relkp_feature_id(
+                    them,
+                    captured,
+                    m.to,
+                    if them == crate::board::PlayerColor::White {
+                        white_king
+                    } else {
+                        black_king
+                    },
+                    gs,
+                )
+            {
+                self.remove_feature(weights, idx, them == crate::board::PlayerColor::White);
+            }
+
+            // Case B: En Passant Capture (King cannot do EP in chess, but for safety/completeness)
+            if let Some(_eps) = gs.en_passant
+                && m.piece.piece_type() == crate::board::PieceType::Pawn
+            // King can't be pawn
+            {
+                // Unreachable for King move
+            }
+
+            // Case C: Castling Rook Move
+            // From ENEMY perspective, the Rook also moved.
+            // We must update the Rook's position in the enemy accumulator too.
+            if (m.to.x - m.from.x).abs() > 1
+                && let Some(rook_from) = m.rook_coord
+                && let Some(rook) = gs.board.get_piece(rook_from.x, rook_from.y)
+            {
+                // Remove Rook from old pos
+                if let Some(idx) = super::features::relkp_feature_id(
+                    them,
+                    rook,
+                    rook_from,
+                    if them == crate::board::PlayerColor::White {
+                        white_king
+                    } else {
+                        black_king
+                    },
+                    gs,
+                ) {
+                    self.remove_feature(weights, idx, them == crate::board::PlayerColor::White);
+                }
+
+                // Add Rook to new pos
+                let rook_to_x = m.from.x + if m.to.x > m.from.x { 1 } else { -1 };
+                let rook_to = crate::board::Coordinate::new(rook_to_x, m.from.y);
+
+                if let Some(idx) = super::features::relkp_feature_id(
+                    them,
+                    rook,
+                    rook_to,
+                    if them == crate::board::PlayerColor::White {
+                        white_king
+                    } else {
+                        black_king
+                    },
+                    gs,
+                ) {
+                    self.add_feature(weights, idx, them == crate::board::PlayerColor::White);
+                }
+            }
+
             return;
         }
 
         // Standard incremental update (non-King move)
         let us = m.piece.color();
         // Friendly King is at...
-        let white_king = if let Some(k) = gs.white_king_pos {
+        let white_king = if let Some(k) = gs.white_royals.first().copied() {
             k
         } else {
             return;
         };
-        let black_king = if let Some(k) = gs.black_king_pos {
+        let black_king = if let Some(k) = gs.black_royals.first().copied() {
             k
         } else {
             return;
@@ -231,7 +448,7 @@ impl NnueState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
+    use crate::game::GameState;
 
     #[test]
     fn test_accumulator_ops() {
@@ -251,11 +468,11 @@ mod tests {
 
     #[test]
     fn test_from_position_consistency() {
-        let mut gs = GameState::new();
-        gs.white_king_pos = Some(Coordinate::new(4, 0));
-        gs.black_king_pos = Some(Coordinate::new(4, 7));
-        gs.board
-            .set_piece(4, 1, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let gs = {
+            let mut gs = GameState::new();
+            gs.setup_position_from_icn("w (8;q|1;q) K4,0|k4,7|P4,1");
+            gs
+        };
 
         let state = NnueState::from_position(&gs);
         // Bias + feature

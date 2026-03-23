@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to HydroChess! This guide explains the workflow for making changes to the engine.
 
-**[← Back to README](../README.md)** | **[Setup Guide](SETUP.md)** | **[SPRT Testing](../sprt/README.md)** | **[Roadmap](ROADMAP.md)**
+**[← Back to README](../README.md)** | **[Setup Guide](SETUP.md)** | **[Engine Architecture](ARCHITECTURE.md)** | **[SPRT Testing](../sprt/README.md)** | **[Roadmap](ROADMAP.md)**
 
 ---
 

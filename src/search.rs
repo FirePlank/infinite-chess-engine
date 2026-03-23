@@ -1,5 +1,5 @@
-use crate::board::{PieceType, PlayerColor};
-use crate::evaluation::{evaluate, get_piece_value};
+﻿use crate::board::{PieceType, PlayerColor};
+use crate::evaluation::evaluate;
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
 use crate::search::params::{
@@ -389,18 +389,18 @@ impl<'a> TranspositionTableRef<'a> {
 #[inline(always)]
 pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<TTProbeResult> {
     #[cfg(feature = "multithreading")]
-    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(tt) = SHARED_TT.get() {
-            return tt.probe(&crate::search::tt_defs::TTProbeParams {
-                hash: ctx.hash,
-                alpha: ctx.alpha,
-                beta: ctx.beta,
-                depth: ctx.depth,
-                ply: ctx.ply,
-                rule50_count: ctx.rule50_count,
-                rule_limit: ctx.rule_limit,
-            });
-        }
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        return tt.probe(&crate::search::tt_defs::TTProbeParams {
+            hash: ctx.hash,
+            alpha: ctx.alpha,
+            beta: ctx.beta,
+            depth: ctx.depth,
+            ply: ctx.ply,
+            rule50_count: ctx.rule50_count,
+            rule_limit: ctx.rule_limit,
+        });
     }
     searcher.tt.probe(&crate::search::tt_defs::TTProbeParams {
         hash: ctx.hash,
@@ -417,20 +417,20 @@ pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<T
 #[inline(always)]
 pub fn store_tt_with_shared(searcher: &mut Searcher, ctx: &StoreContext) {
     #[cfg(feature = "multithreading")]
-    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(tt) = SHARED_TT.get() {
-            tt.store(&crate::search::tt_defs::TTStoreParams {
-                hash: ctx.hash,
-                depth: ctx.depth,
-                flag: ctx.flag,
-                score: ctx.score,
-                static_eval: ctx.static_eval,
-                is_pv: ctx.is_pv,
-                best_move: ctx.best_move,
-                ply: ctx.ply,
-            });
-            return;
-        }
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        tt.store(&crate::search::tt_defs::TTStoreParams {
+            hash: ctx.hash,
+            depth: ctx.depth,
+            flag: ctx.flag,
+            score: ctx.score,
+            static_eval: ctx.static_eval,
+            is_pv: ctx.is_pv,
+            best_move: ctx.best_move,
+            ply: ctx.ply,
+        });
+        return;
     }
     searcher.tt.store(&crate::search::tt_defs::TTStoreParams {
         hash: ctx.hash,
@@ -608,16 +608,12 @@ thread_local! {
 fn build_search_stats(searcher: &Searcher) -> SearchStats {
     #[cfg(feature = "multithreading")]
     let (cap, used, fill): (usize, usize, u32) = if let Some(tt) = SHARED_TT.get() {
-        (
-            tt.capacity() as usize,
-            tt.used_entries() as usize,
-            tt.fill_permille() as u32,
-        )
+        (tt.capacity(), tt.used_entries(), tt.fill_permille())
     } else {
         (
-            searcher.tt.capacity() as usize,
-            searcher.tt.used_entries() as usize,
-            searcher.tt.fill_permille() as u32,
+            searcher.tt.capacity(),
+            searcher.tt.used_entries(),
+            searcher.tt.fill_permille(),
         )
     };
 
@@ -1147,7 +1143,7 @@ impl Searcher {
     /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
     #[inline]
     pub fn update_history(&mut self, piece: PieceType, idx: usize, bonus: i32) {
-        let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+        let max_h = params::history_max_gravity();
         let clamped = bonus.clamp(-max_h, max_h);
 
         let entry = &mut self.history[piece as usize][idx];
@@ -1163,7 +1159,7 @@ impl Searcher {
         to_hash: usize,
         bonus: i32,
     ) {
-        let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+        let max_h = params::history_max_gravity();
         let clamped = bonus.clamp(-max_h, max_h);
         let ph_idx = (pawn_hash & PAWN_HISTORY_MASK) as usize;
         let entry = &mut self.pawn_history[ph_idx][piece as usize][to_hash];
@@ -1175,7 +1171,7 @@ impl Searcher {
     #[inline]
     pub fn update_low_ply_history(&mut self, ply: usize, move_hash: usize, bonus: i32) {
         if ply < LOW_PLY_HISTORY_SIZE {
-            let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+            let max_h = params::history_max_gravity();
             let clamped = bonus.clamp(-max_h, max_h);
             let idx = move_hash & LOW_PLY_HISTORY_MASK;
             let entry = &mut self.low_ply_history[ply][idx];
@@ -1239,9 +1235,9 @@ impl Searcher {
     #[inline]
     fn get_minor_index(&self, game: &GameState) -> usize {
         let king_pos = if game.turn == PlayerColor::White {
-            game.white_king_pos
+            game.white_royals.first().copied()
         } else {
-            game.black_king_pos
+            game.black_royals.first().copied()
         };
 
         let mut h = game.minor_hash;
@@ -1662,33 +1658,35 @@ impl Searcher {
         }
         #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
         {
-            if multipv > 1 {
-                eprintln!(
-                    "info depth {} seldepth {} multipv {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
-                    depth,
-                    self.hot.seldepth,
-                    multipv,
-                    score_str,
-                    self.hot.nodes,
-                    self.hot.qnodes,
-                    nps,
-                    time_ms,
-                    tt_fill,
-                    pv
-                );
-            } else {
-                eprintln!(
-                    "info depth {} seldepth {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
-                    depth,
-                    self.hot.seldepth,
-                    score_str,
-                    self.hot.nodes,
-                    self.hot.qnodes,
-                    nps,
-                    time_ms,
-                    tt_fill,
-                    pv
-                );
+            if !self.silent {
+                if multipv > 1 {
+                    eprintln!(
+                        "info depth {} seldepth {} multipv {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
+                        depth,
+                        self.hot.seldepth,
+                        multipv,
+                        score_str,
+                        self.hot.nodes,
+                        self.hot.qnodes,
+                        nps,
+                        time_ms,
+                        tt_fill,
+                        pv
+                    );
+                } else {
+                    eprintln!(
+                        "info depth {} seldepth {} score {} nodes {} qnodes {} nps {} time {} hashfull {} pv {}",
+                        depth,
+                        self.hot.seldepth,
+                        score_str,
+                        self.hot.nodes,
+                        self.hot.qnodes,
+                        nps,
+                        time_ms,
+                        tt_fill,
+                        pv
+                    );
+                }
             }
         }
     }
@@ -1732,14 +1730,16 @@ impl Searcher {
 
         #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
         {
-            eprintln!(
-                "Depth {} (time {}ms, nodes {}, nps {}, hashfull {}‰)",
-                depth, time_ms, self.hot.nodes, nps, tt_fill
-            );
-            for (idx, line) in lines.iter().enumerate() {
-                let score_str = self.format_score(line.score);
-                let pv_str = self.format_pv_line(&line.pv);
-                eprintln!("#{} {} pv {}", idx + 1, score_str, pv_str);
+            if !self.silent {
+                eprintln!(
+                    "Depth {} (time {}ms, nodes {}, nps {}, hashfull {}‰)",
+                    depth, time_ms, self.hot.nodes, nps, tt_fill
+                );
+                for (idx, line) in lines.iter().enumerate() {
+                    let score_str = self.format_score(line.score);
+                    let pv_str = self.format_pv_line(&line.pv);
+                    eprintln!("#{} {} pv {}", idx + 1, score_str, pv_str);
+                }
             }
         }
     }
@@ -3391,8 +3391,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         static_eval += history_bonus;
     }
 
-    // Apply deterministic search noise at low plies for SPRT
-    if searcher.noise_amp > 0 && ply < LOW_PLY_HISTORY_SIZE {
+    // Apply deterministic search noise if provided
+    if searcher.noise_amp > 0 {
         static_eval += get_noise(searcher.seed, hash, searcher.noise_amp);
     }
     searcher.eval_stack[ply] = static_eval;
@@ -3598,8 +3598,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Internal iterative reductions (IIR)
         // Without TT move, reduce depth to find one faster
-        if !all_node && depth >= iir_min_depth() && tt_move.is_none() && prior_reduction <= 3 {
-            depth -= 1 + depth / 8;
+        if depth >= iir_min_depth() && tt_move.is_none() {
+            depth -= 2;
         }
     }
 
@@ -3805,19 +3805,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 if let Some(cap_type) = captured_type {
                     let capt_hist = searcher.capture_history[p_type as usize][cap_type as usize];
 
-                    // Capture futility: skip captures that can't raise alpha
-                    if !gives_check && lmr_depth < 7 {
-                        let cap_value = get_piece_value(cap_type);
-                        let futility_value = static_eval
-                            + 232
-                            + 217 * lmr_depth
-                            + cap_value
-                            + 131 * capt_hist / 1024;
-                        if futility_value <= alpha {
-                            continue;
-                        }
-                    }
-
                     // SEE pruning for captures: skip losing captures
                     // Exempt moves that give check (they have tactical significance)
                     if !gives_check {
@@ -4011,14 +3998,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // TT move is singular - calculate extension level
                 let corr_val_adj = (static_eval - raw_eval).abs() / 256;
 
-                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_val_adj;
-                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_val_adj;
+                let pv_bonus = if is_pv { (depth as i32) * 2 } else { 0 };
+                let double_margin =
+                    (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_val_adj + pv_bonus;
+                let triple_margin =
+                    (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_val_adj + pv_bonus * 2;
 
                 extension = 1;
                 if se_value < singular_beta - double_margin {
                     extension = 2;
                 }
-                if se_value < singular_beta - triple_margin && is_pv {
+                if se_value < singular_beta - triple_margin {
                     extension = 3;
                 }
 
@@ -4515,7 +4505,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let standard_bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 let bonus = standard_bonus / 2;
-                let max_h = params::DEFAULT_HISTORY_MAX_GRAVITY;
+                let max_h = params::history_max_gravity();
 
                 // Update continuation history for opponent's previous move
                 // We use the same offsets (1, 2, 4) relative to the opponent's ply (ply - 1).
@@ -4561,7 +4551,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
                     let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                     let pawn_adj =
-                        (bonus * params::DEFAULT_PAWN_HISTORY_BONUS_SCALE).clamp(-max_h, max_h);
+                        (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
                     let pentry = &mut searcher.pawn_history[ph_idx][prev_pt][prev_idx];
                     *pentry += pawn_adj - ((*pentry * pawn_adj.abs()) >> 14);
                 }
@@ -4817,9 +4807,9 @@ fn quiescence(
     } else {
         // Normal quiescence: generate captures only
         let king_pos = if game.turn == PlayerColor::White {
-            game.white_king_pos
+            game.white_royals.first().copied()
         } else {
-            game.black_king_pos
+            game.black_royals.first().copied()
         };
         let pinned = if let Some(kp) = king_pos {
             game.compute_pins(&kp, game.turn)
@@ -5613,11 +5603,11 @@ mod tests {
             "Should have at least 8 black pieces"
         );
         assert!(
-            game.black_king_pos.is_some(),
+            !game.black_royals.is_empty(),
             "Black king position must be detected"
         );
         assert!(
-            game.white_king_pos.is_some(),
+            !game.white_royals.is_empty(),
             "White king position must be detected"
         );
 

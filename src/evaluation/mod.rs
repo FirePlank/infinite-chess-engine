@@ -13,10 +13,15 @@ pub mod variants;
 use crate::Variant;
 use crate::game::GameState;
 
-pub use base::{calculate_initial_material, get_piece_phase, get_piece_value};
+pub use base::{calculate_initial_material, get_piece_phase, get_piece_value_base};
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+pub use crate::search::params::{
+    EVAL_PARAMS, EvalParamSpec, EvalParams, TUNABLE_EVAL_PARAM_SPECS,
+    get_eval_params_as_json, set_eval_params_from_json,
+};
 
 /// Main evaluation entry point - NNUE Enabled
 #[inline]
@@ -80,18 +85,16 @@ pub fn evaluate(game: &GameState) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece, PieceType, PlayerColor};
+    use crate::board::{PieceType, PlayerColor};
     use crate::game::GameState;
 
     fn create_test_game() -> GameState {
+        create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8")
+    }
+
+    fn create_test_game_from_icn(icn: &str) -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn(icn);
         game
     }
 
@@ -113,32 +116,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_material_advantage() {
-        let mut game = GameState::new();
-        game.board = Board::new();
-
-        // More complex position to avoid lone king detection
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(1, 8, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
-
-        // Recalculate material score
-        let mut score = 0i32;
-        for (_, _, piece) in game.board.iter() {
-            let val = get_piece_value(piece.piece_type());
-            match piece.color() {
-                PlayerColor::White => score += val,
-                PlayerColor::Black => score -= val,
-                PlayerColor::Neutral => {}
-            }
-        }
-        game.material_score = score;
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,4|r1,8");
 
         let eval = evaluate_wrapper(&game);
         // Just verify we get a reasonable value (queen > rook typically)
@@ -163,11 +141,7 @@ mod tests {
     #[test]
     fn test_evaluate_rule50_damping() {
         let mut game = create_test_game();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(1, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|R0,0|R1,0");
         game.material_score = 1000;
         game.turn = PlayerColor::White;
         game.game_rules.move_rule_limit = Some(100);
@@ -216,11 +190,11 @@ mod tests {
     #[test]
     fn test_get_piece_value() {
         // Test piece values are reasonable
-        let queen_val = get_piece_value(PieceType::Queen);
-        let rook_val = get_piece_value(PieceType::Rook);
-        let bishop_val = get_piece_value(PieceType::Bishop);
-        let knight_val = get_piece_value(PieceType::Knight);
-        let pawn_val = get_piece_value(PieceType::Pawn);
+        let queen_val = get_piece_value_base(PieceType::Queen);
+        let rook_val = get_piece_value_base(PieceType::Rook);
+        let bishop_val = get_piece_value_base(PieceType::Bishop);
+        let knight_val = get_piece_value_base(PieceType::Knight);
+        let pawn_val = get_piece_value_base(PieceType::Pawn);
 
         assert!(queen_val > rook_val, "Queen should be worth more than rook");
         assert!(

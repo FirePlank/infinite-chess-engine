@@ -89,7 +89,7 @@ function parseArgs() {
         concurrency: os.availableParallelism ? os.availableParallelism() : os.cpus().length,
 
         variant: null, // Default to all if null
-        elo0: -5,
+        elo0: 0,
         elo1: 5,
         alpha: 0.05,
         beta: 0.05,

@@ -6,7 +6,6 @@
 // 2. Black: Breaking the wall, back-rank penetration, picking off weak pawns.
 
 use crate::board::{Coordinate, PieceType, PlayerColor};
-use crate::evaluation::base::get_piece_value;
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 
@@ -58,7 +57,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                     score += PAWN_VALUE; // Material count
                 } else {
                     // Promoted piece! Huge value.
-                    score += get_piece_value(piece.piece_type());
+                    score += game.get_piece_value(piece.piece_type(), piece.color());
                 }
             }
             PlayerColor::Black => {
@@ -66,7 +65,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                     black_king_pos = coord;
                 }
                 black_pieces.push((coord, piece.piece_type()));
-                score -= get_piece_value(piece.piece_type());
+                score -= game.get_piece_value(piece.piece_type(), piece.color());
             }
             _ => {}
         }
@@ -172,15 +171,19 @@ pub fn evaluate(game: &GameState) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Piece};
     use crate::game::GameState;
 
     fn create_pawn_horde_game() -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
         game.variant = Some(crate::Variant::PawnHorde);
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
+        game
+    }
+
+    fn create_pawn_horde_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_pawn_horde_game();
+        game.setup_position_from_icn(icn);
         game
     }
 
@@ -196,16 +199,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_returns_value() {
-        let mut game = create_pawn_horde_game();
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // White has pawns (horde)
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let mut game = create_pawn_horde_game_from_icn("w (8;q|1;q) k5,8|P4,2|P5,2");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
         game.recompute_hash();
 
         let score = evaluate(&game);
@@ -215,22 +210,12 @@ mod tests {
 
     #[test]
     fn test_pawn_advancement_value() {
-        let mut game = create_pawn_horde_game();
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // Pawn near promotion
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let mut game = create_pawn_horde_game_from_icn("w (8;q|1;q) k5,8|P4,7");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let score_advanced = evaluate(&game);
 
-        // Pawn on starting rank
-        game.board.remove_piece(&4, &7);
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) k5,8|P4,2");
 
         let score_back = evaluate(&game);
 
@@ -243,32 +228,12 @@ mod tests {
 
     #[test]
     fn test_phalanx_bonus() {
-        let mut game = create_pawn_horde_game();
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // Phalanx of pawns side by side
-        game.board
-            .set_piece(3, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
+        let mut game = create_pawn_horde_game_from_icn("w (8;q|1;q) k5,8|P3,4|P4,4|P5,4");
         game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
 
         let score_phalanx = evaluate(&game);
 
-        // Isolated pawns
-        game.board.remove_piece(&3, &4);
-        game.board.remove_piece(&4, &4);
-        game.board.remove_piece(&5, &4);
-        game.board
-            .set_piece(1, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(7, 3, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) k5,8|P1,4|P4,2|P7,3");
 
         let score_isolated = evaluate(&game);
 
@@ -280,27 +245,12 @@ mod tests {
 
     #[test]
     fn test_black_breakthrough_bonus() {
-        let mut game = create_pawn_horde_game();
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        // Pawn wall at y=4
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        game.board
-            .set_piece(5, 4, Piece::new(PieceType::Pawn, PlayerColor::White));
-        // Black rook behind the wall (breakthrough)
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Rook, PlayerColor::Black));
+        let mut game = create_pawn_horde_game_from_icn("b (8;q|1;q) k5,8|P4,4|P5,4|r4,2");
         game.turn = PlayerColor::Black;
-        game.recompute_piece_counts();
 
         let score_breakthrough = evaluate(&game);
 
-        // Rook not behind wall
-        game.board.remove_piece(&4, &2);
-        game.board
-            .set_piece(4, 6, Piece::new(PieceType::Rook, PlayerColor::Black));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("b (8;q|1;q) k5,8|P4,4|P5,4|r4,6");
 
         let score_no_breakthrough = evaluate(&game);
 

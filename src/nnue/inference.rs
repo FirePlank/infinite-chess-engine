@@ -84,38 +84,105 @@ fn build_head_input(
     input
 }
 
+/// Compute dot product of i8 weights and i16 inputs using chunks of 16.
+/// This manual unrolling helps the compiler generate SIMD instructions (e.g. AVX2/NEON).
+#[inline(always)]
+fn dot_product_i8_i16_chunked(weights: &[i8], input: &[i16]) -> i32 {
+    let mut sum = 0;
+    let mut w_iter = weights.chunks_exact(16);
+    let mut i_iter = input.chunks_exact(16);
+
+    for (w, i) in w_iter.by_ref().zip(i_iter.by_ref()) {
+        sum += (w[0] as i32 * i[0] as i32)
+            + (w[1] as i32 * i[1] as i32)
+            + (w[2] as i32 * i[2] as i32)
+            + (w[3] as i32 * i[3] as i32)
+            + (w[4] as i32 * i[4] as i32)
+            + (w[5] as i32 * i[5] as i32)
+            + (w[6] as i32 * i[6] as i32)
+            + (w[7] as i32 * i[7] as i32)
+            + (w[8] as i32 * i[8] as i32)
+            + (w[9] as i32 * i[9] as i32)
+            + (w[10] as i32 * i[10] as i32)
+            + (w[11] as i32 * i[11] as i32)
+            + (w[12] as i32 * i[12] as i32)
+            + (w[13] as i32 * i[13] as i32)
+            + (w[14] as i32 * i[14] as i32)
+            + (w[15] as i32 * i[15] as i32);
+    }
+
+    // Remainder should be zero for 640/32 dims, but handle just in case or for safety
+    for (w, i) in w_iter.remainder().iter().zip(i_iter.remainder()) {
+        sum += (*w as i32) * (*i as i32);
+    }
+
+    sum
+}
+
+/// Compute dot product of i8 weights and i32 inputs (where inputs are actually small positive integers).
+#[inline(always)]
+fn dot_product_i8_i32_chunked(weights: &[i8], input: &[i32]) -> i32 {
+    let mut sum = 0;
+    let mut w_iter = weights.chunks_exact(16);
+    let mut i_iter = input.chunks_exact(16);
+
+    for (w, i) in w_iter.by_ref().zip(i_iter.by_ref()) {
+        sum += (w[0] as i32 * i[0])
+            + (w[1] as i32 * i[1])
+            + (w[2] as i32 * i[2])
+            + (w[3] as i32 * i[3])
+            + (w[4] as i32 * i[4])
+            + (w[5] as i32 * i[5])
+            + (w[6] as i32 * i[6])
+            + (w[7] as i32 * i[7])
+            + (w[8] as i32 * i[8])
+            + (w[9] as i32 * i[9])
+            + (w[10] as i32 * i[10])
+            + (w[11] as i32 * i[11])
+            + (w[12] as i32 * i[12])
+            + (w[13] as i32 * i[13])
+            + (w[14] as i32 * i[14])
+            + (w[15] as i32 * i[15]);
+    }
+
+    for (w, i) in w_iter.remainder().iter().zip(i_iter.remainder()) {
+        sum += (*w as i32) * (*i);
+    }
+
+    sum
+}
+
 /// Forward pass through the MLP head.
 /// Uses i32 accumulation for precision.
 fn forward_head(weights: &NnueWeights, input: &[i16; HEAD_IN]) -> i32 {
     // Layer 1: 640 -> 32
     let mut h1 = [0i32; H1];
+
+    // Process rows of FC1
+    // We assume HEAD_IN (640) is a multiple of 16 (it is).
     for (i, val) in h1.iter_mut().enumerate() {
-        let mut sum = weights.fc1_bias[i];
         let row_offset = i * HEAD_IN;
-        for (j, &inp) in input.iter().enumerate() {
-            sum += (weights.fc1_weight[row_offset + j] as i32) * (inp as i32);
-        }
+        let row_weights = &weights.fc1_weight[row_offset..row_offset + HEAD_IN];
+
+        let sum = weights.fc1_bias[i] + dot_product_i8_i16_chunked(row_weights, input);
+
         *val = crelu_i32(sum >> 6); // Scale down and apply activation
     }
 
     // Layer 2: 32 -> 32
     let mut h2 = [0i32; H2];
     for (i, val) in h2.iter_mut().enumerate() {
-        let mut sum = weights.fc2_bias[i];
         let row_offset = i * H1;
-        for (j, &h1_val) in h1.iter().enumerate() {
-            sum += (weights.fc2_weight[row_offset + j] as i32) * h1_val;
-        }
+        let row_weights = &weights.fc2_weight[row_offset..row_offset + H1];
+
+        let sum = weights.fc2_bias[i] + dot_product_i8_i32_chunked(row_weights, &h1);
+
         *val = crelu_i32(sum >> 6);
     }
 
     // Layer 3: 32 -> 1
-    let mut output = weights.fc3_bias;
-    for (j, &h2_val) in h2.iter().enumerate() {
-        output += (weights.fc3_weight[j] as i32) * h2_val;
-    }
-
-    output
+    // Flattened dot product
+    weights.fc3_bias + dot_product_i8_i32_chunked(&weights.fc3_weight, &h2)
 }
 
 /// Main NNUE evaluation function.
@@ -238,5 +305,35 @@ mod tests {
         assert_eq!(input[RELKP_DIM], 20); // Start of thr_friendly
         assert_eq!(input[RELKP_DIM + THREAT_DIM], 30); // Start of rel_enemy
         assert_eq!(input[RELKP_DIM * 2 + THREAT_DIM], 40); // Start of thr_enemy
+    }
+
+    #[test]
+    fn test_dot_product_chunked() {
+        // Test i8 * i16
+        let weights_i8: Vec<i8> = (0..32).map(|i| (i % 10) as i8).collect();
+        let input_i16: Vec<i16> = (0..32).map(|i| (i % 5) as i16).collect();
+
+        let expected: i32 = weights_i8
+            .iter()
+            .zip(input_i16.iter())
+            .map(|(&w, &i)| (w as i32) * (i as i32))
+            .sum();
+
+        let actual = dot_product_i8_i16_chunked(&weights_i8, &input_i16);
+        assert_eq!(actual, expected, "i8*i16 chunked dot product failed");
+
+        // Test i8 * i32
+        let input_i32: Vec<i32> = (0..32).map(|i| i * 2).collect();
+        let expected_i32: i32 = weights_i8
+            .iter()
+            .zip(input_i32.iter())
+            .map(|(&w, &i)| (w as i32) * i)
+            .sum();
+
+        let actual_i32 = dot_product_i8_i32_chunked(&weights_i8, &input_i32);
+        assert_eq!(
+            actual_i32, expected_i32,
+            "i8*i32 chunked dot product failed"
+        );
     }
 }

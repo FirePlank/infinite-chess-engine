@@ -137,7 +137,8 @@ fn test_incremental_king_move() {
     let mut game_after = game.clone();
     game_after.board.remove_piece(&from.x, &from.y);
     game_after.board.set_piece(to.x, to.y, piece);
-    game_after.white_king_pos = Some(to);
+    game_after.white_royals.clear();
+    game_after.white_royals.push(to);
     game_after.recompute_piece_counts();
 
     let state_scratch = NnueState::from_position(&game_after);
@@ -176,7 +177,8 @@ fn test_incremental_king_move_black() {
     let mut game_after = game.clone();
     game_after.board.remove_piece(&5, &8);
     game_after.board.set_piece(6, 8, piece);
-    game_after.black_king_pos = Some(to);
+    game_after.black_royals.clear();
+    game_after.black_royals.push(to);
     game_after.recompute_piece_counts();
 
     let state_scratch = NnueState::from_position(&game_after);
@@ -326,7 +328,8 @@ fn test_incremental_castling() {
     game_after
         .board
         .set_piece(6, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-    game_after.white_king_pos = Some(to);
+    game_after.white_royals.clear();
+    game_after.white_royals.push(to);
     game_after.recompute_piece_counts();
 
     let state_scratch = NnueState::from_position(&game_after);

@@ -19,7 +19,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   COVERAGE_THRESHOLD: 75
@@ -50,36 +49,28 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-
       - name: Generate coverage report
         id: coverage
         run: |
-          # Generate JSON coverage report (exclude noisy search and WASM bindings)
-          cargo llvm-cov --lib --json --output-path coverage.json --ignore-filename-regex "noisy\.rs|lib\.rs"
-          
-          # Extract line coverage percentage
+          cargo llvm-cov --lib --no-report --ignore-filename-regex "noisy\.rs|lib\.rs"
+          cargo llvm-cov report --json --output-path coverage.json --ignore-filename-regex "noisy\.rs|lib\.rs"
+          cargo llvm-cov report --html --output-dir coverage-html --ignore-filename-regex "noisy\.rs|lib\.rs"
+          cargo llvm-cov report --ignore-filename-regex "noisy\.rs|lib\.rs" > coverage-summary.txt
+
           PERCENT=$(jq '.data[0].totals.lines.percent // 0' coverage.json | xargs printf "%.1f")
           echo "percent=$PERCENT" >> "$GITHUB_OUTPUT"
-          
-          # Check threshold
-          if (( $(echo "$PERCENT >= $COVERAGE_THRESHOLD" | bc -l) )); then
+
+          if python -c "import sys; sys.exit(0 if float('$PERCENT') >= float('$COVERAGE_THRESHOLD') else 1)"; then
             echo "passed=true" >> "$GITHUB_OUTPUT"
-            echo "✅ Coverage: ${PERCENT}% (threshold: ${COVERAGE_THRESHOLD}%)"
+            echo "Coverage: ${PERCENT}% (threshold: ${COVERAGE_THRESHOLD}%)"
           else
             echo "passed=false" >> "$GITHUB_OUTPUT"
-            echo "❌ Coverage: ${PERCENT}% (threshold: ${COVERAGE_THRESHOLD}%)"
+            echo "Coverage below threshold: ${PERCENT}% (threshold: ${COVERAGE_THRESHOLD}%)"
           fi
-          
-          # Generate HTML report for artifact
-          cargo llvm-cov --lib --html --output-dir coverage-html --ignore-filename-regex "noisy\.rs|lib\.rs"
-          
-          # Generate detailed table
-          cargo llvm-cov --lib --ignore-filename-regex "noisy\.rs|lib\.rs" > coverage-summary.txt
-          
-          # Save coverage data for PR comment
           echo "$PERCENT" > coverage-percent.txt
 
       - name: Upload coverage HTML report
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -87,6 +78,7 @@ jobs:
           retention-days: 14
 
       - name: Upload coverage summary
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-summary
@@ -100,117 +92,38 @@ jobs:
         id: base_coverage
         continue-on-error: true
         run: |
-          # Checkout base branch
           git fetch origin ${{ github.base_ref }}:base_branch
           git worktree add base_worktree base_branch
-          
+
           cd base_worktree
-          
-          # Generate coverage for base
           cargo llvm-cov --lib --json --output-path ../base-coverage.json --ignore-filename-regex "noisy\.rs|lib\.rs" 2>/dev/null || echo '{"data":[{"totals":{"lines":{"percent":0}}}]}' > ../base-coverage.json
-          
+
           cd ..
           BASE_PERCENT=$(jq '.data[0].totals.lines.percent // 0' base-coverage.json | xargs printf "%.1f")
           echo "percent=$BASE_PERCENT" >> "$GITHUB_OUTPUT"
-          
-          # Cleanup
-          git worktree remove base_worktree --force 2>/dev/null || true
 
-      - name: Comment coverage on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            
-            // Read current coverage
-            const currentPercent = parseFloat(fs.readFileSync('coverage-percent.txt', 'utf8').trim());
-            const threshold = parseInt(process.env.COVERAGE_THRESHOLD);
-            
-            // Read base coverage (from previous step output)
-            const basePercent = parseFloat('${{ steps.base_coverage.outputs.percent }}' || '0');
-            
-            // Calculate delta
-            const delta = currentPercent - basePercent;
-            const deltaSign = delta >= 0 ? '+' : '';
-            const deltaEmoji = delta > 0 ? '📈' : delta < 0 ? '📉' : '➡️';
-            
-            // Status emoji
-            const statusEmoji = currentPercent >= threshold ? '✅' : '❌';
-            
-            // Read detailed summary
-            let summaryTable = '';
-            try {
-              summaryTable = fs.readFileSync('coverage-summary.txt', 'utf8');
-            } catch (e) {
-              summaryTable = 'Unable to read coverage summary';
-            }
-            
-            const body = `## ${statusEmoji} Code Coverage Report
-            
-            | Metric | Value |
-            |--------|-------|
-            | **Current Coverage** | ${currentPercent.toFixed(1)}% |
-            | **Base Coverage** | ${basePercent.toFixed(1)}% |
-            | **Change** | ${deltaEmoji} ${deltaSign}${delta.toFixed(1)}% |
-            | **Threshold** | ${threshold}% |
-            | **Status** | ${currentPercent >= threshold ? '✅ Passing' : '❌ Below threshold'} |
-            
-            <details>
-            <summary>📊 Detailed Coverage by File</summary>
-            
-            \`\`\`
-            ${summaryTable.slice(0, 5000)}
-            \`\`\`
-            
-            </details>
-            
-            ${currentPercent < threshold ? `\n> ⚠️ **Warning**: Coverage is below the ${threshold}% threshold. Please add tests before merging.` : ''}
-            `;
-            
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            
-            const botComment = comments.find(c => 
-              c.user.type === 'Bot' && c.body.includes('Code Coverage Report')
-            );
-            
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+          git worktree remove base_worktree --force 2>/dev/null || true
 
       - name: Write coverage to step summary
         run: |
           PERCENT=$(cat coverage-percent.txt)
           THRESHOLD=$COVERAGE_THRESHOLD
-          
-          if (( $(echo "$PERCENT >= $THRESHOLD" | bc -l) )); then
-            STATUS="✅ Passing"
+          BASE_PERCENT="${{ steps.base_coverage.outputs.percent }}"
+
+          if python -c "import sys; sys.exit(0 if float('$PERCENT') >= float('$THRESHOLD') else 1)"; then
+            STATUS="Passing"
           else
-            STATUS="❌ Below threshold"
+            STATUS="Below threshold"
           fi
-          
+
           echo "## Code Coverage Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Coverage | ${PERCENT}% |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$BASE_PERCENT" ]; then
+            echo "| Base Coverage | ${BASE_PERCENT}% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "| Threshold | ${THRESHOLD}% |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Status | ${STATUS} |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -225,14 +138,13 @@ jobs:
         run: |
           PERCENT=$(cat coverage-percent.txt)
           THRESHOLD=$COVERAGE_THRESHOLD
-          
-          if (( $(echo "$PERCENT < $THRESHOLD" | bc -l) )); then
-            echo "❌ Coverage ${PERCENT}% is below threshold ${THRESHOLD}%"
+
+          if python -c "import sys; sys.exit(0 if float('$PERCENT') < float('$THRESHOLD') else 1)"; then
+            echo "Coverage ${PERCENT}% is below threshold ${THRESHOLD}%"
             exit 1
           fi
-          echo "✅ Coverage ${PERCENT}% meets threshold ${THRESHOLD}%"
+          echo "Coverage ${PERCENT}% meets threshold ${THRESHOLD}%"
 
-  # SPRT job depends on coverage passing
   sprt-ci:
     needs: test-and-coverage
     if: needs.test-and-coverage.outputs.coverage_passed == 'true'
@@ -247,39 +159,18 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Cache wasm-pack binary
-        id: cache-wasm-pack
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/wasm-pack
-          key: ${{ runner.os }}-wasm-pack-v2
-
-      - name: Install wasm-pack
-        if: steps.cache-wasm-pack.outputs.cache-hit != 'true'
-        run: |
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh -s -- -y
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: "npm"
-          cache-dependency-path: sprt/package-lock.json
-
-      - name: Install SPRT dependencies
-        working-directory: sprt
-        run: npm ci
-
       - name: Check for previous commit
         id: check_parent
         run: |
-          if ! git rev-parse HEAD^ >/dev/null 2>&1; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.base_ref }} --depth=1
+            echo "has_parent=true" >> "$GITHUB_OUTPUT"
+            echo "old_commit=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          elif ! git rev-parse HEAD^ >/dev/null 2>&1; then
             echo "No previous commit detected; skipping SPRT comparison."
             echo "has_parent=false" >> "$GITHUB_OUTPUT"
           else
@@ -287,97 +178,98 @@ jobs:
             echo "old_commit=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build OLD web engine from previous commit
-        id: build_old
+      - name: Build OLD SPRT binary from previous commit
         if: steps.check_parent.outputs.has_parent == 'true'
         run: |
           set -e
           OLD_COMMIT="${{ steps.check_parent.outputs.old_commit }}"
-          echo "Building OLD web engine from commit $OLD_COMMIT"
-
           OLD_WORKTREE="$(mktemp -d)"
+
           git worktree add "$OLD_WORKTREE" "$OLD_COMMIT"
-
-          (
-            cd "$OLD_WORKTREE"
-            wasm-pack build --target web --out-dir "$GITHUB_WORKSPACE/pkg-old"
-          )
-
+          cargo build --release --features sprt --bin sprt --manifest-path "$OLD_WORKTREE/Cargo.toml"
+          mkdir -p "$GITHUB_WORKSPACE/target/release"
+          cp "$OLD_WORKTREE/target/release/sprt" "$GITHUB_WORKSPACE/target/release/sprt_old"
           git worktree remove "$OLD_WORKTREE" --force
 
-          echo "Old engine build complete"
-          ls -la "$GITHUB_WORKSPACE/pkg-old" || true
-
-      - name: Install Chrome dependencies (Linux)
-        if: runner.os == 'Linux' && steps.check_parent.outputs.has_parent == 'true'
-        run: |
-          sudo apt-get update || true
-          sudo apt-get install -y \
-            libnss3 libnspr4 \
-            libatk1.0-0 libatk-bridge2.0-0 \
-            libgtk-3-0 \
-            libdrm2 \
-            libgbm1 \
-            libx11-6 libxcb1 libxcomposite1 libxdamage1 libxrandr2 libxext6 libxfixes3 libxkbcommon0 \
-            libpango-1.0-0 libasound2t64 \
-            || sudo apt-get install -y \
-            libnss3 libnspr4 \
-            libatk1.0-0 libatk-bridge2.0-0 \
-            libgtk-3-0 \
-            libdrm2 \
-            libgbm1 \
-            libx11-6 libxcb1 libxcomposite1 libxdamage1 libxrandr2 libxext6 libxfixes3 libxkbcommon0 \
-            libpango-1.0-0 libasound2 || true
-
-      - name: Run SPRT CI (HEAD vs previous)
+      - name: Run SPRT CLI (HEAD vs previous)
         if: steps.check_parent.outputs.has_parent == 'true'
-        working-directory: sprt
         env:
           SPRT_CI_GAMES: "250"
+          SPRT_CI_MIN_GAMES: "250"
           SPRT_CI_CONCURRENCY: "10"
           SPRT_CI_TC: "5+0.05"
-          SPRT_CI_TIMEOUT_MS: "1800000"
-          SPRT_CI_SERVER_TIMEOUT_MS: "300000"
-          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
-          echo "Starting SPRT CI runner..."
-          node run_sprt_ci.js || true
-          echo "SPRT CI completed"
+          set -o pipefail
+          mkdir -p sprt
+          cargo run --release --features sprt --bin sprt -- run \
+            --old-bin target/release/sprt_old \
+            --tc "$SPRT_CI_TC" \
+            --concurrency "$SPRT_CI_CONCURRENCY" \
+            --max-games "$SPRT_CI_GAMES" \
+            --min-games "$SPRT_CI_MIN_GAMES" \
+            --max-moves 200 \
+            --results sprt/results.json \
+            --games sprt/game_logs.json \
+            2>&1 | tee sprt/sprt-ci.log
 
       - name: Upload SPRT CI result artifact
-        if: always()
+        if: ${{ always() && !env.ACT }}
         uses: actions/upload-artifact@v4
         with:
           name: sprt-ci-result
-          path: sprt/ci_result.json
+          path: |
+            sprt/results.json
+            sprt/sprt-ci.log
+            sprt/game_logs.json
           if-no-files-found: ignore
 
       - name: Write SPRT summary to check
         if: always()
         run: |
-          if [ ! -f sprt/ci_result.json ]; then
+          if [ "${{ steps.check_parent.outputs.has_parent }}" != "true" ]; then
+            echo "### SPRT CI (HEAD vs previous commit)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipped: no previous commit available for comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ ! -f sprt/results.json ]; then
             echo "No SPRT CI result found" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           node - <<'EOF'
           const fs = require('fs');
           const path = require('path');
-          const resultPath = path.join(process.cwd(), 'sprt', 'ci_result.json');
+          const resultPath = path.join(process.cwd(), 'sprt', 'results.json');
+          const logPath = path.join(process.cwd(), 'sprt', 'sprt-ci.log');
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
           if (!fs.existsSync(resultPath) || !summaryPath) {
             process.exit(0);
           }
           const data = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+          const logSummary = fs.existsSync(logPath)
+            ? fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-20).join('\n')
+            : '';
+          const alpha = 0.05;
+          const beta = 0.05;
+          const minGames = 250;
+          const llr = typeof data.llr === 'number' ? data.llr : 0;
+          const games = typeof data.total_games === 'number' ? data.total_games : ((data.wins || 0) + (data.losses || 0) + (data.draws || 0));
+          const lowerBound = Math.log(beta / (1 - alpha));
+          const upperBound = Math.log((1 - beta) / alpha);
+          let verdict = 'INCONCLUSIVE';
+          if (games >= minGames && llr >= upperBound) {
+            verdict = 'PASS';
+          } else if (games >= minGames && llr <= lowerBound) {
+            verdict = 'FAIL';
+          }
           const lines = [];
           lines.push('### SPRT CI (HEAD vs previous commit)');
           lines.push('');
-          if (data.verdict) {
-            lines.push(`Verdict: **${data.verdict}**`);
-            lines.push('');
-          }
-          if (typeof data.elo === 'number' && data.games > 0) {
+          lines.push(`Verdict: **${verdict}**`);
+          lines.push('');
+          if (typeof data.elo === 'number' && games > 0) {
             const elo = data.elo;
-            const err = typeof data.eloError === 'number' ? data.eloError : 0;
+            const err = typeof data.elo_error === 'number' ? data.elo_error : 0;
             const lower = elo - err;
             const upper = elo + err;
             let heuristic = 'roughly equal';
@@ -393,74 +285,20 @@ jobs:
             lines.push(`Heuristic verdict (short run): **${heuristic}**`);
             lines.push('');
           }
-          lines.push(`Games: ${data.games}  (W:${data.wins} L:${data.losses} D:${data.draws})`);
-          if (typeof data.elo === 'number' && data.games > 0) {
+          lines.push(`Games: ${games}  (W:${data.wins} L:${data.losses} D:${data.draws})`);
+          if (typeof data.elo === 'number' && games > 0) {
             const eloStr = data.elo >= 0 ? `+${data.elo.toFixed(1)}` : data.elo.toFixed(1);
-            const errStr = typeof data.eloError === 'number' ? data.eloError.toFixed(1) : 'n/a';
+            const errStr = typeof data.elo_error === 'number' ? data.elo_error.toFixed(1) : 'n/a';
             lines.push(`Estimated Elo: ${eloStr} +/- ${errStr}`);
           }
+          if (typeof llr === 'number') {
+            lines.push(`LLR: ${llr.toFixed(2)}`);
+          }
           lines.push('');
-          if (data.logSummary) {
+          if (logSummary) {
             lines.push('```text');
-            lines.push(data.logSummary);
+            lines.push(logSummary);
             lines.push('```');
           }
           fs.appendFileSync(summaryPath, lines.join('\n') + '\n');
           EOF
-
-      - name: Comment SPRT result on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const resultPath = path.join(process.env.GITHUB_WORKSPACE, 'sprt', 'ci_result.json');
-            if (!fs.existsSync(resultPath)) {
-              return;
-            }
-            const data = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
-            const lines = [];
-            lines.push('### SPRT CI (HEAD vs previous commit)');
-            lines.push('');
-            if (data.verdict) {
-              lines.push(`Verdict: **${data.verdict}**`);
-              lines.push('');
-            }
-            if (typeof data.elo === 'number' && data.games > 0) {
-              const elo = data.elo;
-              const err = typeof data.eloError === 'number' ? data.eloError : 0;
-              const lower = elo - err;
-              const upper = elo + err;
-              let heuristic = 'roughly equal';
-              if (lower > 50) {
-                heuristic = 'probably better';
-              } else if (lower > 0) {
-                heuristic = 'slightly better';
-              } else if (upper < -50) {
-                heuristic = 'probably worse';
-              } else if (upper < 0) {
-                heuristic = 'slightly worse';
-              }
-              lines.push(`Heuristic verdict (short run): **${heuristic}**`);
-              lines.push('');
-            }
-            lines.push(`Games: ${data.games}  (W:${data.wins} L:${data.losses} D:${data.draws})`);
-            if (typeof data.elo === 'number' && data.games > 0) {
-              const eloStr = data.elo >= 0 ? `+${data.elo.toFixed(1)}` : data.elo.toFixed(1);
-              const errStr = typeof data.eloError === 'number' ? data.eloError.toFixed(1) : 'n/a';
-              lines.push(`Estimated Elo: ${eloStr} +/- ${errStr}`);
-            }
-            lines.push('');
-            if (data.logSummary) {
-              lines.push('```text');
-              lines.push(data.logSummary);
-              lines.push('```');
-            }
-            const body = lines.join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });

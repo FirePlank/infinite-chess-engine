@@ -98,7 +98,7 @@ let activeWorkerResolvers = [];
 
 // SPRT configuration
 const CONFIG = {
-    elo0: -5,
+    elo0: 0,
     elo1: 5,
     alpha: 0.05,
     beta: 0.05,
@@ -936,7 +936,7 @@ async function runSprt() {
     sprtStatusEl.className = 'sprt-status';
     const sprtBaseSeed = Date.now() ^ ((Math.random() * 0xFFFFFFFF) | 0);
     log('Starting SPRT: ' + maxGames + ' games (' + (maxGames / 2) + ' pairs), Mode=' + runConfig.tcMode + ', TC=' + displayTcString + ', Seed=' + sprtBaseSeed, 'info');
-    sprtLog('SPRT Test Started (noisy opening moves for first 4 ply, paired games)');
+    sprtLog('SPRT Test Started (noisy opening moves for first 8 ply, paired games)');
 
     const maxConcurrent = Math.max(1, runConfig.concurrency | 0);
     const workers = [];
@@ -1011,6 +1011,11 @@ async function runSprt() {
                                 msg.variantName, // Add variant to ICN log
                             );
                             gameLogs.push(icnLog);
+                            if (msg.reason === 'time_forfeit' || msg.reason === 'timeout') {
+                                const timeoutMsg = 'ALERT: Game ' + (msg.gameIndex + 1) + ' lost on time [' + (msg.variantName || 'Classical') + ']';
+                                sprtLog(timeoutMsg);
+                                log(timeoutMsg, 'error');
+                            }
                             // Enable download buttons immediately upon first result
                             downloadGamesTxtBtn.disabled = false;
                             downloadGamesJsonBtn.disabled = false;
@@ -1437,3 +1442,4 @@ window.__sprt_compute_features = async (rawSamples) => {
 };
 
 initWasm();
+

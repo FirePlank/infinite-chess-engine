@@ -1,251 +1,224 @@
-# SPRT Testing Tool
+﻿# SPRT Testing Tool
 
-Sequential Probability Ratio Test (SPRT) for validating HydroChess engine changes.
+Sequential Probability Ratio Test (SPRT) tool for validating engine strength changes.
 
-**[← Back to README](../README.md)** | **[Contributing Guide](../docs/CONTRIBUTING.md)** | **[Setup Guide](../docs/SETUP.md)**
+**[← Back to README](../README.md)** | **[Setup Guide](../docs/SETUP.md)** | **[Engine Architecture](../docs/ARCHITECTURE.md)** | **[Contributing Guide](../docs/CONTRIBUTING.md)**
 
----
+## Overview
 
-## What is SPRT?
+SPRT is a statistical test used to determine if a change to the engine results in a strength gain, loss, or is neutral. It is used for tuning search algorithms, evaluation terms, and other parameters.
 
-SPRT is a statistical test that determines whether a new engine version is stronger, weaker, or equivalent to a baseline. It's the industry standard for chess engine development, used by Stockfish, Leela Chess Zero, and others.
-
-**Use SPRT when:**
-- Changing search algorithms (LMR, pruning, extensions)
-- Modifying evaluation terms
-- Tuning piece values or parameters
+There are two ways to run SPRT: the **native CLI** (lightweight) and the **web UI** (visual).
 
 ---
 
-## Quick Start
+## Native CLI
 
-### 1. Build Your Baseline
+The CLI is built directly into the `sprt` binary. It manages game pairs, subprocess engines, clocks, adjudication, and reports results.
+
+### Step 1: Build the baseline
+
+Before making your changes, build the current source as the baseline:
 
 ```bash
-# From the engine root directory
+cargo build --release --features sprt --bin sprt
+```
+
+Copy or rename the binary so it doesn't get overwritten:
+
+```bash
+# Windows
+copy target\release\sprt.exe target\release\sprt_old.exe
+
+# Linux/macOS
+cp target/release/sprt target/release/sprt_old
+```
+
+### Step 2: Make your changes
+
+Edit the engine source code with whatever changes you want to test.
+
+### Step 3: Run the SPRT
+
+The CLI will automatically build the new binary from the current source:
+
+```bash
+cargo run --release --bin sprt --features sprt -- run --old-bin target/release/sprt_old
+```
+
+### CLI Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--new-bin <PATH>` | auto-build | Path to the new engine binary |
+| `--old-bin <PATH>` | **required** | Path to the old (baseline) engine binary |
+| `--tc <TC>` | `10+0.1` | Time control: `base+inc` (seconds), `depth N`, or `fixed Ns` |
+| `--concurrency <N>` | `16` | Number of parallel games |
+| `--max-games <N>` | unlimited | Maximum games to run |
+| `--min-games <N>` | `250` | Minimum games before SPRT can terminate |
+| `--elo0 <F>` | `0.0` | H0 bound (Elo where new is NOT better) |
+| `--elo1 <F>` | `5.0` | H1 bound (Elo where new IS better) |
+| `--alpha <F>` | `0.05` | Type I error rate (false positive) |
+| `--beta <F>` | `0.05` | Type II error rate (false negative) |
+| `--adjudication <N>` | `2000` | Material eval difference (cp) to auto-adjudicate |
+| `--max-moves <N>` | `300` | Max plies before forced draw |
+| `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
+| `--old-strength <N>` | `3` | Strength level for old engine (1-3) |
+| `--games <PATH>` | — | Write game ICNs to a JSON |
+| `--results <PATH>` | — | Write results to a JSON |
+| `--variants <LIST>` | all except custom eval | Comma-separated variant list |
+| `--verbose` | off | Print detailed game info |
+
+### Example: Small regression test
+
+```bash
+cargo run --release --bin sprt --features sprt -- run --old-bin target/release/sprt_old \
+  --tc 1+0.01 \
+  --concurrency 8 \
+  --max-games 200 \
+  --games games.json
+```
+
+Afterwards you can drop the games JSON into [the ICN validator](https://infinitechess.org/icnvalidator) to catch illegal moves or bad terminations, though some discrepancies are expected in certain insufficient material and Huygen mate cases.
+
+---
+
+## Web UI
+
+For visual feedback and interactive configuration, use the browser-based SPRT.
+
+### Step 1: Build the baseline
+
+```bash
 wasm-pack build --target web --out-dir pkg-old
 ```
 
-> [!TIP]
-> If you want to test multithreading, build with: `node build_mt.js`.
+### Step 2: Build & Run
 
-### 2. Make Your Changes
-
-Edit the code and save.
-
-### 3. Run SPRT
+After making changes:
 
 ```bash
 cd sprt
-# For single-threaded testing:
 npm run dev
-
-# For multi-threaded testing:
-node sprt.js --mt
 ```
 
-This will:
-- Build your modified engine → `sprt/web/pkg-new` (with threads if --mt is used)
-- Copy baseline → `sprt/web/pkg-old`
-- Start a local server at `http://localhost:3000`
+This builds the current source into `sprt/web/pkg-new` and starts the test server at `http://localhost:3000`.
 
-### 4. Open the Web UI
+### Step 3: Configure & Run
 
-Navigate to `http://localhost:3000` in your browser.
-
-### 5. Configure and Run
-
-1. Select a **Bounds Preset** (see table below)
-2. Choose **Mode**: Gainer or Non-Regression
-3. Set **TC Mode** and **Time Control** (e.g., Smart Mix or 10+0.1)
-4. Click **Run SPRT**
-
----
-
-## Configuration Options
-
-### Bounds Presets
-
-| Preset | Gainer Bounds | Non-Reg Bounds | Best For |
-|--------|---------------|----------------|----------|
-| `all` (default) | [0, 10] | [-10, 0] | Most changes |
-| `top200` | [0, 5] | [-5, 0] | Small improvements |
-| `top30` | [0, 3] | [-3, 1] | Subtle changes |
-| `stockfish_stc` | [0, 2] | [-1.75, 0.25] | Very refined changes |
-| `stockfish_ltc` | [0.5, 2.5] | [-1.75, 0.25] | Long time control |
-
-### Modes
-
-- **Gainer**: Prove the new engine is stronger (H1: new > old)
-- **Non-Regression**: Prove the new engine isn't weaker (H1: new ≥ old)
-
-### Other Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| TC Mode | Smart Mix | Randomized mix of time controls |
-| Time Control | 10+0.1 | Base time + increment (for Standard) |
-| Concurrency | 50 | Parallel games (Web Workers) |
-| Min Games | 250 | Minimum games before stopping |
-| Max Games | 1000 | Maximum games limit |
-| Max Moves | 300 | Moves before forced draw |
-| Material Adjudication | 2000 | Eval difference to auto win (cp) |
-| Search Noise | 50 | Randomness amplitude for first 4 ply (cp) |
-| Alpha / Beta | 0.05 | False positive / False negative rates |
-
----
-
-## Understanding Results
-
-### Status Colors
-
-| Status | Meaning |
-|--------|---------|
-| 🟢 **PASSED** | New engine is stronger (LLR ≥ upper bound) |
-| 🔴 **FAILED** | New engine is weaker (LLR ≤ lower bound) |
-| 🟡 **INCONCLUSIVE** | Need more games |
-| ⚪ **ABORTED** | Test stopped manually |
-
-### Statistics Shown
-
-- **W/L/D**: Wins, Losses, Draws for the new engine
-- **Elo ± Error**: Estimated rating difference
-- **LLR**: Log-likelihood ratio (test statistic)
-- **Bounds**: [lower, upper] threshold for decision
-
-### Example Output
-
-```
-Game 100: win (W:35 L:25 D:40) Elo≈20.5±12.3 LLR=2.89 [5,4->5,5]
-
-═══════════ SPRT PASSED ═══════════
-Total games: 100
-Score: 55.0% (35W 25L 40D)
-Elo difference: +20.5 ± 12.3
-LLR: 2.89 [0.00, 10.00]
-Verdict: New engine is stronger
-═══════════════════════════════════
-```
-
----
-
-## Game Pairing
-
-Games are run in **color-reversed pairs** to reduce first-move bias:
-
-- Games 0 & 1: Same opening, new engine plays White then Black
-- Games 2 & 3: Different opening, same pattern
-- ...
-
-SPRT only makes decisions after completing full pairs.
-
----
-
-## Downloads
-
-The UI provides download buttons:
-
-| Button | Content |
-|--------|---------|
-| **Copy Log** | Copy game log to clipboard |
-| **Download Logs** | Save game logs in ICN format |
-| **Download Games (TXT)** | Save games as a `.txt` |
-| **Download Games (JSON)** | Save games as a `.json` |
-
-ICN format includes headers like:
-```
-[Event "SPRT Test Game 12"]
-[Result "1-0"]
-[Opening "5,2->5,4"]
-```
+1. Open `http://localhost:3000` in your browser
+2. Select bounds preset, time control, and concurrency
+3. Start the test
 
 ---
 
 ## SPSA Parameter Tuning
 
-SPSA automatically optimizes search parameters through self-play.
+SPSA (Simultaneous Perturbation Stochastic Approximation) is used to automatically tune search and evaluation constants through self-play.
 
-### Quick Start
+The tuner lives in `src/bin/spsa.rs` and uses a single feature gate for dynamic parameter injection during tuning:
 
 ```bash
-cd sprt
-npm run spsa
+cargo run --release --bin spsa --features sprt,param_tuning -- run
 ```
 
-### Options
+### Parameter Selection
+
+`--params` controls which knobs are tuned:
+
+| Selector | Meaning |
+|----------|---------|
+| `all` | Tune every exposed search and eval parameter |
+| `search` | Tune only search parameters from `src/search/params.rs` |
+| `eval` | Tune only evaluation parameters from `src/evaluation/base.rs` |
+| `piece-values` | Tune only evaluation material / piece-value style knobs |
+| `pawn,knight,...` | Tune only the explicitly named parameters |
+
+### SPSA CLI Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--games <n>` | 100 | Games per side per iteration |
-| `--iterations <n>` | 100 | Total iterations |
-| `--tc <ms>` | 100 | Time control per move (ms) |
-| `--concurrency <n>` | 20 | Parallel workers |
-| `--fresh` | false | Ignore checkpoints |
-| `--verbose` | false | Show detailed updates |
-| `--native` | false | Use fast native iwasm execution |
-| `--browser` | false | Force browser execution (Puppeteer) |
-| `--variant <v>` | Classical | Variant to use for tuning |
+| `run --iterations <N>` | `100` | Number of SPSA iterations |
+| `run --pairs <N>` | `400` | Paired openings per iteration; total games = `pairs * 2` |
+| `run --checkpoint-every <N>` | `1` | Save a checkpoint every N iterations |
+| `run --resume <PATH>` | latest checkpoint | Resume from a specific checkpoint |
+| `run --fresh` | off | Ignore checkpoints and start from defaults |
+| `run --tc <TC>` | `3+0.03` | Time control: `base+inc`, `depth N`, or `fixed Ns` |
+| `run --concurrency <N>` | `16` | Number of parallel game workers |
+| `run --variants <LIST>` | default set | Comma-separated variant list |
+| `run --adjudication <N>` | `2000` | Material eval threshold for adjudication |
+| `run --max-moves <N>` | `300` | Maximum plies before forced draw |
+| `run --search-noise <N>` | `50` | Noise amplitude for first 8 ply |
+| `run --params <SELECTOR>` | `all` | Parameter preset or comma-separated names |
+| `run --config <PATH>` | none | Optional JSON override for bounds/defaults/`c_end`/`r_end` |
+| `run --results <PATH>` | `sprt/spsa_final.json` | Final result JSON output |
+| `run --games <PATH>` | off | Write latest iteration ICNs as JSON |
+| `run --big-a <F>` | `iterations / 10` | SPSA stability constant `A` |
+| `run --alpha <F>` | `0.602` | SPSA learning-rate decay |
+| `run --gamma <F>` | `0.101` | SPSA perturbation decay |
+| `run --verbose` | off | Inherit search subprocess stderr |
+| `list --params <SELECTOR>` | `all` | Print selected tunables with bounds, `c_end`, and `R_end` |
+| `apply --input <PATH>` | latest checkpoint | Apply tuned constants back into Rust source |
+| `revert --params <SELECTOR>` | `all` | Revert selected constants back to defaults |
+
+### Tuning Config Overrides
+
+`--config` accepts a JSON object keyed by parameter name. Each entry can override any subset of `default`, `min`, `max`, `c_end`, and `r_end`.
+
+```json
+{
+  "knight": { "min": 180, "max": 340, "c_end": 4.0, "r_end": 0.0020 },
+  "bishop": { "default": 430, "c_end": 4.0, "r_end": 0.0015 },
+  "razoring_linear": { "min": 300, "max": 650, "c_end": 16.0, "r_end": 0.0020 }
+}
+```
 
 ### Examples
 
+Tune all exposed params on the default variant set:
+
 ```bash
-# Quick test run
-npm run spsa -- --games 20 --iterations 10
-
-# Full tuning session
-npm run spsa -- --games 100 --iterations 500
-
-# Resume from checkpoint
-npm run spsa  # Auto-resumes if checkpoint exists
-
-# Start fresh
-npm run spsa -- --fresh
+cargo run --release --bin spsa --features param_tuning -- run --pairs 100 --iterations 500 --concurrency 20
 ```
 
-### Checkpoints
+Tune only piece values at `5+0.1` across the default variants:
 
-- Saved to `sprt/checkpoints/spsa_N.json` every 5% of iterations
-- Auto-resumed on next run
-- Use `--fresh` to ignore checkpoints
-
-### Configuration
-
-Edit `sprt/spsa_config.mjs` to:
-- Add/remove tunable parameters
-- Set parameter bounds
-- Adjust SPSA hyperparameters (learning rate, perturbation)
-
----
-
-## Directory Structure
-
-```
-sprt/
-├── sprt.js              # Build script + dev server
-├── spsa.mjs             # SPSA tuner
-├── spsa_config.mjs      # Tunable parameters
-├── package.json         # npm scripts
-├── checkpoints/         # SPSA checkpoints
-└── web/
-    ├── index.html       # SPRT web UI
-    ├── main.js          # UI logic
-    ├── sprt-worker.js   # Game worker
-    ├── pkg-old/         # Baseline engine
-    └── pkg-new/         # Modified engine
+```bash
+cargo run --release --bin spsa --features param_tuning -- run --tc 5+0.1 --params piece-values
 ```
 
----
+Tune only a hand-picked subset:
 
-## References
+```bash
+cargo run --release --bin spsa --features param_tuning -- run --params pawn,knight,bishop,rook,mg_bishop_pair_bonus
+```
+
+Inspect the tunable set before a run:
+
+```bash
+cargo run --bin spsa --features param_tuning -- list --params eval
+```
+
+Apply the latest checkpoint back into source:
+
+```bash
+cargo run --bin spsa --features param_tuning -- apply
+```
+
+Checkpoints are saved to `sprt/spsa_checkpoints/` by default and resume automatically unless `--fresh` is passed.
+
+## Project Structure
+
+- `src/bin/sprt.rs` — Native CLI (SPRT manager + search subprocess)
+- `sprt.js` — Build and server script (web UI)
+- `src/bin/spsa.rs` — Match-based SPSA CLI (runner + search subprocess + apply/revert)
+- `web/` — Web UI for running SPRT tests
+- `web/pkg-old/` — Baseline WebAssembly package
+- `web/pkg-new/` — Modified WebAssembly package
+
+### References
 
 - [SPRT on Chess Programming Wiki](https://www.chessprogramming.org/Sequential_Probability_Ratio_Test)
 - [SPSA on Chess Programming Wiki](https://www.chessprogramming.org/SPSA)
-- [Stockfish Testing](https://tests.stockfishchess.org/) - Production SPRT system
+- [Stockfish Testing](https://tests.stockfishchess.org/) — Production SPRT system
 
----
-
-## Navigation
-
-- **[← Main README](../README.md)**
-- **[Setup Guide](../docs/SETUP.md)**
-- **[Contributing Guide](../docs/CONTRIBUTING.md)**

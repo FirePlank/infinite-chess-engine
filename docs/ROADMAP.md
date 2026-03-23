@@ -12,7 +12,7 @@ The single biggest opportunity for strength gain is fine-tuning the engine's par
 
 ### The Plan
 1.  **Optimization of SPSA Tuner**:
-    - We have an SPSA tuner (`sprt/spsa.mjs`, alternatively `src/bin/spsa_tuner.rs`), but it is currently quite slow on a single machine to yield reliable results in a reasonable amount of time.
+    - We have an SPSA tuner (`src/bin/spsa.rs`) that runs match-based self-play from the CLI, but it needs large-scale testing time to converge cleanly on stronger parameter sets.
     - *Goal*: Optimize the tuner or distribute the workload.
 2.  **Hand-tuning via SPRT**:
     - **Alternative**: Contributors can hand-tune the most relevant parameters (e.g., piece values, evaluation weights, LMR reductions) and verify them using the SPRT test suite.
@@ -22,7 +22,7 @@ The single biggest opportunity for strength gain is fine-tuning the engine's par
 ### Relevant Files
 - `src/search/params.rs`
 - `src/evaluation/base.rs`
-- `src/bin/spsa_tuner.rs`
+- `src/bin/spsa.rs`
 
 ---
 

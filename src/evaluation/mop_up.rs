@@ -957,46 +957,35 @@ mod tests {
 
     fn create_test_game() -> GameState {
         let mut game = GameState::new();
-        game.board = Board::new();
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
         game
     }
 
+    fn create_test_game_from_icn(icn: &str) -> GameState {
+        let mut game = create_test_game();
+        game.board = Board::new();
+        game.setup_position_from_icn(icn);
+        game
+    }
+
     #[test]
     fn test_is_lone_king_true() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1");
 
         assert!(is_lone_king(&game, PlayerColor::White));
     }
 
     #[test]
     fn test_is_lone_king_false() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|Q4,1");
 
         assert!(!is_lone_king(&game, PlayerColor::White));
     }
 
     #[test]
     fn test_calculate_mop_up_scale_returns_none_for_no_advantage() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(4, 8, Piece::new(PieceType::Queen, PlayerColor::Black));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,1|q4,8");
 
         // Both sides have material, so no mop-up
         let scale = calculate_mop_up_scale(&game, PlayerColor::Black);
@@ -1034,14 +1023,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_lone_king_endgame_returns_value() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,1");
 
         let enemy_king = Coordinate::new(5, 8);
         let our_king = Coordinate::new(5, 1);
@@ -1054,14 +1036,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_mop_up_scaled_no_king() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(3, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) k5,8|Q4,4|Q3,4");
 
         let enemy_king = Coordinate::new(5, 8);
 
@@ -1078,18 +1053,7 @@ mod tests {
 
     #[test]
     fn test_mop_up_rook_fence_bonus() {
-        let mut game = create_test_game();
-        // Black king in center
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::King, PlayerColor::Black));
-        // White rooks creating a fence
-        game.board
-            .set_piece(0, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(7, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) k4,4|R0,4|R7,4|K4,1");
 
         let enemy_king = Coordinate::new(4, 4);
         let our_king = Coordinate::new(4, 1);
@@ -1106,15 +1070,7 @@ mod tests {
 
     #[test]
     fn test_mop_up_king_approach_bonus() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        // White king close to enemy
-        game.board
-            .set_piece(6, 5, Piece::new(PieceType::King, PlayerColor::White));
-        game.recompute_piece_counts();
+        let mut game = create_test_game_from_icn("w (8;q|1;q) k5,5|Q4,4|K6,5");
 
         let enemy_king = Coordinate::new(5, 5);
         let our_king_close = Coordinate::new(6, 5);
@@ -1127,10 +1083,7 @@ mod tests {
         );
 
         // Move white king further away
-        game.board.remove_piece(&6, &5);
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w (8;q|1;q) k5,5|Q4,4|K1,1");
 
         let our_king_far = Coordinate::new(1, 1);
         let score_far =
@@ -1146,20 +1099,7 @@ mod tests {
 
     #[test]
     fn test_calculate_mop_up_scale_with_pawns() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::King, PlayerColor::White));
-        // Add rooks (sufficient material) and promotable pawn
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(2, 2, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(3, 7, Piece::new(PieceType::Pawn, PlayerColor::White)); // Near promotion
-        game.white_promo_rank = 8;
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) k5,5|K4,4|R1,1|R2,2|P3,7");
 
         let scale = calculate_mop_up_scale(&game, PlayerColor::Black);
         // Should return a scale since white has mating material
@@ -1168,21 +1108,7 @@ mod tests {
 
     #[test]
     fn test_find_bitboard_cage() {
-        let mut game = create_test_game();
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::King, PlayerColor::Black));
-        // Surround with attacking rooks
-        game.board
-            .set_piece(4, 0, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(4, 8, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(0, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(8, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.recompute_piece_counts();
+        let game = create_test_game_from_icn("w (8;q|1;q) k4,4|R4,0|R4,8|R0,4|R8,4|K1,1");
 
         let enemy_king = Coordinate::new(4, 4);
         let (_is_caged, area) = find_bitboard_cage(

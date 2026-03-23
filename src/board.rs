@@ -255,6 +255,14 @@ impl PieceType {
         }
     }
 
+    #[inline]
+    pub fn parse_promotion_code(code: &str) -> Option<Self> {
+        code.parse::<PieceType>().ok().or_else(|| {
+            let site = PieceType::from_site_code(&code.to_uppercase());
+            (site != PieceType::Void).then_some(site)
+        })
+    }
+
     /// Check if this piece type is a neutral/blocking type (cannot be moved by players)
     #[inline]
     pub fn is_neutral_type(&self) -> bool {

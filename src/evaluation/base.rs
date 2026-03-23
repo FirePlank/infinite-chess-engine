@@ -4,6 +4,14 @@ use crate::game::GameState;
 use smallvec::SmallVec;
 use std::cell::UnsafeCell;
 
+use crate::search::params::{
+    archbishop, bishop, camel, centaur, chancellor_bonus, eg_bishop_pair_bonus,
+    eg_doubled_pawn_penalty, eg_outpost_bonus, giraffe, guard, hawk, huygen, knight, knightrider,
+    mg_bishop_pair_bonus, mg_doubled_pawn_penalty, mg_outpost_bonus, pawn, queen_open_file_bonus,
+    queen_semi_open_file_bonus, queen_value, rook, rook_open_file_bonus, rook_semi_open_file_bonus,
+    rose, zebra,
+};
+
 // 2-Bucket LRU pawn structure cache
 const PAWN_CACHE_SIZE: usize = 16384; // 16384 buckets * 2 entries = 32768 entries
 
@@ -53,11 +61,11 @@ pub fn clear_pawn_cache() {
     });
 }
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 use once_cell::sync::Lazy;
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 use std::sync::RwLock;
 
 /// Tracer trait for evaluation components.
@@ -125,7 +133,7 @@ impl ActiveTrace {
     }
 }
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EvalFeatures {
     // King safety
@@ -150,23 +158,23 @@ pub struct EvalFeatures {
     pub queen_fork_zone_bonus: i32,
 }
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub static EVAL_FEATURES: Lazy<RwLock<EvalFeatures>> =
     Lazy::new(|| RwLock::new(EvalFeatures::default()));
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub fn reset_eval_features() {
     if let Ok(mut guard) = EVAL_FEATURES.write() {
         *guard = EvalFeatures::default();
     }
 }
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub fn snapshot_eval_features() -> EvalFeatures {
     EVAL_FEATURES.read().map(|g| g.clone()).unwrap_or_default()
 }
 
-#[cfg(feature = "eval_tuning")]
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 macro_rules! bump_feat {
     ($field:ident, $amount:expr) => {{
         if let Ok(mut f) = $crate::evaluation::EVAL_FEATURES.write() {
@@ -175,57 +183,74 @@ macro_rules! bump_feat {
     }};
 }
 
-#[cfg(not(feature = "eval_tuning"))]
+#[cfg(not(any(feature = "param_tuning", feature = "eval_tuning")))]
 macro_rules! bump_feat {
     ($($tt:tt)*) => {};
 }
 
+pub const DEFAULT_EVAL_PAWN: i32 = 100;
+pub const DEFAULT_EVAL_KNIGHT: i32 = 250;
+pub const DEFAULT_EVAL_BISHOP: i32 = 434;
+pub const DEFAULT_EVAL_ROOK: i32 = 646;
+pub const DEFAULT_EVAL_GUARD: i32 = 224;
+pub const DEFAULT_EVAL_CENTAUR: i32 = 566;
+pub const DEFAULT_EVAL_COMPOUND_BONUS: i32 = 46;
+pub const DEFAULT_EVAL_CAMEL: i32 = 270;
+pub const DEFAULT_EVAL_GIRAFFE: i32 = 268;
+pub const DEFAULT_EVAL_ZEBRA: i32 = 272;
+pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 720;
+pub const DEFAULT_EVAL_HAWK: i32 = 632;
+pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 908;
+pub const DEFAULT_EVAL_ROSE: i32 = 700;
+pub const DEFAULT_EVAL_HUYGEN: i32 = 363;
+pub const DEFAULT_EVAL_CHANCELLOR_BONUS: i32 = 116;
+pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 8;
+pub const DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY: i32 = 12;
+pub const DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS: i32 = 60;
+pub const DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS: i32 = 80;
+pub const DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS: i32 = 45;
+pub const DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS: i32 = 20;
+pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 25;
+pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
+pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 20;
+pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 50;
+
 // Piece Values
-const KNIGHT: i32 = 250;
-const BISHOP: i32 = KNIGHT + 200;
-const ROOK: i32 = KNIGHT + BISHOP - 50;
-const GUARD: i32 = 220;
-const CENTAUR: i32 = 550;
-const QUEEN: i32 = ROOK * 2 + COMPOUND_BONUS;
 
-const COMPOUND_BONUS: i32 = 50;
-const ROYAL_BONUS: i32 = 50;
-
-pub fn get_piece_value(piece_type: PieceType) -> i32 {
+pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
     match piece_type {
         // neutral/blocking pieces - no material value
         PieceType::Void => 0,
         PieceType::Obstacle => 0,
 
         // orthodox - adjusted for infinite chess where sliders dominate
-        PieceType::Pawn => 100,
-        PieceType::Knight => KNIGHT, // Weak in infinite chess
-        PieceType::Bishop => BISHOP, // Strong slider
-        PieceType::Rook => ROOK,     // Very strong in infinite chess
-        PieceType::Queen => QUEEN,   // > 2 rooks
-        PieceType::Guard => GUARD,
+        PieceType::Pawn => pawn(),
+        PieceType::Knight => knight(),     // Weak in infinite chess
+        PieceType::Bishop => bishop(),     // Strong slider
+        PieceType::Rook => rook(),         // Very strong in infinite chess
+        PieceType::Queen => queen_value(), // > 2 rooks
+        PieceType::Guard => guard(),
 
         // short / medium range
-        PieceType::Camel => 270,   // (1,3) leaper
-        PieceType::Giraffe => 260, // (1,4) leaper
-        PieceType::Zebra => 260,   // (2,3) leaper
+        PieceType::Camel => camel(),     // (1,3) leaper
+        PieceType::Giraffe => giraffe(), // (1,4) leaper
+        PieceType::Zebra => zebra(),     // (2,3) leaper
 
         // riders / compounds
-        PieceType::Knightrider => 700,
-        PieceType::Amazon => QUEEN + KNIGHT,
-        PieceType::Hawk => 600,
-        PieceType::Chancellor => ROOK + KNIGHT + 100,
-        PieceType::Archbishop => 900,
-        PieceType::Centaur => CENTAUR,
+        PieceType::Knightrider => knightrider(),
+        PieceType::Amazon => queen_value() + knight(),
+        PieceType::Hawk => hawk(),
+        PieceType::Chancellor => rook() + knight() + chancellor_bonus(),
+        PieceType::Archbishop => archbishop(),
+        PieceType::Centaur => centaur(),
 
-        // royals
-        PieceType::King => GUARD + ROYAL_BONUS,
-        PieceType::RoyalQueen => QUEEN + ROYAL_BONUS,
-        PieceType::RoyalCentaur => CENTAUR + ROYAL_BONUS,
+        PieceType::King => guard(),
+        PieceType::RoyalQueen => queen_value(),
+        PieceType::RoyalCentaur => centaur(),
 
         // special infinite-board pieces
-        PieceType::Rose => 450,
-        PieceType::Huygen => 355,
+        PieceType::Rose => rose(),
+        PieceType::Huygen => huygen(),
     }
 }
 
@@ -369,12 +394,6 @@ const EG_KING_OPEN_FILE_PENALTY: i32 = 10;
 const MG_CONNECTED_PAWN_BONUS: i32 = 8;
 const EG_CONNECTED_PAWN_BONUS: i32 = 15; // Chains critical in EG
 
-const MG_DOUBLED_PAWN_PENALTY: i32 = 8;
-const EG_DOUBLED_PAWN_PENALTY: i32 = 12;
-
-const MG_BISHOP_PAIR_BONUS: i32 = 60;
-const EG_BISHOP_PAIR_BONUS: i32 = 80;
-
 const MG_KING_DEFENDER_BONUS: i32 = 6;
 const EG_KING_DEFENDER_BONUS: i32 = 2; // Less need for defenders
 
@@ -386,12 +405,6 @@ const MG_FAR_SLIDER_PENALTY_MULT: i32 = 100; // 100%
 const EG_FAR_SLIDER_PENALTY_MULT: i32 = 40; // 40%
 
 // Piece on Open File Bonuses
-const ROOK_OPEN_FILE_BONUS: i32 = 45;
-const ROOK_SEMI_OPEN_FILE_BONUS: i32 = 20;
-const QUEEN_OPEN_FILE_BONUS: i32 = 25;
-const QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
-const MG_OUTPOST_BONUS: i32 = 20;
-const EG_OUTPOST_BONUS: i32 = 50;
 
 // Passed Pawn Detail (MG/EG tapered arrays by relative rank 0-5)
 // Rank 0 is far, Rank 5 is near promotion.
@@ -459,9 +472,9 @@ pub fn compute_mop_up_term(game: &GameState) -> i32 {
 
     // Get king positions
     let (our_king, enemy_king) = if winning_color == PlayerColor::White {
-        (game.white_king_pos.as_ref(), game.black_king_pos.as_ref())
+        (game.white_royals.first(), game.black_royals.first())
     } else {
-        (game.black_king_pos.as_ref(), game.white_king_pos.as_ref())
+        (game.black_royals.first(), game.white_royals.first())
     };
 
     let enemy_king = match enemy_king {
@@ -498,8 +511,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // Start with material score
     let mut score = game.material_score;
 
-    // Use cached king positions
-    let (white_king, black_king) = (game.white_king_pos, game.black_king_pos);
+    let (white_royals, black_royals) = (game.white_royals.as_slice(), game.black_royals.as_slice());
+    let white_king = white_royals.first().copied();
+    let black_king = black_royals.first().copied();
 
     let taper = |mg: i32, eg: i32| -> i32 {
         ((mg * game.total_phase.min(MAX_PHASE))
@@ -719,39 +733,45 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                                 if is_slider {
                                     if is_white {
-                                        if let Some(bk) = black_king
-                                            && (x - bk.x).abs() <= ATTACK_ZONE_RADIUS
-                                            && (y - bk.y).abs() <= ATTACK_ZONE_RADIUS
-                                        {
-                                            w_sliders_in_zone += 1;
+                                        for &bk in black_royals {
+                                            if (x - bk.x).abs() <= ATTACK_ZONE_RADIUS
+                                                && (y - bk.y).abs() <= ATTACK_ZONE_RADIUS
+                                            {
+                                                w_sliders_in_zone += 1;
+                                                break; // Count piece once even if near multiple kings
+                                            }
                                         }
-                                    } else if let Some(wk) = white_king
-                                        && (x - wk.x).abs() <= ATTACK_ZONE_RADIUS
-                                        && (y - wk.y).abs() <= ATTACK_ZONE_RADIUS
-                                    {
-                                        b_sliders_in_zone += 1;
+                                    } else {
+                                        for &wk in white_royals {
+                                            if (x - wk.x).abs() <= ATTACK_ZONE_RADIUS
+                                                && (y - wk.y).abs() <= ATTACK_ZONE_RADIUS
+                                            {
+                                                b_sliders_in_zone += 1;
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
 
                                 // Global Tropism (Piece activity relative to kings)
                                 if !pt.is_royal() && pt != PieceType::Pawn {
-                                    let piece_val = get_piece_value(pt);
+                                    let piece_val = get_piece_value_base(pt);
                                     if is_white {
-                                        if let Some(bk) = black_king {
+                                        for &bk in black_royals {
                                             let d = (x - bk.x).abs().max((y - bk.y).abs());
                                             w_attacking_tropism += piece_val / (d as i32 + 10);
                                         }
-                                        if let Some(wk) = white_king {
+                                        for &wk in white_royals {
                                             let d = (x - wk.x).abs().max((y - wk.y).abs());
                                             w_defensive_tropism +=
                                                 piece_val.min(350) / (d as i32 + 10);
                                         }
                                     } else {
-                                        if let Some(wk) = white_king {
+                                        for &wk in white_royals {
                                             let d = (x - wk.x).abs().max((y - wk.y).abs());
                                             b_attacking_tropism += piece_val / (d as i32 + 10);
                                         }
-                                        if let Some(bk) = black_king {
+                                        for &bk in black_royals {
                                             let d = (x - bk.x).abs().max((y - bk.y).abs());
                                             b_defensive_tropism +=
                                                 piece_val.min(350) / (d as i32 + 10);
@@ -817,8 +837,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 }
 
                                 {
-                                    // Check White King
-                                    if let Some(wk) = white_king {
+                                    // Check White Kings
+                                    for &wk in white_royals {
                                         let dx = x - wk.x;
                                         let dy = y - wk.y;
                                         let adx = dx.abs();
@@ -837,13 +857,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         }
 
                                         // Rays
-                                        // Ortho: (1, 0), (-1, 0), (0, 1), (0, -1) -> Indices 4, 5, 6, 7
                                         if dx != 0 && dy == 0 {
                                             let idx = if dx > 0 { 4 } else { 5 };
                                             if (dist as i32) < w_king_rays[idx].0 {
                                                 w_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
@@ -853,14 +872,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if (dist as i32) < w_king_rays[idx].0 {
                                                 w_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
                                             }
-                                        }
-                                        // Diag: (1, 1), (1, -1), (-1, 1), (-1, -1) -> Indices 0, 1, 2, 3
-                                        else if adx == ady && dist > 0 {
+                                        } else if adx == ady && dist > 0 {
                                             let idx = if dx > 0 {
                                                 if dy > 0 { 0 } else { 1 }
                                             } else if dy > 0 {
@@ -871,7 +888,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if (dist as i32) < w_king_rays[idx].0 {
                                                 w_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
@@ -879,8 +896,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         }
                                     }
 
-                                    // Check Black King
-                                    if let Some(bk) = black_king {
+                                    // Check Black Kings
+                                    for &bk in black_royals {
                                         let dx = x - bk.x;
                                         let dy = y - bk.y;
                                         let adx = dx.abs();
@@ -904,7 +921,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if (dist as i32) < b_king_rays[idx].0 {
                                                 b_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
@@ -914,7 +931,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if (dist as i32) < b_king_rays[idx].0 {
                                                 b_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
@@ -930,7 +947,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if (dist as i32) < b_king_rays[idx].0 {
                                                 b_king_rays[idx] = (
                                                     dist as i32,
-                                                    get_piece_value(pt),
+                                                    get_piece_value_base(pt),
                                                     piece.color(),
                                                     pt,
                                                 );
@@ -951,7 +968,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         if let Some(target) = game.board.get_piece(x + dx, y + dy)
                                             && target.color() == enemy
                                         {
-                                            let tv = get_piece_value(target.piece_type());
+                                            let tv = get_piece_value_base(target.piece_type());
                                             if tv >= 600 {
                                                 if is_white {
                                                     w_pawn_threats += PAWN_THREATENS_QUEEN;
@@ -986,8 +1003,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         if let Some(target) = game.board.get_piece(x + dx, y + dy)
                                             && target.color() == enemy
                                         {
-                                            let tv = get_piece_value(target.piece_type());
-                                            let mv = get_piece_value(pt);
+                                            let tv = get_piece_value_base(target.piece_type());
+                                            let mv = get_piece_value_base(pt);
                                             if tv >= 600 && mv < 600 {
                                                 if is_white {
                                                     w_minor_threats += MINOR_THREATENS_QUEEN;
@@ -1169,7 +1186,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         if black_pieces < 3
                             && white_pieces > 1
                             && !white_has_promo
-                            && let Some(bk) = &black_king
+                            && let Some(bk) = black_royals.first()
                             && crate::evaluation::mop_up::calculate_mop_up_scale(
                                 game,
                                 PlayerColor::Black,
@@ -1178,7 +1195,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         {
                             let s = crate::evaluation::mop_up::evaluate_mop_up_scaled(
                                 game,
-                                white_king.as_ref(),
+                                white_royals.first(),
                                 bk,
                                 PlayerColor::White,
                                 PlayerColor::Black,
@@ -1192,7 +1209,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             && white_pieces < 3
                             && black_pieces > 1
                             && !black_has_promo
-                            && let Some(wk) = &white_king
+                            && let Some(wk) = white_royals.first()
                             && crate::evaluation::mop_up::calculate_mop_up_scale(
                                 game,
                                 PlayerColor::White,
@@ -1201,7 +1218,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         {
                             let s = crate::evaluation::mop_up::evaluate_mop_up_scaled(
                                 game,
-                                black_king.as_ref(),
+                                black_royals.first(),
                                 wk,
                                 PlayerColor::Black,
                                 PlayerColor::White,
@@ -1231,8 +1248,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         if !mop_up_applied {
                             score += evaluate_pieces_processed(
                                 game,
-                                &white_king,
-                                &black_king,
+                                white_royals,
+                                black_royals,
                                 final_phase,
                                 tracer,
                                 piece_list,
@@ -1260,8 +1277,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             };
                             score += evaluate_king_safety_traced(
                                 game,
-                                &white_king,
-                                &black_king,
+                                white_royals,
+                                black_royals,
                                 final_phase,
                                 tracer,
                                 &ks_metrics,
@@ -1276,8 +1293,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             score += evaluate_pawn_structure_traced(
                                 game,
                                 final_phase,
-                                &white_king,
-                                &black_king,
+                                white_royals,
+                                black_royals,
                                 tracer,
                                 white_pawns,
                                 black_pawns,
@@ -1331,8 +1348,8 @@ struct PieceMetrics {
 #[allow(clippy::too_many_arguments)]
 fn evaluate_pieces_processed<T: EvaluationTracer>(
     game: &GameState,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     phase: i32,
     tracer: &mut T,
     piece_list: &[(i64, i64, crate::board::Piece)],
@@ -1365,8 +1382,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 x,
                 y,
                 piece.color(),
-                white_king,
-                black_king,
+                white_royals,
+                black_royals,
                 phase,
                 white_pawns,
                 black_pawns,
@@ -1376,8 +1393,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 x,
                 y,
                 piece.color(),
-                white_king,
-                black_king,
+                white_royals,
+                black_royals,
                 phase,
                 white_pawns,
                 black_pawns,
@@ -1387,8 +1404,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 x,
                 y,
                 piece.color(),
-                white_king,
-                black_king,
+                white_royals,
+                black_royals,
                 phase,
                 white_pawns,
                 black_pawns,
@@ -1399,8 +1416,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     x,
                     y,
                     piece.color(),
-                    white_king,
-                    black_king,
+                    white_royals,
+                    black_royals,
                     phase,
                     white_pawns,
                     black_pawns,
@@ -1413,8 +1430,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     x,
                     y,
                     piece.color(),
-                    white_king,
-                    black_king,
+                    white_royals,
+                    black_royals,
                     phase,
                     white_pawns,
                     black_pawns,
@@ -1427,8 +1444,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     x,
                     y,
                     piece.color(),
-                    white_king,
-                    black_king,
+                    white_royals,
+                    black_royals,
                     phase,
                     white_pawns,
                     black_pawns,
@@ -1438,8 +1455,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     x,
                     y,
                     piece.color(),
-                    white_king,
-                    black_king,
+                    white_royals,
+                    black_royals,
                     phase,
                     white_pawns,
                     black_pawns,
@@ -1451,8 +1468,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 x,
                 y,
                 piece.color(),
-                white_king,
-                black_king,
+                white_royals,
+                black_royals,
                 phase,
                 white_pawns,
                 black_pawns,
@@ -1475,7 +1492,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value(piece.piece_type()),
+                get_piece_value_base(piece.piece_type()),
             ),
             PieceType::Centaur | PieceType::RoyalCentaur => {
                 let leaper_eval = evaluate_leaper_positioning(
@@ -1483,7 +1500,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     y,
                     piece.color(),
                     cloud_center.as_ref(),
-                    get_piece_value(piece.piece_type()),
+                    get_piece_value_base(piece.piece_type()),
                 );
                 leaper_eval * CENTAUR_GUARD_SCALE / 100
             }
@@ -1492,14 +1509,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value(PieceType::Huygen),
+                get_piece_value_base(PieceType::Huygen),
             ),
             PieceType::Guard => evaluate_leaper_positioning(
                 x,
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value(PieceType::Guard),
+                get_piece_value_base(PieceType::Guard),
             ),
             _ => 0,
         };
@@ -1518,7 +1535,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
                 let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
 
-                let piece_val = get_piece_value(pt);
+                let piece_val = get_piece_value_base(pt);
                 let value_factor = (piece_val / 100).max(1);
                 let mult = taper(MG_FAR_SLIDER_PENALTY_MULT, EG_FAR_SLIDER_PENALTY_MULT);
 
@@ -1566,23 +1583,24 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             };
         }
 
-        let own_king = if piece.color() == PlayerColor::White {
-            white_king
+        let own_royals = if piece.color() == PlayerColor::White {
+            white_royals
         } else {
-            black_king
+            black_royals
         };
-        if let Some(ok) = own_king
-            .filter(|_| !piece.piece_type().is_royal() && piece.piece_type() != PieceType::Pawn)
-        {
-            let dist = (x - ok.x).abs().max((y - ok.y).abs());
-            if dist <= 3 {
-                if get_piece_value(piece.piece_type()) < KING_DEFENDER_VALUE_THRESHOLD {
-                    piece_score += taper(MG_KING_DEFENDER_BONUS, EG_KING_DEFENDER_BONUS);
-                } else {
-                    piece_score -= taper(
-                        MG_KING_ATTACKER_NEAR_OWN_KING_PENALTY,
-                        EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY,
-                    );
+        for &ok in own_royals {
+            if !piece.piece_type().is_royal() && piece.piece_type() != PieceType::Pawn {
+                let dist = (x - ok.x).abs().max((y - ok.y).abs());
+                if dist <= 3 {
+                    if get_piece_value_base(piece.piece_type()) < KING_DEFENDER_VALUE_THRESHOLD {
+                        piece_score += taper(MG_KING_DEFENDER_BONUS, EG_KING_DEFENDER_BONUS);
+                    } else {
+                        piece_score -= taper(
+                            MG_KING_ATTACKER_NEAR_OWN_KING_PENALTY,
+                            EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY,
+                        );
+                    }
+                    break; // Count once
                 }
             }
         }
@@ -1617,14 +1635,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     let mut b_pair_bonus = 0;
 
     if metrics.white_bishops >= 2 {
-        w_pair_bonus += taper(MG_BISHOP_PAIR_BONUS, EG_BISHOP_PAIR_BONUS);
+        w_pair_bonus += taper(mg_bishop_pair_bonus(), eg_bishop_pair_bonus());
         bump_feat!(bishop_pair_bonus, 1);
         if metrics.white_bishop_colors.0 && metrics.white_bishop_colors.1 {
             w_pair_bonus += 20;
         }
     }
     if metrics.black_bishops >= 2 {
-        b_pair_bonus += taper(MG_BISHOP_PAIR_BONUS, EG_BISHOP_PAIR_BONUS);
+        b_pair_bonus += taper(mg_bishop_pair_bonus(), eg_bishop_pair_bonus());
         bump_feat!(bishop_pair_bonus, -1);
         if metrics.black_bishop_colors.0 && metrics.black_bishop_colors.1 {
             b_pair_bonus += 20;
@@ -1688,8 +1706,8 @@ pub struct KingSafetyMetrics {
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     game: &GameState,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     phase: i32,
     tracer: &mut T,
     metrics: &KingSafetyMetrics,
@@ -1706,10 +1724,10 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     let mut b_attack: i32 = 0;
 
     // Defense penalty (Shelter)
-    if let Some(wk) = white_king {
+    for &wk in white_royals {
         w_safety += evaluate_king_shelter(
             game,
-            wk,
+            &wk,
             PlayerColor::White,
             phase,
             metrics.urgency.0,
@@ -1719,10 +1737,10 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             w_ring_covered,
         );
     }
-    if let Some(bk) = black_king {
+    for &bk in black_royals {
         b_safety += evaluate_king_shelter(
             game,
-            bk,
+            &bk,
             PlayerColor::Black,
             phase,
             metrics.urgency.1,
@@ -1734,11 +1752,11 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     }
 
     // Attack bonuses (using counts)
-    if black_king.is_some() {
+    if !black_royals.is_empty() {
         // White attacks Black
         w_attack += compute_attack_bonus_optimized(b_king_rays, metrics.white_slider_counts);
     }
-    if white_king.is_some() {
+    if !white_royals.is_empty() {
         // Black attacks White
         b_attack += compute_attack_bonus_optimized(w_king_rays, metrics.black_slider_counts);
     }
@@ -1800,8 +1818,8 @@ pub fn evaluate_rook(
     x: i64,
     y: i64,
     color: PlayerColor,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -1811,22 +1829,28 @@ pub fn evaluate_rook(
     let mut bonus: i32 = 0;
 
     // Behind enemy king bonus and rook tropism.
-    let enemy_king = if color == PlayerColor::White {
-        black_king
+    let enemy_royals = if color == PlayerColor::White {
+        black_royals
     } else {
-        white_king
+        white_royals
     };
-    if let Some(ek) = enemy_king {
+    for &ek in enemy_royals {
         // Behind enemy king along the rank direction.
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
             bonus += taper(MG_BEHIND_KING_BONUS, EG_BEHIND_KING_BONUS);
+            break;
         }
+    }
 
+    for &ek in enemy_royals {
         // On same or adjacent file to enemy king: strong attacking potential.
         if (x - ek.x).abs() <= 1 {
             bonus += 50;
+            break;
         }
+    }
 
+    for &ek in enemy_royals {
         // Simplified confinement bonus - just reward rooks controlling key squares near king
         let mut confinement_bonus = 0;
 
@@ -1845,33 +1869,37 @@ pub fn evaluate_rook(
         }
 
         bonus += confinement_bonus;
+        if confinement_bonus > 0 {
+            break;
+        }
+    }
 
+    for &ek in enemy_royals {
         // Simplified slider coordination - just count nearby sliders without iteration
-        let nearby_slider_bonus = if (x - ek.x).abs() <= 4 && (y - ek.y).abs() <= 4 {
+        if (x - ek.x).abs() <= 4 && (y - ek.y).abs() <= 4 {
             // This rook is close to king, assume some coordination exists
-            SLIDER_NET_BONUS / 2
-        } else {
-            0
-        };
-
-        bonus += nearby_slider_bonus;
-
-        // Penalize rooks that have drifted very far from the king zone
-        let mut cheb = (x - ek.x).abs().max((y - ek.y).abs());
-        let own_king_ref = if color == PlayerColor::White {
-            white_king
-        } else {
-            black_king
-        };
-        if let Some(ok) = own_king_ref {
-            let cheb_own = (x - ok.x).abs().max((y - ok.y).abs());
-            cheb = cheb.min(cheb_own);
+            bonus += SLIDER_NET_BONUS / 2;
+            break;
         }
+    }
 
-        if cheb > FAR_SLIDER_CHEB_RADIUS {
-            let excess = (cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
-            bonus -= excess * FAR_ROOK_PENALTY;
-        }
+    // Penalize rooks that have drifted very far from the king zone
+    let mut min_cheb = i64::MAX;
+    for &ek in enemy_royals {
+        min_cheb = min_cheb.min((x - ek.x).abs().max((y - ek.y).abs()));
+    }
+    let own_royals = if color == PlayerColor::White {
+        white_royals
+    } else {
+        black_royals
+    };
+    for &ok in own_royals {
+        min_cheb = min_cheb.min((x - ok.x).abs().max((y - ok.y).abs()));
+    }
+
+    if min_cheb != i64::MAX && min_cheb > FAR_SLIDER_CHEB_RADIUS {
+        let excess = (min_cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
+        bonus -= excess * FAR_ROOK_PENALTY;
     }
 
     // Open / Semi-Open File Bonus
@@ -1893,10 +1921,10 @@ pub fn evaluate_rook(
 
         if !has_enemy_pawns {
             // Open file
-            bonus += ROOK_OPEN_FILE_BONUS;
+            bonus += rook_open_file_bonus();
         } else {
             // Semi-open file
-            bonus += ROOK_SEMI_OPEN_FILE_BONUS;
+            bonus += rook_semi_open_file_bonus();
         }
     }
 
@@ -1909,8 +1937,8 @@ pub fn evaluate_queen(
     x: i64,
     y: i64,
     color: PlayerColor,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -1920,64 +1948,57 @@ pub fn evaluate_queen(
     let mut bonus: i32 = 0;
 
     // Queen should aggressively aim at the enemy king from a safe distance.
-    let enemy_king = if color == PlayerColor::White {
-        black_king
+    let enemy_royals = if color == PlayerColor::White {
+        black_royals
     } else {
-        white_king
+        white_royals
     };
-    if let Some(ek) = enemy_king {
+
+    let from = Coordinate { x, y };
+    for ek in enemy_royals {
         let dx = ek.x - x;
         let dy = ek.y - y;
         let same_file = dx == 0;
         let same_rank = dy == 0;
         let same_diag = dx.abs() == dy.abs();
 
-        let from = Coordinate { x, y };
-
         if same_file || same_rank || same_diag {
-            // Reward only if the line is clear between queen and king (direct pressure).
             if is_clear_line_between_fast(&game.spatial_indices, &from, ek) {
-                // Base line-attack bonus - reduced to avoid queen chasing king too eagerly
-                let mut line_bonus: i32 = 15;
+                let mut line_bonus = 15;
                 let lin_dist = dx.abs().max(dy.abs()) as i32;
-                let max_lin: i32 = 20;
+                let max_lin = 20;
                 let clamped = lin_dist.min(max_lin);
                 let diff = (clamped - QUEEN_IDEAL_LINE_DIST).abs();
                 let base = (max_lin - diff * 2).max(0);
-                // Reduce the distance score weight
-                let distance_score =
+                line_bonus +=
                     base * (taper(MG_KING_TROPISM_BONUS, EG_KING_TROPISM_BONUS) / 2).max(1);
-
-                line_bonus += distance_score;
                 bonus += line_bonus;
-
-                // Small bonus for being "behind" the king
                 if (color == PlayerColor::White && y > ek.y)
                     || (color == PlayerColor::Black && y < ek.y)
                 {
                     bonus += 10;
                 }
+                break;
             }
         }
+    }
 
-        // Penalize queens that are extremely far from the *king zone*.
-        // We take the minimum Chebyshev distance to own and enemy kings so
-        // that wandering far away from both is discouraged.
-        let mut cheb = (x - ek.x).abs().max((y - ek.y).abs());
-        let own_king_ref = if color == PlayerColor::White {
-            white_king
-        } else {
-            black_king
-        };
-        if let Some(ok) = own_king_ref {
-            let cheb_own = (x - ok.x).abs().max((y - ok.y).abs());
-            cheb = cheb.min(cheb_own);
-        }
+    let mut min_cheb = i64::MAX;
+    for ek in enemy_royals {
+        min_cheb = min_cheb.min((x - ek.x).abs().max((y - ek.y).abs()));
+    }
+    let own_royals = if color == PlayerColor::White {
+        white_royals
+    } else {
+        black_royals
+    };
+    for &ok in own_royals {
+        min_cheb = min_cheb.min((x - ok.x).abs().max((y - ok.y).abs()));
+    }
 
-        if cheb > FAR_SLIDER_CHEB_RADIUS {
-            let excess = (cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
-            bonus -= excess * FAR_QUEEN_PENALTY;
-        }
+    if min_cheb != i64::MAX && min_cheb > FAR_SLIDER_CHEB_RADIUS {
+        let excess = (min_cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
+        bonus -= excess * FAR_QUEEN_PENALTY;
     }
 
     // Open / Semi-Open File Bonus
@@ -1999,10 +2020,10 @@ pub fn evaluate_queen(
 
         if !has_enemy_pawns {
             // Open file
-            bonus += QUEEN_OPEN_FILE_BONUS;
+            bonus += queen_open_file_bonus();
         } else {
             // Semi-open file
-            bonus += QUEEN_SEMI_OPEN_FILE_BONUS;
+            bonus += queen_semi_open_file_bonus();
         }
     }
 
@@ -2015,8 +2036,8 @@ pub fn evaluate_bishop(
     x: i64,
     y: i64,
     color: PlayerColor,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -2031,34 +2052,36 @@ pub fn evaluate_bishop(
     }
 
     // Behind enemy king bonus and bishop tropism.
-    let enemy_king = if color == PlayerColor::White {
-        black_king
+    let enemy_royals = if color == PlayerColor::White {
+        black_royals
     } else {
-        white_king
+        white_royals
     };
-    if let Some(ek) = enemy_king {
+    for &ek in enemy_royals {
         // Bishop behind enemy king along the rank direction (less direct than rook/queen).
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
             bonus += taper(MG_BEHIND_KING_BONUS, EG_BEHIND_KING_BONUS) / 2;
+            break;
         }
+    }
 
-        // Penalize bishops that are extremely far from the king zone
-        // (minimum of distance to own and enemy kings).
-        let mut cheb = (x - ek.x).abs().max((y - ek.y).abs());
-        let own_king_ref = if color == PlayerColor::White {
-            white_king
-        } else {
-            black_king
-        };
-        if let Some(ok) = own_king_ref {
-            let cheb_own = (x - ok.x).abs().max((y - ok.y).abs());
-            cheb = cheb.min(cheb_own);
-        }
+    // Penalize bishops that are extremely far from the king zone
+    let mut min_cheb = i64::MAX;
+    for &ek in enemy_royals {
+        min_cheb = min_cheb.min((x - ek.x).abs().max((y - ek.y).abs()));
+    }
+    let own_royals = if color == PlayerColor::White {
+        white_royals
+    } else {
+        black_royals
+    };
+    for &ok in own_royals {
+        min_cheb = min_cheb.min((x - ok.x).abs().max((y - ok.y).abs()));
+    }
 
-        if cheb > FAR_SLIDER_CHEB_RADIUS {
-            let excess = (cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
-            bonus -= excess * FAR_BISHOP_PENALTY;
-        }
+    if min_cheb != i64::MAX && min_cheb > FAR_SLIDER_CHEB_RADIUS {
+        let excess = (min_cheb - FAR_SLIDER_CHEB_RADIUS).min(FAR_SLIDER_CHEB_MAX_EXCESS) as i32;
+        bonus -= excess * FAR_BISHOP_PENALTY;
     }
 
     // Outpost Bonus: precise pawn support
@@ -2083,7 +2106,7 @@ pub fn evaluate_bishop(
     let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
-        bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
+        bonus += taper(mg_outpost_bonus(), eg_outpost_bonus());
     }
 
     bonus
@@ -2105,7 +2128,7 @@ fn evaluate_knight(
         y,
         color,
         cloud_center,
-        get_piece_value(PieceType::Knight),
+        get_piece_value_base(PieceType::Knight),
     );
 
     // Outpost Bonus: precise pawn support
@@ -2128,7 +2151,7 @@ fn evaluate_knight(
     let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
-        bonus += taper(MG_OUTPOST_BONUS, EG_OUTPOST_BONUS);
+        bonus += taper(mg_outpost_bonus(), eg_outpost_bonus());
     }
 
     bonus
@@ -2416,8 +2439,8 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                     evaluate_pawn_structure_traced(
                         game,
                         phase,
-                        &game.white_king_pos,
-                        &game.black_king_pos,
+                        game.white_royals.as_slice(),
+                        game.black_royals.as_slice(),
                         &mut NoTrace,
                         wp,
                         bp,
@@ -2434,8 +2457,8 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
 pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     tracer: &mut T,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -2450,8 +2473,8 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         return compute_pawn_structure_traced(
             game,
             phase,
-            white_king,
-            black_king,
+            white_royals,
+            black_royals,
             tracer,
             white_pawns,
             black_pawns,
@@ -2481,8 +2504,8 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     let score = compute_pawn_structure_traced(
         game,
         phase,
-        white_king,
-        black_king,
+        white_royals,
+        black_royals,
         tracer,
         white_pawns,
         black_pawns,
@@ -2509,8 +2532,8 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 fn compute_pawn_structure_traced<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
-    white_king: &Option<Coordinate>,
-    black_king: &Option<Coordinate>,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
     tracer: &mut T,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -2543,7 +2566,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             j += 1;
         }
         if count > 1 {
-            w_doubled -= (count - 1) * taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
+            w_doubled -= (count - 1) * taper(mg_doubled_pawn_penalty(), eg_doubled_pawn_penalty());
         }
         i = j;
     }
@@ -2559,7 +2582,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             j += 1;
         }
         if count > 1 {
-            b_doubled -= (count - 1) * taper(MG_DOUBLED_PAWN_PENALTY, EG_DOUBLED_PAWN_PENALTY);
+            b_doubled -= (count - 1) * taper(mg_doubled_pawn_penalty(), eg_doubled_pawn_penalty());
         }
         i = j;
     }
@@ -2649,13 +2672,15 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             // 3. King Distances
             let mut friendly_king_bonus = 0;
             let mut enemy_king_penalty = 0;
-            if let Some(wk) = white_king {
+            for wk in white_royals {
                 let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as usize;
-                friendly_king_bonus = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                friendly_king_bonus = friendly_king_bonus.max(b);
             }
-            if let Some(bk) = black_king {
+            for bk in black_royals {
                 let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as usize;
-                enemy_king_penalty = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                enemy_king_penalty = enemy_king_penalty.max(p);
             }
 
             // 4. Safe Promotion Path
@@ -2807,13 +2832,15 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
 
             let mut friendly_king_bonus = 0;
             let mut enemy_king_penalty = 0;
-            if let Some(bk) = black_king {
+            for bk in black_royals {
                 let d = (bx - bk.x).abs().max((by - bk.y).abs()) as usize;
-                friendly_king_bonus = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                friendly_king_bonus = friendly_king_bonus.max(b);
             }
-            if let Some(wk) = white_king {
+            for wk in white_royals {
                 let d = (bx - wk.x).abs().max((by - wk.y).abs()) as usize;
-                enemy_king_penalty = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+                enemy_king_penalty = enemy_king_penalty.max(p);
             }
 
             // 4. Safe Promotion Path
@@ -3079,7 +3106,7 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score += get_piece_value(piece.piece_type());
+                score += get_piece_value_base(piece.piece_type());
             }
         }
 
@@ -3092,7 +3119,7 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score -= get_piece_value(piece.piece_type());
+                score -= get_piece_value_base(piece.piece_type());
             }
         }
 
@@ -3251,8 +3278,8 @@ mod tests {
         let icn = "w (8;q|1;q) K0,0|k7,7|B4,4";
         game.setup_position_from_icn(icn);
 
-        let wk = Some(Coordinate::new(0, 0));
-        let bk = Some(Coordinate::new(7, 7));
+        let wk = [Coordinate::new(0, 0)];
+        let bk = [Coordinate::new(7, 7)];
         let score = evaluate_bishop(
             &game,
             4,
@@ -3277,8 +3304,8 @@ mod tests {
         let icn = "w (8;q|1;q) K0,0|k7,7|R4,1";
         game.setup_position_from_icn(icn);
 
-        let wk = Some(Coordinate::new(0, 0));
-        let bk = Some(Coordinate::new(7, 7));
+        let wk = [Coordinate::new(0, 0)];
+        let bk = [Coordinate::new(7, 7)];
         let score = evaluate_rook(
             &game,
             4,
@@ -3300,8 +3327,8 @@ mod tests {
         let icn = "w (8;q|1;q) K0,0|k7,7|Q4,4";
         game.setup_position_from_icn(icn);
 
-        let wk = Some(Coordinate::new(0, 0));
-        let bk = Some(Coordinate::new(7, 7));
+        let wk = [Coordinate::new(0, 0)];
+        let bk = [Coordinate::new(7, 7)];
         let score = evaluate_queen(
             &game,
             4,
@@ -3370,8 +3397,8 @@ mod tests {
         );
         assert_eq!(
             score_supported - score_no_support,
-            EG_OUTPOST_BONUS,
-            "Bonus should match EG_OUTPOST_BONUS in endgame"
+            eg_outpost_bonus(),
+            "Bonus should match eg_outpost_bonus() in endgame"
         );
     }
 

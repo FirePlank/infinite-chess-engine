@@ -662,10 +662,10 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 }
             }
 
-            // For the first 4 ply (2 moves each side), use a slight noise
-            // to create opening variety. After ply 4, use normal search.
+            // For the first 8 ply, use a slight noise to create opening variety.
+            // After ply 8, use normal search.
             const currentPly = moveHistory.length;
-            const noiseAmp = currentPly < 4 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
+            const noiseAmp = currentPly < 8 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
 
             let flaggedOnTime = false;
             let move;
