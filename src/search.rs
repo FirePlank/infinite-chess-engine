@@ -2375,6 +2375,10 @@ fn get_best_move_threaded(
 
         // Set correction mode based on variant (zero overhead during search)
         searcher.set_corrhist_mode(game);
+        searcher.move_rule_limit = game
+            .game_rules
+            .move_rule_limit
+            .map_or(i32::MAX, |v| v as i32);
 
         let result = search_with_searcher(searcher, game, max_depth);
         let stats = build_search_stats(searcher);

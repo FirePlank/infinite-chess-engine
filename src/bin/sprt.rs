@@ -187,6 +187,7 @@ struct GameOutcome {
     variant_name: String,
     game_idx: usize,
     termination_reason: String,
+    new_engine_timed_out: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -382,6 +383,7 @@ fn play_game(
                 variant_name: variant.to_str().to_string(),
                 game_idx,
                 termination_reason: $reason.to_string(),
+                new_engine_timed_out: false,
             }
         };
     }
@@ -395,6 +397,7 @@ fn play_game(
                     variant_name: variant.to_str().to_string(),
                     game_idx,
                     termination_reason: "interrupted".to_string(),
+                    new_engine_timed_out: false,
                 };
             }
             break;
@@ -553,7 +556,23 @@ fn play_game(
             };
             let white_won = (result == GameResult::Win) == new_plays_white;
             let result_str = if white_won { "1-0" } else { "0-1" };
-            return game_outcome!(result, "timeout", result_str);
+            return GameOutcome {
+                result,
+                icn: generate_icn(
+                    &variant,
+                    &move_info_log,
+                    game_idx,
+                    new_plays_white,
+                    Some("timeout"),
+                    config,
+                    result_str,
+                    &starting_board_setup,
+                ),
+                variant_name: variant.to_str().to_string(),
+                game_idx,
+                termination_reason: "timeout".to_string(),
+                new_engine_timed_out: is_new_turn,
+            };
         }
 
         if let Some(move_icn) = bestmove_icn {
@@ -620,6 +639,7 @@ fn play_game(
                     variant_name: variant.to_str().to_string(),
                     game_idx,
                     termination_reason: "interrupted".to_string(),
+                    new_engine_timed_out: false,
                 };
             }
 
@@ -645,6 +665,7 @@ fn play_game(
                 variant_name: variant.to_str().to_string(),
                 game_idx,
                 termination_reason: termination_reason.unwrap_or("engine failure").to_string(),
+                new_engine_timed_out: false,
             };
         }
     }
@@ -989,11 +1010,11 @@ fn main() {
                         continue;
                     }
 
-                    if outcome.termination_reason == "timeout" {
+                    if outcome.termination_reason == "timeout" && outcome.new_engine_timed_out {
                         timeout_losses += 1;
                         if config.verbose {
                             println!(
-                                "\nALERT: Game {} ended by timeout [{}].",
+                                "\nALERT: Game {} ended by timeout [{}] - NEW ENGINE TIMED OUT",
                                 outcome.game_idx, outcome.variant_name
                             );
                         }
@@ -1051,7 +1072,10 @@ fn main() {
             println!("  Elo: {:.1} +/- {:.1}", elo, err);
             println!("  Record: {}W - {}L - {}D", wins, losses, draws);
             if timeout_losses > 0 {
-                println!("  ALERT: {} games ended by timeout", timeout_losses);
+                println!(
+                    "  ALERT: {} games ended by timeout (NEW ENGINE ONLY)",
+                    timeout_losses
+                );
             }
             println!("\nPer-Variant Breakdown:");
             let mut variant_names: Vec<_> = per_variant_stats.keys().collect();

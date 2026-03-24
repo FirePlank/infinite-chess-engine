@@ -4404,8 +4404,7 @@ mod tests {
 
     #[test]
     fn test_distant_slider_block() {
-        let mut game =
-            create_test_game_from_icn("w (8;q|1;q) K-4,-2|R7,2|b26,-32|k100,100");
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K-4,-2|R7,2|b26,-32|k100,100");
         game.special_rights.clear();
 
         assert!(game.is_in_check(), "White king should be in check");

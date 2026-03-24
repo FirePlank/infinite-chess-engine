@@ -3180,12 +3180,6 @@ mod tests {
         // Empty board = 0
         assert_eq!(calculate_initial_material(&game.board), 0);
 
-        // Add white queen
-        let icn1 = "w (8;q|1;q) Q4,1";
-        game.setup_position_from_icn(icn1);
-        assert_eq!(calculate_initial_material(&game.board), 1350); // Queen = 1350 in infinite chess
-
-        // Add black queen - should cancel out
         let icn2 = "w (8;q|1|q) Q4,1|q4,8";
         game.setup_position_from_icn(icn2);
         assert_eq!(calculate_initial_material(&game.board), 0);

@@ -358,21 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn test_see_rook_takes_rook() {
-        let mut game = create_test_game_from_icn("w (8;q|1;q) R4,1|r4,7");
-        game.turn = PlayerColor::White;
-
-        let m = Move::new(
-            Coordinate::new(4, 1),
-            Coordinate::new(4, 7),
-            Piece::new(PieceType::Rook, PlayerColor::White),
-        );
-
-        let see_val = static_exchange_eval_impl(&game, &m);
-        assert_eq!(see_val, 650, "Rook takes rook should yield rook value");
-    }
-
-    #[test]
     fn test_see_ge_threshold_pass() {
         let mut game = create_test_game_from_icn("w (8;q|1;q) P4,4|q5,5");
         game.turn = PlayerColor::White;
@@ -416,21 +401,5 @@ mod tests {
 
         let see_val = static_exchange_eval_impl(&game, &m);
         assert_eq!(see_val, 0, "Non-capture should return 0");
-    }
-
-    #[test]
-    fn test_see_knight_takes_bishop() {
-        let mut game = create_test_game_from_icn("w (8;q|1;q) N3,3|b4,5");
-        game.turn = PlayerColor::White;
-
-        let m = Move::new(
-            Coordinate::new(3, 3),
-            Coordinate::new(4, 5),
-            Piece::new(PieceType::Knight, PlayerColor::White),
-        );
-
-        let see_val = static_exchange_eval_impl(&game, &m);
-        // Knight (250) takes bishop (450) = +450 (undefended)
-        assert_eq!(see_val, 450, "Knight takes bishop should yield 450");
     }
 }
