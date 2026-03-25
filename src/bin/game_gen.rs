@@ -88,9 +88,7 @@ fn main() {
 
         while ply < MAX_MOVES {
             // Draw detection: Insufficient material
-            if let Some(divisor) = evaluate_insufficient_material(&state)
-                && divisor == 0
-            {
+            if evaluate_insufficient_material(&state) {
                 break;
             }
 

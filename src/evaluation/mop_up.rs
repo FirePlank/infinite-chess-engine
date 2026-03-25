@@ -209,6 +209,167 @@ pub fn evaluate_mop_up_scaled(
 
 // --- Core Evaluation ---
 
+/// Returns true if this endgame (with our king helping) can only be won by using the world border
+/// as part of the mating net — i.e., the material is insufficient on an unbounded board but
+/// sufficient on a bounded one.
+fn is_bounded_only_winnable(
+    queen_count: u8,
+    rook_count: u8,
+    ortho_count: u8,
+    diag_count: u8,
+    leaper_count: u8,
+    amazon_count: u8,
+    total_non_pawn_pieces: u8,
+    has_king: bool,
+) -> bool {
+    // Amazons can mate without borders; and without our king we have no mating king aid
+    if !has_king || amazon_count >= 1 {
+        return false;
+    }
+
+    // K+Q vs K  (queen alone is insufficient on unbounded)
+    if queen_count == 1 && total_non_pawn_pieces == 1 {
+        return true;
+    }
+    // K+R vs K  (single rook insufficient on unbounded)
+    if rook_count == 1 && queen_count == 0 && total_non_pawn_pieces == 1 {
+        return true;
+    }
+    // K+Chancellor vs K  (ortho slider but not a rook, no diag, no leaper)
+    if ortho_count == 1
+        && rook_count == 0
+        && queen_count == 0
+        && diag_count == 0
+        && leaper_count == 0
+        && total_non_pawn_pieces == 1
+    {
+        return true;
+    }
+    // K+Archbishop vs K  (diag + knight-component but no ortho)
+    if diag_count == 1
+        && ortho_count == 0
+        && queen_count == 0
+        && leaper_count == 0
+        && total_non_pawn_pieces == 1
+    {
+        return true;
+    }
+    // K+R+minor vs K  (R+N or R+same-color-B — insufficient on unbounded)
+    if rook_count == 1 && queen_count == 0 && total_non_pawn_pieces == 2 {
+        return true;
+    }
+
+    false
+}
+
+/// Bonus for driving the enemy king toward world-border corners/edges.
+/// Used when the mating pattern requires the board edge as a fence.
+fn corner_drive_bonus(
+    enemy_king: &Coordinate,
+    our_king: Option<&Coordinate>,
+    our_pieces: &[SliderInfo],
+) -> i32 {
+    let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
+    let ex = enemy_king.x;
+    let ey = enemy_king.y;
+
+    let dist_h = ((ex - min_x) as i32).min((max_x - ex) as i32); // dist to nearest x-wall
+    let dist_v = ((ey - min_y) as i32).min((max_y - ey) as i32); // dist to nearest y-wall
+
+    let world_w = ((max_x - min_x) as i32).max(1);
+    let world_h = ((max_y - min_y) as i32).max(1);
+    let half_w = (world_w / 2).max(1);
+    let half_h = (world_h / 2).max(1);
+
+    // Strong linear gradient: max at wall (dist=0), zero at board center
+    let edge_h = (half_w - dist_h.min(half_w)) * 16;
+    let edge_v = (half_h - dist_v.min(half_h)) * 16;
+
+    // Smooth proximity bonus using quadratic formula
+    // Rewards continuous progress toward corners/edges
+    // At edge (dist=0): max bonus
+    // At center (dist=half): zero bonus
+    // Formula: (1 - (dist/half)^2) * max_bonus, clamped to [0, max_bonus]
+    let max_proximity = 500i32;
+    let proximity_h = if dist_h < half_w {
+        let ratio = (dist_h as i32) as f32 / (half_w as f32);
+        ((1.0 - ratio * ratio) * max_proximity as f32) as i32
+    } else {
+        0
+    };
+    let proximity_v = if dist_v < half_h {
+        let ratio = (dist_v as i32) as f32 / (half_h as f32);
+        ((1.0 - ratio * ratio) * max_proximity as f32) as i32
+    } else {
+        0
+    };
+    // Corner bonus: both dimensions close to edge get extra reward
+    let corner_bonus = if dist_h == 0 && dist_v == 0 {
+        200 // extra bonus for exact corner
+    } else if dist_h <= 1 && dist_v <= 1 {
+        100 // extra bonus for near corner
+    } else {
+        0
+    };
+    let proximity = proximity_h + proximity_v + corner_bonus;
+
+    // Direction from enemy king toward board center (= its escape direction away from the walls)
+    let cx = (min_x + max_x) / 2;
+    let cy = (min_y + max_y) / 2;
+    let to_center_x = cx - ex; // positive = center is to the right
+    let to_center_y = cy - ey; // positive = center is above
+
+    let mut cut = 0i32;
+    for p in our_pieces {
+        let pdx = p.x - ex;
+        let pdy = p.y - ey;
+
+        // FENCE BONUS: slider aligned on same rank/file AND on the center-side of the enemy king.
+        // A piece on the same rank cuts off all horizontal escape; same file cuts all vertical —
+        // the core technique of K+Q vs K and K+R vs K mating patterns.
+        if pdy == 0 && pdx != 0 {
+            if (to_center_x > 0 && pdx > 0) || (to_center_x < 0 && pdx < 0) {
+                cut += 50;
+            }
+        }
+        if pdx == 0 && pdy != 0 {
+            if (to_center_y > 0 && pdy > 0) || (to_center_y < 0 && pdy < 0) {
+                cut += 50;
+            }
+        }
+
+        // General center-side bonus (piece on the escape side of the enemy king)
+        if to_center_x > 0 && pdx > 0 {
+            cut += 14;
+        } else if to_center_x < 0 && pdx < 0 {
+            cut += 14;
+        }
+        if to_center_y > 0 && pdy > 0 {
+            cut += 14;
+        } else if to_center_y < 0 && pdy < 0 {
+            cut += 14;
+        }
+    }
+
+    // Our king on the center-side helps box in the enemy king from the inside
+    if let Some(ok) = our_king {
+        let kdx = ok.x - ex;
+        let kdy = ok.y - ey;
+        if to_center_x > 0 && kdx > 0 {
+            cut += 10;
+        } else if to_center_x < 0 && kdx < 0 {
+            cut += 10;
+        }
+        if to_center_y > 0 && kdy > 0 {
+            cut += 10;
+        } else if to_center_y < 0 && kdy < 0 {
+            cut += 10;
+        }
+    }
+
+    edge_h + edge_v + proximity + cut
+}
+
 /// Main logic for driving the enemy king to mate.
 #[inline(always)]
 fn evaluate_mop_up_core(
@@ -243,6 +404,7 @@ fn evaluate_mop_up_core(
     let mut diag_count: u8 = 0;
     let mut leaper_count: u8 = 0;
     let mut queen_count: u8 = 0;
+    let mut rook_count: u8 = 0;
     let mut amazon_count: u8 = 0;
     let mut total_non_pawn_pieces: u8 = 0;
     let mut short_range_bonus: i32 = 0;
@@ -353,6 +515,10 @@ fn evaluate_mop_up_core(
             queen_count += 1;
         } else if pt == PieceType::Amazon {
             amazon_count += 1;
+        }
+
+        if pt == PieceType::Rook {
+            rook_count += 1;
         }
 
         total_non_pawn_pieces += 1;
@@ -850,6 +1016,22 @@ fn evaluate_mop_up_core(
                 let prox = (20 - king_dist.min(20)) as i32;
                 bonus += prox;
             }
+        }
+
+        // Bounded-board corner-driving bonus for border-dependent mates (K+Q, K+R, etc.)
+        if crate::moves::get_world_size() <= 200
+            && is_bounded_only_winnable(
+                queen_count,
+                rook_count,
+                ortho_count,
+                diag_count,
+                leaper_count,
+                amazon_count,
+                total_non_pawn_pieces,
+                our_king.is_some(),
+            )
+        {
+            bonus += corner_drive_bonus(enemy_king, our_king, &our_pieces[..our_pieces_count]) * 5;
         }
     }
 

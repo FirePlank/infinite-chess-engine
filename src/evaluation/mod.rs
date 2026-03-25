@@ -16,12 +16,12 @@ use crate::game::GameState;
 pub use base::{calculate_initial_material, get_piece_phase, get_piece_value_base};
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
-pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
-#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use crate::search::params::{
-    EVAL_PARAMS, EvalParamSpec, EvalParams, TUNABLE_EVAL_PARAM_SPECS,
-    get_eval_params_as_json, set_eval_params_from_json,
+    EVAL_PARAMS, EvalParamSpec, EvalParams, TUNABLE_EVAL_PARAM_SPECS, get_eval_params_as_json,
+    set_eval_params_from_json,
 };
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
 
 /// Main evaluation entry point - NNUE Enabled
 #[inline]

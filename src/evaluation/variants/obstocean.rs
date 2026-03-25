@@ -4,11 +4,6 @@ use crate::game::GameState;
 
 #[inline]
 pub fn evaluate(game: &GameState) -> i32 {
-    match crate::evaluation::insufficient_material::evaluate_insufficient_material(game) {
-        Some(0) => return 0,
-        Some(d) => return evaluate_inner(game) / d,
-        None => {}
-    }
     evaluate_inner(game)
 }
 

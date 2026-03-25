@@ -423,7 +423,6 @@ impl Engine {
     }
 
     /// Set evaluation parameters from a JSON string.
-    /// Only available when the `eval_tuning` feature is enabled.
     #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
     #[wasm_bindgen]
     pub fn set_eval_params(&self, json: &str) -> bool {
@@ -431,7 +430,6 @@ impl Engine {
     }
 
     /// Get current evaluation parameters as a JSON string.
-    /// Only available when the `eval_tuning` feature is enabled.
     #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
     #[wasm_bindgen]
     pub fn get_eval_params(&self) -> String {
@@ -439,8 +437,6 @@ impl Engine {
     }
 
     /// Set search parameters from a JSON string.
-    /// Only available when the `search_tuning` feature is enabled.
-    /// Returns true on success, false on parse failure.
     #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
     #[wasm_bindgen]
     pub fn set_search_params(&self, json: &str) -> bool {
@@ -448,23 +444,13 @@ impl Engine {
     }
 
     /// Get current search parameters as a JSON string.
-    /// Only available when the `search_tuning` feature is enabled.
     #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
     #[wasm_bindgen]
     pub fn get_search_params(&self) -> String {
         crate::search::params::get_search_params_as_json()
     }
 
-    /// Derive an effective time limit for this move from the current clock and
-    /// game state. Returns `(time_ms, is_soft_limit)`.
-    ///
-    /// **is_soft_limit** indicates whether the returned time is a suggestion
-    /// (where exceeding it slightly is acceptable) vs a hard constraint.
-    /// - Soft limit: untimed/infinite games with a suggested per-move limit
-    /// - Hard limit: timed games where exceeding the budget risks flagging
-    ///
-    /// Uses logarithmic time formulas for proper scaling across
-    /// different time controls (blitz, rapid, classical).
+    /// Derive an effective time limit for this move from the current clock and game state.
     fn effective_time_limit_ms(&self, requested_limit_ms: u32) -> (u128, u128, bool) {
         let Some(clock) = self.clock else {
             // No clock info: use the fixed per-move limit as a soft limit.
@@ -594,7 +580,6 @@ impl Engine {
 
     /// Timed search. This also exposes the search evaluation as an `eval` field alongside the move,
     /// so callers can reuse the same search for adjudication.
-    /// thread_id is used for Lazy SMP - helper threads (id > 0) skip the first move.
     #[wasm_bindgen]
     pub fn get_best_move_with_time(
         &mut self,
@@ -707,17 +692,7 @@ impl Engine {
         serde_wasm_bindgen::to_value(&js_move).unwrap()
     }
 
-    /// MultiPV-enabled timed search. Returns an array of PV lines (best moves with their
-    /// evaluations and full PVs).
-    ///
-    /// Parameters:
-    /// - `time_limit_ms`: Maximum time to think in milliseconds
-    /// - `multi_pv`: Number of best moves to return (default 1). Must be >= 1.
-    /// - `silent`: If true, suppress info output during search
-    ///
-    /// When `multi_pv` is 1, this has zero overhead compared to `get_best_move_with_time`.
-    /// For `multi_pv` > 1, subsequent PV lines are found by re-searching the position
-    /// with previously found best moves excluded.
+    /// MultiPV-enabled timed search. Returns an array of PV lines
     #[wasm_bindgen]
     pub fn get_best_moves_multipv(
         &mut self,
@@ -806,16 +781,8 @@ impl Engine {
     }
 
     /// Returns true if either side has sufficient material to force checkmate.
-    /// Returns false if the position is a dead draw due to insufficient material.
-    /// This can be used by the SPRT harness to detect insufficient material draws.
     pub fn is_sufficient_material(&self) -> bool {
-        // Use the evaluate_insufficient_material function
-        // None = sufficient, Some(0) = dead draw, Some(n) = drawish
-        match evaluation::insufficient_material::evaluate_insufficient_material(&self.game) {
-            None => true,     // Sufficient material
-            Some(0) => false, // Dead draw (insufficient)
-            Some(_) => true,  // Drawish but not dead draw
-        }
+        !evaluation::insufficient_material::evaluate_insufficient_material(&self.game)
     }
 }
 

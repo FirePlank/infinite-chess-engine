@@ -42,7 +42,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     // 1. Gather Piece Lists
     let mut white_pawns: ArrayVec<Coordinate, 64> = ArrayVec::new();
-    let mut black_pieces: ArrayVec<(Coordinate, PieceType), 16> = ArrayVec::new();
+    let mut black_pieces: ArrayVec<(Coordinate, PieceType), 18> = ArrayVec::new();
     let mut black_king_pos = Coordinate::new(5, 8); // Default fallback
 
     // Map for quick lookup of pawn locations

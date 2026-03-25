@@ -1454,12 +1454,16 @@ impl GameState {
         !white_has_non_king || !black_has_non_king
     }
 
-    /// Returns true if the position is a draw by 50-move rule (or variant limit) or repetition.
+    /// Returns true if the position is a draw for any reason (50-move rule, repetition, insufficient material)
     #[inline]
     pub fn is_draw(&mut self, ply: usize, in_check: bool) -> bool {
         // Don't check during null move search
         if self.null_moves > 0 {
             return false;
+        }
+
+        if crate::evaluation::insufficient_material::evaluate_insufficient_material(self) {
+            return true;
         }
 
         // Draw by fifty-move rule: only if we aren't in checkmate

@@ -67,8 +67,8 @@ pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
 #[inline]
 pub fn get_world_size() -> i64 {
     unsafe {
-        let width = COORD_MAX_X - COORD_MIN_X;
-        let height = COORD_MAX_Y - COORD_MIN_Y;
+        let width = COORD_MAX_X.saturating_sub(COORD_MIN_X);
+        let height = COORD_MAX_Y.saturating_sub(COORD_MIN_Y);
         width.max(height)
     }
 }

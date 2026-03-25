@@ -319,6 +319,10 @@ fn detect_terminal_state(game: &mut GameState) -> Option<TerminalState> {
         return Some(TerminalState::Draw("stalemate"));
     }
 
+    if hydrochess_wasm::evaluation::insufficient_material::evaluate_insufficient_material(game) {
+        return Some(TerminalState::Draw("insufficient_material"));
+    }
+
     if game.is_draw(0, in_check) {
         if game.is_fifty() {
             return Some(TerminalState::Draw("fifty-move rule"));
@@ -669,6 +673,24 @@ fn play_game(
             };
         }
     }
+
+    // Check terminal conditions before declaring max_moves draw
+    if let Some(terminal) = detect_terminal_state(&mut game) {
+        match terminal {
+            TerminalState::Checkmate { white_won } => {
+                let result = if white_won == new_plays_white {
+                    GameResult::Win
+                } else {
+                    GameResult::Loss
+                };
+                return game_outcome!(result, "checkmate", if white_won { "1-0" } else { "0-1" });
+            }
+            TerminalState::Draw(reason) => {
+                return game_outcome!(GameResult::Draw, reason, "1/2-1/2");
+            }
+        }
+    }
+    
     game_outcome!(GameResult::Draw, "max_moves", "1/2-1/2")
 }
 
@@ -716,9 +738,15 @@ fn get_board_setup_icn(game: &GameState) -> String {
         .collect::<Vec<_>>()
         .join("|");
 
+    let variant_tag = if let Some(v) = &game.variant {
+        format!("[Variant \"{}\"] ", v.to_str())
+    } else {
+        String::new()
+    };
+
     format!(
-        "{} 0/{} 1 {} {} {}",
-        turn_str, move_limit, promo_token, bounds_token, pieces_str
+        "{}{} 0/{} 1 {} {} {}",
+        variant_tag, turn_str, move_limit, promo_token, bounds_token, pieces_str
     )
 }
 
@@ -763,6 +791,7 @@ fn generate_icn(
             "stalemate" => "Draw by stalemate".to_string(),
             "fifty-move rule" => "Draw by fifty-move rule".to_string(),
             "threefold repetition" => "Draw by threefold repetition".to_string(),
+            "insufficient_material" => "Draw by insufficient material".to_string(),
             "timeout" => "Loss on time".to_string(),
             "illegal move" => "Loss on illegal move".to_string(),
             "engine failure" => "Loss on engine failure".to_string(),
@@ -841,6 +870,32 @@ fn main() {
                 dst
             };
 
+            let parsed_variants = if variants == "all" {
+                vec![
+                    Variant::Classical,
+                    Variant::ConfinedClassical,
+                    Variant::ClassicalPlus,
+                    Variant::CoaIP,
+                    Variant::CoaIPHO,
+                    Variant::CoaIPRO,
+                    Variant::CoaIPNO,
+                    Variant::Palace,
+                    Variant::Pawndard,
+                    Variant::Core,
+                    Variant::Standarch,
+                    Variant::SpaceClassic,
+                    Variant::Space,
+                    Variant::Abundance,
+                    Variant::PawnHorde,
+                    Variant::Knightline,
+                    Variant::Obstocean,
+                    Variant::Chess,
+                    Variant::ScatteredLeapers,
+                ]
+            } else {
+                variants.split(',').map(Variant::parse).collect()
+            };
+
             let mut config = Config {
                 elo0,
                 elo1,
@@ -854,7 +909,7 @@ fn main() {
                 concurrency,
                 max_games,
                 min_games,
-                variants: variants.split(',').map(Variant::parse).collect(),
+                variants: parsed_variants,
                 adjudication_threshold: adjudication,
                 new_bin: actual_new_bin,
                 old_bin,

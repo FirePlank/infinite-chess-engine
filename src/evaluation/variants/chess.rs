@@ -370,7 +370,29 @@ pub fn evaluate(game: &GameState) -> i32 {
     let mg_phase = game_phase.min(MAX_PHASE);
     let eg_phase = MAX_PHASE - mg_phase;
 
-    (mg_score * mg_phase + eg_score * eg_phase) / MAX_PHASE
+    let mut score = (mg_score * mg_phase + eg_score * eg_phase) / MAX_PHASE;
+
+    // Apply Mop-up evaluation for endgames
+    if crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::Black).is_some() {
+        score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            Some(&white_king),
+            &black_king,
+            PlayerColor::White,
+            PlayerColor::Black,
+        );
+    } else if crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White).is_some()
+    {
+        score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            Some(&black_king),
+            &white_king,
+            PlayerColor::Black,
+            PlayerColor::White,
+        );
+    }
+
+    score
 }
 
 fn count_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::board::Piece) -> i32 {

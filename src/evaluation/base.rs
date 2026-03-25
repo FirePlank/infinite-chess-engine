@@ -432,16 +432,6 @@ const EG_PASSED_SAFE_PATH_BONUS: i32 = 80;
 
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
-    // Check for insufficient material draw
-    match crate::evaluation::insufficient_material::evaluate_insufficient_material(game) {
-        Some(0) => return 0, // Dead draw
-        Some(divisor) => {
-            // Drawish - dampen eval
-            return evaluate_inner(game) / divisor;
-        }
-        None => {} // Sufficient - continue to normal eval
-    }
-
     evaluate_inner(game)
 }
 

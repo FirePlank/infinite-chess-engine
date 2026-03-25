@@ -238,7 +238,10 @@ function generateSetupICN(variantName, startTurn, halfmoveClock, fullmoveNumber,
         return m;
     }).join('|');
 
-    return `${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
+    // 5. Include variant tag so engine recognizes the variant
+    const variantTag = `[Variant "${variantName}"] `;
+
+    return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
 }
 
 export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, engineLetterToICNCode, generateSetupICN };
