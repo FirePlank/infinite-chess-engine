@@ -24,10 +24,14 @@ pub struct MoveGenContext<'a> {
 }
 
 // World border for infinite chess.
-static mut COORD_MIN_X: i64 = -1_000_000_000_000_000; // default -1e15
-static mut COORD_MAX_X: i64 = 1_000_000_000_000_000; // default  1e15
-static mut COORD_MIN_Y: i64 = -1_000_000_000_000_000; // default -1e15
-static mut COORD_MAX_Y: i64 = 1_000_000_000_000_000; // default  1e15
+// Thread-local so concurrent rayon workers (SPRT) maintain independent bounds.
+use std::cell::Cell;
+thread_local! {
+    static COORD_MIN_X: Cell<i64> = Cell::new(-1_000_000_000_000_000);
+    static COORD_MAX_X: Cell<i64> = Cell::new( 1_000_000_000_000_000);
+    static COORD_MIN_Y: Cell<i64> = Cell::new(-1_000_000_000_000_000);
+    static COORD_MAX_Y: Cell<i64> = Cell::new( 1_000_000_000_000_000);
+}
 
 struct CrossRayContext<'a> {
     board: &'a Board,
@@ -53,12 +57,10 @@ pub struct SlidingMoveContext<'a> {
 
 /// Update world borders from JS playableRegion (left, right, bottom, top).
 pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
-    unsafe {
-        COORD_MIN_X = left.min(right);
-        COORD_MAX_X = left.max(right);
-        COORD_MIN_Y = bottom.min(top);
-        COORD_MAX_Y = bottom.max(top);
-    }
+    COORD_MIN_X.with(|c| c.set(left.min(right)));
+    COORD_MAX_X.with(|c| c.set(left.max(right)));
+    COORD_MIN_Y.with(|c| c.set(bottom.min(top)));
+    COORD_MAX_Y.with(|c| c.set(bottom.max(top)));
 }
 
 /// Get the maximum dimension of the current world border.
@@ -66,18 +68,21 @@ pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
 /// Used for determining if standard chess mating patterns apply (bounded board).
 #[inline]
 pub fn get_world_size() -> i64 {
-    unsafe {
-        let width = COORD_MAX_X.saturating_sub(COORD_MIN_X);
-        let height = COORD_MAX_Y.saturating_sub(COORD_MIN_Y);
-        width.max(height)
-    }
+    let width = COORD_MAX_X.with(|c| c.get()).saturating_sub(COORD_MIN_X.with(|c| c.get()));
+    let height = COORD_MAX_Y.with(|c| c.get()).saturating_sub(COORD_MIN_Y.with(|c| c.get()));
+    width.max(height)
 }
 
 /// Get all coordinate bounds (min_x, max_x, min_y, max_y).
 /// Used for cage detection in mop-up evaluation.
 #[inline]
 pub fn get_coord_bounds() -> (i64, i64, i64, i64) {
-    unsafe { (COORD_MIN_X, COORD_MAX_X, COORD_MIN_Y, COORD_MAX_Y) }
+    (
+        COORD_MIN_X.with(|c| c.get()),
+        COORD_MAX_X.with(|c| c.get()),
+        COORD_MIN_Y.with(|c| c.get()),
+        COORD_MAX_Y.with(|c| c.get()),
+    )
 }
 
 /// Generate all pseudo-legal moves for a Knightrider.
@@ -209,7 +214,9 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
 /// Check if a coordinate is within valid bounds (world border)
 #[inline]
 pub fn in_bounds(x: i64, y: i64) -> bool {
-    unsafe { x >= COORD_MIN_X && x <= COORD_MAX_X && y >= COORD_MIN_Y && y <= COORD_MAX_Y }
+    COORD_MIN_X.with(|mn_x| COORD_MAX_X.with(|mx_x| COORD_MIN_Y.with(|mn_y| COORD_MAX_Y.with(|mx_y| {
+        x >= mn_x.get() && x <= mx_x.get() && y >= mn_y.get() && y <= mx_y.get()
+    }))))
 }
 
 /// Helper to check if a path is clear between two squares ON THE SAME TILE.
@@ -2167,47 +2174,45 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
         return None;
     }
 
-    unsafe {
-        let min_x = COORD_MIN_X;
-        let max_x = COORD_MAX_X;
-        let min_y = COORD_MIN_Y;
-        let max_y = COORD_MAX_Y;
+    let min_x = COORD_MIN_X.with(|c| c.get());
+    let max_x = COORD_MAX_X.with(|c| c.get());
+    let min_y = COORD_MIN_Y.with(|c| c.get());
+    let max_y = COORD_MAX_Y.with(|c| c.get());
 
-        const MAX_INF_DISTANCE: i64 = 256;
+    const MAX_INF_DISTANCE: i64 = 256;
 
-        if dir_x == 0 {
-            let raw = if dir_y > 0 {
-                max_y - from.y
-            } else {
-                from.y - min_y
-            };
-            let limit = raw.min(MAX_INF_DISTANCE);
-            if limit > 0 { Some(limit) } else { None }
-        } else if dir_y == 0 {
-            let raw = if dir_x > 0 {
-                max_x - from.x
-            } else {
-                from.x - min_x
-            };
-            let limit = raw.min(MAX_INF_DISTANCE);
-            if limit > 0 { Some(limit) } else { None }
-        } else if dir_x.abs() == dir_y.abs() {
-            let raw_x = if dir_x > 0 {
-                max_x - from.x
-            } else {
-                from.x - min_x
-            };
-            let raw_y = if dir_y > 0 {
-                max_y - from.y
-            } else {
-                from.y - min_y
-            };
-            let raw = raw_x.min(raw_y);
-            let limit = raw.min(MAX_INF_DISTANCE);
-            if limit > 0 { Some(limit) } else { None }
+    if dir_x == 0 {
+        let raw = if dir_y > 0 {
+            max_y - from.y
         } else {
-            None
-        }
+            from.y - min_y
+        };
+        let limit = raw.min(MAX_INF_DISTANCE);
+        if limit > 0 { Some(limit) } else { None }
+    } else if dir_y == 0 {
+        let raw = if dir_x > 0 {
+            max_x - from.x
+        } else {
+            from.x - min_x
+        };
+        let limit = raw.min(MAX_INF_DISTANCE);
+        if limit > 0 { Some(limit) } else { None }
+    } else if dir_x.abs() == dir_y.abs() {
+        let raw_x = if dir_x > 0 {
+            max_x - from.x
+        } else {
+            from.x - min_x
+        };
+        let raw_y = if dir_y > 0 {
+            max_y - from.y
+        } else {
+            from.y - min_y
+        };
+        let raw = raw_x.min(raw_y);
+        let limit = raw.min(MAX_INF_DISTANCE);
+        if limit > 0 { Some(limit) } else { None }
+    } else {
+        None
     }
 }
 

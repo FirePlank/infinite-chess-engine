@@ -392,12 +392,23 @@ fn is_insufficient_1k1k(m: &Mat) -> bool {
         return true;
     }
 
-    // R+N alone (no other pieces)
+    // R+N alone (insufficient on unbounded board)
     if m.rooks == 1
         && m.knights == 1
         && m.queens == 0
         && m.bishops_maj == 0
         && m.bishops_min == 0
+        && m.pawns == 0
+        && no_exotic_pieces(m)
+    {
+        return true;
+    }
+
+    // R+single bishop (insufficient on unbounded board)
+    if m.rooks == 1
+        && m.bishops_maj + m.bishops_min == 1
+        && m.queens == 0
+        && m.knights == 0
         && m.pawns == 0
         && no_exotic_pieces(m)
     {
@@ -651,6 +662,17 @@ fn is_insufficient_0k1k(m: &Mat) -> bool {
         {
             return true;
         }
+    }
+
+    // R+single bishop alone (insufficient)
+    if m.rooks == 1
+        && m.bishops_maj + m.bishops_min == 1
+        && m.queens == 0
+        && m.knights == 0
+        && m.pawns == 0
+        && no_exotic_pieces(m)
+    {
+        return true;
     }
 
     // 1 Rook with companions
@@ -979,10 +1001,16 @@ fn count_both(
 }
 
 /// Returns true if the position is a draw by insufficient material.
-/// Matches infinitechess.org logic. Checks both sides symmetrically.
 #[inline]
 pub fn evaluate_insufficient_material(game: &crate::game::GameState) -> bool {
     if (game.white_piece_count + game.black_piece_count) >= 6 {
+        return false;
+    }
+
+    // Only check insufficient material if both sides have checkmate as win condition
+    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
+    {
         return false;
     }
 

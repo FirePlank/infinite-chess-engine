@@ -135,26 +135,27 @@ impl Variant {
     }
 
     pub fn parse(s: &str) -> Self {
-        match s {
-            "Classical" => Variant::Classical,
-            "Confined_Classical" | "Confined Classical" => Variant::ConfinedClassical,
-            "Classical_Plus" | "Classical Plus" => Variant::ClassicalPlus,
-            "CoaIP" => Variant::CoaIP,
-            "CoaIP_HO" | "Chess on an Infinite Plane - Huygens Option" => Variant::CoaIPHO,
-            "CoaIP_RO" | "Chess on an Infinite Plane - Roses Option" => Variant::CoaIPRO,
-            "CoaIP_NO" | "Chess on an Infinite Plane - Knightriders Option" => Variant::CoaIPNO,
-            "Palace" => Variant::Palace,
-            "Pawndard" => Variant::Pawndard,
-            "Core" => Variant::Core,
-            "Standarch" => Variant::Standarch,
-            "Space_Classic" | "Space Classic" => Variant::SpaceClassic,
-            "Space" => Variant::Space,
-            "Abundance" => Variant::Abundance,
-            "Pawn_Horde" | "Pawn Horde" => Variant::PawnHorde,
-            "Knightline" => Variant::Knightline,
-            "Obstocean" => Variant::Obstocean,
-            "Chess" => Variant::Chess,
-            "Scattered_Leapers" | "Scattered Leapers" => Variant::ScatteredLeapers,
+        let normalized = s.to_lowercase().replace(' ', "_");
+        match normalized.as_str() {
+            "classical" => Variant::Classical,
+            "confined_classical" => Variant::ConfinedClassical,
+            "classical_plus" => Variant::ClassicalPlus,
+            "coaip" => Variant::CoaIP,
+            "coaip_ho" | "chess_on_an_infinite_plane_-_huygens_option" => Variant::CoaIPHO,
+            "coaip_ro" | "chess_on_an_infinite_plane_-_roses_option" => Variant::CoaIPRO,
+            "coaip_no" | "chess_on_an_infinite_plane_-_knightriders_option" => Variant::CoaIPNO,
+            "palace" => Variant::Palace,
+            "pawndard" => Variant::Pawndard,
+            "core" => Variant::Core,
+            "standarch" => Variant::Standarch,
+            "space_classic" => Variant::SpaceClassic,
+            "space" => Variant::Space,
+            "abundance" => Variant::Abundance,
+            "pawn_horde" => Variant::PawnHorde,
+            "knightline" => Variant::Knightline,
+            "obstocean" => Variant::Obstocean,
+            "chess" => Variant::Chess,
+            "scattered_leapers" => Variant::ScatteredLeapers,
             _ => Variant::Classical, // Default fallback
         }
     }
