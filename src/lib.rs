@@ -797,3 +797,138 @@ impl Engine {
         return crate::evaluation::evaluate(game);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::PlayerColor;
+
+    fn all_variants() -> Vec<Variant> {
+        vec![
+            Variant::Classical,
+            Variant::ConfinedClassical,
+            Variant::ClassicalPlus,
+            Variant::CoaIP,
+            Variant::CoaIPHO,
+            Variant::CoaIPRO,
+            Variant::CoaIPNO,
+            Variant::Palace,
+            Variant::Pawndard,
+            Variant::Core,
+            Variant::Standarch,
+            Variant::SpaceClassic,
+            Variant::Space,
+            Variant::Abundance,
+            Variant::PawnHorde,
+            Variant::Knightline,
+            Variant::Obstocean,
+            Variant::Chess,
+            Variant::ScatteredLeapers,
+        ]
+    }
+
+    #[test]
+    fn variant_round_trips_and_starting_positions_exist() {
+        for variant in all_variants() {
+            let canonical = variant.to_str();
+            assert_eq!(Variant::parse(canonical), variant);
+            assert!(!variant.starting_icn().is_empty());
+        }
+    }
+
+    #[test]
+    fn variant_aliases_and_default_bounds_are_stable() {
+        assert_eq!(Variant::parse("Confined Classical"), Variant::ConfinedClassical);
+        assert_eq!(
+            Variant::parse("Chess on an Infinite Plane - Huygens Option"),
+            Variant::CoaIPHO
+        );
+        assert_eq!(
+            Variant::parse("Chess on an Infinite Plane - Roses Option"),
+            Variant::CoaIPRO
+        );
+        assert_eq!(
+            Variant::parse("Chess on an Infinite Plane - Knightriders Option"),
+            Variant::CoaIPNO
+        );
+        assert_eq!(Variant::parse("not a real variant"), Variant::Classical);
+
+        assert_eq!(Variant::Chess.get_default_bounds(), (1, 8, 1, 8));
+        assert_eq!(Variant::Obstocean.get_default_bounds(), (-6, 15, -3, 12));
+        assert_eq!(
+            Variant::Space.get_default_bounds(),
+            (
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+                -1_000_000_000_000_000,
+                1_000_000_000_000_000,
+            )
+        );
+    }
+
+    #[test]
+    fn native_engine_search_and_pv_work_on_fixed_depth() {
+        let mut engine = Engine::from_icn_native(Variant::Chess.starting_icn(), Some(2));
+        let best = engine.search_native(0, Some(1), true, Some(0), Some(1234));
+
+        assert!(best.is_some());
+        assert!(!engine.current_pv_native(1).is_empty());
+    }
+
+    #[test]
+    fn native_engine_mutation_and_position_queries_work() {
+        let mut engine = Engine::new_native(Variant::Chess.starting_icn());
+        assert_eq!(engine.perft(1), 20);
+        assert!(engine.is_sufficient_material());
+        assert!(!engine.is_in_check());
+
+        let eval = Engine::evaluate_position(engine.game_mut());
+        assert!(eval.abs() < 200);
+
+        let bare_kings = Engine::new_native("w 0/100 1 (8|1) K5,1|k5,8");
+        assert!(!bare_kings.is_sufficient_material());
+        assert!(!bare_kings.is_in_check());
+    }
+
+    #[test]
+    fn effective_time_limit_without_clock_is_soft_limit() {
+        let engine = Engine::new_native(Variant::Chess.starting_icn());
+        assert_eq!(engine.effective_time_limit_ms(250), (250, 250, true));
+    }
+
+    #[test]
+    fn effective_time_limit_handles_neutral_and_empty_clock_cases() {
+        let mut engine = Engine::new_native(Variant::Chess.starting_icn());
+        engine.set_clock(0, 0, 0, 0);
+        assert_eq!(engine.effective_time_limit_ms(300), (300, 300, true));
+
+        engine.game.turn = PlayerColor::Neutral;
+        assert_eq!(engine.effective_time_limit_ms(400), (400, 400, true));
+    }
+
+    #[test]
+    fn effective_time_limit_uses_increment_and_opening_cap() {
+        let mut engine = Engine::new_native(Variant::Chess.starting_icn());
+        engine.set_clock(0, 0, 1500, 0);
+
+        let (optimum, maximum, is_soft) = engine.effective_time_limit_ms(0);
+        assert!(!is_soft);
+        assert!(optimum >= 10);
+        assert!(maximum >= optimum);
+        assert!(maximum <= 5000);
+    }
+
+    #[test]
+    fn effective_time_limit_for_black_side_is_a_hard_limit() {
+        let mut engine = Engine::new_native(Variant::Chess.starting_icn());
+        engine.game.turn = PlayerColor::Black;
+        engine.game.fullmove_number = 12;
+        engine.set_clock(40_000, 25_000, 250, 500);
+
+        let (optimum, maximum, is_soft) = engine.effective_time_limit_ms(100);
+        assert!(!is_soft);
+        assert!(optimum >= 10);
+        assert!(maximum >= optimum);
+        assert!(maximum < 25_000);
+    }
+}

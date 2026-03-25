@@ -949,3 +949,171 @@ impl StagedMoveGen {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{Coordinate, Piece, PieceType};
+    use crate::search::Searcher;
+
+    fn game_from_icn(icn: &str) -> GameState {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        game
+    }
+
+    fn find_move(game: &GameState, from: (i64, i64), to: (i64, i64)) -> Move {
+        game.get_legal_moves()
+            .into_iter()
+            .find(|m| m.from.x == from.0 && m.from.y == from.1 && m.to.x == to.0 && m.to.y == to.1)
+            .unwrap()
+    }
+
+    #[test]
+    fn pseudo_legal_accepts_pawn_push_capture_and_en_passant() {
+        let push_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P4,2");
+        let push = find_move(&push_game, (4, 2), (4, 3));
+        assert!(StagedMoveGen::is_pseudo_legal(&push_game, &push));
+
+        let capture_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P4,4|p5,5");
+        let capture = find_move(&capture_game, (4, 4), (5, 5));
+        assert!(StagedMoveGen::is_pseudo_legal(&capture_game, &capture));
+
+        let ep_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P5,5|p6,5 6,6");
+        let ep = find_move(&ep_game, (5, 5), (6, 6));
+        assert!(StagedMoveGen::is_pseudo_legal(&ep_game, &ep));
+    }
+
+    #[test]
+    fn pseudo_legal_rejects_wrong_color_and_blocked_slider() {
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|r4,4|P4,5");
+
+        let wrong_color = Move::new(
+            Coordinate::new(4, 4),
+            Coordinate::new(4, 1),
+            Piece::new(PieceType::Rook, PlayerColor::Black),
+        );
+        assert!(!StagedMoveGen::is_pseudo_legal(&game, &wrong_color));
+
+        let blocked_rook = Move::new(
+            Coordinate::new(4, 4),
+            Coordinate::new(4, 8),
+            Piece::new(PieceType::Rook, PlayerColor::Black),
+        );
+        assert!(!StagedMoveGen::is_pseudo_legal(&game, &blocked_rook));
+    }
+
+    #[test]
+    fn pseudo_legal_handles_knight_and_castling_rules() {
+        let knight_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|N4,4");
+        let knight = Move::new(
+            Coordinate::new(4, 4),
+            Coordinate::new(5, 6),
+            Piece::new(PieceType::Knight, PlayerColor::White),
+        );
+        assert!(StagedMoveGen::is_pseudo_legal(&knight_game, &knight));
+
+        let castle_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1+|R8,1+|k5,8");
+        let castle = castle_game
+            .get_legal_moves()
+            .into_iter()
+            .find(|m| m.piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() > 1)
+            .unwrap();
+        assert!(StagedMoveGen::is_pseudo_legal(&castle_game, &castle));
+    }
+
+    #[test]
+    fn move_gives_check_fast_detects_knight_slider_and_empty_royals() {
+        let knight_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|N2,5");
+        let knight = Move::new(
+            Coordinate::new(2, 5),
+            Coordinate::new(4, 6),
+            Piece::new(PieceType::Knight, PlayerColor::White),
+        );
+        assert!(StagedMoveGen::move_gives_check_fast(&knight_game, &knight));
+
+        let rook_game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|R1,8");
+        let rook = Move::new(
+            Coordinate::new(1, 8),
+            Coordinate::new(4, 8),
+            Piece::new(PieceType::Rook, PlayerColor::White),
+        );
+        assert!(StagedMoveGen::move_gives_check_fast(&rook_game, &rook));
+
+        let no_enemy_royal = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|Q4,4");
+        let queen = Move::new(
+            Coordinate::new(4, 4),
+            Coordinate::new(4, 5),
+            Piece::new(PieceType::Queen, PlayerColor::White),
+        );
+        assert!(!StagedMoveGen::move_gives_check_fast(&no_enemy_royal, &queen));
+    }
+
+    #[test]
+    fn staged_movegen_can_skip_quiets_and_respect_exclusion() {
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|Q4,4|k5,8|p4,7");
+        let searcher = Searcher::new(1000);
+        let capture = find_move(&game, (4, 4), (4, 7));
+
+        let mut skip = StagedMoveGen::new(None, 0, 2, &searcher, &game);
+        skip.skip_quiet_moves();
+        let first = skip.next(&game, &searcher).unwrap();
+        assert_eq!(first.to, capture.to);
+        assert!(skip.next(&game, &searcher).is_none());
+
+        let mut excluded = StagedMoveGen::with_exclusion(None, 0, 2, &searcher, &game, capture);
+        let generated: Vec<_> = std::iter::from_fn(|| excluded.next(&game, &searcher)).collect();
+        assert!(generated.iter().all(|m| m.to != capture.to));
+    }
+
+    #[test]
+    fn staged_movegen_prefers_tt_move_and_probcut_filters_bad_see() {
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|Q4,4|k5,8|p4,7");
+        let searcher = Searcher::new(1000);
+        let tt_move = find_move(&game, (4, 4), (4, 7));
+
+        let mut picker = StagedMoveGen::new(Some(tt_move), 0, 2, &searcher, &game);
+        assert_eq!(picker.next(&game, &searcher).unwrap().to, tt_move.to);
+
+        let mut probcut = StagedMoveGen::new_probcut(None, 10_000, &searcher, &game);
+        assert!(probcut.next(&game, &searcher).is_none());
+    }
+
+    #[test]
+    fn staged_movegen_uses_evasion_stages_when_in_check() {
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|r5,4");
+        assert!(game.is_in_check());
+        assert!(game.must_escape_check());
+
+        let searcher = Searcher::new(1000);
+        let mut picker = StagedMoveGen::new(None, 0, 2, &searcher, &game);
+        assert_eq!(picker.stage, MoveStage::EvasionInit);
+
+        let first = picker.next(&game, &searcher).unwrap();
+        let mut check_game = game.clone();
+        let undo = check_game.make_move(&first);
+        assert!(!check_game.is_move_illegal());
+        check_game.undo_move(&first, undo);
+    }
+
+    #[test]
+    fn staged_movegen_scores_countermove_and_killers_as_quiets() {
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|R1,1|k5,8");
+        let quiet = find_move(&game, (1, 1), (1, 2));
+        let mut searcher = Searcher::new(1000);
+
+        searcher.killers[0][0] = Some(quiet);
+        let picker = StagedMoveGen::new(None, 0, 2, &searcher, &game);
+        assert_eq!(picker.score_quiet(&game, &searcher, &quiet), sort_killer1());
+
+        let mut searcher = Searcher::new(1000);
+        searcher.prev_move_stack[0] = (3, 9);
+        searcher.countermoves[3][9] = (
+            quiet.piece.piece_type() as u8,
+            quiet.to.x as i16,
+            quiet.to.y as i16,
+        );
+        let picker = StagedMoveGen::new(None, 1, 2, &searcher, &game);
+        assert!(picker.score_quiet(&game, &searcher, &quiet) >= sort_countermove());
+    }
+}

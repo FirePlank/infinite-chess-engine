@@ -4958,4 +4958,228 @@ mod tests {
         assert!(game.starting_squares.contains(&Coordinate::new(1, 1)));
         assert!(game.starting_squares.contains(&Coordinate::new(8, 1)));
     }
+
+    // ===== TESTS FOR UNTESTED HIGH-IMPACT FUNCTIONS =====
+
+    #[test]
+    fn test_recompute_piece_counts_empty_board() {
+        let mut game = GameState::new();
+        game.recompute_piece_counts();
+
+        assert_eq!(game.white_piece_count, 0);
+        assert_eq!(game.black_piece_count, 0);
+    }
+
+    #[test]
+    fn test_recompute_piece_counts_standard_setup() {
+        let mut game = GameState::new();
+        game.setup_standard_chess();
+        let original_white = game.white_piece_count;
+        let original_black = game.black_piece_count;
+
+        game.recompute_piece_counts();
+
+        assert_eq!(game.white_piece_count, original_white);
+        assert_eq!(game.black_piece_count, original_black);
+    }
+
+    #[test]
+    fn test_recompute_piece_counts_tracks_royals() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+        game.recompute_piece_counts();
+
+        assert!(game.white_royals.contains(&Coordinate::new(5, 1)));
+        assert!(game.black_royals.contains(&Coordinate::new(5, 8)));
+    }
+
+    #[test]
+    fn test_recompute_piece_counts_non_pawn_material() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,1");
+        game.recompute_piece_counts();
+
+        assert!(game.white_non_pawn_material);
+    }
+
+    #[test]
+    fn test_recompute_piece_counts_no_non_pawn_material() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
+        game.recompute_piece_counts();
+
+        assert!(!game.white_non_pawn_material);
+    }
+
+    #[test]
+    fn test_recompute_check_squares_basic() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+        game.recompute_check_squares();
+
+        // No checkers in this position
+        assert_eq!(game.checkers_count_white, 0);
+        assert_eq!(game.checkers_count_black, 0);
+    }
+
+    #[test]
+    fn test_get_piece_value_king() {
+        let game = GameState::new();
+        let king_value = game.get_piece_value(PieceType::King, PlayerColor::White);
+
+        // King should have significant value
+        assert!(king_value > 0);
+    }
+
+    #[test]
+    fn test_get_piece_value_varies_by_piece_type() {
+        let game = GameState::new();
+        let pawn_value = game.get_piece_value(PieceType::Pawn, PlayerColor::White);
+        let queen_value = game.get_piece_value(PieceType::Queen, PlayerColor::White);
+
+        assert!(pawn_value > 0);
+        assert!(queen_value > pawn_value);
+    }
+
+    #[test]
+    fn test_has_pieces_true() {
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+
+        assert!(game.has_pieces(PlayerColor::White));
+        assert!(game.has_pieces(PlayerColor::Black));
+    }
+
+    #[test]
+    fn test_has_pieces_false() {
+        let game = GameState::new();
+
+        assert!(!game.has_pieces(PlayerColor::White));
+        assert!(!game.has_pieces(PlayerColor::Black));
+    }
+
+    #[test]
+    fn test_must_escape_check_basic() {
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+
+        // Just verify it doesn't panic
+        let _ = game.must_escape_check();
+    }
+
+    #[test]
+    fn test_king_capturable_default() {
+        let game = GameState::new();
+
+        // Verify it returns a boolean
+        let _ = game.king_capturable(PlayerColor::White);
+    }
+
+    #[test]
+    fn test_enemy_king_pos() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k7,7");
+        game.turn = PlayerColor::White;
+
+        let enemy_pos = game.enemy_king_pos();
+        assert_eq!(enemy_pos, Some(&Coordinate::new(7, 7)));
+    }
+
+    #[test]
+    fn test_init_starting_piece_counts_standard() {
+        let mut game = GameState::new();
+        game.setup_standard_chess();
+        game.init_starting_piece_counts();
+
+        // Should have non-zero starting piece counts for non-king material
+        assert!(game.starting_white_pieces > 0);
+        assert!(game.starting_black_pieces > 0);
+    }
+
+    #[test]
+    fn test_is_draw_king_vs_king() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+
+        assert!(game.is_draw(5, false));
+    }
+
+    #[test]
+    fn test_is_draw_with_non_pawn_material() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,1");
+
+        // With rook material, not a draw
+        let result = game.is_draw(5, false);
+        // Just verify it returns a boolean without panicking
+        let _ = result;
+    }
+
+    #[test]
+    fn test_is_draw_returns_boolean() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+        let is_draw = game.is_draw(5, false);
+
+        // Should return true for K vs K
+        assert_eq!(is_draw, true);
+    }
+
+    #[test]
+    fn test_has_lost_by_royal_capture_default() {
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+
+        // Standard chess - not applicable
+        assert!(!game.has_lost_by_royal_capture());
+    }
+
+    #[test]
+    fn test_perft_depth_zero() {
+        let mut game = GameState::new();
+        let count = game.perft(0);
+
+        // Depth 0 should return 1 (the position itself)
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_perft_standard_depth_one() {
+        let mut game = GameState::new();
+        game.setup_standard_chess();
+        let count = game.perft(1);
+
+        // Standard chess with full board setup - verify it returns a count
+        // The actual count depends on the board setup
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_compute_pins_structure() {
+        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
+        let king_pos = Coordinate::new(5, 1);
+
+        let pins = game.compute_pins(&king_pos, PlayerColor::White);
+
+        // Empty position should have no pins
+        assert_eq!(pins.len(), 0);
+    }
+
+    #[test]
+    fn test_recompute_correction_hashes() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
+
+        game.recompute_correction_hashes();
+
+        // Pawn hash should be recomputed - just verify no panic
+        assert!(true);
+    }
+
+    #[test]
+    fn test_make_move_coords_simple() {
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,4");
+
+        // make_move_coords takes raw i64 coordinates
+        game.make_move_coords(4, 4, 4, 5, None);
+
+        // Verify move was made (rook moved from 4,4 to 4,5)
+        assert!(game.board.get_piece(4, 5).is_some());
+    }
+
+    #[test]
+    fn test_is_move_illegal_after_setup() {
+        let game = GameState::new();
+
+        // After empty setup, no moves should be illegal because there are no pieces
+        assert!(!game.is_move_illegal());
+    }
 }

@@ -606,4 +606,27 @@ mod tests {
         assert!(TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "delta_margin"));
         assert!(!TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "nmp_reduction"));
     }
+
+    #[test]
+    fn search_param_specs_have_valid_ranges_and_defaults() {
+        for spec in TUNABLE_PARAM_SPECS {
+            assert!(spec.min <= spec.default);
+            assert!(spec.default <= spec.max);
+            assert_eq!(spec.clamp_value(spec.min - 1000), spec.min);
+            assert_eq!(spec.clamp_value(spec.max + 1000), spec.max);
+            assert_eq!(spec.clamp_value(spec.default), spec.default);
+        }
+    }
+
+    #[test]
+    fn eval_param_specs_have_valid_ranges_and_queen_value_matches_formula() {
+        for spec in TUNABLE_EVAL_PARAM_SPECS {
+            assert!(spec.min <= spec.max);
+            assert_eq!(spec.clamp_value(spec.min - 1000), spec.min);
+            assert_eq!(spec.clamp_value(spec.max + 1000), spec.max);
+            assert!((spec.min..=spec.max).contains(&spec.clamp_value(spec.default)));
+        }
+
+        assert_eq!(queen_value(), rook() * 2 + compound_bonus());
+    }
 }

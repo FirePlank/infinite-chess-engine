@@ -189,4 +189,213 @@ mod tests {
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);
     }
+
+    #[test]
+    fn test_hash_coordinate_deterministic() {
+        let h1 = hash_coordinate(3, 5);
+        let h2 = hash_coordinate(3, 5);
+        assert_eq!(h1, h2);
+
+        let h3 = hash_coordinate(-1, 8);
+        let h4 = hash_coordinate(-1, 8);
+        assert_eq!(h3, h4);
+    }
+
+    #[test]
+    fn test_hash_coordinate_boundary_values() {
+        let h0 = hash_coordinate(0, 0);
+        let h_pos = hash_coordinate(7, 7);
+        let h_neg = hash_coordinate(-1, -1);
+
+        assert_ne!(h0, h_pos);
+        assert_ne!(h0, h_neg);
+        assert_ne!(h_pos, h_neg);
+    }
+
+    #[test]
+    fn test_piece_key_different_colors() {
+        use crate::board::PlayerColor;
+
+        let pt = PieceType::Pawn;
+        let white_key = piece_key(pt, PlayerColor::White, 1, 1);
+        let black_key = piece_key(pt, PlayerColor::Black, 1, 1);
+        assert_ne!(white_key, black_key);
+    }
+
+    #[test]
+    fn test_piece_key_different_positions() {
+        use crate::board::PlayerColor;
+
+        let pt = PieceType::Knight;
+        let key1 = piece_key(pt, PlayerColor::White, 0, 0);
+        let key2 = piece_key(pt, PlayerColor::White, 1, 1);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_piece_key_different_types() {
+        use crate::board::PlayerColor;
+
+        let color = PlayerColor::White;
+        let pawn_key = piece_key(PieceType::Pawn, color, 2, 2);
+        let knight_key = piece_key(PieceType::Knight, color, 2, 2);
+        assert_ne!(pawn_key, knight_key);
+    }
+
+    #[test]
+    fn test_castling_rights_key_unique_combinations() {
+        let mut hashes = vec![];
+        for wks in [false, true] {
+            for wqs in [false, true] {
+                for bks in [false, true] {
+                    for bqs in [false, true] {
+                        hashes.push(castling_rights_key(wks, wqs, bks, bqs));
+                    }
+                }
+            }
+        }
+
+        let mut unique_hashes = hashes.clone();
+        unique_hashes.sort();
+        unique_hashes.dedup();
+        assert_eq!(unique_hashes.len(), 16);
+    }
+
+    #[test]
+    fn test_castling_rights_key_consistency() {
+        let h1 = castling_rights_key(true, false, true, false);
+        let h2 = castling_rights_key(true, false, true, false);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_castling_rights_key_from_bitfield_all_combinations() {
+        for bits in 0..=15u8 {
+            let h = castling_rights_key_from_bitfield(bits);
+            // bits=0 produces hash 0 (no castling rights), other combinations produce non-zero
+            if bits != 0 {
+                assert_ne!(h, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_castling_rights_key_bitfield_consistency() {
+        let h_explicit = castling_rights_key(true, true, false, true);
+
+        let mut bits = 0u8;
+        bits |= 1; // white kingside
+        bits |= 2; // white queenside
+        bits |= 8; // black queenside
+        let h_bitfield = castling_rights_key_from_bitfield(bits);
+
+        assert_eq!(h_explicit, h_bitfield);
+    }
+
+    #[test]
+    fn test_en_passant_key_different_squares() {
+        let h1 = en_passant_key(2, 4);
+        let h2 = en_passant_key(3, 4);
+        let h3 = en_passant_key(2, 5);
+
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h2, h3);
+    }
+
+    #[test]
+    fn test_en_passant_key_deterministic() {
+        let h1 = en_passant_key(4, 5);
+        let h2 = en_passant_key(4, 5);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_pawn_special_right_key_different_squares() {
+        let h1 = pawn_special_right_key(1, 3);
+        let h2 = pawn_special_right_key(1, 4);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_pawn_key_different_colors() {
+        use crate::board::PlayerColor;
+
+        let white_key = pawn_key(PlayerColor::White, 3, 3);
+        let black_key = pawn_key(PlayerColor::Black, 3, 3);
+        assert_ne!(white_key, black_key);
+    }
+
+    #[test]
+    fn test_pawn_key_different_positions() {
+        use crate::board::PlayerColor;
+
+        let color = PlayerColor::White;
+        let k1 = pawn_key(color, 2, 3);
+        let k2 = pawn_key(color, 2, 4);
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_material_key_different_pieces() {
+        use crate::board::PlayerColor;
+
+        let color = PlayerColor::White;
+        let pawn_key = material_key(PieceType::Pawn, color);
+        let knight_key = material_key(PieceType::Knight, color);
+        assert_ne!(pawn_key, knight_key);
+    }
+
+    #[test]
+    fn test_material_key_different_colors() {
+        let piece_type = PieceType::Rook;
+        let white_key = material_key(piece_type, PlayerColor::White);
+        let black_key = material_key(piece_type, PlayerColor::Black);
+        assert_ne!(white_key, black_key);
+    }
+
+    #[test]
+    fn test_side_key_nonzero() {
+        assert_ne!(SIDE_KEY, 0);
+    }
+
+    #[test]
+    fn test_normalize_coord_positive() {
+        let n = normalize_coord(5);
+        assert!(n > 0);
+    }
+
+    #[test]
+    fn test_normalize_coord_zero() {
+        let n = normalize_coord(0);
+        // normalize_coord(0) produces 0 via the bitwise operation
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_normalize_coord_negative() {
+        let n = normalize_coord(-3);
+        assert!(n > 0);
+    }
+
+    #[test]
+    fn test_normalize_coord_different_values() {
+        let n1 = normalize_coord(1);
+        let n2 = normalize_coord(2);
+        let n3 = normalize_coord(3);
+        assert_ne!(n1, n2);
+        assert_ne!(n2, n3);
+        assert_ne!(n1, n3);
+    }
+
+    #[test]
+    fn test_castling_combinations_table_coverage() {
+        for i in 0..16 {
+            let h = CASTLING_COMBINATIONS[i];
+            // When i=0 (no castling rights), hash is 0; otherwise should be non-zero
+            if i != 0 {
+                assert_ne!(h, 0);
+            }
+        }
+    }
 }
