@@ -50,9 +50,9 @@ enum Commands {
         #[arg(long, default_value = "10+0.1")]
         tc: String,
 
-        /// Number of parallel games
-        #[arg(long, default_value_t = 16)]
-        concurrency: usize,
+        /// Number of parallel games (defaults to logical CPU count)
+        #[arg(long)]
+        concurrency: Option<usize>,
 
         /// Maximum games to run (omit for no limit)
         #[arg(long)]
@@ -1141,6 +1141,11 @@ fn main() {
             old_strength,
             verbose,
         }) => {
+            let concurrency = concurrency.unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+            });
             let actual_new_bin = if let Some(path) = new_bin {
                 path
             } else {

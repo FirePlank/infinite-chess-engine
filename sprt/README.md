@@ -53,7 +53,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--new-bin <PATH>` | auto-build | Path to the new engine binary |
 | `--old-bin <PATH>` | **required** | Path to the old (baseline) engine binary |
 | `--tc <TC>` | `10+0.1` | Time control: `base+inc` (seconds), `depth N`, or `fixed Ns` |
-| `--concurrency <N>` | `16` | Number of parallel games |
+| `--concurrency <N>` | logical CPU count | Number of parallel games |
 | `--max-games <N>` | unlimited | Maximum games to run |
 | `--min-games <N>` | `250` | Minimum games before SPRT can terminate |
 | `--elo0 <F>` | `0.0` | H0 bound (Elo where new is NOT better) |
