@@ -1190,31 +1190,8 @@ impl Searcher {
             return false;
         }
 
-        // Don't stop until we've completed at least depth 1.
-        // Safety exception: if a runaway depth-1 quiescence (e.g. deep
-        // check/evasion chains) has consumed more than 10× the hard
-        // time limit, abort anyway.  This prevents the engine from
-        // spinning indefinitely when min_depth_required blocks all
-        // normal time checks.  The 10× multiplier is generous enough
-        // that ordinary depth-1 searches are never affected.
+        // Don't stop until we've completed at least depth 1
         if self.hot.min_depth_required > 0 {
-            if self.hot.nodes & 8191 == 0 {
-                let hard_limit = if self.hot.maximum_time_ms > 0 {
-                    self.hot.maximum_time_ms as f64
-                } else {
-                    self.hot.time_limit_ms as f64
-                };
-                // Only engage the safety abort when there is a real time
-                // budget (hard_limit > 0) to avoid firing on perft/tests.
-                if hard_limit > 0.0 {
-                    let elapsed = self.hot.timer.elapsed_ms() as f64;
-                    let safety_limit = (hard_limit * 10.0).max(10_000.0);
-                    if elapsed > safety_limit {
-                        self.hot.stopped = true;
-                        return true;
-                    }
-                }
-            }
             return false;
         }
 
@@ -3000,12 +2977,6 @@ fn negamax_root(
     let alpha_orig = alpha;
 
     searcher.pv_length[0] = 0;
-    // Clear the root PV slot so that a stale move from the previous search
-    // can never bleed into this search if we abort before writing a new PV.
-    // (search_with_searcher trusts pv_table[0] as "valid from a previous
-    // iteration", but that only holds for previous *depth* iterations of the
-    // *same* search, not across game-positions.)
-    searcher.pv_table[0] = None;
 
     let hash = game.hash;
     let mut tt_move: Option<Move> = None;
