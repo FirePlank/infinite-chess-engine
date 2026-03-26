@@ -9,6 +9,7 @@ use hydrochess_wasm::board::{Coordinate, PieceType, PlayerColor};
 use hydrochess_wasm::game::GameState;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Parser, Debug)]
@@ -482,6 +483,17 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
     None
 }
 
+fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
+    static WORLD_BOUNDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = WORLD_BOUNDS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("world bounds lock poisoned");
+    let bounds = variant.get_default_bounds();
+    hydrochess_wasm::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
+    f()
+}
+
 fn play_game(
     config: &Config,
     variant: Variant,
@@ -489,13 +501,12 @@ fn play_game(
     game_idx: usize,
     seeds: Vec<u64>,
 ) -> GameOutcome {
-    let mut game = GameState::new();
-    game.setup_position_from_icn(variant.starting_icn());
-    game.variant = Some(variant);
-
-    // Explicitly set world bounds for this variant to ensure they're correct
-    let bounds = variant.get_default_bounds();
-    hydrochess_wasm::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
+    let mut game = with_variant_bounds(variant, || {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(variant.starting_icn());
+        game.variant = Some(variant);
+        game
+    });
 
     let starting_board_setup = get_board_setup_icn(&game);
 
@@ -508,9 +519,9 @@ fn play_game(
 
     let get_eval = |g: &GameState| {
         #[cfg(feature = "nnue")]
-        return hydrochess_wasm::evaluation::evaluate(g, None);
+        return with_variant_bounds(variant, || hydrochess_wasm::evaluation::evaluate(g, None));
         #[cfg(not(feature = "nnue"))]
-        return hydrochess_wasm::evaluation::evaluate(g);
+        return with_variant_bounds(variant, || hydrochess_wasm::evaluation::evaluate(g));
     };
 
     /// Helper to create an outcome return value
@@ -558,7 +569,7 @@ fn play_game(
         }
 
         // Terminal state checks always run before adjudication or engine search.
-        if let Some(terminal) = detect_terminal_state(&game) {
+        if let Some(terminal) = with_variant_bounds(variant, || detect_terminal_state(&game)) {
             match terminal {
                 TerminalState::Checkmate { white_won } => {
                     let result = if white_won == new_plays_white {
@@ -804,9 +815,12 @@ fn play_game(
             // Reconstruct game state from the full ICN (starting position + all moves).
             let new_icn = format!("{} {}", starting_board_setup, move_history_clean.join("|"));
             let old_turn = game.turn;
-            game = GameState::new();
-            game.setup_position_from_icn(&new_icn);
-            game.variant = Some(variant);
+            game = with_variant_bounds(variant, || {
+                let mut game = GameState::new();
+                game.setup_position_from_icn(&new_icn);
+                game.variant = Some(variant);
+                game
+            });
 
             // If the turn didn't change, the move wasn't applied (illegal or unparseable)
             if game.turn == old_turn {
@@ -835,7 +849,7 @@ fn play_game(
                 black_clock = remaining_clock;
             }
         } else {
-            if let Some(terminal) = detect_terminal_state(&game) {
+            if let Some(terminal) = with_variant_bounds(variant, || detect_terminal_state(&game)) {
                 match terminal {
                     TerminalState::Checkmate { white_won } => {
                         let result = if white_won == new_plays_white {
@@ -930,7 +944,7 @@ fn play_game(
     }
 
     // Final check: all terminal conditions before declaring max_moves draw
-    if let Some(terminal) = detect_terminal_state(&game) {
+    if let Some(terminal) = with_variant_bounds(variant, || detect_terminal_state(&game)) {
         match terminal {
             TerminalState::Checkmate { white_won } => {
                 let result = if white_won == new_plays_white {

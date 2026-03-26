@@ -24,14 +24,11 @@ pub struct MoveGenContext<'a> {
 }
 
 // World border for infinite chess.
-// Thread-local so concurrent rayon workers (SPRT) maintain independent bounds.
-use std::cell::Cell;
-thread_local! {
-    static COORD_MIN_X: Cell<i64> = Cell::new(-1_000_000_000_000_000);
-    static COORD_MAX_X: Cell<i64> = Cell::new( 1_000_000_000_000_000);
-    static COORD_MIN_Y: Cell<i64> = Cell::new(-1_000_000_000_000_000);
-    static COORD_MAX_Y: Cell<i64> = Cell::new( 1_000_000_000_000_000);
-}
+use std::sync::atomic::{AtomicI64, Ordering};
+static COORD_MIN_X: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
+static COORD_MAX_X: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
+static COORD_MIN_Y: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
+static COORD_MAX_Y: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
 
 struct CrossRayContext<'a> {
     board: &'a Board,
@@ -57,10 +54,10 @@ pub struct SlidingMoveContext<'a> {
 
 /// Update world borders from JS playableRegion (left, right, bottom, top).
 pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
-    COORD_MIN_X.with(|c| c.set(left.min(right)));
-    COORD_MAX_X.with(|c| c.set(left.max(right)));
-    COORD_MIN_Y.with(|c| c.set(bottom.min(top)));
-    COORD_MAX_Y.with(|c| c.set(bottom.max(top)));
+    COORD_MIN_X.store(left.min(right), Ordering::Relaxed);
+    COORD_MAX_X.store(left.max(right), Ordering::Relaxed);
+    COORD_MIN_Y.store(bottom.min(top), Ordering::Relaxed);
+    COORD_MAX_Y.store(bottom.max(top), Ordering::Relaxed);
 }
 
 /// Get the maximum dimension of the current world border.
@@ -68,8 +65,12 @@ pub fn set_world_bounds(left: i64, right: i64, bottom: i64, top: i64) {
 /// Used for determining if standard chess mating patterns apply (bounded board).
 #[inline]
 pub fn get_world_size() -> i64 {
-    let width = COORD_MAX_X.with(|c| c.get()).saturating_sub(COORD_MIN_X.with(|c| c.get()));
-    let height = COORD_MAX_Y.with(|c| c.get()).saturating_sub(COORD_MIN_Y.with(|c| c.get()));
+    let width = COORD_MAX_X
+        .load(Ordering::Relaxed)
+        .saturating_sub(COORD_MIN_X.load(Ordering::Relaxed));
+    let height = COORD_MAX_Y
+        .load(Ordering::Relaxed)
+        .saturating_sub(COORD_MIN_Y.load(Ordering::Relaxed));
     width.max(height)
 }
 
@@ -78,10 +79,10 @@ pub fn get_world_size() -> i64 {
 #[inline]
 pub fn get_coord_bounds() -> (i64, i64, i64, i64) {
     (
-        COORD_MIN_X.with(|c| c.get()),
-        COORD_MAX_X.with(|c| c.get()),
-        COORD_MIN_Y.with(|c| c.get()),
-        COORD_MAX_Y.with(|c| c.get()),
+        COORD_MIN_X.load(Ordering::Relaxed),
+        COORD_MAX_X.load(Ordering::Relaxed),
+        COORD_MIN_Y.load(Ordering::Relaxed),
+        COORD_MAX_Y.load(Ordering::Relaxed),
     )
 }
 
@@ -214,9 +215,11 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
 /// Check if a coordinate is within valid bounds (world border)
 #[inline]
 pub fn in_bounds(x: i64, y: i64) -> bool {
-    COORD_MIN_X.with(|mn_x| COORD_MAX_X.with(|mx_x| COORD_MIN_Y.with(|mn_y| COORD_MAX_Y.with(|mx_y| {
-        x >= mn_x.get() && x <= mx_x.get() && y >= mn_y.get() && y <= mx_y.get()
-    }))))
+    let min_x = COORD_MIN_X.load(Ordering::Relaxed);
+    let max_x = COORD_MAX_X.load(Ordering::Relaxed);
+    let min_y = COORD_MIN_Y.load(Ordering::Relaxed);
+    let max_y = COORD_MAX_Y.load(Ordering::Relaxed);
+    x >= min_x && x <= max_x && y >= min_y && y <= max_y
 }
 
 /// Helper to check if a path is clear between two squares ON THE SAME TILE.
@@ -2174,10 +2177,10 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
         return None;
     }
 
-    let min_x = COORD_MIN_X.with(|c| c.get());
-    let max_x = COORD_MAX_X.with(|c| c.get());
-    let min_y = COORD_MIN_Y.with(|c| c.get());
-    let max_y = COORD_MAX_Y.with(|c| c.get());
+    let min_x = COORD_MIN_X.load(Ordering::Relaxed);
+    let max_x = COORD_MAX_X.load(Ordering::Relaxed);
+    let min_y = COORD_MIN_Y.load(Ordering::Relaxed);
+    let max_y = COORD_MAX_Y.load(Ordering::Relaxed);
 
     const MAX_INF_DISTANCE: i64 = 256;
 

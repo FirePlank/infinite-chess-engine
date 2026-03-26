@@ -435,54 +435,6 @@ pub fn evaluate(game: &GameState) -> i32 {
     evaluate_inner(game)
 }
 
-/// Compute MopUp term for NNUE hybrid evaluation.
-/// Always applied (both NNUE and HCE branches) to fix endgame conversion.
-#[cfg(feature = "nnue")]
-#[inline]
-pub fn compute_mop_up_term(game: &GameState) -> i32 {
-    use crate::evaluation::mop_up::{calculate_mop_up_scale, evaluate_lone_king_endgame};
-
-    // Determine which side has material advantage
-    let white_material = game.white_non_pawn_material;
-    let black_material = game.black_non_pawn_material;
-
-    let (winning_color, losing_color) = if white_material && !black_material {
-        (PlayerColor::White, PlayerColor::Black)
-    } else if black_material && !white_material {
-        (PlayerColor::Black, PlayerColor::White)
-    } else {
-        return 0; // No clear winner or both have material
-    };
-
-    // Check if mop-up is active
-    let scale = match calculate_mop_up_scale(game, losing_color) {
-        Some(s) if s > 0 => s,
-        _ => return 0,
-    };
-
-    // Get king positions
-    let (our_king, enemy_king) = if winning_color == PlayerColor::White {
-        (game.white_royals.first(), game.black_royals.first())
-    } else {
-        (game.black_royals.first(), game.white_royals.first())
-    };
-
-    let enemy_king = match enemy_king {
-        Some(k) => k,
-        None => return 0,
-    };
-
-    let raw = evaluate_lone_king_endgame(game, our_king, enemy_king, winning_color);
-    let mop_up = (raw * scale as i32) / 100;
-
-    // Return from side-to-move's perspective (positive = good for STM)
-    if winning_color == game.turn {
-        mop_up
-    } else {
-        -mop_up
-    }
-}
-
 /// Perform a full evaluation with detailed tracing.
 pub fn debug_evaluate(game: &GameState) -> ActiveTrace {
     let mut tracer = ActiveTrace::default();
@@ -1163,61 +1115,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         tracer.record("Pawn Advancement", w_adv, b_adv);
                         score += w_adv - b_adv;
 
-                        let white_has_promo = white_max_y != i64::MIN;
-                        let black_has_promo = black_min_y != i64::MAX;
-
-                        // Mop-up (using existing counts)
-                        let white_pieces =
-                            game.white_piece_count.saturating_sub(game.white_pawn_count);
-                        let black_pieces =
-                            game.black_piece_count.saturating_sub(game.black_pawn_count);
-                        let mut mop_up_applied = false;
-
-                        if black_pieces < 3
-                            && white_pieces > 1
-                            && !white_has_promo
-                            && let Some(bk) = black_royals.first()
-                            && crate::evaluation::mop_up::calculate_mop_up_scale(
-                                game,
-                                PlayerColor::Black,
-                            )
-                            .is_some()
-                        {
-                            let s = crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                                game,
-                                white_royals.first(),
-                                bk,
-                                PlayerColor::White,
-                                PlayerColor::Black,
-                            );
-                            tracer.record("Mop-up", s, 0);
-                            score += s;
-                            mop_up_applied = true;
-                        }
-
-                        if !mop_up_applied
-                            && white_pieces < 3
-                            && black_pieces > 1
-                            && !black_has_promo
-                            && let Some(wk) = white_royals.first()
-                            && crate::evaluation::mop_up::calculate_mop_up_scale(
-                                game,
-                                PlayerColor::White,
-                            )
-                            .is_some()
-                        {
-                            let s = crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                                game,
-                                black_royals.first(),
-                                wk,
-                                PlayerColor::Black,
-                                PlayerColor::White,
-                            );
-                            tracer.record("Mop-up", 0, s);
-                            score -= s;
-                            mop_up_applied = true;
-                        }
-
                         // Defense urgency
                         let calc_urgency = |tp: i32| (10 + tp + (tp / 4)).min(100);
                         let w_urgency = calc_urgency(black_threat_points);
@@ -1235,82 +1132,80 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             b_sliders_in_zone,
                         );
 
-                        if !mop_up_applied {
-                            score += evaluate_pieces_processed(
-                                game,
-                                white_royals,
-                                black_royals,
-                                final_phase,
-                                tracer,
-                                piece_list,
-                                PieceMetrics {
-                                    white_undeveloped,
-                                    black_undeveloped,
-                                    white_bishops,
-                                    black_bishops,
-                                    white_bishop_colors,
-                                    black_bishop_colors,
-                                    cloud_center,
-                                },
-                                w_attack_ready,
-                                b_attack_ready,
-                                white_pawns,
-                                black_pawns,
-                            );
+                        score += evaluate_pieces_processed(
+                            game,
+                            white_royals,
+                            black_royals,
+                            final_phase,
+                            tracer,
+                            piece_list,
+                            PieceMetrics {
+                                white_undeveloped,
+                                black_undeveloped,
+                                white_bishops,
+                                black_bishops,
+                                white_bishop_colors,
+                                black_bishop_colors,
+                                cloud_center,
+                            },
+                            w_attack_ready,
+                            b_attack_ready,
+                            white_pawns,
+                            black_pawns,
+                        );
 
-                            // King Safety
-                            let ks_metrics = KingSafetyMetrics {
-                                white_slider_counts: (w_diag_count, w_ortho_count),
-                                black_slider_counts: (b_diag_count, b_ortho_count),
-                                urgency: (w_urgency, b_urgency),
-                                has_enemy_queen: (b_has_queen_threat, w_has_queen_threat),
-                            };
-                            score += evaluate_king_safety_traced(
-                                game,
-                                white_royals,
-                                black_royals,
-                                final_phase,
-                                tracer,
-                                &ks_metrics,
-                                white_pawns,
-                                black_pawns,
-                                &w_king_rays,
-                                &b_king_rays,
-                                w_king_ring_covered,
-                                b_king_ring_covered,
-                            );
+                        // King Safety
+                        let ks_metrics = KingSafetyMetrics {
+                            white_slider_counts: (w_diag_count, w_ortho_count),
+                            black_slider_counts: (b_diag_count, b_ortho_count),
+                            urgency: (w_urgency, b_urgency),
+                            has_enemy_queen: (b_has_queen_threat, w_has_queen_threat),
+                        };
+                        score += evaluate_king_safety_traced(
+                            game,
+                            white_royals,
+                            black_royals,
+                            final_phase,
+                            tracer,
+                            &ks_metrics,
+                            white_pawns,
+                            black_pawns,
+                            &w_king_rays,
+                            &b_king_rays,
+                            w_king_ring_covered,
+                            b_king_ring_covered,
+                        );
 
-                            score += evaluate_pawn_structure_traced(
-                                game,
-                                final_phase,
-                                white_royals,
-                                black_royals,
-                                tracer,
-                                white_pawns,
-                                black_pawns,
-                                white_rq,
-                                black_rq,
-                            );
+                        score += evaluate_pawn_structure_traced(
+                            game,
+                            final_phase,
+                            white_royals,
+                            black_royals,
+                            tracer,
+                            white_pawns,
+                            black_pawns,
+                            white_rq,
+                            black_rq,
+                        );
 
-                            // Interaction Threats (Result from merged loop)
-                            tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
-                            tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
-                            score += (w_pawn_threats + w_minor_threats)
-                                - (b_pawn_threats + b_minor_threats);
+                        // Interaction Threats (Result from merged loop)
+                        tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
+                        tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
+                        score += (w_pawn_threats + w_minor_threats)
+                            - (b_pawn_threats + b_minor_threats);
 
-                            // Global Tropism
-                            let gt_att_mult = taper(180, 360);
-                            let gt_def_mult = taper(120, 60);
+                        // Global Tropism
+                        let gt_att_mult = taper(180, 360);
+                        let gt_def_mult = taper(120, 60);
 
-                            // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
-                            let w_gt = (w_attacking_tropism * gt_att_mult / 100)
-                                + (w_defensive_tropism * gt_def_mult / 100);
-                            let b_gt = (b_attacking_tropism * gt_att_mult / 100)
-                                + (b_defensive_tropism * gt_def_mult / 100);
+                        // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
+                        let w_gt = (w_attacking_tropism * gt_att_mult / 100)
+                            + (w_defensive_tropism * gt_def_mult / 100);
+                        let b_gt = (b_attacking_tropism * gt_att_mult / 100)
+                            + (b_defensive_tropism * gt_def_mult / 100);
 
-                            tracer.record("Global Tropism", w_gt, b_gt);
-                            score += w_gt - b_gt;
-                        }
+                        tracer.record("Global Tropism", w_gt, b_gt);
+                        score += w_gt - b_gt;
                     }); // brq
                 }); // wrq
             }); // bp

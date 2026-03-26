@@ -311,8 +311,8 @@ fn is_insufficient(m: &Mat) -> bool {
         return true;
     } // 3+ knights
 
-    // 2N alone or with bishops (doesn't include rooks/pawns)
-    if m.knights == 2 && m.rooks == 0 && m.pawns == 0 && no_exotic_pieces(m) {
+    // 2N alone or with bishops (doesn't include queens, rooks, pawns)
+    if m.knights == 2 && m.queens == 0 && m.rooks == 0 && m.pawns == 0 && no_exotic_pieces(m) {
         return true;
     }
 
@@ -434,49 +434,51 @@ fn is_insufficient(m: &Mat) -> bool {
         return true;
     }
 
-    false
-}
-
-/// Bordered variant (smaller map).
-#[inline]
-fn is_insufficient_bordered(m: &Mat) -> bool {
-    // ===== SUFFICIENT CASES (return false) =====
-    // 3+ Archbishops
-    if m.archbishops >= 3
+    // Huygens 1-4 alone (less than 5 is insufficient)
+    if m.huygens >= 1
+        && m.huygens <= 4
         && m.queens == 0
         && m.rooks == 0
         && m.knights == 0
         && m.bishops_maj == 0
         && m.bishops_min == 0
         && m.chancellors == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return false;
-    }
-    // 2+ Chancellors
-    if m.chancellors >= 2
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_maj == 0
-        && m.bishops_min == 0
         && m.archbishops == 0
         && m.hawks == 0
         && m.guards == 0
         && m.pawns == 0
         && m.amazons == 0
         && m.knightriders == 0
-        && m.huygens == 0
     {
-        return false;
+        return true;
     }
 
+    false
+}
+
+/// Bordered variant (smaller map).
+#[inline]
+fn is_insufficient_bordered(m: &Mat) -> bool {
     // ===== INSUFFICIENT CASES (return true) =====
+    // Huygens 1-4 alone (less than 5 is insufficient)
+    if m.huygens >= 1
+        && m.huygens <= 4
+        && m.queens == 0
+        && m.rooks == 0
+        && m.knights == 0
+        && m.bishops_maj == 0
+        && m.bishops_min == 0
+        && m.chancellors == 0
+        && m.archbishops == 0
+        && m.hawks == 0
+        && m.guards == 0
+        && m.pawns == 0
+        && m.amazons == 0
+        && m.knightriders == 0
+    {
+        return true;
+    }
+    
     // Only royals
     if no_exotic_pieces(m)
         && m.queens == 0
@@ -489,19 +491,24 @@ fn is_insufficient_bordered(m: &Mat) -> bool {
         return true;
     }
 
-    // Bishops only (any count)
-    if m.bishops_maj >= 1
+    // Bishops only (same color - insufficient; opposite color - sufficient)
+    if (m.bishops_maj >= 1 || m.bishops_min >= 1)
         && m.queens == 0
         && m.rooks == 0
         && m.knights == 0
         && m.pawns == 0
         && no_exotic_pieces(m)
     {
+        // Opposite-color bishops (both maj and min) are sufficient
+        if m.bishops_maj >= 1 && m.bishops_min >= 1 {
+            return false;
+        }
+        // Same-color bishops only are insufficient
         return true;
     }
 
     // 2 knights
-    if m.knights == 2
+    if m.knights <= 2
         && m.queens == 0
         && m.rooks == 0
         && m.bishops_maj == 0

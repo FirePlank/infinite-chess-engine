@@ -11,6 +11,7 @@ pub mod mop_up;
 pub mod variants;
 
 use crate::Variant;
+use crate::board::PlayerColor;
 use crate::game::GameState;
 
 pub use base::{calculate_initial_material, get_piece_phase, get_piece_value_base};
@@ -23,25 +24,66 @@ pub use crate::search::params::{
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
 
+/// Returns the mop-up bonus from the side-to-move's perspective (positive = good for side to move).
+#[inline]
+fn compute_mop_up_term(game: &GameState) -> i32 {
+    let white_pieces = game.white_piece_count.saturating_sub(game.white_pawn_count);
+    let black_pieces = game.black_piece_count.saturating_sub(game.black_pawn_count);
+    let white_has_promo = game.white_pawn_count > 0;
+    let black_has_promo = game.black_pawn_count > 0;
+    
+    let raw = if black_pieces < 3
+        && white_pieces > 1
+        && !white_has_promo
+        && let Some(bk) = game.black_royals.first()
+        && crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::Black).is_some()
+    {
+        crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            game.white_royals.first(),
+            bk,
+            PlayerColor::White,
+            PlayerColor::Black,
+        )
+    } else if white_pieces < 3
+        && black_pieces > 1
+        && !black_has_promo
+        && let Some(wk) = game.white_royals.first()
+        && crate::evaluation::mop_up::calculate_mop_up_scale(game, PlayerColor::White).is_some()
+    {
+        -crate::evaluation::mop_up::evaluate_mop_up_scaled(
+            game,
+            game.black_royals.first(),
+            wk,
+            PlayerColor::Black,
+            PlayerColor::White,
+        )
+    } else {
+        return 0;
+    };
+
+    if game.turn == PlayerColor::Black { -raw } else { raw }
+}
+
 /// Main evaluation entry point - NNUE Enabled
 #[inline]
 #[cfg(feature = "nnue")]
 pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -> i32 {
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
-        Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
-        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
+        Some(Variant::Obstocean) => variants::obstocean::evaluate(game) + compute_mop_up_term(game),
+        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game) + compute_mop_up_term(game),
         // Add new variants here as they get custom evaluators
         _ => {
             // Try NNUE first if applicable (standard pieces, kings present, weights loaded)
             if crate::nnue::is_applicable(game) {
                 if let Some(state) = nnue_state {
-                    crate::nnue::evaluate_with_state(game, state) + base::compute_mop_up_term(game)
+                    crate::nnue::evaluate_with_state(game, state) + compute_mop_up_term(game)
                 } else {
-                    crate::nnue::evaluate(game) + base::compute_mop_up_term(game)
+                    crate::nnue::evaluate(game) + compute_mop_up_term(game)
                 }
             } else {
-                base::evaluate(game)
+                base::evaluate(game) + compute_mop_up_term(game)
             }
         } // Default: use base for all others
     };
@@ -64,10 +106,10 @@ pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -
 pub fn evaluate(game: &GameState) -> i32 {
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
-        Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
-        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
+        Some(Variant::Obstocean) => variants::obstocean::evaluate(game) + compute_mop_up_term(game),
+        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game) + compute_mop_up_term(game),
         // Add new variants here as they get custom evaluators
-        _ => base::evaluate(game), // Default: use base for all others
+        _ => base::evaluate(game) + compute_mop_up_term(game), // Default: use base for all others
     };
 
     // As the halfmove clock increases during shuffling, we slightly damp the

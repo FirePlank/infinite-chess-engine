@@ -12,8 +12,6 @@ fn evaluate_inner(game: &GameState) -> i32 {
     let mut score = game.material_score;
     let white_royals = game.white_royals.as_slice();
     let black_royals = game.black_royals.as_slice();
-    let wk_first = white_royals.first();
-    let bk_first = black_royals.first();
 
     base::EVAL_WHITE_PAWNS.with(|wp_cell| {
         base::EVAL_BLACK_PAWNS.with(|bp_cell| {
@@ -140,37 +138,6 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             }
                         }
 
-                        // 4. Mop-up (uses collected info)
-                        if crate::evaluation::mop_up::calculate_mop_up_scale(
-                            game,
-                            PlayerColor::Black,
-                        )
-                        .is_some()
-                        {
-                            if let Some(b) = bk_first {
-                                score += crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                                    game,
-                                    wk_first,
-                                    b,
-                                    PlayerColor::White,
-                                    PlayerColor::Black,
-                                );
-                            }
-                        } else if crate::evaluation::mop_up::calculate_mop_up_scale(
-                            game,
-                            PlayerColor::White,
-                        )
-                        .is_some()
-                            && let Some(w) = wk_first
-                        {
-                            score -= crate::evaluation::mop_up::evaluate_mop_up_scaled(
-                                game,
-                                bk_first,
-                                w,
-                                PlayerColor::Black,
-                                PlayerColor::White,
-                            );
-                        }
 
                         // Pawn Structure (uses collected info to avoid RefCell borrow panic)
                         score += base::evaluate_pawn_structure_traced(
