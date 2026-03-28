@@ -1082,7 +1082,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                 w_pawn_bonus -= PAWN_FAR_FROM_PROMO_PENALTY;
                                             } else {
                                                 w_pawn_bonus +=
-                                                    (PAWN_FULL_VALUE_THRESHOLD - dist) as i32 * 4;
+                                                    (PAWN_FULL_VALUE_THRESHOLD - dist) as i32 * 6;
                                             }
                                             if y > white_max_y {
                                                 white_max_y = y;
@@ -1096,7 +1096,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             b_pawn_bonus -= PAWN_FAR_FROM_PROMO_PENALTY;
                                         } else {
                                             b_pawn_bonus +=
-                                                (PAWN_FULL_VALUE_THRESHOLD - dist) as i32 * 4;
+                                                (PAWN_FULL_VALUE_THRESHOLD - dist) as i32 * 6;
                                         }
                                         if y < black_min_y {
                                             black_min_y = y;
@@ -1704,16 +1704,16 @@ fn compute_attack_bonus_optimized(
         }
     }
 
-    const ATTACK_BONUS_PER_OPEN_RAY: i32 = 10;
+    const ATTACK_BONUS_PER_OPEN_RAY: i32 = 12;
     let diag_bonus = if our_diag_count > 0 && open_diag_rays > 0 {
-        let mult = 100 + (our_diag_count - 1).max(0) * 15;
+        let mult = 100 + (our_diag_count - 1).max(0) * 25;
         open_diag_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
     };
 
     let ortho_bonus = if our_ortho_count > 0 && open_ortho_rays > 0 {
-        let mult = 100 + (our_ortho_count - 1).max(0) * 15;
+        let mult = 100 + (our_ortho_count - 1).max(0) * 25;
         open_ortho_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
@@ -2172,7 +2172,11 @@ fn evaluate_king_shelter(
                 "adjacent" => (MG_PAWN_SHELTER_MISSING_ADJACENT, EG_PAWN_SHELTER_MISSING_ADJACENT),
                 _ => (MG_PAWN_SHELTER_MISSING_OUTER, EG_PAWN_SHELTER_MISSING_OUTER),
             };
-            safety -= taper(mg_penalty, eg_penalty);
+            // Scale penalty by defense urgency: more danger = more important to have pawn shelter
+            // Scale from 50 (no urgency) to 130 (high urgency)
+            let urgency_scale = (50 + (defense_urgency * 80) / 100).min(130);
+            let penalty = taper(mg_penalty, eg_penalty);
+            safety -= (penalty * urgency_scale) / 100;
         }
     }
 
