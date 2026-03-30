@@ -6,7 +6,7 @@ use crate::moves::{
     Move, MoveList, SpatialIndices, get_legal_moves, get_legal_moves_into,
     get_pseudo_legal_moves_for_piece_into, is_square_attacked,
 };
-use crate::utils::{is_prime_fast, is_prime_i64};
+use crate::utils::{PRIMES_UNDER_128, is_prime_fast, is_prime_i64};
 use arrayvec::ArrayVec;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -2031,8 +2031,8 @@ impl GameState {
         let step_y = dy_check.signum();
 
         // SPECIAL CASE: Huygen checker - Fast Path
-        // Always active. Checks the first 128 primes from the checker towards the king.
-        // Handles both Huygens between and Huygens outside (jumping over checker).
+        // Always active. Checks all squares between king and checker for valid blocking.
+        // A square blocks if it's at a prime distance from the Huygen AND no closer prime-distance piece blocks it.
         if is_huygen_checker {
             use crate::utils::PRIMES_UNDER_128;
 
@@ -2043,8 +2043,6 @@ impl GameState {
                 checker_sq.y
             };
             let king_coord = if is_horizontal { king_sq.x } else { king_sq.y };
-            let dir_from_checker_to_king = (king_coord - checker_coord).signum();
-
             let line_vec = if is_horizontal {
                 self.spatial_indices.rows.get(&checker_sq.y)
             } else {
@@ -2067,8 +2065,9 @@ impl GameState {
                         Coordinate::new(checker_sq.x, our_huygen_coord)
                     };
 
-                    'outer_huygen_fast: for &p_from_checker in &PRIMES_UNDER_128 {
-                        let block_coord = checker_coord + dir_from_checker_to_king * p_from_checker;
+                    // Iterate through all primes from the Huygen to find valid blocking squares
+                    'outer_huygen_fast: for &p_from_huygen in &PRIMES_UNDER_128 {
+                        let block_coord = our_huygen_coord + (if our_huygen_coord < king_coord { 1 } else { -1 }) * p_from_huygen;
 
                         // Must be between king and checker
                         let block_between = if checker_coord > king_coord {
@@ -2077,14 +2076,6 @@ impl GameState {
                             block_coord < king_coord && block_coord > checker_coord
                         };
                         if !block_between {
-                            let past_king = if checker_coord > king_coord {
-                                block_coord <= king_coord
-                            } else {
-                                block_coord >= king_coord
-                            };
-                            if past_king {
-                                break;
-                            }
                             continue;
                         }
 
@@ -2103,17 +2094,7 @@ impl GameState {
                             continue;
                         }
 
-                        let dist_from_huygen = (block_coord - our_huygen_coord).abs();
-                        if dist_from_huygen == 0 {
-                            continue;
-                        }
-
-                        // Use robust prime check for distance from Huygen
-                        if !is_prime_i64(dist_from_huygen) {
-                            continue;
-                        }
-
-                        // Blocker check (ignore checker since it's the checker)
+                        // Blocker check: verify no closer prime-distance piece blocks this square
                         let dir_to_block = (block_coord - our_huygen_coord).signum();
                         for j in 0..vec.len() {
                             let other_coord = vec.coords[j];
@@ -2127,7 +2108,7 @@ impl GameState {
                             }
 
                             let other_dist = (other_coord - our_huygen_coord).abs();
-                            if other_dist >= dist_from_huygen {
+                            if other_dist >= p_from_huygen {
                                 continue;
                             }
 
@@ -2201,7 +2182,6 @@ impl GameState {
 
                 if is_horizontal_check {
                     // Check ray is horizontal at y = king_sq.y = checker_sq.y
-                    // Ortho slider can block by moving vertically to y = king_sq.y
                     if from.y != king_sq.y {
                         // Slider is NOT on the check ray - can it move to it?
                         // Destination is (from.x, king_sq.y) if path is clear
@@ -2216,23 +2196,35 @@ impl GameState {
                         };
 
                         if between {
-                            // Check if distance from checker is prime
+                            // Must be at a prime distance from the checker (Huygen)
                             let dist_from_checker = (checker_sq.x - tx).abs();
                             if is_prime_fast(dist_from_checker) {
-                                // Check path is clear (vertical move)
                                 if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
                                     out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                                 }
                             }
                         }
                     } else {
-                        // Slider IS on the check ray - can slide horizontally to prime distance
-                        // Already handled by general Huygen blocking below
+                        // Slider IS on the check ray - iterate primes from checker to find blocking squares
+                        for &prime in &PRIMES_UNDER_128 {
+                            if prime >= check_dist {
+                                break;
+                            }
+                            // Blocking square is at prime distance from checker, toward king
+                            let tx = checker_sq.x - step_x * prime;
+                            let ty = king_sq.y;
+                            if tx == from.x {
+                                continue;
+                            }
+                            if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
+                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
+                            }
+                        }
                     }
                 } else {
                     // Check ray is vertical at x = king_sq.x = checker_sq.x
-                    // Ortho slider can block by moving horizontally to x = king_sq.x
                     if from.x != king_sq.x {
+                        // Slider is NOT on the check ray - can it move to it?
                         let tx = king_sq.x;
                         let ty = from.y;
 
@@ -2247,6 +2239,22 @@ impl GameState {
                             if is_prime_fast(dist_from_checker)
                                 && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
                             {
+                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
+                            }
+                        }
+                    } else {
+                        // Slider IS on the check ray - iterate primes from checker to find blocking squares
+                        for &prime in &PRIMES_UNDER_128 {
+                            if prime >= check_dist {
+                                break;
+                            }
+                            // Blocking square is at prime distance from checker, toward king
+                            let tx = king_sq.x;
+                            let ty = checker_sq.y - step_y * prime;
+                            if ty == from.y {
+                                continue;
+                            }
+                            if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
                                 out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                             }
                         }
