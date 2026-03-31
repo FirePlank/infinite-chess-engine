@@ -1,34 +1,49 @@
 // Chess Variant Evaluation (Standard 8x8 Chess)
-// Uses an improved version of the PeSTO-based evaluation.
 
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 
-// Constants
+// ==================== Material Values ====================
 
 const MG_VALUES: [i32; 6] = [82, 337, 365, 477, 1025, 0];
 const EG_VALUES: [i32; 6] = [94, 281, 297, 512, 936, 0];
 
-// Mobility bonuses
-const MG_MOBILITY: [i32; 6] = [0, 4, 3, 2, 1, 0];
-const EG_MOBILITY: [i32; 6] = [0, 4, 3, 4, 2, 0];
+// ==================== Non-linear Mobility Tables ====================
 
-// King Safety Weights (simple)
-const MG_KING_ATTACK_WEIGHT: [i32; 6] = [0, 10, 10, 20, 40, 0];
-const KING_SAFETY_COEFF: i32 = 2; // Scaler for safety penalty
+// Knight: 0-8 squares
+#[rustfmt::skip]
+const MG_KNIGHT_MOB: [i32; 9] = [-62, -36, -12,  0,  8, 14, 18, 20, 22];
+#[rustfmt::skip]
+const EG_KNIGHT_MOB: [i32; 9] = [-81, -46, -26, -8,  4, 10, 14, 16, 18];
 
-// Pawn Structure
-const MG_ISOLATED_PENALTY: i32 = 10;
-const EG_ISOLATED_PENALTY: i32 = 15;
-const MG_DOUBLED_PENALTY: i32 = 10;
-const EG_DOUBLED_PENALTY: i32 = 10;
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 5, 10, 20, 40, 70, 120, 200];
+// Bishop: 0-13 squares
+#[rustfmt::skip]
+const MG_BISHOP_MOB: [i32; 14] = [-48, -20,  6, 14, 20, 26, 30, 32, 32, 34, 36, 36, 38, 40];
+#[rustfmt::skip]
+const EG_BISHOP_MOB: [i32; 14] = [-59, -23, -3,  8, 16, 22, 28, 30, 34, 36, 38, 40, 42, 44];
 
-const PHASE_INC: [i32; 6] = [0, 1, 1, 2, 4, 0];
-const MAX_PHASE: i32 = 24;
+// Rook: 0-14 squares
+#[rustfmt::skip]
+const MG_ROOK_MOB: [i32; 15] = [-60, -20, 0, 2, 4,  8, 14, 18, 22, 22, 24, 26, 28, 28, 30];
+#[rustfmt::skip]
+const EG_ROOK_MOB: [i32; 15] = [-78, -17, 16, 28, 48, 62, 66, 74, 78, 80, 84, 86, 88, 88, 90];
 
-// Piece-Square Tables (Top-Down, a8=0)
+// Queen: 0-27 squares
+#[rustfmt::skip]
+const MG_QUEEN_MOB: [i32; 28] = [
+    -30, -12, -8, -8, 10, 12, 12, 18, 18, 26, 30, 30,
+     30, 30, 30, 30, 34, 34, 36, 36, 40, 42, 42, 42,
+     44, 46, 46, 48,
+];
+#[rustfmt::skip]
+const EG_QUEEN_MOB: [i32; 28] = [
+    -48, -30,  -7, 14, 30, 40, 44, 50, 52, 58, 60, 64,
+     72, 76, 80, 82, 84, 86, 90, 92, 94, 96, 96, 100,
+    102, 104, 106, 112,
+];
+
+// ==================== Piece-Square Tables (Top-Down, a8=0) ====================
 
 #[rustfmt::skip]
 const MG_PAWN_PST: [i32; 64] = [
@@ -192,12 +207,70 @@ const EG_PST: [[i32; 64]; 6] = [
     EG_KING_PST,
 ];
 
+// ==================== Pawn Structure ====================
+
+const MG_ISOLATED_PENALTY: i32 = 8;
+const EG_ISOLATED_PENALTY: i32 = 16;
+const MG_DOUBLED_PENALTY: i32 = 8;
+const EG_DOUBLED_PENALTY: i32 = 16;
+const MG_BACKWARD_PENALTY: i32 = 9;
+const EG_BACKWARD_PENALTY: i32 = 20;
+
+// Connected pawn bonus by rank (rank 1..=8, index 0 unused)
+#[rustfmt::skip]
+const CONNECTED_BONUS: [i32; 8] = [0, 0, 7, 8, 12, 29, 48, 0];
+
+// Passed pawn bonus by relative rank [0..8], rank 0/1 unused
+#[rustfmt::skip]
+const MG_PASSED_BONUS: [i32; 8] = [0, 0,  5, 10, 20,  40,  70, 120];
+#[rustfmt::skip]
+const EG_PASSED_BONUS: [i32; 8] = [0, 0, 10, 20, 40,  80, 140, 220];
+
+// ==================== Piece Bonuses ====================
+
+const MG_BISHOP_PAIR: i32 = 30;
+const EG_BISHOP_PAIR: i32 = 55;
+
+const MG_ROOK_OPEN_FILE: i32 = 48;
+const EG_ROOK_OPEN_FILE: i32 = 29;
+const MG_ROOK_SEMI_OPEN_FILE: i32 = 19;
+const EG_ROOK_SEMI_OPEN_FILE: i32 = 7;
+
+// Outpost bonus: knight/bishop on a square protected by own pawn,
+// ranks 4-6 (relative), not attackable by enemy pawns.
+const MG_OUTPOST_KNIGHT: i32 = 54;
+const EG_OUTPOST_KNIGHT: i32 = 34;
+const MG_OUTPOST_BISHOP: i32 = 28;
+const EG_OUTPOST_BISHOP: i32 = 20;
+
+// Minor piece behind a pawn
+const MG_MINOR_BEHIND_PAWN: i32 = 18;
+
+// ==================== King Safety ====================
+
+// King attack weights per piece type [pawn, knight, bishop, rook, queen, king]
+const KING_ATTACK_WEIGHT: [i32; 6] = [0, 20, 20, 40, 80, 0];
+
+// Pawn shelter bonus by distance (1 = adjacent rank, 2 = two ranks away, 3 = three)
+// and by file relationship (0 = king file, 1 = adjacent file, 2 = outer file)
+const SHELTER_BONUS: [[i32; 3]; 4] = [
+    [0, 0, 0],   // distance 0 (unused)
+    [20, 14, 8], // distance 1
+    [10,  6, 2], // distance 2
+    [ 4,  2, 0], // distance 3
+];
+// Penalty if no pawn covering the king's file/adjacent at all
+const SHELTER_MISSING_PENALTY: [i32; 3] = [22, 14, 6];
+
+// ==================== Phase ====================
+
+const PHASE_INC: [i32; 6] = [0, 1, 1, 2, 4, 0];
+const MAX_PHASE: i32 = 24;
+
 // ==================== Helper Functions ====================
 
 #[inline]
 fn coord_to_pst_index(x: i64, y: i64) -> usize {
-    // top-down: Rank 8 is row 0, Rank 1 is row 7
-    // DEFENSIVE: Clamp to 1-8 range to avoid underflow/overflow panics
     let cx = x.clamp(1, 8);
     let cy = y.clamp(1, 8);
     let row = (8 - cy) as usize;
@@ -218,23 +291,35 @@ fn get_piece_idx(pt: PieceType) -> usize {
     }
 }
 
-// Main Evaluation
+/// Chebyshev distance between two squares.
+#[inline]
+fn cheb(ax: i64, ay: i64, bx: i64, by: i64) -> i64 {
+    (ax - bx).abs().max((ay - by).abs())
+}
+
+// ==================== Main Evaluation ====================
 
 #[allow(clippy::needless_range_loop)]
 pub fn evaluate(game: &GameState) -> i32 {
     let mut mg = [0i32; 2];
     let mut eg = [0i32; 2];
-    let mut game_phase = 0;
+    let mut game_phase = 0i32;
 
+    // Pawn file occupancy bitmasks (bits 0-7 = files a-h)
     let mut w_pawn_files = 0u8;
     let mut b_pawn_files = 0u8;
+    // Pawns stored as (x, y, is_white)
     let mut pawns: ArrayVec<(i64, i64, bool), 16> = ArrayVec::new();
 
-    // Tracker for king safety
-    let mut w_king_attackers = 0;
-    let mut w_king_attack_weight = 0;
-    let mut b_king_attackers = 0;
-    let mut b_king_attack_weight = 0;
+    // Bishop tracking for bishop pair
+    let mut w_bishop_light = false;
+    let mut w_bishop_dark = false;
+    let mut b_bishop_light = false;
+    let mut b_bishop_dark = false;
+
+    // King safety accumulators
+    let mut w_king_danger = 0i32; // danger TO white king (attackers = black)
+    let mut b_king_danger = 0i32; // danger TO black king (attackers = white)
 
     use crate::board::Coordinate;
 
@@ -249,119 +334,322 @@ pub fn evaluate(game: &GameState) -> i32 {
         .copied()
         .unwrap_or(Coordinate { x: 5, y: 8 });
 
-    // SINGLE PASS: Iterating over board pieces once
+    // ---- PRE-PASS: collect pawn file masks (needed by piece evaluation) ----
+    for (x, _, piece) in game.board.iter_all_pieces() {
+        if piece.piece_type() == PieceType::Pawn {
+            let file_bit = 1u8 << ((x - 1).clamp(0, 7));
+            if piece.color() == PlayerColor::White {
+                w_pawn_files |= file_bit;
+            } else {
+                b_pawn_files |= file_bit;
+            }
+        }
+    }
+
+    // ---- FIRST PASS: material, PST, phase, mobility, bishop pair, rook files ----
     for (x, y, piece) in game.board.iter_all_pieces() {
         let pt = piece.piece_type();
         let pc_idx = get_piece_idx(pt);
         let is_white = piece.color() == PlayerColor::White;
-        let color_idx = if is_white { 0 } else { 1 };
+        let ci = if is_white { 0 } else { 1 };
 
-        // 1. PST & Material
+        // PST index: white uses normal orientation, black flips vertically
         let mut sq = coord_to_pst_index(x, y);
         if !is_white {
             sq ^= 56;
         }
-        mg[color_idx] += MG_VALUES[pc_idx] + MG_PST[pc_idx][sq];
-        eg[color_idx] += EG_VALUES[pc_idx] + EG_PST[pc_idx][sq];
 
-        // 2. Phase
+        mg[ci] += MG_VALUES[pc_idx] + MG_PST[pc_idx][sq];
+        eg[ci] += EG_VALUES[pc_idx] + EG_PST[pc_idx][sq];
         game_phase += PHASE_INC[pc_idx];
 
-        if pt == PieceType::Pawn {
-            if is_white {
-                w_pawn_files |= 1 << ((x - 1).clamp(0, 7));
-            } else {
-                b_pawn_files |= 1 << ((x - 1).clamp(0, 7));
+        match pt {
+            PieceType::Pawn => {
+                pawns.push((x, y, is_white));
             }
-            pawns.push((x, y, is_white));
-        } else if (1..=4).contains(&pc_idx) {
-            // 3. Mobility (including capture squares)
-            let mobility = count_mobility(&game.board, x, y, piece);
-            mg[color_idx] += mobility * MG_MOBILITY[pc_idx];
-            eg[color_idx] += mobility * EG_MOBILITY[pc_idx];
 
-            // 4. King Safety contribution
-            let target_king = if is_white { &black_king } else { &white_king };
-            if (x - target_king.x).abs() <= 3 && (y - target_king.y).abs() <= 3 {
+            PieceType::Bishop => {
+                // Track bishop square color for pair detection
+                let light = (x + y) % 2 == 0;
                 if is_white {
-                    b_king_attackers += 1;
-                    b_king_attack_weight += MG_KING_ATTACK_WEIGHT[pc_idx];
-                } else {
-                    w_king_attackers += 1;
-                    w_king_attack_weight += MG_KING_ATTACK_WEIGHT[pc_idx];
+                    if light { w_bishop_light = true; } else { w_bishop_dark = true; }
+                } else if light { b_bishop_light = true; } else { b_bishop_dark = true; }
+
+                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob_idx = mob.min(13) as usize;
+                mg[ci] += MG_BISHOP_MOB[mob_idx];
+                eg[ci] += EG_BISHOP_MOB[mob_idx];
+
+                // King safety: bishop near enemy king
+                let ek = if is_white { &black_king } else { &white_king };
+                if cheb(x, y, ek.x, ek.y) <= 4 {
+                    if is_white { b_king_danger += KING_ATTACK_WEIGHT[2]; }
+                    else        { w_king_danger += KING_ATTACK_WEIGHT[2]; }
+                }
+
+                // Outpost (ranks 4-6 for white = y 4-6, for black = y 3-5)
+                let rel_rank = if is_white { y } else { 9 - y };
+                if (4..=6).contains(&rel_rank) {
+                    let f = (x - 1).clamp(0, 7) as usize;
+                    let own_pawns = if is_white { w_pawn_files } else { b_pawn_files };
+                    let enemy_pawns = if is_white { b_pawn_files } else { w_pawn_files };
+                    let pawn_protected = (f > 0 && (own_pawns & (1 << (f - 1))) != 0)
+                        || (f < 7 && (own_pawns & (1 << (f + 1))) != 0);
+                    let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
+                        || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
+                    if pawn_protected && !enemy_can_attack {
+                        mg[ci] += MG_OUTPOST_BISHOP;
+                        eg[ci] += EG_OUTPOST_BISHOP;
+                    }
                 }
             }
+
+            PieceType::Knight => {
+                let mob = count_knight_mobility(&game.board, x, y, piece);
+                let mob_idx = mob.min(8) as usize;
+                mg[ci] += MG_KNIGHT_MOB[mob_idx];
+                eg[ci] += EG_KNIGHT_MOB[mob_idx];
+
+                // King safety
+                let ek = if is_white { &black_king } else { &white_king };
+                if cheb(x, y, ek.x, ek.y) <= 3 {
+                    if is_white { b_king_danger += KING_ATTACK_WEIGHT[1]; }
+                    else        { w_king_danger += KING_ATTACK_WEIGHT[1]; }
+                }
+
+                // Outpost
+                let rel_rank = if is_white { y } else { 9 - y };
+                if (4..=6).contains(&rel_rank) {
+                    let f = (x - 1).clamp(0, 7) as usize;
+                    let own_pawns = if is_white { w_pawn_files } else { b_pawn_files };
+                    let enemy_pawns = if is_white { b_pawn_files } else { w_pawn_files };
+                    let pawn_protected = (f > 0 && (own_pawns & (1 << (f - 1))) != 0)
+                        || (f < 7 && (own_pawns & (1 << (f + 1))) != 0);
+                    let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
+                        || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
+                    if pawn_protected && !enemy_can_attack {
+                        mg[ci] += MG_OUTPOST_KNIGHT;
+                        eg[ci] += EG_OUTPOST_KNIGHT;
+                    }
+                }
+
+                // Minor behind pawn
+                let pawn_ahead_y = if is_white { y + 1 } else { y - 1 };
+                if (1..=8).contains(&pawn_ahead_y) {
+                    if let Some(p) = game.board.get_piece(x, pawn_ahead_y) {
+                        if p.piece_type() == PieceType::Pawn && p.color() == piece.color() {
+                            mg[ci] += MG_MINOR_BEHIND_PAWN;
+                        }
+                    }
+                }
+            }
+
+            PieceType::Rook => {
+                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob_idx = mob.min(14) as usize;
+                mg[ci] += MG_ROOK_MOB[mob_idx];
+                eg[ci] += EG_ROOK_MOB[mob_idx];
+
+                // King safety
+                let ek = if is_white { &black_king } else { &white_king };
+                if cheb(x, y, ek.x, ek.y) <= 4 {
+                    if is_white { b_king_danger += KING_ATTACK_WEIGHT[3]; }
+                    else        { w_king_danger += KING_ATTACK_WEIGHT[3]; }
+                }
+
+                // Open / semi-open file bonus
+                let f = ((x - 1).clamp(0, 7)) as u8;
+                let file_bit = 1u8 << f;
+                let own_pawn = if is_white { w_pawn_files } else { b_pawn_files };
+                let enemy_pawn = if is_white { b_pawn_files } else { w_pawn_files };
+                if own_pawn & file_bit == 0 {
+                    if enemy_pawn & file_bit == 0 {
+                        mg[ci] += MG_ROOK_OPEN_FILE;
+                        eg[ci] += EG_ROOK_OPEN_FILE;
+                    } else {
+                        mg[ci] += MG_ROOK_SEMI_OPEN_FILE;
+                        eg[ci] += EG_ROOK_SEMI_OPEN_FILE;
+                    }
+                }
+            }
+
+            PieceType::Queen => {
+                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob_idx = mob.min(27) as usize;
+                mg[ci] += MG_QUEEN_MOB[mob_idx];
+                eg[ci] += EG_QUEEN_MOB[mob_idx];
+
+                // King safety
+                let ek = if is_white { &black_king } else { &white_king };
+                if cheb(x, y, ek.x, ek.y) <= 5 {
+                    if is_white { b_king_danger += KING_ATTACK_WEIGHT[4]; }
+                    else        { w_king_danger += KING_ATTACK_WEIGHT[4]; }
+                }
+            }
+
+            _ => {}
         }
     }
 
-    // Pawn Structure (Second Pass on pawns only)
+    // ---- Bishop pair ----
+    if w_bishop_light && w_bishop_dark {
+        mg[0] += MG_BISHOP_PAIR;
+        eg[0] += EG_BISHOP_PAIR;
+    }
+    if b_bishop_light && b_bishop_dark {
+        mg[1] += MG_BISHOP_PAIR;
+        eg[1] += EG_BISHOP_PAIR;
+    }
+
+    // ---- SECOND PASS: pawn structure ----
     for i in 0..pawns.len() {
         let (x, y, is_white) = pawns[i];
-        let color_idx = if is_white { 0 } else { 1 };
+        let ci = if is_white { 0 } else { 1 };
         let f = (x - 1).clamp(0, 7) as usize;
-        let files = if is_white { w_pawn_files } else { b_pawn_files };
+        let own_files = if is_white { w_pawn_files } else { b_pawn_files };
+        let enemy_files = if is_white { b_pawn_files } else { w_pawn_files };
 
-        // 1. Isolated
-        let has_neighbor =
-            (f > 0 && (files & (1 << (f - 1))) != 0) || (f < 7 && (files & (1 << (f + 1))) != 0);
+        // -- Isolated --
+        let has_neighbor = (f > 0 && (own_files & (1 << (f - 1))) != 0)
+            || (f < 7 && (own_files & (1 << (f + 1))) != 0);
         if !has_neighbor {
-            mg[color_idx] -= MG_ISOLATED_PENALTY;
-            eg[color_idx] -= EG_ISOLATED_PENALTY;
+            mg[ci] -= MG_ISOLATED_PENALTY;
+            eg[ci] -= EG_ISOLATED_PENALTY;
         }
 
-        // 2. Doubled
-        let mut is_doubled = false;
-        for j in 0..pawns.len() {
-            if i != j {
-                let (nx, _, nw) = pawns[j];
-                if nw == is_white && nx == x {
-                    is_doubled = true;
-                    break;
+        // -- Doubled --
+        let is_doubled = pawns.iter().enumerate().any(|(j, &(nx, _, nw))| {
+            j != i && nw == is_white && nx == x
+        });
+        if is_doubled {
+            mg[ci] -= MG_DOUBLED_PENALTY;
+            eg[ci] -= EG_DOUBLED_PENALTY;
+        }
+
+        // -- Connected (phalanx or supported) --
+        // Phalanx: friendly pawn on same rank, adjacent file
+        let phalanx = pawns.iter().any(|&(nx, ny, nw)| {
+            nw == is_white && ny == y && (nx - x).abs() == 1
+        });
+        // Supported: friendly pawn one rank behind on adjacent file
+        let support_y = if is_white { y - 1 } else { y + 1 };
+        let supported = pawns.iter().any(|&(nx, ny, nw)| {
+            nw == is_white && ny == support_y && (nx - x).abs() <= 1
+        });
+        if phalanx || supported {
+            let rank = if is_white { y } else { 9 - y };
+            let rank_idx = (rank as usize).clamp(0, 7);
+            let v = CONNECTED_BONUS[rank_idx];
+            mg[ci] += v;
+            eg[ci] += v * (rank_idx as i32 - 2).max(0) / 4;
+        }
+
+        // -- Backward pawn --
+        // A pawn is backward if it has no friendly pawns supporting it from behind
+        // on adjacent files, and the stop square is contested by an enemy pawn.
+        // Only applied when not already isolated (no neighbor), to avoid double-counting.
+        if !supported && !phalanx && has_neighbor {
+            let no_support_behind = !pawns.iter().any(|&(nx, ny, nw)| {
+                nw == is_white
+                    && (nx - x).abs() == 1
+                    && if is_white { ny < y } else { ny > y }
+            });
+            let enemy_stop_file = (f > 0 && (enemy_files & (1 << (f - 1))) != 0)
+                || (f < 7 && (enemy_files & (1 << (f + 1))) != 0);
+            if no_support_behind && enemy_stop_file {
+                mg[ci] -= MG_BACKWARD_PENALTY;
+                eg[ci] -= EG_BACKWARD_PENALTY;
+            }
+        }
+
+        // -- Passed pawn --
+        let is_passed = !pawns.iter().any(|&(nx, ny, nw)| {
+            nw != is_white
+                && (nx - x).abs() <= 1
+                && if is_white { ny > y } else { ny < y }
+        });
+
+        if is_passed {
+            let rel_rank = if is_white { y } else { 9 - y };
+            let rank_idx = (rel_rank as usize).clamp(0, 7);
+            let mg_bonus = MG_PASSED_BONUS[rank_idx];
+            let mut eg_bonus = EG_PASSED_BONUS[rank_idx];
+
+            // King proximity adjustment (endgame): friendly king close = +bonus, enemy king close = -bonus
+            if rank_idx >= 3 {
+                let promo_x = x;
+                let promo_y = if is_white { 8i64 } else { 1i64 };
+                let (own_king, opp_king) = if is_white {
+                    (&white_king, &black_king)
+                } else {
+                    (&black_king, &white_king)
+                };
+                let own_dist = cheb(own_king.x, own_king.y, promo_x, promo_y).min(5) as i32;
+                let opp_dist = cheb(opp_king.x, opp_king.y, promo_x, promo_y).min(5) as i32;
+                let w = (rank_idx as i32 - 2) * 5;
+                eg_bonus += (opp_dist - own_dist) * w;
+            }
+
+            mg[ci] += mg_bonus;
+            eg[ci] += eg_bonus;
+        }
+    }
+
+    // ---- King Safety: pawn shelter ----
+    // For each king evaluate the 3 files around it (king file, ±1)
+    for color_idx in 0..2usize {
+        let (king, own_pawns_arr, is_white_king): (&Coordinate, &[_], bool) = if color_idx == 0 {
+            (&white_king, pawns.as_slice(), true)
+        } else {
+            (&black_king, pawns.as_slice(), false)
+        };
+
+        let kf = (king.x - 1).clamp(0, 7) as usize;
+        let mut shelter_mg = 0i32;
+
+        for df in -1i64..=1i64 {
+            let f = (kf as i64 + df).clamp(0, 7) as usize;
+            let file_dist = df.unsigned_abs() as usize; // 0 = king file, 1 = adjacent
+            let file_rel = file_dist.min(2);
+
+            // Find closest own pawn ahead (toward promotion)
+            let best_pawn_rank_dist: Option<i32> = own_pawns_arr
+                .iter()
+                .filter(|&&(px, py, pw)| {
+                    pw == is_white_king
+                        && (px - 1).clamp(0, 7) as usize == f
+                        && if is_white_king { py > king.y } else { py < king.y }
+                })
+                .map(|&(_, py, _)| (py - king.y).abs() as i32)
+                .min();
+
+            match best_pawn_rank_dist {
+                Some(dist) if dist <= 3 => {
+                    let d = dist as usize;
+                    shelter_mg += SHELTER_BONUS[d][file_rel];
+                }
+                _ => {
+                    shelter_mg -= SHELTER_MISSING_PENALTY[file_rel];
                 }
             }
         }
-        if is_doubled {
-            mg[color_idx] -= MG_DOUBLED_PENALTY;
-            eg[color_idx] -= EG_DOUBLED_PENALTY;
-        }
-
-        // 3. Passed (No enemy pawns on same/adj files AHEAD)
-        let mut is_passed = true;
-        for j in 0..pawns.len() {
-            let (nx, ny, nw) = pawns[j];
-            if nw != is_white
-                && (nx - x).abs() <= 1
-                && ((is_white && ny > y) || (!is_white && ny < y))
-            {
-                is_passed = false;
-                break;
-            }
-        }
-
-        if is_passed {
-            let rank = if is_white { y } else { 9 - y };
-            let bonus = PASSED_PAWN_BONUS[(rank - 1).clamp(0, 7) as usize];
-            mg[color_idx] += bonus / 2;
-            eg[color_idx] += bonus;
-        }
+        // Shelter applies to mg only
+        mg[color_idx] += shelter_mg;
     }
 
-    // Apply King Safety Penalty (Non-linear)
-    if w_king_attackers >= 2 {
-        let penalty = (w_king_attackers * w_king_attackers * w_king_attack_weight) / 40;
-        mg[0] -= penalty * KING_SAFETY_COEFF;
+    // ---- King Safety: attacker danger ----
+    // Apply as quadratic penalty (only in midgame)
+    if w_king_danger > 0 {
+        let penalty = w_king_danger * w_king_danger / 256;
+        mg[0] -= penalty;
     }
-    if b_king_attackers >= 2 {
-        let penalty = (b_king_attackers * b_king_attackers * b_king_attack_weight) / 40;
-        mg[1] -= penalty * KING_SAFETY_COEFF;
+    if b_king_danger > 0 {
+        let penalty = b_king_danger * b_king_danger / 256;
+        mg[1] -= penalty;
     }
 
-    // Perspective relative to current player
-    let side = if game.turn == PlayerColor::White {
-        0
-    } else {
-        1
-    };
+    // ---- Tapered score ----
+    let side = if game.turn == PlayerColor::White { 0 } else { 1 };
     let other = side ^ 1;
 
     let mg_score = mg[side] - mg[other];
@@ -373,52 +661,47 @@ pub fn evaluate(game: &GameState) -> i32 {
     (mg_score * mg_phase + eg_score * eg_phase) / MAX_PHASE
 }
 
-fn count_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
-    let mut count = 0;
+// ==================== Mobility Counting ====================
+
+fn count_knight_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
+    let our_color = piece.color();
+    let mut count = 0i32;
+    for (dx, dy) in [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)] {
+        let nx = x + dx;
+        let ny = y + dy;
+        if !(1..=8).contains(&nx) || !(1..=8).contains(&ny) { continue; }
+        if let Some(p) = board.get_piece(nx, ny) {
+            if p.color() != our_color && p.color() != PlayerColor::Neutral {
+                count += 1;
+            }
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn count_sliding_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
     let pt = piece.piece_type();
     let our_color = piece.color();
-    let dirs = match pt {
-        PieceType::Knight => vec![
-            (2, 1),
-            (2, -1),
-            (-2, 1),
-            (-2, -1),
-            (1, 2),
-            (1, -2),
-            (-1, 2),
-            (-1, -2),
-        ],
-        PieceType::Bishop => vec![(1, 1), (1, -1), (-1, 1), (-1, -1)],
-        PieceType::Rook => vec![(1, 0), (-1, 0), (0, 1), (0, -1)],
-        PieceType::Queen => vec![
-            (1, 1),
-            (1, -1),
-            (-1, 1),
-            (-1, -1),
-            (1, 0),
-            (-1, 0),
-            (0, 1),
-            (0, -1),
-        ],
+    let dirs: &[(i64, i64)] = match pt {
+        PieceType::Bishop => &[(1,1),(1,-1),(-1,1),(-1,-1)],
+        PieceType::Rook   => &[(1,0),(-1,0),(0,1),(0,-1)],
+        PieceType::Queen  => &[(1,1),(1,-1),(-1,1),(-1,-1),(1,0),(-1,0),(0,1),(0,-1)],
         _ => return 0,
     };
-
-    let sliding = pt == PieceType::Bishop || pt == PieceType::Rook || pt == PieceType::Queen;
-
-    for (dx, dy) in dirs {
+    let mut count = 0i32;
+    for &(dx, dy) in dirs {
         let mut nx = x + dx;
         let mut ny = y + dy;
         while (1..=8).contains(&nx) && (1..=8).contains(&ny) {
             if let Some(p) = board.get_piece(nx, ny) {
                 if p.color() != our_color && p.color() != PlayerColor::Neutral {
-                    count += 1; // Count capture square
+                    count += 1;
                 }
                 break;
             }
             count += 1;
-            if !sliding {
-                break;
-            }
             nx += dx;
             ny += dy;
         }
