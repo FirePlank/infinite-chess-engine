@@ -729,7 +729,7 @@ fn compute(game: &crate::game::GameState) -> bool {
 /// Detects cross-board combinations where helpmate is theoretically possible
 /// despite both sides being individually insufficient.
 #[inline]
-fn is_helpmate_only_combo(a: &Mat, b: &Mat) -> bool {
+fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
     // R+B vs Q (either direction)
     let rb_vs_q = |x: &Mat, y: &Mat| {
         x.rooks == 1
@@ -898,6 +898,72 @@ fn is_helpmate_only_combo(a: &Mat, b: &Mat) -> bool {
         return true;
     }
 
+    // Bounded-only helpmate combos
+    if bordered {
+        // B vs B opposite colors (either direction)
+        let b_vs_b_opposite = |x: &Mat, y: &Mat| {
+            x.queens == 0
+                && x.rooks == 0
+                && x.knights == 0
+                && x.pawns == 0
+                && no_exotic_pieces(x)
+                && x.non_royal() == 1
+                && y.queens == 0
+                && y.rooks == 0
+                && y.knights == 0
+                && y.pawns == 0
+                && no_exotic_pieces(y)
+                && y.non_royal() == 1
+                && ((x.bishops_maj == 1 && x.bishops_min == 0 && y.bishops_maj == 0 && y.bishops_min == 1)
+                    || (x.bishops_maj == 0 && x.bishops_min == 1 && y.bishops_maj == 1 && y.bishops_min == 0))
+        };
+        if b_vs_b_opposite(a, b) || b_vs_b_opposite(b, a) {
+            return true;
+        }
+
+        // N vs B (either direction)
+        let n_vs_b = |x: &Mat, y: &Mat| {
+            x.knights == 1
+                && x.queens == 0
+                && x.rooks == 0
+                && (x.bishops_maj + x.bishops_min) == 0
+                && x.pawns == 0
+                && no_exotic_pieces(x)
+                && x.non_royal() == 1
+                && (y.bishops_maj + y.bishops_min) == 1
+                && y.queens == 0
+                && y.rooks == 0
+                && y.knights == 0
+                && y.pawns == 0
+                && no_exotic_pieces(y)
+                && y.non_royal() == 1
+        };
+        if n_vs_b(a, b) || n_vs_b(b, a) {
+            return true;
+        }
+
+        // N vs N (either direction)
+        let n_vs_n = |x: &Mat, y: &Mat| {
+            x.knights == 1
+                && x.queens == 0
+                && x.rooks == 0
+                && (x.bishops_maj + x.bishops_min) == 0
+                && x.pawns == 0
+                && no_exotic_pieces(x)
+                && x.non_royal() == 1
+                && y.knights == 1
+                && y.queens == 0
+                && y.rooks == 0
+                && (y.bishops_maj + y.bishops_min) == 0
+                && y.pawns == 0
+                && no_exotic_pieces(y)
+                && y.non_royal() == 1
+        };
+        if n_vs_n(a, b) || n_vs_n(b, a) {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -986,7 +1052,7 @@ fn compute_game_handler(game: &crate::game::GameState) -> bool {
 
     // Both sides are individually insufficient. Check for helpmate-only combos
     // that game handlers must not auto-declare as draws.
-    if is_helpmate_only_combo(&w, &b) {
+    if is_helpmate_only_combo(&w, &b, bordered) {
         return false;
     }
 
