@@ -11,7 +11,7 @@ fn main() {
     // Embed git commit info so every binary self-reports which snapshot it was built from.
     // The values are empty strings when git is unavailable or the repo has no commits.
     let commit = Command::new("git")
-        .args(["rev-parse", "--short=8", "HEAD"])
+        .args(["rev-parse", "--short=7", "HEAD"])
         .output()
         .ok()
         .filter(|o| o.status.success())

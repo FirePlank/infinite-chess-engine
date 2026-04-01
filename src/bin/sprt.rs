@@ -212,7 +212,7 @@ fn try_query_binary_commit_info(bin_path: &str) -> Option<CommitInfo> {
 /// Silently returns `None` if git is unavailable or `rev` cannot be resolved.
 fn try_get_commit_info_from_git(rev: &str) -> Option<CommitInfo> {
     let sha_out = Command::new("git")
-        .args(["rev-parse", "--short=8", rev])
+        .args(["rev-parse", "--short=7", rev])
         .output()
         .ok()
         .filter(|o| o.status.success())?;
