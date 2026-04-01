@@ -1639,7 +1639,7 @@ fn main() {
                 println!("\nRun stopped by user.");
             }
 
-            println!("\nFinal Summary:");
+            println!("\n\nFinal Summary:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
             print_settings_context(&config);
             let (elo, err) = estimate_elo(wins, losses, draws);
