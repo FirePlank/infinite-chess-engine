@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// Commit SHA and date baked in at compile time by build.rs.
+const BUILD_COMMIT: Option<&str> = option_env!("SPRT_GIT_COMMIT");
+const BUILD_DATE: Option<&str> = option_env!("SPRT_GIT_DATE");
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -98,14 +102,18 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
 
-        /// Git commit SHA for the new engine (auto-detected from git HEAD if omitted)
+        /// Git commit SHA for the new engine (overrides the build-time embedded value)
         #[arg(long)]
         new_commit: Option<String>,
 
-        /// Git commit SHA for the old engine (auto-read from <old-bin>.commit if omitted)
+        /// Git commit SHA for the old engine (overrides the value embedded in the old binary)
         #[arg(long)]
         old_commit: Option<String>,
     },
+
+    /// Print the commit SHA and date baked into this binary at build time (JSON output).
+    /// Used internally by the run manager to identify which snapshot the old binary was built from.
+    CommitInfo,
 
     /// Internal interface for subprocess move generation
     Search {
@@ -174,12 +182,30 @@ impl CommitInfo {
     }
 }
 
-/// Try to read a companion `<bin_path>.commit` JSON file that was saved when the
-/// baseline binary was built.
-fn try_read_companion_file(bin_path: &str) -> Option<CommitInfo> {
-    let path = format!("{}.commit", bin_path);
-    let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<CommitInfo>(&content).ok()
+/// Best-effort: get the author-date (YYYY-MM-DD) for the given git revision.
+/// Returns an empty string when git is unavailable or the revision is unknown.
+fn get_commit_date_from_git(sha: &str) -> String {
+    Command::new("git")
+        .args(["log", "-1", "--format=%cs", sha])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Query `bin_path commit-info` to get the commit info embedded in that binary at build time.
+/// Returns `None` if the binary doesn't support the subcommand or its output can't be parsed.
+fn try_query_binary_commit_info(bin_path: &str) -> Option<CommitInfo> {
+    let output = Command::new(bin_path)
+        .arg("commit-info")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    serde_json::from_str::<CommitInfo>(&json)
+        .ok()
+        .filter(|c| !c.commit.is_empty())
 }
 
 /// Try to resolve a git commit SHA (short 8-char) and author-date for `rev`.
@@ -194,14 +220,41 @@ fn try_get_commit_info_from_git(rev: &str) -> Option<CommitInfo> {
     if commit.is_empty() {
         return None;
     }
-    let date = Command::new("git")
-        .args(["log", "-1", "--format=%cs", rev])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    let date = get_commit_date_from_git(rev);
     Some(CommitInfo { commit, date })
+}
+
+/// Print the "NEW: … vs OLD: …" commit identity line (shared by startup banner and final summary).
+fn print_commit_context(new_info: &Option<CommitInfo>, old_info: &Option<CommitInfo>) {
+    match (new_info, old_info) {
+        (Some(nc), Some(oc)) => println!(
+            "  NEW: {}  vs  OLD: {}",
+            nc.display_str(),
+            oc.display_str()
+        ),
+        (Some(nc), None) => println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str()),
+        (None, Some(oc)) => println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str()),
+        (None, None) => {}
+    }
+}
+
+/// Print the compact settings lines (shared by startup banner and final summary).
+fn print_settings_context(config: &Config) {
+    println!(
+        "  Bounds: [{}, {}] Elo | \u{03b1}={}, \u{03b2}={}",
+        config.elo0, config.elo1, config.alpha, config.beta
+    );
+    println!(
+        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {} cp | Min/Max games: {}/{}",
+        config.tc,
+        config.concurrency,
+        config.variants.len(),
+        config.adjudication_threshold,
+        config.min_games,
+        config
+            .max_games
+            .map_or_else(|| "\u{221e}".to_string(), |m| m.to_string()),
+    );
 }
 
 #[derive(Clone, Debug)]
@@ -1360,30 +1413,23 @@ fn main() {
                 old_commit_info: None,
             };
 
-            // Resolve old commit info: explicit CLI arg > companion file alongside old binary.
+            // Resolve old commit info: explicit CLI arg > query the old binary itself.
             config.old_commit_info = if let Some(sha) = old_commit {
-                let date = Command::new("git")
-                    .args(["log", "-1", "--format=%cs", &sha])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default();
+                let date = get_commit_date_from_git(&sha);
                 Some(CommitInfo { commit: sha, date })
             } else {
-                try_read_companion_file(&config.old_bin)
+                try_query_binary_commit_info(&config.old_bin)
             };
 
-            // Resolve new commit info: explicit CLI arg > auto-detect from git HEAD.
+            // Resolve new commit info: explicit CLI arg > build-time embedded value > git HEAD.
             config.new_commit_info = if let Some(sha) = new_commit {
-                let date = Command::new("git")
-                    .args(["log", "-1", "--format=%cs", &sha])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default();
+                let date = get_commit_date_from_git(&sha);
                 Some(CommitInfo { commit: sha, date })
+            } else if let Some(commit) = BUILD_COMMIT.filter(|s| !s.is_empty()) {
+                Some(CommitInfo {
+                    commit: commit.to_string(),
+                    date: BUILD_DATE.unwrap_or("").to_string(),
+                })
             } else {
                 try_get_commit_info_from_git("HEAD")
             };
@@ -1416,35 +1462,10 @@ fn main() {
                 );
             }
 
-            println!("SPRT Configuration:");
-            match (&config.new_commit_info, &config.old_commit_info) {
-                (Some(nc), Some(oc)) => println!(
-                    "  NEW: {}  vs  OLD: {}",
-                    nc.display_str(),
-                    oc.display_str()
-                ),
-                (Some(nc), None) => {
-                    println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str())
-                }
-                (None, Some(oc)) => {
-                    println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str())
-                }
-                (None, None) => {}
-            }
-            println!(
-                "  Bounds: [{}, {}] Elo | \u{03b1}={}, \u{03b2}={}",
-                config.elo0, config.elo1, config.alpha, config.beta
-            );
-            println!(
-                "  TC: {} | Concurrency: {} | Variants: {} | Min/Max games: {}/{}",
-                config.tc,
-                config.concurrency,
-                config.variants.len(),
-                config.min_games,
-                config
-                    .max_games
-                    .map_or_else(|| "\u{221e}".to_string(), |m| m.to_string())
-            );
+            println!();
+            println!("Starting SPRT with Configuration:");
+            print_commit_context(&config.new_commit_info, &config.old_commit_info);
+            print_settings_context(&config);
             println!();
 
             let (lower, upper) = (
@@ -1619,29 +1640,8 @@ fn main() {
             }
 
             println!("\nFinal Summary:");
-            match (&config.new_commit_info, &config.old_commit_info) {
-                (Some(nc), Some(oc)) => println!(
-                    "  NEW: {}  vs  OLD: {}",
-                    nc.display_str(),
-                    oc.display_str()
-                ),
-                (Some(nc), None) => {
-                    println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str())
-                }
-                (None, Some(oc)) => {
-                    println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str())
-                }
-                (None, None) => {}
-            }
-            println!(
-                "  Settings: SPRT[{:.1},{:.1}] \u{03b1}={} \u{03b2}={} | TC={} | {} variants",
-                config.elo0,
-                config.elo1,
-                config.alpha,
-                config.beta,
-                config.tc,
-                config.variants.len()
-            );
+            print_commit_context(&config.new_commit_info, &config.old_commit_info);
+            print_settings_context(&config);
             let (elo, err) = estimate_elo(wins, losses, draws);
             println!("  Elo: {:.1} +/- {:.1}", elo, err);
             println!("  Record: {}W - {}L - {}D", wins, losses, draws);
@@ -1677,6 +1677,7 @@ fn main() {
                     beta: f64,
                     concurrency: usize,
                     variant_count: usize,
+                    adjudication: i32,
                     min_games: usize,
                     max_games: Option<usize>,
                 }
@@ -1730,6 +1731,7 @@ fn main() {
                         beta: config.beta,
                         concurrency: config.concurrency,
                         variant_count: config.variants.len(),
+                        adjudication: config.adjudication_threshold,
                         min_games: config.min_games,
                         max_games: config.max_games,
                     },
@@ -1827,6 +1829,13 @@ fn main() {
                 eprintln!("PANIC in search subprocess: {}", msg);
                 println!("bestmove none");
             }
+        }
+        Some(Commands::CommitInfo) => {
+            let info = CommitInfo {
+                commit: BUILD_COMMIT.unwrap_or("").to_string(),
+                date: BUILD_DATE.unwrap_or("").to_string(),
+            };
+            println!("{}", serde_json::to_string(&info).unwrap());
         }
         None => {
             println!("Use --help for usage. SPRT CLI requires a subcommand.");

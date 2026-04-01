@@ -191,13 +191,6 @@ jobs:
           cp "$OLD_WORKTREE/target/release/sprt" "$GITHUB_WORKSPACE/target/release/sprt_old"
           git worktree remove "$OLD_WORKTREE" --force
 
-          # Save commit metadata alongside the baseline binary so the SPRT runner can
-          # display which snapshot the old engine was built from.
-          OLD_SHORT=$(git rev-parse --short=8 "$OLD_COMMIT")
-          OLD_DATE=$(git log -1 --format='%cs' "$OLD_COMMIT")
-          printf '{"commit":"%s","date":"%s"}' "$OLD_SHORT" "$OLD_DATE" \
-            > "$GITHUB_WORKSPACE/target/release/sprt_old.commit"
-
       - name: Run SPRT CLI (HEAD vs previous)
         if: steps.check_parent.outputs.has_parent == 'true'
         env:
@@ -208,10 +201,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p sprt
-          NEW_COMMIT=$(git rev-parse HEAD)
           cargo run --release --features sprt --bin sprt -- run \
             --old-bin target/release/sprt_old \
-            --new-commit "$NEW_COMMIT" \
             --tc "$SPRT_CI_TC" \
             --concurrency "$SPRT_CI_CONCURRENCY" \
             --max-games "$SPRT_CI_GAMES" \
@@ -286,8 +277,9 @@ jobs:
           // Compact settings
           if (Object.keys(s).length > 0) {
             const varCount = typeof s.variant_count === 'number' ? s.variant_count : '?';
+            const adjudication = typeof s.adjudication === 'number' ? s.adjudication : '?';
             const maxG = s.max_games != null ? s.max_games : '\u221e';
-            lines.push(`Settings: SPRT[${elo0},${elo1}] \u03b1=${alpha} \u03b2=${beta} | TC=${s.tc ?? '?'} | ${varCount} variants | min/max games: ${minGames}/${maxG}`);
+            lines.push(`Settings: SPRT[${elo0},${elo1}] \u03b1=${alpha} \u03b2=${beta} | TC=${s.tc ?? '?'} | ${varCount} variants | Adjudication: ${adjudication} cp | min/max games: ${minGames}/${maxG}`);
             lines.push('');
           }
           if (typeof data.elo === 'number' && games > 0) {
