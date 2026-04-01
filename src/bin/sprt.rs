@@ -7,7 +7,7 @@ use hydrochess_wasm::Engine;
 use hydrochess_wasm::Variant;
 use hydrochess_wasm::board::{Coordinate, PieceType, PlayerColor};
 use hydrochess_wasm::game::GameState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,6 +97,14 @@ enum Commands {
         /// Print verbose engine info
         #[arg(long, default_value_t = false)]
         verbose: bool,
+
+        /// Git commit SHA for the new engine (auto-detected from git HEAD if omitted)
+        #[arg(long)]
+        new_commit: Option<String>,
+
+        /// Git commit SHA for the old engine (auto-read from <old-bin>.commit if omitted)
+        #[arg(long)]
+        old_commit: Option<String>,
     },
 
     /// Internal interface for subprocess move generation
@@ -147,6 +155,55 @@ enum Commands {
     },
 }
 
+/// Commit identity: short SHA plus an optional date string (YYYY-MM-DD).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CommitInfo {
+    commit: String,
+    #[serde(default)]
+    date: String,
+}
+
+impl CommitInfo {
+    /// Format for display: "abc12345 (2024-01-15)" or just "abc12345" when date is absent.
+    fn display_str(&self) -> String {
+        if self.date.is_empty() {
+            self.commit.clone()
+        } else {
+            format!("{} ({})", self.commit, self.date)
+        }
+    }
+}
+
+/// Try to read a companion `<bin_path>.commit` JSON file that was saved when the
+/// baseline binary was built.
+fn try_read_companion_file(bin_path: &str) -> Option<CommitInfo> {
+    let path = format!("{}.commit", bin_path);
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<CommitInfo>(&content).ok()
+}
+
+/// Try to resolve a git commit SHA (short 8-char) and author-date for `rev`.
+/// Silently returns `None` if git is unavailable or `rev` cannot be resolved.
+fn try_get_commit_info_from_git(rev: &str) -> Option<CommitInfo> {
+    let sha_out = Command::new("git")
+        .args(["rev-parse", "--short=8", rev])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let commit = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
+    if commit.is_empty() {
+        return None;
+    }
+    let date = Command::new("git")
+        .args(["log", "-1", "--format=%cs", rev])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    Some(CommitInfo { commit, date })
+}
+
 #[derive(Clone, Debug)]
 struct Config {
     elo0: f64,
@@ -169,6 +226,8 @@ struct Config {
     search_noise: i32,
     old_strength: u32,
     verbose: bool,
+    new_commit_info: Option<CommitInfo>,
+    old_commit_info: Option<CommitInfo>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -1181,6 +1240,8 @@ fn main() {
             search_noise,
             old_strength,
             verbose,
+            new_commit,
+            old_commit,
         }) => {
             let concurrency = concurrency.unwrap_or_else(|| {
                 std::thread::available_parallelism()
@@ -1295,7 +1356,38 @@ fn main() {
                 search_noise,
                 old_strength,
                 verbose,
+                new_commit_info: None,
+                old_commit_info: None,
             };
+
+            // Resolve old commit info: explicit CLI arg > companion file alongside old binary.
+            config.old_commit_info = if let Some(sha) = old_commit {
+                let date = Command::new("git")
+                    .args(["log", "-1", "--format=%cs", &sha])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                Some(CommitInfo { commit: sha, date })
+            } else {
+                try_read_companion_file(&config.old_bin)
+            };
+
+            // Resolve new commit info: explicit CLI arg > auto-detect from git HEAD.
+            config.new_commit_info = if let Some(sha) = new_commit {
+                let date = Command::new("git")
+                    .args(["log", "-1", "--format=%cs", &sha])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                Some(CommitInfo { commit: sha, date })
+            } else {
+                try_get_commit_info_from_git("HEAD")
+            };
+
             let games_path = games;
             let results_path = results;
 
@@ -1324,10 +1416,36 @@ fn main() {
                 );
             }
 
+            println!("SPRT Configuration:");
+            match (&config.new_commit_info, &config.old_commit_info) {
+                (Some(nc), Some(oc)) => println!(
+                    "  NEW: {}  vs  OLD: {}",
+                    nc.display_str(),
+                    oc.display_str()
+                ),
+                (Some(nc), None) => {
+                    println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str())
+                }
+                (None, Some(oc)) => {
+                    println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str())
+                }
+                (None, None) => {}
+            }
             println!(
-                "Starting SPRT: elo0={}, elo1={}, tc={}, concurrency={}\n",
-                config.elo0, config.elo1, tc, config.concurrency
+                "  Bounds: [{}, {}] Elo | \u{03b1}={}, \u{03b2}={}",
+                config.elo0, config.elo1, config.alpha, config.beta
             );
+            println!(
+                "  TC: {} | Concurrency: {} | Variants: {} | Min/Max games: {}/{}",
+                config.tc,
+                config.concurrency,
+                config.variants.len(),
+                config.min_games,
+                config
+                    .max_games
+                    .map_or_else(|| "\u{221e}".to_string(), |m| m.to_string())
+            );
+            println!();
 
             let (lower, upper) = (
                 (config.beta / (1.0 - config.alpha)).ln(),
@@ -1501,6 +1619,29 @@ fn main() {
             }
 
             println!("\nFinal Summary:");
+            match (&config.new_commit_info, &config.old_commit_info) {
+                (Some(nc), Some(oc)) => println!(
+                    "  NEW: {}  vs  OLD: {}",
+                    nc.display_str(),
+                    oc.display_str()
+                ),
+                (Some(nc), None) => {
+                    println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str())
+                }
+                (None, Some(oc)) => {
+                    println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str())
+                }
+                (None, None) => {}
+            }
+            println!(
+                "  Settings: SPRT[{:.1},{:.1}] \u{03b1}={} \u{03b2}={} | TC={} | {} variants",
+                config.elo0,
+                config.elo1,
+                config.alpha,
+                config.beta,
+                config.tc,
+                config.variants.len()
+            );
             let (elo, err) = estimate_elo(wins, losses, draws);
             println!("  Elo: {:.1} +/- {:.1}", elo, err);
             println!("  Record: {}W - {}L - {}D", wins, losses, draws);
@@ -1528,7 +1669,28 @@ fn main() {
             }
             if let Some(path) = results_path {
                 #[derive(Serialize)]
+                struct ResultSettings {
+                    tc: String,
+                    elo0: f64,
+                    elo1: f64,
+                    alpha: f64,
+                    beta: f64,
+                    concurrency: usize,
+                    variant_count: usize,
+                    min_games: usize,
+                    max_games: Option<usize>,
+                }
+                #[derive(Serialize)]
                 struct FinalResults {
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    new_commit: Option<String>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    new_commit_date: Option<String>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    old_commit: Option<String>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    old_commit_date: Option<String>,
+                    settings: ResultSettings,
                     wins: usize,
                     losses: usize,
                     draws: usize,
@@ -1542,6 +1704,35 @@ fn main() {
                 let final_llr = calculate_llr(wins, losses, draws, config.elo0, config.elo1);
                 let (final_elo, final_err) = estimate_elo(wins, losses, draws);
                 let res = FinalResults {
+                    new_commit: config
+                        .new_commit_info
+                        .as_ref()
+                        .map(|c| c.commit.clone()),
+                    new_commit_date: config
+                        .new_commit_info
+                        .as_ref()
+                        .filter(|c| !c.date.is_empty())
+                        .map(|c| c.date.clone()),
+                    old_commit: config
+                        .old_commit_info
+                        .as_ref()
+                        .map(|c| c.commit.clone()),
+                    old_commit_date: config
+                        .old_commit_info
+                        .as_ref()
+                        .filter(|c| !c.date.is_empty())
+                        .map(|c| c.date.clone()),
+                    settings: ResultSettings {
+                        tc: config.tc.clone(),
+                        elo0: config.elo0,
+                        elo1: config.elo1,
+                        alpha: config.alpha,
+                        beta: config.beta,
+                        concurrency: config.concurrency,
+                        variant_count: config.variants.len(),
+                        min_games: config.min_games,
+                        max_games: config.max_games,
+                    },
                     wins,
                     losses,
                     draws,

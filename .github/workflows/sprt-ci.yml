@@ -191,6 +191,13 @@ jobs:
           cp "$OLD_WORKTREE/target/release/sprt" "$GITHUB_WORKSPACE/target/release/sprt_old"
           git worktree remove "$OLD_WORKTREE" --force
 
+          # Save commit metadata alongside the baseline binary so the SPRT runner can
+          # display which snapshot the old engine was built from.
+          OLD_SHORT=$(git rev-parse --short=8 "$OLD_COMMIT")
+          OLD_DATE=$(git log -1 --format='%cs' "$OLD_COMMIT")
+          printf '{"commit":"%s","date":"%s"}' "$OLD_SHORT" "$OLD_DATE" \
+            > "$GITHUB_WORKSPACE/target/release/sprt_old.commit"
+
       - name: Run SPRT CLI (HEAD vs previous)
         if: steps.check_parent.outputs.has_parent == 'true'
         env:
@@ -201,8 +208,10 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p sprt
+          NEW_COMMIT=$(git rev-parse HEAD)
           cargo run --release --features sprt --bin sprt -- run \
             --old-bin target/release/sprt_old \
+            --new-commit "$NEW_COMMIT" \
             --tc "$SPRT_CI_TC" \
             --concurrency "$SPRT_CI_CONCURRENCY" \
             --max-games "$SPRT_CI_GAMES" \
@@ -249,9 +258,12 @@ jobs:
           const logSummary = fs.existsSync(logPath)
             ? fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-20).join('\n')
             : '';
-          const alpha = 0.05;
-          const beta = 0.05;
-          const minGames = 250;
+          const s = data.settings || {};
+          const alpha = typeof s.alpha === 'number' ? s.alpha : 0.05;
+          const beta = typeof s.beta === 'number' ? s.beta : 0.05;
+          const elo0 = typeof s.elo0 === 'number' ? s.elo0 : 0;
+          const elo1 = typeof s.elo1 === 'number' ? s.elo1 : 5;
+          const minGames = typeof s.min_games === 'number' ? s.min_games : 250;
           const llr = typeof data.llr === 'number' ? data.llr : 0;
           const games = typeof data.total_games === 'number' ? data.total_games : ((data.wins || 0) + (data.losses || 0) + (data.draws || 0));
           const lowerBound = Math.log(beta / (1 - alpha));
@@ -267,6 +279,17 @@ jobs:
           lines.push('');
           lines.push(`Verdict: **${verdict}**`);
           lines.push('');
+          // Commit identities
+          const fmtCommit = (sha, date) => sha ? (date ? `\`${sha}\` (${date})` : `\`${sha}\``) : '(unknown)';
+          lines.push(`NEW: ${fmtCommit(data.new_commit, data.new_commit_date)}  vs  OLD: ${fmtCommit(data.old_commit, data.old_commit_date)}`);
+          lines.push('');
+          // Compact settings
+          if (Object.keys(s).length > 0) {
+            const varCount = typeof s.variant_count === 'number' ? s.variant_count : '?';
+            const maxG = s.max_games != null ? s.max_games : '\u221e';
+            lines.push(`Settings: SPRT[${elo0},${elo1}] \u03b1=${alpha} \u03b2=${beta} | TC=${s.tc ?? '?'} | ${varCount} variants | min/max games: ${minGames}/${maxG}`);
+            lines.push('');
+          }
           if (typeof data.elo === 'number' && games > 0) {
             const elo = data.elo;
             const err = typeof data.elo_error === 'number' ? data.elo_error : 0;
