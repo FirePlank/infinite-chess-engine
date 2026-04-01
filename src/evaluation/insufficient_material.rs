@@ -130,8 +130,8 @@ fn is_insufficient(m: &Mat) -> bool {
         return true;
     }
 
-    // Less than 5 bishops
-    if m.bishops_maj + m.bishops_min < 5
+    // Less than 4 bishops
+    if m.bishops_maj + m.bishops_min < 4
         && m.queens == 0
         && m.rooks == 0
         && m.knights == 0
