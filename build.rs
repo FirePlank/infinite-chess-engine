@@ -26,7 +26,9 @@ fn main() {
         .unwrap_or_default();
     println!("cargo:rustc-env=SPRT_GIT_COMMIT={}", commit);
     println!("cargo:rustc-env=SPRT_GIT_DATE={}", date);
-    // Rebuild when the checked-out commit changes.
+    // Rebuild when the checked-out commit changes, whether refs are stored
+    // as loose files under .git/refs or packed into .git/packed-refs.
     println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/heads");
+    println!("cargo:rerun-if-changed=.git/refs");
+    println!("cargo:rerun-if-changed=.git/packed-refs");
 }
