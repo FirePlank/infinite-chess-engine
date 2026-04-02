@@ -189,6 +189,14 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("queen_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS as i64, 0, 210, 2.0, 0.002, "Queen semi-open file bonus"),
     EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
     EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
+    // Attack units system (Stockfish-style king safety)
+    EvalParamSpec::new("queen_attack_units", crate::evaluation::base::DEFAULT_EVAL_QUEEN_ATTACK_UNITS as i64, 1, 15, 1.0, 0.002, "Queen attack units when attacking king zone"),
+    EvalParamSpec::new("rook_attack_units", crate::evaluation::base::DEFAULT_EVAL_ROOK_ATTACK_UNITS as i64, 1, 10, 1.0, 0.002, "Rook attack units when attacking king zone"),
+    EvalParamSpec::new("bishop_attack_units", crate::evaluation::base::DEFAULT_EVAL_BISHOP_ATTACK_UNITS as i64, 1, 8, 1.0, 0.002, "Bishop attack units when attacking king zone"),
+    EvalParamSpec::new("knightrider_attack_units", crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER_ATTACK_UNITS as i64, 1, 8, 1.0, 0.002, "Knightrider attack units when attacking king zone"),
+    EvalParamSpec::new("rose_attack_units", crate::evaluation::base::DEFAULT_EVAL_ROSE_ATTACK_UNITS as i64, 1, 10, 1.0, 0.002, "Rose attack units when attacking king zone"),
+    EvalParamSpec::new("huygen_attack_units", crate::evaluation::base::DEFAULT_EVAL_HUYGEN_ATTACK_UNITS as i64, 1, 8, 1.0, 0.002, "Huygen attack units when attacking king zone"),
+    EvalParamSpec::new("leaper_attack_units", crate::evaluation::base::DEFAULT_EVAL_LEAPER_ATTACK_UNITS as i64, 0, 5, 1.0, 0.002, "Leaper attack units when attacking king zone (Knight, Guard, Camel, Giraffe, Zebra, Hawk, Centaur)"),
 ];
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -221,6 +229,15 @@ pub struct EvalParams {
     pub queen_semi_open_file_bonus: i32,
     pub mg_outpost_bonus: i32,
     pub eg_outpost_bonus: i32,
+    // Attack units (king safety)
+    pub queen_attack_units: i32,
+    pub rook_attack_units: i32,
+    pub bishop_attack_units: i32,
+    pub knightrider_attack_units: i32,
+    pub rose_attack_units: i32,
+    pub huygen_attack_units: i32,
+    pub leaper_attack_units: i32,
+    pub attack_weights: [i32; 8],
 }
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -253,6 +270,14 @@ impl Default for EvalParams {
             queen_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
+            queen_attack_units: crate::evaluation::base::DEFAULT_EVAL_QUEEN_ATTACK_UNITS,
+            rook_attack_units: crate::evaluation::base::DEFAULT_EVAL_ROOK_ATTACK_UNITS,
+            bishop_attack_units: crate::evaluation::base::DEFAULT_EVAL_BISHOP_ATTACK_UNITS,
+            knightrider_attack_units: crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER_ATTACK_UNITS,
+            rose_attack_units: crate::evaluation::base::DEFAULT_EVAL_ROSE_ATTACK_UNITS,
+            huygen_attack_units: crate::evaluation::base::DEFAULT_EVAL_HUYGEN_ATTACK_UNITS,
+            leaper_attack_units: crate::evaluation::base::DEFAULT_EVAL_LEAPER_ATTACK_UNITS,
+            attack_weights: crate::evaluation::base::DEFAULT_EVAL_ATTACK_WEIGHTS,
         }
     }
 }
@@ -329,6 +354,26 @@ define_eval_accessor!(queen_open_file_bonus, crate::evaluation::base::DEFAULT_EV
 define_eval_accessor!(queen_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS);
 define_eval_accessor!(mg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS);
 define_eval_accessor!(eg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS);
+// Attack units (king safety)
+define_eval_accessor!(queen_attack_units, crate::evaluation::base::DEFAULT_EVAL_QUEEN_ATTACK_UNITS);
+define_eval_accessor!(rook_attack_units, crate::evaluation::base::DEFAULT_EVAL_ROOK_ATTACK_UNITS);
+define_eval_accessor!(bishop_attack_units, crate::evaluation::base::DEFAULT_EVAL_BISHOP_ATTACK_UNITS);
+define_eval_accessor!(knightrider_attack_units, crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER_ATTACK_UNITS);
+define_eval_accessor!(rose_attack_units, crate::evaluation::base::DEFAULT_EVAL_ROSE_ATTACK_UNITS);
+define_eval_accessor!(huygen_attack_units, crate::evaluation::base::DEFAULT_EVAL_HUYGEN_ATTACK_UNITS);
+define_eval_accessor!(leaper_attack_units, crate::evaluation::base::DEFAULT_EVAL_LEAPER_ATTACK_UNITS);
+
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+#[inline]
+pub fn attack_weights() -> [i32; 8] {
+    EVAL_PARAMS.read().unwrap().attack_weights
+}
+
+#[cfg(not(any(feature = "param_tuning", feature = "eval_tuning")))]
+#[inline]
+pub const fn attack_weights() -> [i32; 8] {
+    crate::evaluation::base::DEFAULT_EVAL_ATTACK_WEIGHTS
+}
 
 #[inline]
 pub fn queen_value() -> i32 {
