@@ -18,7 +18,7 @@ fn main() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     let date = Command::new("git")
-        .args(["log", "-1", "--format=%cs", "HEAD"])
+        .args(["log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d", "HEAD"])
         .output()
         .ok()
         .filter(|o| o.status.success())
