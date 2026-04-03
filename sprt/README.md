@@ -60,7 +60,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--elo1 <F>` | `5.0` | H1 bound (Elo where new IS better) |
 | `--alpha <F>` | `0.05` | Type I error rate (false positive) |
 | `--beta <F>` | `0.05` | Type II error rate (false negative) |
-| `--adjudication <N>` | `2000` | Material eval difference (cp) to auto-adjudicate |
+| `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate (0 = disabled) |
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
 | `--old-strength <N>` | `3` | Strength level for old engine (1-3) |
@@ -146,7 +146,7 @@ cargo run --release --bin spsa --features sprt,param_tuning -- run
 | `run --tc <TC>` | `3+0.03` | Time control: `base+inc`, `depth N`, or `fixed Ns` |
 | `run --concurrency <N>` | `16` | Number of parallel game workers |
 | `run --variants <LIST>` | default set | Comma-separated variant list |
-| `run --adjudication <N>` | `2000` | Material eval threshold for adjudication |
+| `run --adjudication <N>` | `2000` | Eval threshold for adjudication |
 | `run --max-moves <N>` | `300` | Maximum plies before forced draw |
 | `run --search-noise <N>` | `50` | Noise amplitude for first 8 ply |
 | `run --params <SELECTOR>` | `all` | Parameter preset or comma-separated names |

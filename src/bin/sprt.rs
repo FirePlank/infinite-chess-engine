@@ -76,7 +76,7 @@ enum Commands {
         variants: String,
 
         /// Material threshold for draws
-        #[arg(long, default_value_t = 2000)]
+        #[arg(long, default_value_t = 0)]
         adjudication: i32,
 
         /// Path to output game ICNs
@@ -258,12 +258,17 @@ fn print_commit_context(new_info: &Option<CommitInfo>, old_info: &Option<CommitI
 
 /// Print the compact settings lines (shared by startup banner and final summary).
 fn print_settings_context(config: &Config) {
+    let adjudication_str = if config.adjudication_threshold <= 0 {
+        "Disabled".to_string()
+    } else {
+        format!("{} cp", config.adjudication_threshold)
+    };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {} cp",
+        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
-        config.adjudication_threshold,
+        adjudication_str,
     );
 }
 

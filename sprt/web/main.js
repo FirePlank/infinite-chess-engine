@@ -110,7 +110,7 @@ const CONFIG = {
     minGames: 500,
     maxMoves: 300,
     concurrency: navigator.hardwareConcurrency || 1,
-    materialThreshold: 2000,
+    materialThreshold: 0,
 
     searchNoise: 50,
 };
