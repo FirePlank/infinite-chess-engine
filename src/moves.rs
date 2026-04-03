@@ -3503,69 +3503,94 @@ fn generate_knightrider_moves_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::GameState;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static BOUNDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn get_bounds_lock() -> &'static Mutex<()> {
+        BOUNDS_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    // Helper function to reset world bounds to defaults
+    fn reset_world_bounds() {
+        set_world_bounds(
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        );
+    }
+    
+    // Helper to acquire bounds lock for tests that modify bounds
+    fn with_bounds_lock<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = get_bounds_lock().lock().unwrap_or_else(|e| e.into_inner());
+        f()
+    }
 
     // ======================== Bounds Tests ========================
 
     #[test]
     fn test_in_bounds_default() {
-        // Default bounds are very large (-1e15 to 1e15)
-        assert!(in_bounds(0, 0));
-        assert!(in_bounds(1000, 1000));
-        assert!(in_bounds(-1000, -1000));
-        assert!(in_bounds(1_000_000_000, 1_000_000_000));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            // Default bounds are very large (-1e15 to 1e15)
+            assert!(in_bounds(0, 0));
+            assert!(in_bounds(1000, 1000));
+            assert!(in_bounds(-1000, -1000));
+            assert!(in_bounds(1_000_000_000, 1_000_000_000));
+        });
     }
 
     #[test]
     fn test_set_world_bounds() {
-        // Set custom bounds
-        set_world_bounds(-100, 100, -50, 50);
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            // Set custom bounds
+            set_world_bounds(-100, 100, -50, 50);
 
-        assert!(in_bounds(0, 0));
-        assert!(in_bounds(100, 50));
-        assert!(in_bounds(-100, -50));
-        assert!(!in_bounds(101, 0));
-        assert!(!in_bounds(0, 51));
+            assert!(in_bounds(0, 0));
+            assert!(in_bounds(100, 50));
+            assert!(in_bounds(-100, -50));
+            assert!(!in_bounds(101, 0));
+            assert!(!in_bounds(0, 51));
 
-        // Reset to large defaults
-        set_world_bounds(
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-        );
+            // Reset to large defaults
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_get_world_size() {
-        set_world_bounds(-100, 100, -50, 50);
-        let size = get_world_size();
-        assert_eq!(size, 200, "Width is larger than height");
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            set_world_bounds(-100, 100, -50, 50);
+            let size = get_world_size();
+            assert_eq!(size, 200, "Width is larger than height");
 
-        // Reset
-        set_world_bounds(
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-        );
+            // Reset
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_get_coord_bounds() {
-        set_world_bounds(-10, 20, -30, 40);
-        let (min_x, max_x, min_y, max_y) = get_coord_bounds();
-        assert_eq!(min_x, -10);
-        assert_eq!(max_x, 20);
-        assert_eq!(min_y, -30);
-        assert_eq!(max_y, 40);
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            set_world_bounds(-10, 20, -30, 40);
+            let (min_x, max_x, min_y, max_y) = get_coord_bounds();
+            assert_eq!(min_x, -10);
+            assert_eq!(max_x, 20);
+            assert_eq!(min_y, -30);
+            assert_eq!(max_y, 40);
 
-        // Reset
-        set_world_bounds(
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-        );
+            // Reset
+            reset_world_bounds();
+        });
     }
 
     // ======================== SpatialIndices Tests ========================
@@ -3715,117 +3740,133 @@ mod tests {
 
     #[test]
     fn test_knight_moves_generation() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w N4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Knight, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_leaper_moves_into(&game.board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
 
-        // Knight has 8 possible moves from center
-        assert_eq!(moves.len(), 8, "Knight should have 8 moves from (4,4)");
+            // Knight has 8 possible moves from center
+            assert_eq!(moves.len(), 8, "Knight should have 8 moves from (4,4)");
 
-        // Check specific squares
-        let expected = [
-            (5, 6),
-            (6, 5),
-            (6, 3),
-            (5, 2),
-            (3, 2),
-            (2, 3),
-            (2, 5),
-            (3, 6),
-        ];
-        for (x, y) in expected {
-            assert!(
-                moves.iter().any(|m| m.to.x == x && m.to.y == y),
-                "Knight should be able to move to ({}, {})",
-                x,
-                y
-            );
-        }
+            // Check specific squares
+            let expected = [
+                (5, 6),
+                (6, 5),
+                (6, 3),
+                (5, 2),
+                (3, 2),
+                (2, 3),
+                (2, 5),
+                (3, 6),
+            ];
+            for (x, y) in expected {
+                assert!(
+                    moves.iter().any(|m| m.to.x == x && m.to.y == y),
+                    "Knight should be able to move to ({}, {})",
+                    x,
+                    y
+                );
+            }
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_king_moves_generation() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::King, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::King, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::King, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_compass_moves_into(&board, &from, &piece, 1, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_compass_moves_into(&game.board, &from, &piece, 1, MoveGenType::All, &mut moves);
 
-        // King has 8 possible moves from center
-        assert_eq!(moves.len(), 8, "King should have 8 moves from (4,4)");
+            // King has 8 possible moves from center
+            assert_eq!(moves.len(), 8, "King should have 8 moves from (4,4)");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_fairy_piece_camel() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Camel, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Ca4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Camel, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Camel, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 3, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_leaper_moves_into(&game.board, &from, &piece, 1, 3, MoveGenType::All, &mut moves);
 
-        // Camel leaps (1,3) - 8 squares
-        assert_eq!(moves.len(), 8, "Camel should have 8 moves from (4,4)");
+            // Camel leaps (1,3) - 8 squares
+            assert_eq!(moves.len(), 8, "Camel should have 8 moves from (4,4)");
 
-        // Check a specific camel square
-        assert!(
-            moves.iter().any(|m| m.to.x == 5 && m.to.y == 7),
-            "Camel should be able to move to (5, 7)"
-        );
+            // Check a specific camel square
+            assert!(
+                moves.iter().any(|m| m.to.x == 5 && m.to.y == 7),
+                "Camel should be able to move to (5, 7)"
+            );
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_fairy_piece_zebra() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Zebra, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Z4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Zebra, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Zebra, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 2, 3, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_leaper_moves_into(&game.board, &from, &piece, 2, 3, MoveGenType::All, &mut moves);
 
-        // Zebra leaps (2,3) - 8 squares
-        assert_eq!(moves.len(), 8, "Zebra should have 8 moves from (4,4)");
+            // Zebra leaps (2,3) - 8 squares
+            assert_eq!(moves.len(), 8, "Zebra should have 8 moves from (4,4)");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_negative_coordinates() {
-        // Test that piece at negative coordinates generates moves correctly
-        let mut board = Board::new();
-        board.set_piece(
-            -100,
-            -100,
-            Piece::new(PieceType::Knight, PlayerColor::White),
-        );
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            // Test that piece at negative coordinates generates moves correctly
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w N-100,-100");
 
-        let from = Coordinate::new(-100, -100);
-        let piece = Piece::new(PieceType::Knight, PlayerColor::White);
+            let from = Coordinate::new(-100, -100);
+            let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_leaper_moves_into(&board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_leaper_moves_into(&game.board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
 
-        assert_eq!(
-            moves.len(),
-            8,
-            "Knight at negative coords should have 8 moves"
-        );
+            assert_eq!(
+                moves.len(),
+                8,
+                "Knight at negative coords should have 8 moves"
+            );
 
-        // Check one of the expected squares
-        assert!(
-            moves.iter().any(|m| m.to.x == -99 && m.to.y == -98),
-            "Knight should be able to move to (-99, -98)"
-        );
+            // Check one of the expected squares
+            assert!(
+                moves.iter().any(|m| m.to.x == -99 && m.to.y == -98),
+                "Knight should be able to move to (-99, -98)"
+            );
+            reset_world_bounds();
+        });
     }
 
     #[test]
@@ -3840,176 +3881,180 @@ mod tests {
 
     #[test]
     fn test_generate_pawn_moves() {
-        use crate::game::PromotionRanks;
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w (8;q|1;q) P4,2|p5,3");
 
-        let mut board = Board::new();
-        board.set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
-        board.set_piece(5, 3, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Capture target
+            let from = Coordinate::new(4, 2);
+            let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
 
-        let from = Coordinate::new(4, 2);
-        let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+            let special = FxHashSet::default();
+            let mut moves = MoveList::new();
+            generate_pawn_moves_into(&game.board, &from, &piece, &special, &None, &game.game_rules, &mut moves);
 
-        let rules = GameRules {
-            promotions_allowed: Some(vec!["queens".to_string()]),
-            promotion_ranks: PromotionRanks {
-                white: vec![8],
-                black: vec![1],
-            },
-            ..GameRules::default()
-        };
-
-        let special = FxHashSet::default();
-        let mut moves = MoveList::new();
-        generate_pawn_moves_into(&board, &from, &piece, &special, &None, &rules, &mut moves);
-
-        assert!(moves.len() >= 2, "Pawn should have at least 2 moves");
-        // Should include forward move and capture
-        assert!(
-            moves.iter().any(|m| m.to.y == 3 && m.to.x == 4),
-            "Forward move"
-        );
-        assert!(moves.iter().any(|m| m.to.y == 3 && m.to.x == 5), "Capture");
+            assert!(moves.len() >= 2, "Pawn should have at least 2 moves");
+            // Should include forward move and capture
+            assert!(
+                moves.iter().any(|m| m.to.y == 3 && m.to.x == 4),
+                "Forward move"
+            );
+            assert!(moves.iter().any(|m| m.to.y == 3 && m.to.x == 5), "Capture");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_sliding_moves_rook() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w R4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Rook, PlayerColor::White);
-        let indices = SpatialIndices::new(&board);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Rook, PlayerColor::White);
 
-        let ortho = &[(1, 0), (-1, 0), (0, 1), (0, -1)];
-        let mut moves = MoveList::new();
-        generate_sliding_moves_into(
-            &SlidingMoveContext {
-                board: &board,
-                from: &from,
-                piece: &piece,
-                directions: ortho,
-                indices: &indices,
-                enemy_king_pos: None,
-                visited_targets: None,
-                pinned: &FxHashMap::default(),
-            },
-            &mut moves,
-        );
+            let ortho = &[(1, 0), (-1, 0), (0, 1), (0, -1)];
+            let mut moves = MoveList::new();
+            generate_sliding_moves_into(
+                &SlidingMoveContext {
+                    board: &game.board,
+                    from: &from,
+                    piece: &piece,
+                    directions: ortho,
+                    indices: &game.spatial_indices,
+                    enemy_king_pos: None,
+                    visited_targets: None,
+                    pinned: &FxHashMap::default(),
+                },
+                &mut moves,
+            );
 
-        // Rook on empty board should have many moves (limited by fallback)
-        assert!(!moves.is_empty(), "Rook should have some moves");
+            // Rook on empty board should have many moves (limited by fallback)
+            assert!(!moves.is_empty(), "Rook should have some moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_sliding_moves_bishop() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Bishop, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w B4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Bishop, PlayerColor::White);
-        let indices = SpatialIndices::new(&board);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Bishop, PlayerColor::White);
 
-        let diag = &[(1, 1), (1, -1), (-1, 1), (-1, -1)];
-        let mut moves = MoveList::new();
-        generate_sliding_moves_into(
-            &SlidingMoveContext {
-                board: &board,
-                from: &from,
-                piece: &piece,
-                directions: diag,
-                indices: &indices,
-                enemy_king_pos: None,
-                visited_targets: None,
-                pinned: &FxHashMap::default(),
-            },
-            &mut moves,
-        );
+            let diag = &[(1, 1), (1, -1), (-1, 1), (-1, -1)];
+            let mut moves = MoveList::new();
+            generate_sliding_moves_into(
+                &SlidingMoveContext {
+                    board: &game.board,
+                    from: &from,
+                    piece: &piece,
+                    directions: diag,
+                    indices: &game.spatial_indices,
+                    enemy_king_pos: None,
+                    visited_targets: None,
+                    pinned: &FxHashMap::default(),
+                },
+                &mut moves,
+            );
 
-        assert!(!moves.is_empty(), "Bishop should have some moves");
+            assert!(!moves.is_empty(), "Bishop should have some moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_is_square_attacked_by_knight() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w N4,4");
 
-        let indices = SpatialIndices::new(&board);
-        let target_attacked = Coordinate::new(5, 6); // Knight can attack this
-        let target_not_attacked = Coordinate::new(4, 5); // Knight cannot attack this
+            let target_attacked = Coordinate::new(5, 6); // Knight can attack this
+            let target_not_attacked = Coordinate::new(4, 5); // Knight cannot attack this
 
-        assert!(is_square_attacked(
-            &board,
-            &target_attacked,
-            PlayerColor::White,
-            &indices
-        ));
-        assert!(!is_square_attacked(
-            &board,
-            &target_not_attacked,
-            PlayerColor::White,
-            &indices
-        ));
+            assert!(is_square_attacked(
+                &game.board,
+                &target_attacked,
+                PlayerColor::White,
+                &game.spatial_indices
+            ));
+            assert!(!is_square_attacked(
+                &game.board,
+                &target_not_attacked,
+                PlayerColor::White,
+                &game.spatial_indices
+            ));
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_is_square_attacked_by_rook() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w R4,4");
 
-        let indices = SpatialIndices::new(&board);
-        let target_file = Coordinate::new(4, 10); // Same file
-        let target_rank = Coordinate::new(10, 4); // Same rank
+            let target_file = Coordinate::new(4, 10); // Same file
+            let target_rank = Coordinate::new(10, 4); // Same rank
 
-        assert!(is_square_attacked(
-            &board,
-            &target_file,
-            PlayerColor::White,
-            &indices
-        ));
-        assert!(is_square_attacked(
-            &board,
-            &target_rank,
-            PlayerColor::White,
-            &indices
-        ));
+            assert!(is_square_attacked(
+                &game.board,
+                &target_file,
+                PlayerColor::White,
+                &game.spatial_indices
+            ));
+            assert!(is_square_attacked(
+                &game.board,
+                &target_rank,
+                PlayerColor::White,
+                &game.spatial_indices
+            ));
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_is_square_attacked_blocked() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.set_piece(4, 6, Piece::new(PieceType::Pawn, PlayerColor::White)); // Blocker
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w R4,4|P4,6");
 
-        let indices = SpatialIndices::new(&board);
-        let target_blocked = Coordinate::new(4, 10); // Blocked by pawn at (4,6)
+            let target_blocked = Coordinate::new(4, 10); // Blocked by pawn at (4,6)
 
-        assert!(!is_square_attacked(
-            &board,
-            &target_blocked,
-            PlayerColor::White,
-            &indices
-        ));
+            assert!(!is_square_attacked(
+                &game.board,
+                &target_blocked,
+                PlayerColor::White,
+                &game.spatial_indices
+            ));
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_castling_moves() {
-        let mut board = Board::new();
-        board.set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        board.set_piece(8, 1, Piece::new(PieceType::Rook, PlayerColor::White)); // Kingside rook
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1+|R8,1+");
 
-        let from = Coordinate::new(5, 1);
-        let piece = Piece::new(PieceType::King, PlayerColor::White);
+            let from = Coordinate::new(5, 1);
+            let piece = Piece::new(PieceType::King, PlayerColor::White);
 
-        let mut special = FxHashSet::default();
-        special.insert(Coordinate::new(5, 1)); // King has special right
-        special.insert(Coordinate::new(8, 1)); // Rook has special right
+            let moves = generate_castling_moves(&game.board, &from, &piece, &game.special_rights, &game.spatial_indices);
 
-        let indices = SpatialIndices::new(&board);
-        let moves = generate_castling_moves(&board, &from, &piece, &special, &indices);
-
-        // Test that the function runs without panicking and returns a MoveList
-        // Castling availability depends on variant rules and board state
-        let _ = moves.len();
+            // Test that the function runs without panicking and returns a MoveList
+            // Castling availability depends on variant rules and board state
+            let _ = moves.len();
+            reset_world_bounds();
+        });
     }
 
     #[test]
@@ -4024,17 +4069,21 @@ mod tests {
 
     #[test]
     fn test_generate_compass_moves() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Hawk, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w H4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Hawk, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Hawk, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_compass_moves_into(&board, &from, &piece, 2, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_compass_moves_into(&game.board, &from, &piece, 2, MoveGenType::All, &mut moves);
 
-        // Distance 2 compass should have 8 moves (4 ortho + 4 diag)
-        assert_eq!(moves.len(), 8);
+            // Distance 2 compass should have 8 moves (4 ortho + 4 diag)
+            assert_eq!(moves.len(), 8);
+            reset_world_bounds();
+        });
     }
 
     #[test]
@@ -4048,148 +4097,154 @@ mod tests {
 
     #[test]
     fn test_find_blocker_via_indices() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        board.set_piece(4, 8, Piece::new(PieceType::Pawn, PlayerColor::White)); // Blocker
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w R4,4|P4,8");
 
-        let from = Coordinate::new(4, 4);
-        let indices = SpatialIndices::new(&board);
+            let from = Coordinate::new(4, 4);
 
-        // Looking up (positive y)
-        let (dist, captures) =
-            find_blocker_via_indices(&board, &from, 0, 1, &indices, PlayerColor::White);
+            // Looking up (positive y)
+            let (dist, captures) =
+                find_blocker_via_indices(&game.board, &from, 0, 1, &game.spatial_indices, PlayerColor::White);
 
-        assert!(dist > 0, "Should find a blocker");
-        assert!(!captures, "Own piece should not be a capture");
+            assert!(dist > 0, "Should find a blocker");
+            assert!(!captures, "Own piece should not be a capture");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_knightrider_moves() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Knightrider, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Kr4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Knightrider, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Knightrider, PlayerColor::White);
 
-        let moves = generate_knightrider_moves(&board, &from, &piece);
+            let moves = generate_knightrider_moves(&game.board, &from, &piece);
 
-        // Knightrider should have at least 8 moves (the initial knight squares)
-        assert!(moves.len() >= 8, "Knightrider should have at least 8 moves");
+            // Knightrider should have at least 8 moves (the initial knight squares)
+            assert!(moves.len() >= 8, "Knightrider should have at least 8 moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_rose_moves() {
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rose, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Ro4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Rose, PlayerColor::White);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Rose, PlayerColor::White);
 
-        let mut moves = MoveList::new();
-        generate_rose_moves_into(&board, &from, &piece, MoveGenType::All, &mut moves);
+            let mut moves = MoveList::new();
+            generate_rose_moves_into(&game.board, &from, &piece, MoveGenType::All, &mut moves);
 
-        assert!(!moves.is_empty(), "Rose should have some moves");
+            assert!(!moves.is_empty(), "Rose should have some moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_get_legal_moves() {
-        use crate::game::GameRules;
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1|k5,8|P4,2");
 
-        let mut board = Board::new();
-        board.set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        board.set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        board.set_piece(4, 2, Piece::new(PieceType::Pawn, PlayerColor::White));
+            let ctx = MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.black_royals.first(),
+                pinned: &FxHashMap::default(),
+            };
 
-        let indices = SpatialIndices::new(&board);
-        let special = FxHashSet::default();
-        let rules = GameRules::default();
+            let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
 
-        let ctx = MoveGenContext {
-            special_rights: &special,
-            en_passant: &None,
-            game_rules: &rules,
-            indices: &indices,
-            enemy_king_pos: Some(&Coordinate::new(5, 8)),
-            pinned: &FxHashMap::default(),
-        };
-
-        let moves = get_legal_moves(&board, PlayerColor::White, &ctx);
-
-        assert!(!moves.is_empty(), "White should have legal moves");
+            assert!(!moves.is_empty(), "White should have legal moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_get_quiescence_captures() {
-        use crate::game::GameRules;
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1|k5,8|N4,4|p5,6");
 
-        let mut board = Board::new();
-        board.set_piece(5, 1, Piece::new(PieceType::King, PlayerColor::White));
-        board.set_piece(5, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        board.set_piece(4, 4, Piece::new(PieceType::Knight, PlayerColor::White));
-        board.set_piece(5, 6, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Capture target
+            let ctx = MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: None,
+                pinned: &FxHashMap::default(),
+            };
 
-        let indices = SpatialIndices::new(&board);
-        let special = FxHashSet::default();
-        let rules = GameRules::default();
+            let mut captures = MoveList::new();
+            get_quiescence_captures(&game.board, PlayerColor::White, &ctx, &mut captures);
 
-        let ctx = MoveGenContext {
-            special_rights: &special,
-            en_passant: &None,
-            game_rules: &rules,
-            indices: &indices,
-            enemy_king_pos: None,
-            pinned: &FxHashMap::default(),
-        };
-
-        let mut captures = MoveList::new();
-        get_quiescence_captures(&board, PlayerColor::White, &ctx, &mut captures);
-
-        // Should find the knight capture
-        assert!(!captures.is_empty(), "Should find capture moves");
+            // Should find the knight capture
+            assert!(!captures.is_empty(), "Should find capture moves");
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_rose_moves_unblocked() {
-        // Rose on empty board should have many moves
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rose, PlayerColor::White));
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            // Rose on empty board should have many moves
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Ro4,4");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Rose, PlayerColor::White);
-        let mut moves = MoveList::new();
-        generate_rose_moves_into(&board, &from, &piece, MoveGenType::All, &mut moves);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Rose, PlayerColor::White);
+            let mut moves = MoveList::new();
+            generate_rose_moves_into(&game.board, &from, &piece, MoveGenType::All, &mut moves);
 
-        // Should have moves (each of 16 spirals can go up to 7 hops, though many overlap)
-        assert!(!moves.is_empty(), "Rose should have moves on empty board");
+            // Should have moves (each of 16 spirals can go up to 7 hops, though many overlap)
+            assert!(!moves.is_empty(), "Rose should have moves on empty board");
 
-        // First hop in any spiral should be a knight move
-        // Check that (-2, -1) from origin is in the moves
-        let has_knight_move = moves.iter().any(|m| m.to.x == 2 && m.to.y == 3);
-        assert!(
-            has_knight_move,
-            "Rose should be able to make knight-like first hops"
-        );
+            // First hop in any spiral should be a knight move
+            // Check that (-2, -1) from origin is in the moves
+            let has_knight_move = moves.iter().any(|m| m.to.x == 2 && m.to.y == 3);
+            assert!(
+                has_knight_move,
+                "Rose should be able to make knight-like first hops"
+            );
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_generate_rose_moves_blocked() {
-        // Rose with a blocker that prevents some moves
-        let mut board = Board::new();
-        board.set_piece(4, 4, Piece::new(PieceType::Rose, PlayerColor::White));
-        // Place blocker at first knight hop destination
-        board.set_piece(3, 2, Piece::new(PieceType::Pawn, PlayerColor::White)); // (4-1, 4-2)
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            // Rose with a blocker that prevents some moves
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Ro4,4|P3,2");
 
-        let from = Coordinate::new(4, 4);
-        let piece = Piece::new(PieceType::Rose, PlayerColor::White);
-        let mut moves = MoveList::new();
-        generate_rose_moves_into(&board, &from, &piece, MoveGenType::All, &mut moves);
+            let from = Coordinate::new(4, 4);
+            let piece = Piece::new(PieceType::Rose, PlayerColor::White);
+            let mut moves = MoveList::new();
+            generate_rose_moves_into(&game.board, &from, &piece, MoveGenType::All, &mut moves);
 
-        // Should NOT have the blocked square as a move (friendly piece)
-        let has_blocked_square = moves.iter().any(|m| m.to.x == 3 && m.to.y == 2);
-        assert!(
-            !has_blocked_square,
-            "Rose should not move to square occupied by friendly piece"
-        );
+            // Should NOT have the blocked square as a move (friendly piece)
+            let has_blocked_square = moves.iter().any(|m| m.to.x == 3 && m.to.y == 2);
+            assert!(
+                !has_blocked_square,
+                "Rose should not move to square occupied by friendly piece"
+            );
+        });
     }
 
     #[test]
@@ -4204,78 +4259,64 @@ mod tests {
     }
     #[test]
     fn test_long_distance_royal_targeting() {
-        use crate::game::GameState;
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Q10,-30|k77,-41");
 
-        let mut game = GameState::new();
-        // White Queen at (10, -30)
-        game.board
-            .set_piece(10, -30, Piece::new(PieceType::Queen, PlayerColor::White));
-        // Black King at (77, -41)
-        game.board
-            .set_piece(77, -41, Piece::new(PieceType::King, PlayerColor::Black));
+            let ctx = MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.black_royals.first(),
+                pinned: &FxHashMap::default(),
+            };
 
-        // Recompute indices and king positions
-        game.recompute_piece_counts();
+            let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
 
-        let ctx = MoveGenContext {
-            special_rights: &game.special_rights,
-            en_passant: &game.en_passant,
-            game_rules: &game.game_rules,
-            indices: &game.spatial_indices,
-            enemy_king_pos: game.black_royals.first(),
-            pinned: &FxHashMap::default(),
-        };
+            let target_from = Coordinate::new(10, -30);
+            let target_to = Coordinate::new(77, -30);
 
-        let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
+            let found = moves
+                .iter()
+                .any(|m| m.from == target_from && m.to == target_to);
 
-        let target_from = Coordinate::new(10, -30);
-        let target_to = Coordinate::new(77, -30);
-
-        let found = moves
-            .iter()
-            .any(|m| m.from == target_from && m.to == target_to);
-
-        assert!(
-            found,
-            "Move (10,-30) -> (77,-30) should be generated to target King at (77,-41)"
-        );
+            assert!(
+                found,
+                "Move (10,-30) -> (77,-30) should be generated to target King at (77,-41)"
+            );
+            reset_world_bounds();
+        });
     }
 
     #[test]
     fn test_quiescence_generates_quiet_promotions() {
-        use crate::game::{GameRules, PromotionRanks};
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w (8;q|1;q) P0,7");
 
-        let mut board = Board::new();
-        board.set_piece(0, 7, Piece::new(PieceType::Pawn, PlayerColor::White));
+            let ctx = MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: None,
+                pinned: &FxHashMap::default(),
+            };
 
-        let indices = SpatialIndices::new(&board);
-        let special = FxHashSet::default();
-        let rules = GameRules {
-            promotion_ranks: PromotionRanks {
-                white: vec![8],
-                black: vec![1],
-            },
-            ..GameRules::default()
-        };
+            let mut moves = MoveList::new();
+            get_quiescence_captures(&game.board, PlayerColor::White, &ctx, &mut moves);
 
-        let ctx = MoveGenContext {
-            special_rights: &special,
-            en_passant: &None,
-            game_rules: &rules,
-            indices: &indices,
-            enemy_king_pos: None,
-            pinned: &FxHashMap::default(),
-        };
+            // Should include quiet promotion to (0, 8)
+            let found_promo = moves.iter().any(|m| {
+                m.from.x == 0 && m.from.y == 7 && m.to.x == 0 && m.to.y == 8 && m.promotion.is_some()
+            });
 
-        let mut moves = MoveList::new();
-        get_quiescence_captures(&board, PlayerColor::White, &ctx, &mut moves);
-
-        // Should include quiet promotion to (0, 8)
-        let found_promo = moves.iter().any(|m| {
-            m.from.x == 0 && m.from.y == 7 && m.to.x == 0 && m.to.y == 8 && m.promotion.is_some()
+            assert!(found_promo, "QSearch should generate quiet pawn promotions");
+            reset_world_bounds();
         });
-
-        assert!(found_promo, "QSearch should generate quiet pawn promotions");
     }
 
     mod border_handling_tests {
@@ -4283,94 +4324,78 @@ mod tests {
 
         #[test]
         fn test_huygen_border_respect() {
-            let mut board = Board::new();
-            let from = Coordinate::new(0, 0);
-            let piece = Piece::new(PieceType::Huygen, PlayerColor::White);
-            board.set_piece(from.x, from.y, piece);
-            let indices = SpatialIndices::new(&board);
+            super::with_bounds_lock(|| {
+                super::reset_world_bounds();
+                let mut game = GameState::new();
+                game.setup_position_from_icn("-5,5,-5,5 w Hy0,0");
 
-            // Set small border
-            set_world_bounds(-5, 5, -5, 5);
+                let from = Coordinate::new(0, 0);
+                let piece = Piece::new(PieceType::Huygen, PlayerColor::White);
 
-            let mut moves = MoveList::new();
-            generate_huygen_moves_into(
-                &board,
-                &from,
-                &piece,
-                &indices,
-                MoveGenType::All,
-                &mut moves,
-            );
+                let mut moves = MoveList::new();
+                generate_huygen_moves_into(
+                    &game.board,
+                    &from,
+                    &piece,
+                    &game.spatial_indices,
+                    MoveGenType::All,
+                    &mut moves,
+                );
 
-            for m in &moves {
-                assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
-            }
+                for m in &moves {
+                    assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
+                }
 
-            // Verify some moves were generated within bounds
-            assert!(!moves.is_empty());
+                // Verify some moves were generated within bounds
+                assert!(!moves.is_empty());
 
-            // Reset bounds
-            set_world_bounds(
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-            );
+                // Reset bounds
+                super::reset_world_bounds();
+            });
         }
 
         #[test]
         fn test_rose_border_respect() {
-            let mut board = Board::new();
-            let from = Coordinate::new(0, 0);
-            let piece = Piece::new(PieceType::Rose, PlayerColor::White);
-            board.set_piece(from.x, from.y, piece);
+            super::with_bounds_lock(|| {
+                super::reset_world_bounds();
+                let mut game = GameState::new();
+                game.setup_position_from_icn("-2,2,-2,2 w Ro0,0");
 
-            // Set small border
-            set_world_bounds(-2, 2, -2, 2);
+                let from = Coordinate::new(0, 0);
+                let piece = Piece::new(PieceType::Rose, PlayerColor::White);
 
-            let mut moves = MoveList::new();
-            generate_rose_moves_into(&board, &from, &piece, MoveGenType::All, &mut moves);
+                let mut moves = MoveList::new();
+                generate_rose_moves_into(&game.board, &from, &piece, MoveGenType::All, &mut moves);
 
-            for m in &moves {
-                assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
-            }
+                for m in &moves {
+                    assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
+                }
 
-            // Reset bounds
-            set_world_bounds(
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-            );
+                // Reset bounds
+                super::reset_world_bounds();
+            });
         }
 
         #[test]
         fn test_pawn_border_respect() {
-            let mut board = Board::new();
-            // Pawn at white terminal rank in a tiny world
-            let from = Coordinate::new(0, 5);
-            let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
-            board.set_piece(from.x, from.y, piece);
+            super::with_bounds_lock(|| {
+                super::reset_world_bounds();
+                let mut game = GameState::new();
+                // Pawn at white terminal rank in a tiny world
+                game.setup_position_from_icn("-10,10,-10,5 w P0,5");
 
-            let rules = GameRules::default();
-            let special = FxHashSet::default();
+                let from = Coordinate::new(0, 5);
+                let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
 
-            // Border ends just above the pawn
-            set_world_bounds(-10, 10, -10, 5);
+                let mut moves = MoveList::new();
+                generate_pawn_moves_into(&game.board, &from, &piece, &game.special_rights, &None, &game.game_rules, &mut moves);
 
-            let mut moves = MoveList::new();
-            generate_pawn_moves_into(&board, &from, &piece, &special, &None, &rules, &mut moves);
+                // Should have NO moves because they all go to y=6 which is out of bounds
+                assert!(moves.is_empty(), "Pawn should have no moves out of bounds");
 
-            // Should have NO moves because they all go to y=6 which is out of bounds
-            assert!(moves.is_empty(), "Pawn should have no moves out of bounds");
-
-            // Reset bounds
-            set_world_bounds(
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-                -1_000_000_000_000_000,
-                1_000_000_000_000_000,
-            );
+                // Reset bounds
+                super::reset_world_bounds();
+            });
         }
     }
 }

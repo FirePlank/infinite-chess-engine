@@ -4251,13 +4251,42 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static BOUNDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn get_bounds_lock() -> &'static Mutex<()> {
+        BOUNDS_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Helper to reset world bounds to defaults
+    fn reset_world_bounds() {
+        crate::moves::set_world_bounds(
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        );
+    }
+
+    /// Helper to acquire bounds lock for tests that modify bounds
+    fn with_bounds_lock<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = get_bounds_lock().lock().unwrap_or_else(|e| e.into_inner());
+        f()
+    }
 
     /// Helper to create a minimal game state for testing
     fn create_test_game() -> GameState {
+        reset_world_bounds();
         create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8")
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {
+        reset_world_bounds();
         let mut game = GameState::new();
         game.setup_position_from_icn(icn);
         game
@@ -4265,45 +4294,49 @@ mod tests {
 
     #[test]
     fn test_parse_icn_full() {
-        let icn = "[Event \"Complex Game\"] w 10,3 5/100 1 (8;am,q|1;am,q) -100,500,-35,100 checkmate,royalcapture,allroyalscaptured,allpiecescaptured K5,1+|k5,8+";
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let icn = "[Event \"Complex Game\"] w 10,3 5/100 1 (8;am,q|1;am,q) -100,500,-35,100 checkmate,royalcapture,allroyalscaptured,allpiecescaptured K5,1+|k5,8+";
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
 
-        let mut game = GameState::new();
-        game.setup_position_from_icn(icn);
+            // Check header info
+            assert_eq!(game.turn, PlayerColor::White);
+            assert_eq!(game.halfmove_clock, 5);
+            assert_eq!(game.game_rules.move_rule_limit, Some(100));
+            assert_eq!(game.fullmove_number, 1);
+            assert_eq!(game.white_promo_rank, 8);
+            assert_eq!(game.black_promo_rank, 1);
 
-        // Check header info
-        assert_eq!(game.turn, PlayerColor::White);
-        assert_eq!(game.halfmove_clock, 5);
-        assert_eq!(game.game_rules.move_rule_limit, Some(100));
-        assert_eq!(game.fullmove_number, 1);
-        assert_eq!(game.white_promo_rank, 8);
-        assert_eq!(game.black_promo_rank, 1);
+            // En passant square (10,3). White turn, so Black pawn just moved 10,4->10,2.
+            // Pawn being captured is at 10,2.
+            let ep = game.en_passant.unwrap();
+            assert_eq!(ep.square, Coordinate::new(10, 3));
+            assert_eq!(ep.pawn_square, Coordinate::new(10, 2));
 
-        // En passant square (10,3). White turn, so Black pawn just moved 10,4->10,2.
-        // Pawn being captured is at 10,2.
-        let ep = game.en_passant.unwrap();
-        assert_eq!(ep.square, Coordinate::new(10, 3));
-        assert_eq!(ep.pawn_square, Coordinate::new(10, 2));
+            // Check world bounds
+            let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
+            assert_eq!(min_x, -100);
+            assert_eq!(max_x, 500);
+            assert_eq!(min_y, -35);
+            assert_eq!(max_y, 100);
 
-        // Check world bounds
-        let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
-        assert_eq!(min_x, -100);
-        assert_eq!(max_x, 500);
-        assert_eq!(min_y, -35);
-        assert_eq!(max_y, 100);
+            // Check win conditions
+            // Priority: Checkmate
+            assert_eq!(game.game_rules.white_win_condition, WinCondition::Checkmate);
+            assert_eq!(game.game_rules.black_win_condition, WinCondition::Checkmate);
 
-        // Check win conditions
-        // Priority: Checkmate
-        assert_eq!(game.game_rules.white_win_condition, WinCondition::Checkmate);
-        assert_eq!(game.game_rules.black_win_condition, WinCondition::Checkmate);
+            // Check allowed promotions
+            let allowed = game.game_rules.promotions_allowed.as_ref().unwrap();
+            assert!(allowed.contains(&"am".to_string()));
+            assert!(allowed.contains(&"q".to_string()));
 
-        // Check allowed promotions
-        let allowed = game.game_rules.promotions_allowed.as_ref().unwrap();
-        assert!(allowed.contains(&"am".to_string()));
-        assert!(allowed.contains(&"q".to_string()));
-
-        // Check pieces
-        let k = game.board.get_piece(5, 1).unwrap();
-        assert_eq!(k.piece_type(), PieceType::King);
+            // Check pieces
+            let k = game.board.get_piece(5, 1).unwrap();
+            assert_eq!(k.piece_type(), PieceType::King);
+            
+            reset_world_bounds();
+        });
     }
 
     // ======================== 50-Move Rule Tests ========================
@@ -4767,29 +4800,32 @@ mod tests {
 
     #[test]
     fn test_setup_standard_chess() {
-        let mut game = GameState::new();
-        game.setup_standard_chess();
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_standard_chess();
 
-        // Check piece counts
-        assert_eq!(game.white_piece_count, 16);
-        assert_eq!(game.black_piece_count, 16);
+            // Check piece counts
+            assert_eq!(game.white_piece_count, 16);
+            assert_eq!(game.black_piece_count, 16);
 
-        // Check king positions
-        assert_eq!(
-            game.white_royals.first().copied(),
-            Some(Coordinate::new(5, 1))
-        );
-        assert_eq!(
-            game.black_royals.first().copied(),
-            Some(Coordinate::new(5, 8))
-        );
+            // Check king positions
+            assert_eq!(
+                game.white_royals.first().copied(),
+                Some(Coordinate::new(5, 1))
+            );
+            assert_eq!(
+                game.black_royals.first().copied(),
+                Some(Coordinate::new(5, 8))
+            );
 
-        // Check it's white's turn
-        assert_eq!(game.turn, PlayerColor::White);
+            // Check it's white's turn
+            assert_eq!(game.turn, PlayerColor::White);
 
-        // Check promotion ranks set
-        assert_eq!(game.white_promo_rank, 8);
-        assert_eq!(game.black_promo_rank, 1);
+            // Check promotion ranks set
+            assert_eq!(game.white_promo_rank, 8);
+            assert_eq!(game.black_promo_rank, 1);
+        });
     }
 
     #[test]

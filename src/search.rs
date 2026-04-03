@@ -5012,9 +5012,19 @@ fn quiescence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
+    use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
-    use crate::moves::Move;
+    use crate::moves::{Move, set_world_bounds};
+
+    // Helper function to reset world bounds to defaults
+    fn reset_world_bounds() {
+        set_world_bounds(
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        );
+    }
 
     #[test]
     fn test_corrhist_constants() {
@@ -5181,21 +5191,8 @@ mod tests {
     #[test]
     fn test_get_best_move_simple_position() {
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // Simple position: white queen can take undefended black rook
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Rook, PlayerColor::Black));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|Q4,4|k7,7|r4,7");
 
         // Short search with 1 second time limit
         let result = get_best_move(&mut game, 5, 1000, true, true);
@@ -5210,19 +5207,8 @@ mod tests {
     #[test]
     fn test_get_best_move_returns_result() {
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // Any position with legal moves
-        game.board
-            .set_piece(4, 1, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(4, 8, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(1, 1, Piece::new(PieceType::Rook, PlayerColor::White));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K4,1|k4,8|R1,1");
 
         let result = get_best_move(&mut game, 5, 1000, true, true);
 
@@ -5238,21 +5224,8 @@ mod tests {
     #[test]
     fn test_evaluate_with_search() {
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // Balanced position
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 2, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Rook, PlayerColor::Black));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|k7,7|R4,2|r4,7");
 
         // Get static eval
         #[cfg(feature = "nnue")]
@@ -5381,19 +5354,8 @@ mod tests {
     #[test]
     fn test_search_endgame_position() {
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // KQ vs K endgame
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Queen, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|Q4,4|k7,7");
 
         let result = get_best_move(&mut game, 3, 500, true, true);
         assert!(result.is_some(), "Should find a move in KQ vs K");
@@ -5406,21 +5368,8 @@ mod tests {
     #[test]
     fn test_search_with_captures() {
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // Position with clear capture
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(4, 4, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(4, 7, Piece::new(PieceType::Pawn, PlayerColor::Black)); // Can be captured
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|R4,4|k7,7|p4,7");
 
         let result = get_best_move(&mut game, 4, 500, true, true);
         assert!(result.is_some());
@@ -5519,20 +5468,8 @@ mod tests {
     #[test]
     fn test_multipv_search_functionality() {
         let mut game = GameState::new();
-        game.board = Board::new();
-        // Setup a position where white has multiple good moves
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(2, 2, Piece::new(PieceType::Rook, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Pawn, PlayerColor::White));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        // Simple position for multipv
+        game.setup_position_from_icn("w K0,0|Q4,4|k7,7|r5,5");
 
         // Search with MultiPV = 2
         let result = get_best_moves_multipv(&mut game, 2, 500, 500, 2, true, false);
@@ -5594,29 +5531,9 @@ mod tests {
 
     #[test]
     fn test_search_mate_in_one() {
+        reset_world_bounds();
         let mut game = GameState::new();
-        game.board = Board::new();
-
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::Black));
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                if dx == 0 && dy == 0 {
-                    continue;
-                }
-                game.board
-                    .set_piece(dx, dy, Piece::new(PieceType::Pawn, PlayerColor::Black));
-            }
-        }
-
-        game.board.remove_piece(&0, &1);
-        game.board
-            .set_piece(-5, -5, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(5, 5, Piece::new(PieceType::Rook, PlayerColor::White));
-
-        game.turn = PlayerColor::White;
-        game.recompute_piece_counts();
+        game.setup_position_from_icn("w K-5,-5|R5,5|k0,0|p-1,-1|p0,-1|p1,-1|p-1,0|p1,0|p-1,1|p1,1");
 
         assert_eq!(
             game.white_piece_count, 2,
@@ -5670,15 +5587,8 @@ mod tests {
     fn test_quiescence_search_depth() {
         let mut searcher = Box::new(Searcher::new(1000));
         let mut game = GameState::new();
-        game.board = Board::new();
-
         // Setup empty board with kings to avoid panics
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|k7,7");
 
         // Qsearch should return static eval on quiet position
         let alpha = -10000;
@@ -5703,13 +5613,7 @@ mod tests {
     #[test]
     fn test_negamax_node_counts() {
         let mut game = GameState::new();
-        game.board = Board::new();
-        game.board
-            .set_piece(0, 0, Piece::new(PieceType::King, PlayerColor::White));
-        game.board
-            .set_piece(7, 7, Piece::new(PieceType::King, PlayerColor::Black));
-        game.recompute_piece_counts();
-        game.recompute_hash();
+        game.setup_position_from_icn("w K0,0|k7,7");
 
         let nodes = negamax_node_count_for_depth(&mut game, 1);
         assert!(nodes > 0);
