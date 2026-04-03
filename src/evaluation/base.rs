@@ -381,39 +381,14 @@ const EG_KING_TROPISM_BONUS: i32 = 6; // King centralized -> piece proximity mat
 const MG_KING_RING_MISSING_PENALTY: i32 = 45;
 const EG_KING_RING_MISSING_PENALTY: i32 = 20; // Less penalty in EG
 
-// Bonuses for having a pawn at distance 1, 2, 3 (distance = |rank_diff|)
-const MG_PAWN_SHELTER_DIST1_KING_FILE: i32 = 48;   // Pawn 1 rank from king on same file
-const MG_PAWN_SHELTER_DIST1_ADJACENT: i32 = 32;   // Pawn 1 rank from king on adjacent file
-const MG_PAWN_SHELTER_DIST1_OUTER: i32 = 16;      // Pawn 1 rank from king on outer file
+const MG_KING_PAWN_SHIELD_BONUS: i32 = 18;
+const EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
 
-const MG_PAWN_SHELTER_DIST2_KING_FILE: i32 = 28;
-const MG_PAWN_SHELTER_DIST2_ADJACENT: i32 = 18;
-const MG_PAWN_SHELTER_DIST2_OUTER: i32 = 8;
+const MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
+const EG_KING_PAWN_AHEAD_PENALTY: i32 = 5;
 
-const MG_PAWN_SHELTER_DIST3_KING_FILE: i32 = 12;
-const MG_PAWN_SHELTER_DIST3_ADJACENT: i32 = 6;
-const MG_PAWN_SHELTER_DIST3_OUTER: i32 = 0;
-
-const EG_PAWN_SHELTER_DIST1_KING_FILE: i32 = 8;
-const EG_PAWN_SHELTER_DIST1_ADJACENT: i32 = 4;
-const EG_PAWN_SHELTER_DIST1_OUTER: i32 = 0;
-
-const EG_PAWN_SHELTER_DIST2_KING_FILE: i32 = 4;
-const EG_PAWN_SHELTER_DIST2_ADJACENT: i32 = 2;
-const EG_PAWN_SHELTER_DIST2_OUTER: i32 = 0;
-
-const EG_PAWN_SHELTER_DIST3_KING_FILE: i32 = 2;
-const EG_PAWN_SHELTER_DIST3_ADJACENT: i32 = 1;
-const EG_PAWN_SHELTER_DIST3_OUTER: i32 = 0;
-
-// Penalties for MISSING pawns (no pawn at distance 1-3)
-const MG_PAWN_SHELTER_MISSING_KING_FILE: i32 = 52;   // Missing on king's file = severe
-const MG_PAWN_SHELTER_MISSING_ADJACENT: i32 = 32;    // Missing on adjacent = bad
-const MG_PAWN_SHELTER_MISSING_OUTER: i32 = 16;       // Missing on outer = moderate
-
-const EG_PAWN_SHELTER_MISSING_KING_FILE: i32 = 12;
-const EG_PAWN_SHELTER_MISSING_ADJACENT: i32 = 8;
-const EG_PAWN_SHELTER_MISSING_OUTER: i32 = 4;
+const MG_KING_OPEN_FILE_PENALTY: i32 = 25;
+const EG_KING_OPEN_FILE_PENALTY: i32 = 10;
 
 // Structural
 const MG_CONNECTED_PAWN_BONUS: i32 = 8;
@@ -1793,16 +1768,16 @@ fn compute_attack_bonus_optimized(
         }
     }
 
-    const ATTACK_BONUS_PER_OPEN_RAY: i32 = 16;
+    const ATTACK_BONUS_PER_OPEN_RAY: i32 = 12;
     let diag_bonus = if our_diag_count > 0 && open_diag_rays > 0 {
-        let mult = 80 + (our_diag_count - 1).max(0) * 28;
+        let mult = 100 + (our_diag_count - 1).max(0) * 25;
         open_diag_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
     };
 
     let ortho_bonus = if our_ortho_count > 0 && open_ortho_rays > 0 {
-        let mult = 120 + (our_ortho_count - 1).max(0) * 42;
+        let mult = 110 + (our_ortho_count - 1).max(0) * 30;
         open_ortho_rays * ATTACK_BONUS_PER_OPEN_RAY * mult / 100
     } else {
         0
@@ -2203,68 +2178,44 @@ fn evaluate_king_shelter(
         bump_feat!(king_ring_missing_penalty, -1);
     }
 
-    // 1b. TIGHT PAWN SHELTER - Distance-based evaluation
-    // For each nearby file (king's file ±2), find the closest friendly pawn
-    // and evaluate based on distance. Missing pawns = penalty.
+    // 1b. King shield (pawn ahead/behind) - Unified: Use pre-sorted pawn list
+    let mut has_pawn_ahead = false;
+    let mut has_pawn_behind = false;
     let is_white = color == PlayerColor::White;
 
-    for file_offset in -2..=2_i64 {
-        let file_x = king.x + file_offset;
-
-        // Find closest friendly pawn on this file
-        let start = pawns.partition_point(|p| p.0 < file_x);
-        let mut closest_pawn_dist: Option<i64> = None;
+    for dx in -2..=2_i64 {
+        let x = king.x + dx;
+        // Find range of pawns on this file
+        let start = pawns.partition_point(|p| p.0 < x);
         let mut k = start;
-        while k < pawns.len() && pawns[k].0 == file_x {
-            let pawn_y = pawns[k].1;
-            // Pawn should be in the "forward" direction (for white: y > king.y)
-            let is_forward = if is_white {
-                pawn_y > king.y
-            } else {
-                pawn_y < king.y
-            };
-            if is_forward {
-                let dist = (pawn_y - king.y).abs();
-                closest_pawn_dist = Some(closest_pawn_dist.map(|d| d.min(dist)).unwrap_or(dist));
+        let mut on_file_count = 0;
+        while k < pawns.len() && pawns[k].0 == x {
+            on_file_count += 1;
+            let py = pawns[k].1;
+            if is_white {
+                if py > king.y {
+                    has_pawn_ahead = true;
+                } else if py < king.y {
+                    has_pawn_behind = true;
+                }
+            } else if py < king.y {
+                has_pawn_ahead = true;
+            } else if py > king.y {
+                has_pawn_behind = true;
             }
             k += 1;
         }
 
-        // Apply distance-based bonus or missing penalty
-        let file_type = match file_offset.abs() {
-            0 => "king_file",
-            1 => "adjacent",
-            _ => "outer",
-        };
-
-        if let Some(dist) = closest_pawn_dist {
-            // Have a pawn, apply distance-based bonus
-            let (mg_bonus, eg_bonus) = match (file_type, dist) {
-                ("king_file", 1) => (MG_PAWN_SHELTER_DIST1_KING_FILE, EG_PAWN_SHELTER_DIST1_KING_FILE),
-                ("king_file", 2) => (MG_PAWN_SHELTER_DIST2_KING_FILE, EG_PAWN_SHELTER_DIST2_KING_FILE),
-                ("king_file", 3) => (MG_PAWN_SHELTER_DIST3_KING_FILE, EG_PAWN_SHELTER_DIST3_KING_FILE),
-                ("adjacent", 1) => (MG_PAWN_SHELTER_DIST1_ADJACENT, EG_PAWN_SHELTER_DIST1_ADJACENT),
-                ("adjacent", 2) => (MG_PAWN_SHELTER_DIST2_ADJACENT, EG_PAWN_SHELTER_DIST2_ADJACENT),
-                ("adjacent", 3) => (MG_PAWN_SHELTER_DIST3_ADJACENT, EG_PAWN_SHELTER_DIST3_ADJACENT),
-                ("outer", 1) => (MG_PAWN_SHELTER_DIST1_OUTER, EG_PAWN_SHELTER_DIST1_OUTER),
-                ("outer", 2) => (MG_PAWN_SHELTER_DIST2_OUTER, EG_PAWN_SHELTER_DIST2_OUTER),
-                ("outer", 3) => (MG_PAWN_SHELTER_DIST3_OUTER, EG_PAWN_SHELTER_DIST3_OUTER),
-                _ => (0, 0), // Distance 4+ = no bonus
-            };
-            safety += taper(mg_bonus, eg_bonus);
-        } else {
-            // No forward-facing pawn on this file: apply penalty
-            let (mg_penalty, eg_penalty) = match file_type {
-                "king_file" => (MG_PAWN_SHELTER_MISSING_KING_FILE, EG_PAWN_SHELTER_MISSING_KING_FILE),
-                "adjacent" => (MG_PAWN_SHELTER_MISSING_ADJACENT, EG_PAWN_SHELTER_MISSING_ADJACENT),
-                _ => (MG_PAWN_SHELTER_MISSING_OUTER, EG_PAWN_SHELTER_MISSING_OUTER),
-            };
-            // Scale penalty by defense urgency: more danger = more important to have pawn shelter
-            // Scale from 50 (no urgency) to 130 (high urgency)
-            let urgency_scale = (50 + (defense_urgency * 80) / 100).min(130);
-            let penalty = taper(mg_penalty, eg_penalty);
-            safety -= (penalty * urgency_scale) / 100;
+        // King on Open File Penalty (No friendly pawns on file)
+        if dx == 0 && on_file_count == 0 {
+            safety -= taper(MG_KING_OPEN_FILE_PENALTY, EG_KING_OPEN_FILE_PENALTY);
         }
+    }
+
+    if has_pawn_ahead && !has_pawn_behind {
+        safety += taper(MG_KING_PAWN_SHIELD_BONUS, EG_KING_PAWN_SHIELD_BONUS);
+    } else if !has_pawn_ahead && has_pawn_behind {
+        safety -= taper(MG_KING_PAWN_AHEAD_PENALTY, EG_KING_PAWN_AHEAD_PENALTY);
     }
 
     if defense_urgency <= 10 {
