@@ -697,6 +697,13 @@ fn play_game(
             break;
         }
 
+        // Check for threefold repetition using manual position key tracking
+        let current_key = make_position_key(&game);
+        let repetition_count = *repetition_counts.get(&current_key).unwrap_or(&0);
+        if repetition_count >= 3 {
+            return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
+        }
+
         // Terminal state checks always run before adjudication or engine search.
         if let Some(terminal) = with_variant_bounds(variant, || detect_terminal_state(&game)) {
             match terminal {
@@ -752,13 +759,6 @@ fn play_game(
                     return game_outcome!(GameResult::Draw, reason, "1/2-1/2");
                 }
             }
-        }
-
-        // Check for threefold repetition using manual position key tracking
-        let current_key = make_position_key(&game);
-        let repetition_count = *repetition_counts.get(&current_key).unwrap_or(&0);
-        if repetition_count >= 3 {
-            return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
         }
 
         // Material adjudication (after terminal checks, only if both engines agree)
@@ -1357,45 +1357,13 @@ fn main() {
             let actual_new_bin = if let Some(path) = new_bin {
                 path
             } else {
-                println!("No --new-bin provided. Building current source...");
+                println!("No --new-bin provided. Using current binary...");
                 let ext = std::env::consts::EXE_EXTENSION;
-                let binary_name = if ext.is_empty() {
+                if ext.is_empty() {
                     "target/release/sprt".to_string()
                 } else {
                     format!("target/release/sprt.{}", ext)
-                };
-                let backup_name = if ext.is_empty() {
-                    "target/release/sprt_backup".to_string()
-                } else {
-                    format!("target/release/sprt_backup.{}", ext)
-                };
-
-                // Move old binary out of the way so linker can write freely
-                let _ = std::fs::rename(&binary_name, &backup_name);
-
-                let status = Command::new("cargo")
-                    .args(["build", "--release", "--features=sprt", "--bin", "sprt"])
-                    .status()
-                    .expect("Failed to execute cargo build");
-                if !status.success() {
-                    panic!("Failed to build new binary automatically.");
                 }
-
-                // Copy newly built binary to sprt_new
-                let dst = if ext.is_empty() {
-                    "target/release/sprt_new".to_string()
-                } else {
-                    format!("target/release/sprt_new.{}", ext)
-                };
-
-                std::fs::copy(&binary_name, &dst).unwrap_or_else(|e| {
-                    panic!("Failed to copy {} to {}: {}", binary_name, dst, e);
-                });
-
-                // Clean up backup
-                let _ = std::fs::remove_file(&backup_name);
-
-                dst
             };
 
             let parsed_variants = if variants == "all" {
