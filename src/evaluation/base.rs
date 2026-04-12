@@ -581,6 +581,24 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         white_rq.clear();
                         black_rq.clear();
 
+                        // Slider counts
+                        for (_cx, _cy, tile) in game.board.tiles.iter() {
+                            if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
+                                continue;
+                            }
+
+                            // Count diagonals and orthogonals directly from bitboards
+                            let w_diag_bits = tile.occ_diag_sliders & tile.occ_white;
+                            let b_diag_bits = tile.occ_diag_sliders & tile.occ_black;
+                            let w_ortho_bits = tile.occ_ortho_sliders & tile.occ_white;
+                            let b_ortho_bits = tile.occ_ortho_sliders & tile.occ_black;
+
+                            w_diag_count += w_diag_bits.count_ones() as i32;
+                            b_diag_count += b_diag_bits.count_ones() as i32;
+                            w_ortho_count += w_ortho_bits.count_ones() as i32;
+                            b_ortho_count += b_ortho_bits.count_ones() as i32;
+                        }
+
                         for (cx, cy, tile) in game.board.tiles.iter() {
                             if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
                                 continue;
@@ -1010,22 +1028,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         } else {
                                             black_bishop_colors.1 = true;
                                         }
-                                    }
-                                }
-
-                                // 6. Slider counts
-                                if (tile.occ_diag_sliders & (1 << idx)) != 0 {
-                                    if is_white {
-                                        w_diag_count += 1;
-                                    } else {
-                                        b_diag_count += 1;
-                                    }
-                                }
-                                if (tile.occ_ortho_sliders & (1 << idx)) != 0 {
-                                    if is_white {
-                                        w_ortho_count += 1;
-                                    } else {
-                                        b_ortho_count += 1;
                                     }
                                 }
 
