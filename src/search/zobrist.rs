@@ -156,10 +156,11 @@ const MATERIAL_KEY_MIXER: u64 = 0xFEDCBA9876543210;
 
 #[inline(always)]
 pub fn material_key(piece_type: PieceType, color: PlayerColor) -> u64 {
-    // Use piece type as a simple hash - no position dependency
     let pt = piece_type as u64;
     let c = color as u64;
-    MATERIAL_KEY_MIXER.wrapping_mul(pt.wrapping_add(1)) ^ c.wrapping_mul(0x517CC1B727220A95)
+    let hp = pt.wrapping_add(1).wrapping_mul(0x9E3779B185EBCA87);
+    let hc = c.wrapping_add(1).wrapping_mul(0xC2B2AE3D27D4EB4F);
+    MATERIAL_KEY_MIXER ^ hp ^ hc.rotate_left(32)
 }
 
 #[cfg(test)]
