@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::process::Command;
 
 fn main() {
@@ -8,7 +9,6 @@ fn main() {
         println!("cargo:rustc-link-arg=-zstack-size=8388608");
     }
 
-    // Only embed git commit info when building the sprt feature.
     if env::var("CARGO_FEATURE_SPRT").is_ok() {
         // Embed git commit info so every binary self-reports which snapshot it was built from.
         // The values are empty strings when git is unavailable or the repo has no commits.
@@ -41,10 +41,22 @@ fn main() {
         println!("cargo:rustc-env=SPRT_GIT_DATE={}", date);
         println!("cargo:rustc-env=SPRT_GIT_DIRTY={}", if is_dirty { "1" } else { "0" });
         
-        // Rebuild when the checked-out commit changes, whether refs are stored
-        // as loose files under .git/refs or packed into .git/packed-refs.
-        println!("cargo:rerun-if-changed=.git/HEAD");
-        println!("cargo:rerun-if-changed=.git/refs");
-        println!("cargo:rerun-if-changed=.git/packed-refs");
+        // Write commit info to a marker file and watch it.
+        // This only "changes" when you actually switch commits/branches,
+        // not for unrelated git operations.
+        let marker = ".cargo/.git-commit-marker";
+        let _ = fs::create_dir_all(".cargo");
+        let marker_content = format!("{}{}", commit, if is_dirty { "dirty" } else { "clean" });
+
+        // Only write if content differs - this prevents unnecessary mtime updates
+        let should_write = fs::read_to_string(marker)
+            .map(|existing| existing != marker_content)
+            .unwrap_or(true);
+
+        if should_write {
+            let _ = fs::write(marker, &marker_content);
+        }
+
+        println!("cargo:rerun-if-changed={}", marker);
     }
 }
