@@ -702,7 +702,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         // Tropism sums across all royals
                                         if piece_val > 0 {
                                             let d = dx.max(dy);
-                                            w_attacking_tropism += piece_val / (d as i32 + 5);
+                                            w_attacking_tropism += piece_val / (d as i32 + 10);
                                         }
                                     }
                                     // Single pass through WHITE royals for friendly tropism
@@ -710,7 +710,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         for &wk in white_royals {
                                             let d = (x - wk.x).abs().max((y - wk.y).abs());
                                             w_defensive_tropism +=
-                                                piece_val.min(350) / (d as i32 + 5);
+                                                piece_val.min(350) / (d as i32 + 10);
                                         }
                                     }
                                 } else {
@@ -728,7 +728,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         // Tropism sums across all royals
                                         if piece_val > 0 {
                                             let d = dx.max(dy);
-                                            b_attacking_tropism += piece_val / (d as i32 + 5);
+                                            b_attacking_tropism += piece_val / (d as i32 + 10);
                                         }
                                     }
                                     // Single pass through BLACK royals for friendly tropism
@@ -736,7 +736,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         for &bk in black_royals {
                                             let d = (x - bk.x).abs().max((y - bk.y).abs());
                                             b_defensive_tropism +=
-                                                piece_val.min(350) / (d as i32 + 5);
+                                                piece_val.min(350) / (d as i32 + 10);
                                         }
                                     }
                                 }
