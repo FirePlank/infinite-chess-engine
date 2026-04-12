@@ -122,6 +122,13 @@ const VARIANTS = {
         worldBorder: 0,
         hasCustomEval: true,
     },
+    // Custom variant that uses all fairy leapers
+    Scattered_Leapers: {
+        position: 'P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|R1,1+|r1,8+|r8,8+|B3,1|B6,1|b3,8|b6,8|GU2,1|gu2,8|K5,1+|k5,8+|gu7,8|P11,1+|P-2,1+|P-5,0+|P14,0+|p-2,8+|p-5,9+|p11,8+|p14,9+|nr4,9|NR4,0|CA9,-2|ca9,11|ca0,11|ze-3,12|ze12,12|ZE12,-3|GI-5,-6|GI14,-6|gi14,15|gi-5,15|ha-1,14|ha10,14|P6,2+|RO7,-6|p8,7+|ZE-3,-3|CA0,-2|GU7,1|R8,1+|HA10,-5|HA-1,-5|ro7,15',
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+        },
+    },
 };
 
 // Get variant position and special rights

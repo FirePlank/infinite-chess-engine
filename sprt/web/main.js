@@ -844,7 +844,7 @@ async function runSprt() {
     }
     CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
     const maxGamesVal = (sprtMaxGames.value || '').trim().toLowerCase();
-    CONFIG.maxGames = (maxGamesVal === 'unlimited' || maxGamesVal === '') ? null : (Number.isFinite(parseInt(maxGamesVal, 10)) ? parseInt(maxGamesVal, 10) : null);
+    CONFIG.maxGames = (maxGamesVal === 'unlimited' || maxGamesVal === '') ? Infinity : (Number.isFinite(parseInt(maxGamesVal, 10)) ? parseInt(maxGamesVal, 10) : Infinity);
     const valMoves = parseInt(sprtMaxMoves.value, 10);
     CONFIG.maxMoves = (Number.isFinite(valMoves) && valMoves > 0) ? valMoves : Infinity;
     {
