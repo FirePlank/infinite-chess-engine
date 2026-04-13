@@ -207,14 +207,28 @@ cargo run --bin spsa --features param_tuning -- apply
 
 Checkpoints are saved to `sprt/spsa_checkpoints/` by default and resume automatically unless `--fresh` is passed.
 
+---
+
+## Game Review Tool
+
+The web UI also includes an interactive game review tool (`web/review.html`) for analyzing game positions and moves:
+
+### Features
+
+- **Move Classification**: Automatically classifies moves as Best, Excellent, Good, Inaccuracy, Mistake, Blunder, or Forced
+- **Evaluation Graph**: Visual representation of position evaluation throughout the game with hover tooltips
+- **Move List**: Interactive move list showing evaluation after each move with classification symbols
+- **Accuracy Stats**: Per-side accuracy percentages and classification breakdowns
+
+---
+
 ## Project Structure
 
 - `src/bin/sprt.rs` — Native CLI (SPRT manager + search subprocess)
 - `sprt.js` — Build and server script (web UI)
 - `src/bin/spsa.rs` — Match-based SPSA CLI (runner + search subprocess + apply/revert)
-- `web/` — Web UI for running SPRT tests
-- `web/pkg-old/` — Baseline WebAssembly package
-- `web/pkg-new/` — Modified WebAssembly package
+- `web/` — Web UI for running SPRT and game review
+- `web/review.html` — Game review tool UI
 
 ### References
 

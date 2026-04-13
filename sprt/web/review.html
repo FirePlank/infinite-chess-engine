@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Review · HydroChess</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-page:    #141318;
+            --bg-card:    #1c1b22;
+            --bg-raised:  #232229;
+            --bg-hover:   #2a2932;
+            --bg-input:   #19181f;
+            --border:     #2e2c38;
+            --border-light: #3a3847;
+            --text-primary:   #f0eef8;
+            --text-secondary: #9b98b0;
+            --text-dim:       #5c5a6e;
+            --accent:     #8b7ff5;
+            --accent-dim: rgba(139,127,245,0.12);
+            --accent-hover: #7a6ee4;
+            --best:       #5fa855;
+            --excellent:  #5fa855;
+            --good:       #7a7a8a;
+            --inaccuracy: #d4a72c;
+            --mistake:    #d47c2c;
+            --blunder:    #c94040;
+            --radius-sm:  6px;
+            --radius:     10px;
+            --radius-lg:  14px;
+            --shadow:     0 2px 12px rgba(0,0,0,0.4);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
+        /* ── Top bar ──────────────────────────────────────── */
+        .topbar {
+            height: 52px;
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 28px;
+            gap: 14px;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+        .topbar-logo {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .topbar-logo svg { width: 22px; height: 22px; opacity: 0.9; }
+        .topbar-sep { width: 1px; height: 22px; background: var(--border); }
+        .topbar-title { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
+        .topbar-game-info {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ── Page layout ──────────────────────────────────── */
+        .page {
+            max-width: 1300px;
+            margin: 0 auto;
+            padding: 24px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        /* ── Input card ───────────────────────────────────── */
+        .input-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 18px 20px;
+            box-shadow: var(--shadow);
+        }
+        .input-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+        .icn-textarea {
+            width: 100%;
+            min-height: 80px;
+            max-height: 160px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11.5px;
+            line-height: 1.6;
+            padding: 10px 12px;
+            resize: vertical;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            caret-color: var(--accent);
+        }
+        .icn-textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-dim);
+        }
+        .icn-textarea::placeholder { color: var(--text-dim); }
+
+        .controls-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .control-chip {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+        }
+        .control-chip label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-dim);
+            padding: 0 10px;
+            white-space: nowrap;
+            background: var(--bg-raised);
+            border-right: 1px solid var(--border);
+            height: 34px;
+            display: flex;
+            align-items: center;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .control-chip input,
+        .control-chip select {
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            padding: 0 10px;
+            outline: none;
+            height: 34px;
+            min-width: 60px;
+        }
+        .control-chip select { 
+            background: var(--bg-input) url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239b98b0' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e") no-repeat right 8px center;
+            background-size: 16px;
+            color: var(--text-primary);
+            min-width: 130px;
+            padding-right: 28px !important;
+            cursor: pointer;
+            appearance: none;
+        }
+        .control-chip select option {
+            color: #000;
+            background: #fff;
+        }
+
+        .btn {
+            height: 34px;
+            padding: 0 18px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            letter-spacing: 0.2px;
+        }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+        .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn-cancel {
+            background: transparent;
+            border: 1px solid var(--blunder);
+            color: var(--blunder);
+        }
+        .btn-cancel:hover { background: rgba(201,64,64,0.12); }
+
+        /* ── Results area ─────────────────────────────────── */
+        .hidden { display: none !important; }
+        #resultsPanel:not(.hidden) { display: contents; }
+
+        /* ── Progress ─────────────────────────────────────── */
+        .progress-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 20px;
+        }
+        .progress-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        #progressText { font-size: 13px; color: var(--text-secondary); }
+        #progressPct  { font-size: 13px; font-weight: 600; color: var(--accent); }
+        .progress-track {
+            height: 5px;
+            background: var(--bg-raised);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #b8a9ff);
+            border-radius: 3px;
+            transition: width 0.25s ease;
+            width: 0%;
+        }
+
+        /* ── Main results grid ────────────────────────────── */
+        .results-grid {
+            display: grid;
+            grid-template-columns: 1fr 310px;
+            gap: 18px;
+            align-items: start;
+        }
+        @media (max-width: 900px) { .results-grid { grid-template-columns: 1fr; } }
+
+        /* ── Card ─────────────────────────────────────────── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: var(--shadow);
+        }
+        .card-header {
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .card-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-dim);
+        }
+        .card-body { padding: 16px 18px; }
+
+        /* ── Eval graph ───────────────────────────────────── */
+        .graph-wrap { position: relative; width: 100%; }
+        #evalCanvas { display: block; width: 100%; border-radius: var(--radius-sm); }
+
+        /* ── Accuracy row ─────────────────────────────────── */
+        .accuracy-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .acc-block {
+            background: var(--bg-raised);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+        }
+        .acc-block-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .piece-dot {
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .piece-dot.white { background: #ece8d8; }
+        .piece-dot.black { background: #3a3630; border: 1.5px solid #666; }
+        .acc-block-head .acc-name { font-size: 12px; font-weight: 600; }
+        .acc-num {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -1px;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+        .acc-track {
+            height: 4px;
+            background: var(--bg-page);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .acc-fill { height: 100%; border-radius: 2px; transition: width 0.9s cubic-bezier(0.4,0,0.2,1); }
+
+        .cls-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 2px 0;
+            font-size: 11.5px;
+        }
+        .cls-pip {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .cls-name { flex: 1; color: var(--text-secondary); }
+        .cls-count { font-weight: 700; color: var(--text-primary); }
+
+        /* ── Sidebar ──────────────────────────────────────── */
+        .sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+        /* ── Move detail ──────────────────────────────────── */
+        .detail-empty { color: var(--text-dim); font-size: 13px; padding: 4px 0; }
+        .detail-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: var(--radius-sm);
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            width: 100%;
+        }
+        .detail-meta {
+            font-size: 11px;
+            color: var(--text-dim);
+            margin-bottom: 14px;
+        }
+        .detail-moves {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .detail-move-box {
+            background: var(--bg-raised);
+            border-radius: var(--radius-sm);
+            padding: 10px 12px;
+        }
+        .detail-move-box .dmb-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+        .detail-move-box .dmb-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .detail-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        .dstat {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            padding: 3px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .dstat:last-child { border-bottom: none; }
+        .dstat-label { color: var(--text-secondary); }
+        .dstat-val { font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+        /* ── Move list ────────────────────────────────────── */
+        .movelist-scroll {
+            max-height: 420px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 6px 8px;
+        }
+        .movelist-scroll::-webkit-scrollbar { width: 5px; }
+        .movelist-scroll::-webkit-scrollbar-track { background: transparent; }
+        .movelist-scroll::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+        .move-row {
+            display: flex;
+            align-items: stretch;
+            gap: 2px;
+            margin-bottom: 1px;
+            min-width: 0;
+        }
+        .move-number {
+            width: 30px;
+            min-width: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 6px;
+            font-size: 10.5px;
+            color: var(--text-dim);
+            font-weight: 500;
+            flex-shrink: 0;
+        }
+        .move-cell {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 7px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.1s;
+            font-size: 11.5px;
+            font-family: 'JetBrains Mono', monospace;
+            min-height: 26px;
+            overflow: hidden;
+            border-left: 2px solid transparent;
+        }
+        .move-cell:hover { background: var(--bg-hover); }
+        .move-cell.selected {
+            background: var(--accent-dim);
+            border-left-color: var(--accent) !important;
+        }
+        .move-cell.spacer {
+            color: var(--text-dim);
+            cursor: default;
+            font-family: inherit;
+            font-size: 12px;
+        }
+        .move-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .move-sym {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 4px;
+            border-radius: 3px;
+            color: #fff;
+            flex-shrink: 0;
+            line-height: 1.5;
+        }
+        .move-ev {
+            font-size: 10px;
+            color: var(--text-dim);
+            flex-shrink: 0;
+            min-width: 38px;
+            text-align: right;
+        }
+
+        /* Classification border colors */
+        .move-cell.best       { border-left-color: var(--best); }
+        .move-cell.excellent  { border-left-color: var(--excellent); }
+        .move-cell.inaccuracy { border-left-color: var(--inaccuracy); }
+        .move-cell.mistake    { border-left-color: var(--mistake); }
+        .move-cell.blunder    { border-left-color: var(--blunder); }
+    </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<header class="topbar">
+    <div class="topbar-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L8 7H4l2 5-4 4h6l4 6 4-6h6l-4-4 2-5h-4L12 2z"/>
+        </svg>
+        HydroChess
+    </div>
+    <div class="topbar-sep"></div>
+    <div class="topbar-title">Game Review</div>
+    <div id="gameInfo" class="topbar-game-info hidden"></div>
+</header>
+
+<div class="page">
+
+    <!-- ICN Input -->
+    <div class="input-card">
+        <div class="input-label">Game ICN</div>
+        <textarea id="icnInput" class="icn-textarea" rows="3"
+            placeholder="Paste an ICN game string — e.g. [Event &quot;...&quot;] [Variant &quot;Classical&quot;] w 0/100 1 (8|1) ... P1,2+|... Q4,1>9,-4|q4,8>0,12|..."></textarea>
+        <div class="controls-row">
+            <div class="control-chip">
+                <label for="depthInput">Depth</label>
+                <input type="number" id="depthInput" value="12" min="1" max="30">
+            </div>
+            <div class="control-chip">
+                <label for="workersInput">Workers</label>
+                <input type="number" id="workersInput" value="" min="1" max="16" placeholder="Auto">
+            </div>
+            <div class="control-chip">
+                <label for="variantHint">Variant</label>
+                <select id="variantHint">
+                    <option value="">Auto-detect</option>
+                </select>
+            </div>
+            <button id="analyzeBtn" class="btn btn-primary">Analyze Game</button>
+            <button id="cancelBtn" class="btn btn-cancel hidden">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Results (hidden until analysis) -->
+    <div id="resultsPanel" class="hidden">
+
+        <!-- Progress -->
+        <div id="progressPanel" class="progress-card hidden">
+            <div class="progress-top">
+                <span id="progressText">Initializing workers…</span>
+                <span id="progressPct">0%</span>
+            </div>
+            <div class="progress-track">
+                <div id="progressBar" class="progress-fill"></div>
+            </div>
+        </div>
+
+        <!-- Main two-column grid -->
+        <div class="results-grid">
+
+            <!-- Left: graph + accuracy -->
+            <div style="display:flex;flex-direction:column;gap:16px;">
+
+                <div id="statsPanel" class="card hidden">
+                    <div class="card-header">
+                        <span class="card-title">Evaluation</span>
+                        <span id="evalLegend" style="font-size:11px;color:var(--text-dim);display:flex;gap:12px;">
+                            <span style="display:flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:var(--inaccuracy);display:inline-block;"></span>Inaccuracy</span>
+                            <span style="display:flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:var(--mistake);display:inline-block;"></span>Mistake</span>
+                            <span style="display:flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:var(--blunder);display:inline-block;"></span>Blunder</span>
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div class="graph-wrap">
+                            <canvas id="evalCanvas"></canvas>
+                        </div>
+                        <div class="accuracy-row">
+                            <div class="acc-block">
+                                <div class="acc-block-head">
+                                    <span class="piece-dot white"></span>
+                                    <span class="acc-name">White</span>
+                                </div>
+                                <div class="acc-num" id="whiteAccVal">—</div>
+                                <div class="acc-track"><div id="whiteAccBar" class="acc-fill" style="width:0%"></div></div>
+                                <div id="whiteBreakdown"></div>
+                            </div>
+                            <div class="acc-block">
+                                <div class="acc-block-head">
+                                    <span class="piece-dot black"></span>
+                                    <span class="acc-name">Black</span>
+                                </div>
+                                <div class="acc-num" id="blackAccVal">—</div>
+                                <div class="acc-track"><div id="blackAccBar" class="acc-fill" style="width:0%"></div></div>
+                                <div id="blackBreakdown"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right sidebar: detail + moves -->
+            <div class="sidebar">
+
+                <div class="card">
+                    <div class="card-header"><span class="card-title">Move Detail</span></div>
+                    <div class="card-body" id="moveDetail">
+                        <p class="detail-empty">Click a move to see details</p>
+                    </div>
+                </div>
+
+                <div id="moveListPanel" class="card hidden">
+                    <div class="card-header"><span class="card-title">Moves</span></div>
+                    <div class="movelist-scroll" id="moveList"></div>
+                </div>
+
+            </div>
+        </div>
+
+    </div><!-- /resultsPanel -->
+
+</div><!-- /page -->
+
+<script type="module" src="./review-main.js"></script>
+</body>
+</html>
