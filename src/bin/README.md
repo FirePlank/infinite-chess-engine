@@ -54,3 +54,11 @@ Extracts tactical puzzles from a game database using win-chance metrics and them
 ```bash
 cargo run --release --bin puzzle_gen --features puzzle_gen
 ```
+
+### 8. UCI Protocol Bridge (`uci.rs`)
+A UCI-compliant chess engine interface for standard 8×8 chess. Accepts UCI commands on stdin and outputs moves/info to stdout. Compatible with any UCI GUI (Cutechess, Arena, Lichess, etc.).
+
+```bash
+cargo build --bin uci --release
+./target/release/uci.exe
+```

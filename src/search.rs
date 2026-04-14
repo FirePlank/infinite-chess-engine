@@ -645,6 +645,13 @@ pub fn get_current_tt_stats() -> SearchStats {
     })
 }
 
+/// Return the completed depth from the last search, or 0 if no search has run yet.
+pub fn get_completed_depth() -> usize {
+    GLOBAL_SEARCHER.with(|cell| {
+        cell.borrow().as_ref().map_or(0, |s| s.completed_depth)
+    })
+}
+
 /// Reset the global search state.
 /// Call this when starting a brand new game so old entries don't carry over.
 pub fn reset_search_state() {
