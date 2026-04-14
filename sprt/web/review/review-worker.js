@@ -1,5 +1,5 @@
-import initWasm, * as wasm from './pkg-new/hydrochess_wasm.js';
-import { getVariantData, generateSetupICN } from './variants.js';
+import initWasm, * as wasm from '../pkg-new/hydrochess_wasm.js';
+import { getVariantData, generateSetupICN } from '../variants.js';
 
 const Engine = wasm.Engine;
 const resetEngineState = wasm.reset_engine_state;

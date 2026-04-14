@@ -474,6 +474,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut cloud_sum_dx: i64 = 0;
     let mut cloud_sum_dy: i64 = 0;
     let mut cloud_count: i64 = 0;
+    let mut cloud_spread_sum: i64 = 0;
 
     let (ref_x, ref_y) = match (white_king, black_king) {
         (Some(wk), Some(bk)) => (
@@ -666,6 +667,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         cloud_sum_dx += cw * cdx;
                                         cloud_sum_dy += cw * cdy;
                                         cloud_count += cw;
+                                        cloud_spread_sum += cw * cdx.abs().max(cdy.abs());
                                     }
                                 }
 
@@ -1158,6 +1160,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         } else {
                             None
                         };
+                        // Weighted average Chebyshev distance of pieces from the kings' midpoint.
+                        // Low = tight/closed position (leapers thrive), High = spread/open (sliders dominate).
+                        let cloud_avg_spread = if cloud_count > 0 {
+                            (cloud_spread_sum / cloud_count) as i32
+                        } else {
+                            8 // neutral fallback
+                        };
 
                         // Pawn Advancement Calculation
                         if white_max_y != i64::MIN {
@@ -1214,6 +1223,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 white_bishop_colors,
                                 black_bishop_colors,
                                 cloud_center,
+                                cloud_avg_spread,
                             },
                             w_attack_ready,
                             b_attack_ready,
@@ -1311,6 +1321,7 @@ struct PieceMetrics {
     white_bishop_colors: (bool, bool),
     black_bishop_colors: (bool, bool),
     cloud_center: Option<Coordinate>,
+    cloud_avg_spread: i32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1333,6 +1344,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     let mut b_activity: i32 = 0;
 
     let cloud_center = metrics.cloud_center;
+    let cloud_avg_spread = metrics.cloud_avg_spread;
 
     let white_attack_ready = {
         let cap = (100 - metrics.white_undeveloped * 25).clamp(30, 100);
@@ -1447,6 +1459,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
+                cloud_avg_spread,
                 phase,
                 white_pawns,
                 black_pawns,
@@ -1460,7 +1473,9 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value_base(piece.piece_type()),
+                piece.piece_type(),
+                cloud_avg_spread,
+                phase,
             ),
             PieceType::Centaur | PieceType::RoyalCentaur => {
                 let leaper_eval = evaluate_leaper_positioning(
@@ -1468,7 +1483,9 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     y,
                     piece.color(),
                     cloud_center.as_ref(),
-                    get_piece_value_base(piece.piece_type()),
+                    piece.piece_type(),
+                    cloud_avg_spread,
+                    phase,
                 );
                 leaper_eval * CENTAUR_GUARD_SCALE / 100
             }
@@ -1477,14 +1494,18 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value_base(PieceType::Huygen),
+                PieceType::Huygen,
+                cloud_avg_spread,
+                phase,
             ),
             PieceType::Guard => evaluate_leaper_positioning(
                 x,
                 y,
                 piece.color(),
                 cloud_center.as_ref(),
-                get_piece_value_base(PieceType::Guard),
+                PieceType::Guard,
+                cloud_avg_spread,
+                phase,
             ),
             _ => 0,
         };
@@ -2086,6 +2107,7 @@ fn evaluate_knight(
     y: i64,
     color: PlayerColor,
     cloud_center: Option<&Coordinate>,
+    cloud_avg_spread: i32,
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
@@ -2097,7 +2119,9 @@ fn evaluate_knight(
         y,
         color,
         cloud_center,
-        get_piece_value_base(PieceType::Knight),
+        PieceType::Knight,
+        cloud_avg_spread,
+        phase,
     );
 
     // Outpost Bonus: precise pawn support
@@ -2126,20 +2150,28 @@ fn evaluate_knight(
     bonus
 }
 
-// ==================== Fairy Piece Evaluation ====================
-
-/// Evaluate leaper pieces (Hawk, Rose, Camel, Giraffe, Zebra, etc.)
-/// Includes: (1) mobility bonus for counting unblocked squares, (2) cloud proximity
+/// Evaluate leaper pieces
+///
+/// Three components:
+/// 1. **Cloud proximity** – reward being near the piece cloud center
+/// 2. **Density bonus** – leapers gain value when pieces cluster together
+/// 3. **Phase taper** – short-range leapers become relatively more valuable in the
+///    endgame as the board empties
 fn evaluate_leaper_positioning(
     x: i64,
     y: i64,
     _color: PlayerColor,
     cloud_center: Option<&Coordinate>,
-    piece_value: i32,
+    piece_type: PieceType,
+    cloud_avg_spread: i32,
+    phase: i32,
 ) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let piece_value = get_piece_value_base(piece_type);
     let mut bonus: i32 = 0;
 
-    // CLOUD PROXIMITY: reward being near the piece cloud center
+    // 1. CLOUD PROXIMITY: reward being near the piece cloud center
     let scale = (piece_value / LEAPER_TROPISM_DIVISOR).max(1);
     if let Some(center) = cloud_center {
         let dist = (x - center.x).abs().max((y - center.y).abs());
@@ -2147,6 +2179,40 @@ fn evaluate_leaper_positioning(
             bonus += (11 - dist as i32) * (scale / 3).max(1);
         }
     }
+
+    // 2. DENSITY BONUS
+    // cloud_avg_spread ∈ [0, CLOUD_CENTER_MAX_SKEW_DIST=16]; neutral at 8.
+    // density_adj > 0 → tight position (pieces clustered) → leaper bonus.
+    // density_adj < 0 → open position (pieces spread) → leaper penalty.
+    let density_sensitivity: i32 = match piece_type {
+        PieceType::Knight => 35,
+        PieceType::Camel => 30,
+        PieceType::Zebra => 25,
+        PieceType::Giraffe => 20,
+        PieceType::Guard => 25,
+        PieceType::Hawk => 15,
+        PieceType::Centaur | PieceType::RoyalCentaur => 22,
+        PieceType::Huygen => 15,
+        PieceType::Rose => 5,
+        _ => 10,
+    };
+    let density_adj = (8_i32 - cloud_avg_spread).clamp(-8, 8);
+    bonus += density_adj * density_sensitivity / 10;
+
+    // 3. PHASE TAPER
+    let (mg_bonus, eg_bonus): (i32, i32) = match piece_type {
+        PieceType::Knight => (0, 30), 
+        PieceType::Camel => (0, 23),
+        PieceType::Zebra => (0, 20),
+        PieceType::Giraffe => (0, 15),
+        PieceType::Guard => (0, 20),
+        PieceType::Hawk => (0, 10),
+        PieceType::Centaur | PieceType::RoyalCentaur => (0, 20),
+        PieceType::Huygen => (0, 0),
+        PieceType::Rose => (0, 0),
+        _ => (0, 10),
+    };
+    bonus += taper(mg_bonus, eg_bonus);
 
     bonus
 }
@@ -3338,7 +3404,7 @@ mod tests {
         let icn_no_support = "w (8;q|1;q) K0,0|k0,10|N4,4";
         game.setup_position_from_icn(icn_no_support);
 
-        let score_no_support = evaluate_knight(4, 4, PlayerColor::White, None, 0, &[], &[]);
+        let score_no_support = evaluate_knight(4, 4, PlayerColor::White, None, 8, 0, &[], &[]);
 
         // Case 2: Support from pawn at (3,3) (White pawn at y-1 supports y)
         let icn_supported = "w (8;q|1;q) K0,0|k0,10|N4,4|P3,3";
@@ -3346,7 +3412,7 @@ mod tests {
         // Mock pawn list
         let white_pawns = vec![(3, 3)];
 
-        let score_supported = evaluate_knight(4, 4, PlayerColor::White, None, 0, &white_pawns, &[]);
+        let score_supported = evaluate_knight(4, 4, PlayerColor::White, None, 8, 0, &white_pawns, &[]);
 
         println!(
             "No Support: {}, Supported: {}",

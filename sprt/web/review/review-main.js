@@ -1,4 +1,4 @@
-import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode } from './variants.js';
+import { getAllVariants } from '../variants.js';
 
 // ── Constants & Configuration ───────────────────────────────────────────────
 

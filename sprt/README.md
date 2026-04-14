@@ -211,7 +211,7 @@ Checkpoints are saved to `sprt/spsa_checkpoints/` by default and resume automati
 
 ## Game Review Tool
 
-The web UI also includes an interactive game review tool (`web/review.html`) for analyzing game positions and moves:
+The web UI also includes an interactive game review tool (`web/review/`) for analyzing game positions and moves:
 
 ### Features
 
@@ -228,7 +228,7 @@ The web UI also includes an interactive game review tool (`web/review.html`) for
 - `sprt.js` — Build and server script (web UI)
 - `src/bin/spsa.rs` — Match-based SPSA CLI (runner + search subprocess + apply/revert)
 - `web/` — Web UI for running SPRT and game review
-- `web/review.html` — Game review tool UI
+- `web/review/` — Game review tool
 
 ### References
 
