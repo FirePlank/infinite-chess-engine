@@ -1,5 +1,4 @@
 use std::env;
-use std::fs;
 use std::process::Command;
 
 fn main() {
@@ -41,22 +40,10 @@ fn main() {
         println!("cargo:rustc-env=SPRT_GIT_DATE={}", date);
         println!("cargo:rustc-env=SPRT_GIT_DIRTY={}", if is_dirty { "1" } else { "0" });
         
-        // Write commit info to a marker file and watch it.
-        // This only "changes" when you actually switch commits/branches,
-        // not for unrelated git operations.
-        let marker = ".cargo/.git-commit-marker";
-        let _ = fs::create_dir_all(".cargo");
-        let marker_content = format!("{}{}", commit, if is_dirty { "dirty" } else { "clean" });
-
-        // Only write if content differs - this prevents unnecessary mtime updates
-        let should_write = fs::read_to_string(marker)
-            .map(|existing| existing != marker_content)
-            .unwrap_or(true);
-
-        if should_write {
-            let _ = fs::write(marker, &marker_content);
-        }
-
-        println!("cargo:rerun-if-changed={}", marker);
+        // Watch .git/HEAD to detect branch/commit changes
+        println!("cargo:rerun-if-changed=.git/HEAD");
+        // Also watch all src files to catch local changes
+        println!("cargo:rerun-if-changed=src");
+        println!("cargo:rerun-if-changed=build.rs");
     }
 }
