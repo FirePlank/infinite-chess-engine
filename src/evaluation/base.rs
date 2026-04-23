@@ -742,6 +742,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         let w_total_effective_units = (w_total_sliders + (w_additional_attack_units - b_defender_units) / 100).max(0) as usize;
                         let b_total_effective_units = (b_total_sliders + (b_additional_attack_units - w_defender_units) / 100).max(0) as usize;
+                        let w_tropism_addend = compute_tropism_addend(w_total_effective_units);
+                        let b_tropism_addend = compute_tropism_addend(b_total_effective_units);
 
                         // Main piece loop
                         for (cx, cy, tile) in game.board.tiles.iter() {
@@ -851,8 +853,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     0
                                 };
 
-                                let w_tropism_addend = compute_tropism_addend(w_total_effective_units);
-                                let b_tropism_addend = compute_tropism_addend(b_total_effective_units);
                                 if is_white {
                                     // Unified pass through BLACK royals: slider zone, enemy tropism
                                     let mut slider_counted = false;
@@ -1799,6 +1799,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 
 const TROPISM_SLIDER_WEIGHTS: [i32; 8] = [11, 11, 10, 9, 8, 7, 6, 5];
 /// Calculates the right distance to attack the other side and defend your own king.
+#[inline(always)]
 fn compute_tropism_addend(slider_count: usize) -> i32 {
     TROPISM_SLIDER_WEIGHTS[slider_count.min(7)]
 }
