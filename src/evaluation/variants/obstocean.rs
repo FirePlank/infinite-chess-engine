@@ -139,7 +139,7 @@ fn evaluate_inner(game: &GameState) -> i32 {
                         }
 
 
-                        // Pawn Structure (uses collected info to avoid RefCell borrow panic)
+                        // 4. Pawn Structure (uses collected info to avoid RefCell borrow panic)
                         score += base::evaluate_pawn_structure_traced(
                             game,
                             game.total_phase.min(base::MAX_PHASE),
@@ -183,14 +183,14 @@ fn eval_pawn(x: i64, y: i64, color: PlayerColor, game: &GameState) -> i32 {
 
     // LANE BONUS (the whole point)
     if x < 1 {
-        // LEFT OUTSIDE: 100 + 15 per file out
-        b += 100 + ((1 - x) as i32 * 15).min(90);
+        // LEFT OUTSIDE: 100 + 20 per file out
+        b += 100 + ((1 - x) as i32 * 20);
     } else if x > 8 {
-        // RIGHT OUTSIDE: 100 + 15 per file out
-        b += 100 + ((x - 8) as i32 * 15).min(90);
+        // RIGHT OUTSIDE: 100 + 20 per file out
+        b += 100 + ((x - 8) as i32 * 20);
     } else if x == 1 || x == 8 {
         // EDGE FILES: Strong priority
-        b += 80;
+        b += 75;
     } else if x == 2 || x == 7 {
         // NEAR EDGE
         b += 25;
