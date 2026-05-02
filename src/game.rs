@@ -2008,31 +2008,34 @@ impl GameState {
         // Pre-compute knightrider blocking squares: the intermediate knight hops between checker and king
         // The knightrider attacks along a line of repeated knight moves: (dx, dy) * n
         // For a check from checker_sq to king_sq, we need to find which knight direction was used
-        let knightrider_blocking_squares: arrayvec::ArrayVec<Coordinate, 32> =
+        // knightrider_check_ndx/ndy: the actual (±1,±2)/(±2,±1) hop direction from king→checker.
+        // knightrider_n: total hops (checker = king + n*(ndx,ndy)).
+        // Blocking squares are king + i*(ndx,ndy) for i in 1..n.
+        let (knightrider_blocking_squares, knightrider_check_ndx, knightrider_check_ndy, knightrider_n):
+            (arrayvec::ArrayVec<Coordinate, 32>, i64, i64, i64) =
             if is_knightrider_checker {
                 use crate::attacks::KNIGHTRIDER_DIRS;
                 let mut blocking = arrayvec::ArrayVec::new();
-                // Find which knight direction matches the check vector
+                let mut found = (0i64, 0i64, 0i64);
                 for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
-                    // Check if dx_check = ndx * n and dy_check = ndy * n for some positive n
                     if ndx != 0 && ndy != 0 {
                         let n_x = dx_check / ndx;
                         let n_y = dy_check / ndy;
                         if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
-                            // Found the knight direction! Compute intermediate squares
-                            let n = n_x;
-                            for i in 1..n {
-                                let bx = king_sq.x + ndx * i;
-                                let by = king_sq.y + ndy * i;
-                                blocking.push(Coordinate::new(bx, by));
+                            found = (ndx, ndy, n_x);
+                            for i in 1..n_x {
+                                blocking.push(Coordinate::new(
+                                    king_sq.x + ndx * i,
+                                    king_sq.y + ndy * i,
+                                ));
                             }
                             break;
                         }
                     }
                 }
-                blocking
+                (blocking, found.0, found.1, found.2)
             } else {
-                arrayvec::ArrayVec::new()
+                (arrayvec::ArrayVec::new(), 0, 0, 0)
             };
 
         // For non-linear checkers, compute blocking squares up front
@@ -2314,8 +2317,8 @@ impl GameState {
                 }
             }
 
-            // Regular slider blocking for non-Huygen, non-Rose checkers (linear attack patterns)
-            if is_slider && can_ortho && !is_huygen_checker && !is_nonlinear_checker {
+            // Regular slider blocking for non-Huygen, non-Rose, non-Knightrider checkers (linear attack patterns)
+            if is_slider && can_ortho && !is_huygen_checker && !is_nonlinear_checker && !is_knightrider_checker {
                 // Horizontal line y=from.y intersects check ray
                 if step_y != 0 {
                     let k = (from.y - king_sq.y) / step_y;
@@ -2477,7 +2480,7 @@ impl GameState {
                 }
             }
 
-            if is_slider && can_diag {
+            if is_slider && can_diag && !is_knightrider_checker {
                 // Diagonal x-y=c intersects check ray
                 let s_diff = step_x - step_y;
                 if s_diff != 0 {
@@ -2515,39 +2518,165 @@ impl GameState {
             }
 
             // ==========================================
+            // ORTHO/DIAG SLIDER BLOCKING AGAINST KNIGHTRIDER CHECKER
+            // O(1) per sliding line: solve king + i*(cndx,cndy) = slider's line for i.
+            // ==========================================
+            if is_knightrider_checker && (can_ortho || can_diag) {
+                let cndx = knightrider_check_ndx;
+                let cndy = knightrider_check_ndy;
+                let cn   = knightrider_n;
+                let kx   = king_sq.x;
+                let ky   = king_sq.y;
+
+                // Same column: from.x = kx + cndx*i  =>  i = (from.x - kx) / cndx
+                if can_ortho && cndx != 0 {
+                    let num = from.x - kx;
+                    if num % cndx == 0 {
+                        let i = num / cndx;
+                        if i >= 1 && i < cn {
+                            let ty = ky + cndy * i;
+                            if ty != from.y {
+                                let tgt = Coordinate::new(from.x, ty);
+                                if can_block_at(from.x, ty)
+                                    && s.is_path_clear_for_rook(&from, &tgt)
+                                {
+                                    out.push(Move::new(from, tgt, *piece));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Same row: from.y = ky + cndy*i  =>  i = (from.y - ky) / cndy
+                if can_ortho && cndy != 0 {
+                    let num = from.y - ky;
+                    if num % cndy == 0 {
+                        let i = num / cndy;
+                        if i >= 1 && i < cn {
+                            let tx = kx + cndx * i;
+                            if tx != from.x {
+                                let tgt = Coordinate::new(tx, from.y);
+                                if can_block_at(tx, from.y)
+                                    && s.is_path_clear_for_rook(&from, &tgt)
+                                {
+                                    out.push(Move::new(from, tgt, *piece));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Main diagonal (x-y = const): i = ((from.x-from.y)-(kx-ky)) / (cndx-cndy)
+                if can_diag {
+                    let den = cndx - cndy;
+                    let num = (from.x - from.y) - (kx - ky);
+                    if num % den == 0 {
+                        let i = num / den;
+                        if i >= 1 && i < cn {
+                            let tx = kx + cndx * i;
+                            let ty = ky + cndy * i;
+                            if tx != from.x {
+                                let tgt = Coordinate::new(tx, ty);
+                                if can_block_at(tx, ty)
+                                    && s.is_path_clear_for_bishop(&from, &tgt)
+                                {
+                                    out.push(Move::new(from, tgt, *piece));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Anti-diagonal (x+y = const): i = ((from.x+from.y)-(kx+ky)) / (cndx+cndy)
+                if can_diag {
+                    let den = cndx + cndy;
+                    let num = (from.x + from.y) - (kx + ky);
+                    if num % den == 0 {
+                        let i = num / den;
+                        if i >= 1 && i < cn {
+                            let tx = kx + cndx * i;
+                            let ty = ky + cndy * i;
+                            if tx != from.x {
+                                let tgt = Coordinate::new(tx, ty);
+                                if can_block_at(tx, ty)
+                                    && s.is_path_clear_for_bishop(&from, &tgt)
+                                {
+                                    out.push(Move::new(from, tgt, *piece));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ==========================================
             // KNIGHTRIDER BLOCKING
             // Slider along knight directions - intersection calculation
             // ==========================================
             if is_slider && pt == PieceType::Knightrider {
-                for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
-                    // Knightrider line: from + t*(ndx, ndy) for t >= 1
-                    // Check ray: king + k*(step_x, step_y) for k in 1..=check_dist
-                    // Find t, k such that both equations are satisfied
-                    let det = ndx * step_y - ndy * step_x;
-                    if det != 0 {
-                        let dx = king_sq.x - from.x;
-                        let dy = king_sq.y - from.y;
-                        let t_num = dx * step_y - dy * step_x;
-                        let k_num = dx * ndy - dy * ndx;
-                        if t_num % det == 0 && k_num % det == 0 {
-                            let t = t_num / det;
-                            let k = k_num / det;
-                            if t >= 1 && k >= 1 && k <= check_dist {
-                                let tx = from.x + t * ndx;
-                                let ty = from.y + t * ndy;
-                                // Check path is clear for knightrider
-                                let mut path_clear = true;
-                                for i in 1..t {
-                                    if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
-                                        path_clear = false;
-                                        break;
+                if is_knightrider_checker {
+                    // Use the real hop direction instead of the sign-only step_x/step_y.
+                    // k ranges up to knightrider_n inclusive so capture (k==n) is covered.
+                    let cndx = knightrider_check_ndx;
+                    let cndy = knightrider_check_ndy;
+                    let cn   = knightrider_n;
+                    for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
+                        let det = ndx * cndy - ndy * cndx;
+                        if det != 0 {
+                            let dx = king_sq.x - from.x;
+                            let dy = king_sq.y - from.y;
+                            let t_num = dx * cndy - dy * cndx;
+                            let k_num = dx * ndy - dy * ndx;
+                            if t_num % det == 0 && k_num % det == 0 {
+                                let t = t_num / det;
+                                let k = k_num / det;
+                                if t >= 1 && k >= 1 && k <= cn {
+                                    let tx = from.x + t * ndx;
+                                    let ty = from.y + t * ndy;
+                                    let mut path_clear = true;
+                                    for i in 1..t {
+                                        if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
+                                            path_clear = false;
+                                            break;
+                                        }
+                                    }
+                                    if path_clear && can_block_at(tx, ty) {
+                                        out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                                     }
                                 }
-                                if path_clear
-                                    && can_block_at(tx, ty)
-                                    && (!is_huygen_checker || is_prime_fast(check_dist - k))
-                                {
-                                    out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
+                            }
+                        }
+                    }
+                } else {
+                    for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
+                        // Knightrider line: from + t*(ndx, ndy) for t >= 1
+                        // Check ray: king + k*(step_x, step_y) for k in 1..=check_dist
+                        // Find t, k such that both equations are satisfied
+                        let det = ndx * step_y - ndy * step_x;
+                        if det != 0 {
+                            let dx = king_sq.x - from.x;
+                            let dy = king_sq.y - from.y;
+                            let t_num = dx * step_y - dy * step_x;
+                            let k_num = dx * ndy - dy * ndx;
+                            if t_num % det == 0 && k_num % det == 0 {
+                                let t = t_num / det;
+                                let k = k_num / det;
+                                if t >= 1 && k >= 1 && k <= check_dist {
+                                    let tx = from.x + t * ndx;
+                                    let ty = from.y + t * ndy;
+                                    let mut path_clear = true;
+                                    for i in 1..t {
+                                        if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
+                                            path_clear = false;
+                                            break;
+                                        }
+                                    }
+                                    if path_clear
+                                        && can_block_at(tx, ty)
+                                        && (!is_huygen_checker || is_prime_fast(check_dist - k))
+                                    {
+                                        out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
+                                    }
                                 }
                             }
                         }
