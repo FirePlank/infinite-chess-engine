@@ -55,6 +55,7 @@ const sprtMaxMoves = document.getElementById('sprtMaxMoves');
 const sprtMaterialThresholdEl = document.getElementById('sprtMaterialAdjudication');
 const sprtSearchNoiseEl = document.getElementById('sprtSearchNoise');
 const sprtVariantsEl = document.getElementById('sprtVariants');
+const resetToDefaultBtn = document.getElementById('resetToDefault');
 const runSprtBtn = document.getElementById('runSprt');
 const stopSprtBtn = document.getElementById('stopSprt');
 const sprtWinsEl = document.getElementById('sprtWins');
@@ -1318,6 +1319,7 @@ function downloadGamesJson() {
     log('Downloaded ' + games.length + ' games as JSON', 'success');
 }
 
+resetToDefaultBtn.addEventListener('click', populateVariantDropdown);
 runSprtBtn.addEventListener('click', runSprt);
 stopSprtBtn.addEventListener('click', stopSprt);
 copyLogBtn.addEventListener('click', copyLog);

@@ -271,17 +271,25 @@ function generateSetupICN(variantName, startTurn, halfmoveClock, fullmoveNumber,
     // 3. Move Rule Limit (50-move rule)
     const moveLimit = vdata.game_rules.move_rule || 100;
 
-    // 4. Moves string: "from1,y1>to1,y1|from2,y2>to2,y2"
+    // 4. Win conditions
+    let winConditionStr = vdata.game_rules.win_conditions.white[0] + ',' + vdata.game_rules.win_conditions.black[0];
+    if (winConditionStr == 'checkmate,checkmate') {
+        winConditionStr = '';
+    } else {
+        winConditionStr += ' ';
+    }
+
+    // 5. Moves string: "from1,y1>to1,y1|from2,y2>to2,y2"
     const movesStr = moveHistoryList.map(h => {
         let m = `${h.from}>${h.to}`;
         if (h.promotion) m += `=${h.promotion}`;
         return m;
     }).join('|');
 
-    // 5. Include variant tag so engine recognizes the variant
+    // 6. Include variant tag so engine recognizes the variant
     const variantTag = `[Variant "${variantName}"] `;
 
-    return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
+    return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${winConditionStr}${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
 }
 
 export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, getVariantsWithDefaultDisabled, engineLetterToICNCode, generateSetupICN };
