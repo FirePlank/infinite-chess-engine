@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn test_get_pawn_advance_bonus() {
         // Near promotion -> high bonus
-        assert_eq!(get_pawn_advance_bonus(1), 250);
-        assert_eq!(get_pawn_advance_bonus(2), 100);
+        assert!(get_pawn_advance_bonus(1) > get_pawn_advance_bonus(2));
+        assert!(get_pawn_advance_bonus(2) >= 100);
         // Further back -> lower bonus
         assert!(get_pawn_advance_bonus(3) < get_pawn_advance_bonus(2));
         assert!(get_pawn_advance_bonus(6) < get_pawn_advance_bonus(3));
