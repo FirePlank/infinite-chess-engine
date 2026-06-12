@@ -591,9 +591,7 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         }
     } catch (e) {
         // Fallback to Classical if variant missing for some reason
-        if (VARIANTS.Classical && typeof VARIANTS.Classical.position === 'string') {
-            startPositionStr = VARIANTS.Classical.position;
-        }
+        startPositionStr = getVariantData('Classical').position;
     }
 
     if (!startPositionStr) {
