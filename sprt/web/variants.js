@@ -90,7 +90,6 @@ const VARIANTS = {
             promotion_ranks: { white: ['6'], black: ['-6'] },
             promotions_allowed: ['q', 'r', 'b', 'n', 'g', 'h', 'c'],
         },
-        defaultDisabled: true,
     },
     Pawn_Horde: {
         position: 'k5,2+|q4,2|r1,2+|n7,2|n2,2|r8,2+|b3,2|b6,2|P2,-1+|P3,-1+|P6,-1+|P7,-1+|P1,-2+|P2,-2+|P4,-2+|P5,-2+|P6,-2+|P7,-2+|P8,-2+|P1,-3+|P2,-3+|P4,-3+|P5,-3+|P6,-3+|P7,-3+|P8,-3+|P1,-4+|P2,-4+|P4,-4+|P5,-4+|P6,-4+|P7,-4+|P8,-4+|P1,-5+|P2,-5+|P4,-5+|P5,-5+|P6,-5+|P7,-5+|P8,-5+|P1,-6+|P2,-6+|P4,-6+|P5,-6+|P6,-6+|P7,-6+|P8,-6+|P3,-2+|P3,-3+|P3,-4+|P3,-5+|P3,-6+|P1,-7+|P2,-7+|P3,-7+|P4,-7+|P5,-7+|P6,-7+|P7,-7+|P8,-7+|P0,-6+|P0,-7+|P9,-6+|P9,-7+|p9,2+|p1,1+|p2,1+|p3,1+|p4,1+|p5,1+|p6,1+|p7,1+|p8,1+|p0,2+',
@@ -130,14 +129,13 @@ const VARIANTS = {
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
     },
-    // Custom variant that uses all fairy leapers
+    // Custom variants that uses more than 1 king
     Double_King_Classical: {
         position: 'k5,8+|k4,8+|n2,8|n7,8|r1,8+|r8,8+|b3,8|b6,8|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|K5,1+|K4,1+|N2,1|N7,1|R1,1+|R8,1+|B3,1|B6,1|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+',
         game_rules: {
             promotions_allowed: ['q', 'r', 'b', 'n'],
             win_conditions: { white: ['allroyalscaptured'], black: ['allroyalscaptured'] },
         },
-        defaultDisabled: true,
     },
     Double_King_Chess: {
         position: "k5,8+|k4,8+|n2,8|n7,8|r1,8+|r8,8+|b3,8|b6,8|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|K5,1+|K4,1+|N2,1|N7,1|R1,1+|R8,1+|B3,1|B6,1|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+",
@@ -145,9 +143,9 @@ const VARIANTS = {
             promotions_allowed: ['q', 'r', 'b', 'n'],
         },
         worldBorder: 0,
-        defaultDisabled: true,
     },
     Triple_King_Maze: {
+        // variant created by Nikita
         position: "vo0,0|vo1,0|vo2,0|vo3,0|vo4,0|vo5,0|vo10,0|vo0,9|vo10,1|vo10,2|vo10,9|vo9,9|vo6,9|vo8,9|vo7,9|vo0,8|vo0,7|vo0,4|vo0,3|vo10,6|vo10,5|vo3,9|vo3,6|vo3,5|vo3,4|vo3,3|vo7,5|vo7,4|vo7,3|vo4,9|vo5,9|vo6,0|vo7,0|vo-2,7|vo-1,7|vo11,2|vo12,2|vo-6,12|vo-6,11|vo-6,6|vo-6,5|vo-6,2|vo-6,-1|vo-6,-2|vo-6,-3|vo16,-3|vo16,-2|vo16,-1|vo16,2|vo16,4|vo16,7|vo16,10|vo16,11|vo16,12|vo-3,4|vo-3,3|vo-3,2|vo-3,1|vo-3,-3|vo-3,0|vo-3,7|vo-3,9|vo-3,8|vo13,2|vo13,1|vo13,0|vo13,5|vo13,6|vo13,7|vo13,8|vo13,9|vo0,-3|vo1,-3|vo2,-3|vo5,-3|vo8,12|vo9,12|vo10,12|vo-3,12|vo0,12|vo10,-3|vo13,-3|vo13,12|vo0,14|vo0,13|vo10,-4|vo10,-5|vo15,7|vo-5,2|vo-4,2|vo-3,-4|vo-3,-5|vo13,14|vo13,13|vo-6,10|vo16,3|vo-6,7|vo6,-3|vo7,-3|vo3,12|vo4,12|vo5,12|vo-8,-6|vo-7,-6|vo-6,-6|vo-3,-6|vo13,15|vo16,15|vo17,15|vo18,15|vo-2,-6|vo-1,-6|vo0,-6|vo1,-6|vo2,-6|vo3,-6|vo7,-6|vo8,-6|vo9,-6|vo10,-6|vo0,15|vo1,15|vo2,15|vo3,15|vo7,15|vo8,15|vo9,15|vo10,15|vo11,15|vo12,15|vo11,-6|vo12,-6|vo13,-6|vo16,-6|vo17,-6|vo18,-6|vo-3,15|vo-2,15|vo-1,15|vo-8,15|vo-7,15|vo-6,15|vo7,6|vo14,7|k5,7|k-8,17|k18,17|q5,17|n14,14|n-4,14|n14,8|n0,11|n0,10|n10,11|n10,10|r-8,14|r-7,13|r-2,8|r-1,8|r17,13|r18,14|r5,16|b5,6|b4,13|b6,13|b-7,17|b-7,16|b17,17|b17,16|b7,7|b3,7|p4,8+|p5,8+|p6,8+|p15,6+|p-5,8+|p1,9+|p2,9+|p8,8+|p9,8+|p-8,8+|p-7,8+|p17,4+|p18,4+|K5,2|K-8,-8|K18,-8|Q5,-8|N14,-5|N-4,-5|N-4,1|N10,-1|N10,-2|N0,-1|N0,-2|R17,-4|R11,1|R12,1|R18,-5|R-8,-5|R-7,-4|R5,-7|B5,3|B4,-4|B6,-4|B5,-2|B-7,-7|B-7,-8|B17,-7|B17,-8|B7,2|B3,2|P4,1+|P5,1+|P6,1+|P15,1+|P-5,3+|P8,0+|P9,0+|P1,1+|P2,1+|P17,1+|P18,1+|P-8,5+|P-7,5+|b5,11",
         game_rules: {
             promotions_allowed: ['q', 'r', 'b', 'n'],
@@ -155,8 +153,15 @@ const VARIANTS = {
             move_rule: 200,
         },
         worldBorder: 0,
-        defaultDisabled: true,
-    }
+    },
+    All_Pieces_Classical: {
+        // Classical setup, allpiecescaptured win condition (tests base eval)
+        position: "P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|R1,1+|R8,1+|r1,8+|r8,8+|N2,1|N7,1|n2,8|n7,8|B3,1|B6,1|b3,8|b6,8|Q4,1|q4,8|K5,1+|k5,8+",
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+            win_conditions: { white: ['allpiecescaptured'], black: ['allpiecescaptured'] },
+        },
+    },
 };
 
 // Get variant position and special rights
@@ -198,11 +203,6 @@ function getAllVariants() {
 // Get variants that have custom evaluation (volatility warning for SPRT)
 function getVariantsWithCustomEval() {
     return Object.keys(VARIANTS).filter(name => VARIANTS[name].hasCustomEval === true);
-}
-
-// Get variants that are not default (volatility warning for SPRT)
-function getVariantsWithDefaultDisabled() {
-    return Object.keys(VARIANTS).filter(name => VARIANTS[name].defaultDisabled === true);
 }
 
 // Map internal engine piece letters to infinitechess.org ICN codes (lowercase for ICN)
@@ -292,4 +292,4 @@ function generateSetupICN(variantName, startTurn, halfmoveClock, fullmoveNumber,
     return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${winConditionStr}${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
 }
 
-export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, getVariantsWithDefaultDisabled, engineLetterToICNCode, generateSetupICN };
+export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, engineLetterToICNCode, generateSetupICN };

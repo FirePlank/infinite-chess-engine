@@ -3,7 +3,7 @@ const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
 const initThreadPoolNew = wasmNew.initThreadPool;
-import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode, getVariantsWithCustomEval, getVariantsWithDefaultDisabled } from './variants.js';
+import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode, getVariantsWithCustomEval } from './variants.js';
 
 let isNewEngineMT = false;
 
@@ -54,8 +54,8 @@ const sprtMaxGames = document.getElementById('sprtMaxGames');
 const sprtMaxMoves = document.getElementById('sprtMaxMoves');
 const sprtMaterialThresholdEl = document.getElementById('sprtMaterialAdjudication');
 const sprtSearchNoiseEl = document.getElementById('sprtSearchNoise');
+const sprtVariantPresetsEl = document.getElementById('sprtVariantPresets');
 const sprtVariantsEl = document.getElementById('sprtVariants');
-const resetToDefaultBtn = document.getElementById('resetToDefault');
 const runSprtBtn = document.getElementById('runSprt');
 const stopSprtBtn = document.getElementById('stopSprt');
 const sprtWinsEl = document.getElementById('sprtWins');
@@ -159,18 +159,106 @@ function getRandomOpening() {
 }
 
 // Variant management functions
+const VARIANT_PRESETS = {
+    Default: [ // base-eval standard variants (no multi-king, AllPieces, and no Abundance)
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Knightline',
+        'Scattered_Leapers',
+    ],
+    All: true, // every variant implemented here
+    Site: [ // variants on the public site except Abundance and Showcases
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Pawn_Horde',
+        'Knightline',
+        'Obstocean',
+        'Chess',
+    ],
+    Base_full: [ // all base-eval variants + multi-king + AllPieces
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Knightline',
+        'Scattered_Leapers',
+        'Double_King_Classical',
+        'Double_King_Chess',
+        'Triple_King_Maze',
+        'All_Pieces_Classical',
+    ],
+    Multi_king: [ // variants with 2+ kings per side
+        'Double_King_Classical',
+        'Double_King_Chess',
+        'Triple_King_Maze',
+    ],
+    Coaip: [ // "Chess on an Infinite Plane" family
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+    ],
+};
+
 function loadVariants() {
     availableVariants = getAllVariants();
+    populateVariantPresets();
     populateVariantDropdown();
-    loadVariantSelection();
+    loadVariantSelection('Saved');
+}
+
+function populateVariantPresets() {
+    Object.keys(VARIANT_PRESETS).forEach(preset => {
+        const btn = document.createElement('button');
+        btn.addEventListener('click', () => loadVariantSelection(preset));
+
+        // Fill in the content and styles
+        if (preset === 'Default') {
+            btn.textContent = 'Default (base only)';
+            btn.classList.add('btn', 'btn-sm');
+        } else {
+            btn.textContent = preset.replace(/_/g, ' ');
+            btn.classList.add('btn', 'btn-secondary', 'btn-sm');
+        }
+
+        sprtVariantPresetsEl.appendChild(btn);
+    });
 }
 
 function populateVariantDropdown() {
     // Get variants with custom eval (these will be disabled by default for SPRT stability)
     const customEvalVariants = new Set(getVariantsWithCustomEval());
-
-    // Variants to disable by default
-    const defaultsDisabled = customEvalVariants.union(new Set(getVariantsWithDefaultDisabled()));
 
     sprtVariantsEl.innerHTML = '';
     availableVariants.forEach(variant => {
@@ -179,32 +267,62 @@ function populateVariantDropdown() {
 
         // Mark variants with custom eval in the dropdown
         option.textContent = customEvalVariants.has(variant)
-            ? `${variant} (custom eval)`
-            : variant;
+            ? `${variant.replace(/_/g, ' ')} (custom eval)`
+            : variant.replace(/_/g, ' ');
 
-        // Default: deselect variants that are disabled by default
-        option.selected = !defaultsDisabled.has(variant);
         sprtVariantsEl.appendChild(option);
     });
 }
 
-function loadVariantSelection() {
-    const saved = localStorage.getItem('sprtSelectedVariants');
-    if (saved) {
-        try {
-            const savedArray = JSON.parse(saved);
+function loadVariantSelection(preset) {
+    switch (preset) {
+        case 'All':
+            Array.from(sprtVariantsEl.options).forEach(option => {
+                option.selected = true;
+            });
+            break;
+
+        case 'Saved':
+            // Selects the previously saved variant selection from localStorage,
+            // or default variants if nothing is saved.
+            const saved = localStorage.getItem('sprtSelectedVariants');
+            if (!saved) {
+                loadVariantSelection('Default');
+                return;
+            }
+
+            try {
+                const savedArray = JSON.parse(saved);
+                // Clear all selections first
+                Array.from(sprtVariantsEl.options).forEach(option => {
+                    option.selected = false;
+                });
+                // Apply saved selections
+                savedArray.forEach(variantName => {
+                    const option = Array.from(sprtVariantsEl.options).find(opt => opt.value === variantName);
+                    if (option) option.selected = true;
+                });
+            } catch (e) {
+                console.warn('Failed to load saved variant selection:', e);
+            }
+            break;
+
+        default:
+            // Load the variants in the specified preset
+            const variants = VARIANT_PRESETS[preset];
+            if (!variants) {
+                console.warn('Preset is not there:', preset);
+                return;
+            }
             // Clear all selections first
             Array.from(sprtVariantsEl.options).forEach(option => {
                 option.selected = false;
             });
-            // Apply saved selections
-            savedArray.forEach(variantName => {
+            // Select the variants in the preset
+            variants.forEach(variantName => {
                 const option = Array.from(sprtVariantsEl.options).find(opt => opt.value === variantName);
                 if (option) option.selected = true;
             });
-        } catch (e) {
-            console.warn('Failed to load saved variant selection:', e);
-        }
     }
     updateSelectedVariants();
 }
@@ -473,9 +591,7 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         }
     } catch (e) {
         // Fallback to Classical if variant missing for some reason
-        if (VARIANTS.Classical && typeof VARIANTS.Classical.position === 'string') {
-            startPositionStr = VARIANTS.Classical.position;
-        }
+        startPositionStr = getVariantData('Classical').position;
     }
 
     if (!startPositionStr) {
@@ -1323,7 +1439,6 @@ function downloadGamesJson() {
     log('Downloaded ' + games.length + ' games as JSON', 'success');
 }
 
-resetToDefaultBtn.addEventListener('click', populateVariantDropdown);
 runSprtBtn.addEventListener('click', runSprt);
 stopSprtBtn.addEventListener('click', stopSprt);
 copyLogBtn.addEventListener('click', copyLog);
