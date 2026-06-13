@@ -451,8 +451,7 @@ mod tests {
     #[test]
     fn test_see_quiet_hanging_piece() {
         // White rook moves to an empty square attacked by a black pawn with no
-        // white defender: the rook is lost for nothing. Previously SEE returned
-        // 0 here (the bug), disabling quiet SEE pruning entirely.
+        // white defender: the rook is lost for nothing.
         let mut game = create_test_game_from_icn("w (8;q|1;q) R5,1|p6,6");
         game.turn = PlayerColor::White;
         let m = Move::new(

@@ -95,9 +95,8 @@ pub struct StagedMoveGen {
     // [(idx, prev_cap, prev_ic, prev_piece, prev_to_h)]
     cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize, usize); 3]>,
 
-    // Pinned-piece map for the side to move, computed once per node and shared
-    // between the capture and quiet generation stages (both stages otherwise
-    // recompute the identical map and re-allocate it).
+    // Side-to-move pin map, computed once per node and shared by the capture
+    // and quiet stages.
     pins_cache: Option<rustc_hash::FxHashMap<crate::board::Coordinate, (i64, i64)>>,
 }
 
@@ -646,10 +645,8 @@ impl StagedMoveGen {
         false
     }
 
-    /// Compute the side-to-move pin map once per node and cache it. Both the
-    /// capture and quiet stages need the identical map (same king, same turn,
-    /// same position during generation), so this avoids recomputing/re-allocating
-    /// it twice.
+    /// Compute and cache the side-to-move pin map, shared by the capture and
+    /// quiet stages.
     fn ensure_pins(&mut self, game: &GameState) {
         if self.pins_cache.is_none() {
             let king_pos = if game.turn == PlayerColor::White {

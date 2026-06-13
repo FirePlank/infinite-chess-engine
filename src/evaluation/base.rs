@@ -611,24 +611,18 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         white_rq.clear();
                         black_rq.clear();
 
-                        // Count attacking units
+                        // Main piece loop
                         for (cx, cy, tile) in game.board.tiles.iter() {
                             if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
                                 continue;
                             }
-                            
-                            // 1. Count diagonals and orthogonals directly from bitboards
-                            let w_diag_bits = tile.occ_diag_sliders & tile.occ_white;
-                            let b_diag_bits = tile.occ_diag_sliders & tile.occ_black;
-                            let w_ortho_bits = tile.occ_ortho_sliders & tile.occ_white;
-                            let b_ortho_bits = tile.occ_ortho_sliders & tile.occ_black;
 
-                            w_diag_count += w_diag_bits.count_ones() as i32;
-                            b_diag_count += b_diag_bits.count_ones() as i32;
-                            w_ortho_count += w_ortho_bits.count_ones() as i32;
-                            b_ortho_count += b_ortho_bits.count_ones() as i32;
+                            // Slider counts from this tile's bitboards.
+                            w_diag_count += (tile.occ_diag_sliders & tile.occ_white).count_ones() as i32;
+                            b_diag_count += (tile.occ_diag_sliders & tile.occ_black).count_ones() as i32;
+                            w_ortho_count += (tile.occ_ortho_sliders & tile.occ_white).count_ones() as i32;
+                            b_ortho_count += (tile.occ_ortho_sliders & tile.occ_black).count_ones() as i32;
 
-                            // 2. Adjusting attack units for non-sliders (NOTE: 100 attack units = 1 slider)
                             let mut bits = tile.occ_all;
                             while bits != 0 {
                                 let idx = bits.trailing_zeros() as usize;
@@ -643,7 +637,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 let x = cx * 8 + (idx % 8) as i64;
                                 let y = cy * 8 + (idx / 8) as i64;
 
-                                // 2.1. Amazons, Chancellors, Archbishops, and Knightriders are stronger than their slider counterparts
+                                // Attack and defender units for king tropism.
                                 if matches!(
                                     pt,
                                     PieceType::Amazon
@@ -657,138 +651,63 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         b_additional_attack_units += 100;
                                     }
                                 }
-
-                                // 2.2. Special leapers can be attackers if they are <=20 squares away from the enemy king
-                                let (your_royals, enemy_royals) = if is_white {
-                                    (&mut white_royal_tropisms, &mut black_royal_tropisms)
-                                } else {
-                                    (&mut black_royal_tropisms, &mut white_royal_tropisms)
-                                };
-                                
-                                for ek in enemy_royals {
-                                    let dx = (x - ek.x).abs();
-                                    let dy = (y - ek.y).abs();
-
-                                    if dx <= 20 && dy <= 20 {
-                                        let leaper_attack_units = if matches!(pt, PieceType::Rose) {
-                                            100
-                                        } else if matches!(
-                                            pt,
-                                            PieceType::Knight
-                                                | PieceType::Centaur
-                                                | PieceType::Camel
-                                                | PieceType::Giraffe
-                                                | PieceType::Zebra
-                                                | PieceType::Huygen
-                                        ) {
-                                            50
-                                        } else {
-                                            0
-                                        };
-
-                                        ek.attacking_units += leaper_attack_units;
-                                    }
-                                }
-
-                                // 2.3. Also account for defenders when calculating attack potential
-                                if piece.color() == PlayerColor::Neutral {
-                                    // Neutral pieces can be considered weak defenders if they are close to the king
-                                    for king in &mut white_royal_tropisms {
-                                        let d = (x - king.x).abs().max((y - king.y).abs());
-                                        if d <= 7 {
-                                            let defender_units = 25 / d as i32;
-                                            king.defender_units_in_distance[d as usize] += defender_units;
+                                {
+                                    let (your_royals, enemy_royals) = if is_white {
+                                        (&mut white_royal_tropisms, &mut black_royal_tropisms)
+                                    } else {
+                                        (&mut black_royal_tropisms, &mut white_royal_tropisms)
+                                    };
+                                    for ek in enemy_royals {
+                                        let dx = (x - ek.x).abs();
+                                        let dy = (y - ek.y).abs();
+                                        if dx <= 20 && dy <= 20 {
+                                            let leaper_attack_units = if matches!(pt, PieceType::Rose) {
+                                                100
+                                            } else if matches!(
+                                                pt,
+                                                PieceType::Knight
+                                                    | PieceType::Centaur
+                                                    | PieceType::Camel
+                                                    | PieceType::Giraffe
+                                                    | PieceType::Zebra
+                                                    | PieceType::Huygen
+                                            ) {
+                                                50
+                                            } else {
+                                                0
+                                            };
+                                            ek.attacking_units += leaper_attack_units;
                                         }
                                     }
-                                    for king in &mut black_royal_tropisms {
-                                        let d = (x - king.x).abs().max((y - king.y).abs());
-                                        if d <= 7 {
-                                            let defender_units = 25 / d as i32;
-                                            king.defender_units_in_distance[d as usize] += defender_units;
+                                    if piece.color() == PlayerColor::Neutral {
+                                        for king in &mut white_royal_tropisms {
+                                            let d = (x - king.x).abs().max((y - king.y).abs());
+                                            if d <= 7 {
+                                                king.defender_units_in_distance[d as usize] += 25 / d as i32;
+                                            }
+                                        }
+                                        for king in &mut black_royal_tropisms {
+                                            let d = (x - king.x).abs().max((y - king.y).abs());
+                                            if d <= 7 {
+                                                king.defender_units_in_distance[d as usize] += 25 / d as i32;
+                                            }
+                                        }
+                                    } else {
+                                        for yk in your_royals {
+                                            let d = (x - yk.x).abs().max((y - yk.y).abs());
+                                            if d <= 7 {
+                                                let defender_units = if matches!(pt, PieceType::Pawn) {
+                                                    33 / d
+                                                } else if !pt.is_royal() {
+                                                    100 / d
+                                                } else {
+                                                    0
+                                                } as i32;
+                                                yk.defender_units_in_distance[d as usize] += defender_units;
+                                            }
                                         }
                                     }
-                                    continue;
                                 }
-
-                                for yk in your_royals {
-                                    let d = (x - yk.x).abs().max((y - yk.y).abs());
-
-                                    if d <= 7 {
-                                        // Defensive units are higher if it is a piece and very close to the king
-                                        let defender_units = if matches!(pt, PieceType::Pawn) {
-                                            33 / d
-                                        } else if !pt.is_royal() {
-                                            100 / d
-                                        } else {
-                                            0
-                                        } as i32;
-
-                                        yk.defender_units_in_distance[d as usize] += defender_units;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. Calculate total sliders and defender units
-                        let w_total_sliders = w_diag_count + w_ortho_count;
-                        let b_total_sliders = b_diag_count + b_ortho_count;
-
-                        for king in &mut white_royal_tropisms {
-                            let mut defender_bonus = 0;
-                            for d in 1..8 {
-                                let defender_units_to_add = king.defender_units_in_distance[d as usize];
-                                king.defender_units += defender_units_to_add;
-
-                                // Apply defender bonus if there are a lot of defenders at a distance
-                                if defender_units_to_add >= 200 {
-                                    defender_bonus = (300 + 100 * d - 100 * b_total_sliders).max(0);
-                                }
-                            }
-                            king.defender_units += defender_bonus;
-                        }
-
-                        for king in &mut black_royal_tropisms {
-                            let mut defender_bonus = 0;
-                            for d in 1..8 {
-                                let defender_units_to_add = king.defender_units_in_distance[d as usize];
-                                king.defender_units += defender_units_to_add;
-
-                                // Apply defender bonus if there are a lot of defenders at a distance
-                                if defender_units_to_add >= 200 {
-                                    defender_bonus = (300 + 100 * d - 100 * w_total_sliders).max(0);
-                                }
-                            }
-                            king.defender_units += defender_bonus;
-                        }
-
-                        for king in &mut white_royal_tropisms {
-                            let total_effective_units = w_total_sliders + (w_additional_attack_units + king.attacking_units - king.defender_units) / 100;
-                            king.tropism_addend = compute_tropism_addend(total_effective_units);
-                        }
-                        for king in &mut black_royal_tropisms {
-                            let total_effective_units = b_total_sliders + (b_additional_attack_units + king.attacking_units - king.defender_units) / 100;
-                            king.tropism_addend = compute_tropism_addend(total_effective_units);
-                        }
-
-                        // Main piece loop
-                        for (cx, cy, tile) in game.board.tiles.iter() {
-                            if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
-                                continue;
-                            }
-
-                            let mut bits = tile.occ_all;
-                            while bits != 0 {
-                                let idx = bits.trailing_zeros() as usize;
-                                bits &= bits - 1;
-                                let packed = tile.piece[idx];
-                                if packed == 0 {
-                                    continue;
-                                }
-                                let piece = crate::board::Piece::from_packed(packed);
-                                let pt = piece.piece_type();
-                                let is_white = piece.color() == PlayerColor::White;
-                                let x = cx * 8 + (idx % 8) as i64;
-                                let y = cy * 8 + (idx / 8) as i64;
 
                                 // 1. Phase
                                 phase += get_piece_phase(pt);
@@ -870,64 +789,25 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     || is_ortho_slider_type
                                     || pt == PieceType::Knightrider;
 
-                                // ========== UNIFIED ROYAL LOOPS (Slider zones, Attack Units, Tropism) ==========
-                                // Merge all royal loops for this piece into single/double passes
-                                let piece_val = if !pt.is_royal() && pt != PieceType::Pawn {
-                                    get_piece_value_base(pt)
-                                } else {
-                                    0
-                                };
-
-                                if is_white {
-                                    // Unified pass through BLACK royals: slider zone, enemy tropism
-                                    let mut slider_counted = false;
-                                    for bk in &black_royal_tropisms {
-                                        let dx = (x - bk.x).abs();
-                                        let dy = (y - bk.y).abs();
-
-                                        // Count slider once
-                                        if !slider_counted && is_slider && dx <= ATTACK_ZONE_RADIUS && dy <= ATTACK_ZONE_RADIUS {
-                                            w_sliders_in_zone += 1;
-                                            slider_counted = true;
-                                        }
-                                        // Tropism sums across all royals
-                                        if piece_val > 0 {
-                                            let d = dx.max(dy);
-                                            w_attacking_tropism += piece_val / (d as i32 + bk.tropism_addend);
-                                        }
-                                    }
-                                    // Single pass through WHITE royals for friendly tropism
-                                    if piece_val > 0 {
-                                        for wk in &white_royal_tropisms {
-                                            let d = (x - wk.x).abs().max((y - wk.y).abs());
-                                            w_defensive_tropism +=
-                                                piece_val.min(350) / (d as i32 + wk.tropism_addend);
-                                        }
-                                    }
-                                } else {
-                                    // Unified pass through WHITE royals: slider zone, enemy tropism
-                                    let mut slider_counted = false;
-                                    for wk in &white_royal_tropisms {
-                                        let dx = (x - wk.x).abs();
-                                        let dy = (y - wk.y).abs();
-
-                                        // Count slider once
-                                        if !slider_counted && is_slider && dx <= ATTACK_ZONE_RADIUS && dy <= ATTACK_ZONE_RADIUS {
-                                            b_sliders_in_zone += 1;
-                                            slider_counted = true;
-                                        }
-                                        // Tropism sums across all royals
-                                        if piece_val > 0 {
-                                            let d = dx.max(dy);
-                                            b_attacking_tropism += piece_val / (d as i32 + wk.tropism_addend);
-                                        }
-                                    }
-                                    // Single pass through BLACK royals for friendly tropism
-                                    if piece_val > 0 {
+                                // Count this slider if it sits within an enemy royal's attack zone.
+                                if is_slider {
+                                    if is_white {
                                         for bk in &black_royal_tropisms {
-                                            let d = (x - bk.x).abs().max((y - bk.y).abs());
-                                            b_defensive_tropism +=
-                                                piece_val.min(350) / (d as i32 + bk.tropism_addend);
+                                            if (x - bk.x).abs() <= ATTACK_ZONE_RADIUS
+                                                && (y - bk.y).abs() <= ATTACK_ZONE_RADIUS
+                                            {
+                                                w_sliders_in_zone += 1;
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        for wk in &white_royal_tropisms {
+                                            if (x - wk.x).abs() <= ATTACK_ZONE_RADIUS
+                                                && (y - wk.y).abs() <= ATTACK_ZONE_RADIUS
+                                            {
+                                                b_sliders_in_zone += 1;
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -1324,6 +1204,72 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        // Finalize slider totals, defender units, and king tropism addends.
+                        let w_total_sliders = w_diag_count + w_ortho_count;
+                        let b_total_sliders = b_diag_count + b_ortho_count;
+                        for king in &mut white_royal_tropisms {
+                            let mut defender_bonus = 0;
+                            for d in 1..8 {
+                                let defender_units_to_add = king.defender_units_in_distance[d as usize];
+                                king.defender_units += defender_units_to_add;
+                                if defender_units_to_add >= 200 {
+                                    defender_bonus = (300 + 100 * d - 100 * b_total_sliders).max(0);
+                                }
+                            }
+                            king.defender_units += defender_bonus;
+                        }
+                        for king in &mut black_royal_tropisms {
+                            let mut defender_bonus = 0;
+                            for d in 1..8 {
+                                let defender_units_to_add = king.defender_units_in_distance[d as usize];
+                                king.defender_units += defender_units_to_add;
+                                if defender_units_to_add >= 200 {
+                                    defender_bonus = (300 + 100 * d - 100 * w_total_sliders).max(0);
+                                }
+                            }
+                            king.defender_units += defender_bonus;
+                        }
+                        for king in &mut white_royal_tropisms {
+                            let total_effective_units = w_total_sliders + (w_additional_attack_units + king.attacking_units - king.defender_units) / 100;
+                            king.tropism_addend = compute_tropism_addend(total_effective_units);
+                        }
+                        for king in &mut black_royal_tropisms {
+                            let total_effective_units = b_total_sliders + (b_additional_attack_units + king.attacking_units - king.defender_units) / 100;
+                            king.tropism_addend = compute_tropism_addend(total_effective_units);
+                        }
+
+                        // Accumulate piece-to-king tropism using the finalized addends.
+                        for &(px, py, ppiece) in piece_list.iter() {
+                            let ppt = ppiece.piece_type();
+                            let piece_val = if !ppt.is_royal() && ppt != PieceType::Pawn {
+                                get_piece_value_base(ppt)
+                            } else {
+                                0
+                            };
+                            if piece_val == 0 {
+                                continue;
+                            }
+                            if ppiece.color() == PlayerColor::White {
+                                for bk in &black_royal_tropisms {
+                                    let d = (px - bk.x).abs().max((py - bk.y).abs());
+                                    w_attacking_tropism += piece_val / (d as i32 + bk.tropism_addend);
+                                }
+                                for wk in &white_royal_tropisms {
+                                    let d = (px - wk.x).abs().max((py - wk.y).abs());
+                                    w_defensive_tropism += piece_val.min(350) / (d as i32 + wk.tropism_addend);
+                                }
+                            } else {
+                                for wk in &white_royal_tropisms {
+                                    let d = (px - wk.x).abs().max((py - wk.y).abs());
+                                    b_attacking_tropism += piece_val / (d as i32 + wk.tropism_addend);
+                                }
+                                for bk in &black_royal_tropisms {
+                                    let d = (px - bk.x).abs().max((py - bk.y).abs());
+                                    b_defensive_tropism += piece_val.min(350) / (d as i32 + bk.tropism_addend);
                                 }
                             }
                         }

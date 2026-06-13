@@ -203,11 +203,8 @@ pub fn sort_moves_root(
     }
 }
 
-/// MVV-LVA-style ordering key including promotion gain. Handles quiet
-/// promotions (no captured piece) too: promoting is itself a material gain, so
-/// the move sorts like a high-value capture instead of landing at the bottom
-/// with the genuine non-captures. For a plain capture this is the usual
-/// `victim * 10 - attacker`.
+/// MVV-LVA ordering key. Promotion gain is added to the victim value so
+/// promotions (including quiet ones) sort by their true material swing.
 #[inline]
 fn capture_sort_key(game: &GameState, m: &Move) -> i32 {
     let attacker_color = m.piece.color();

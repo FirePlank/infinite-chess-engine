@@ -471,6 +471,7 @@ fn build_threat_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
                         }
                         if let Some(vt) = victim_type(victim.piece_type()) {
                             let vic_friendly = vic_color == perspective;
+                            // Raw board-x sign (not color-relative), matching the data generator.
                             let atk_dir: u32 = if dx < 0 { 0 } else { 1 };
                             let feat = encode_pawn_threat(att_friendly, vic_friendly, atk_dir, vt);
                             features.push(feat);
@@ -621,9 +622,8 @@ mod tests {
         use crate::game::GameState;
 
         // Black pawn at (5,5) attacks board-right (dx = +1) onto a white knight at
-        // (6,4). The training-data generator encodes board-right as attack_dir = 1
-        // regardless of color, so inference must match (no color flip). The old
-        // pawn_attack_dir flipped for black and would have emitted attack_dir = 0.
+        // (6,4). Board-right encodes as attack_dir = 1 regardless of color, matching
+        // the training-data generator.
         let mut game = GameState::new();
         game.setup_position_from_icn("w (8;q|1;q) K1,1|k8,8|p5,5|N6,4");
 
