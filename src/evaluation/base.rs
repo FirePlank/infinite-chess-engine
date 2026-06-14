@@ -1662,6 +1662,18 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 cloud_avg_spread,
                 phase,
             ),
+            // A knightrider rides along knight rays; on an unbounded board its
+            // reach is unbounded so mobility-counting is meaningless. Use the
+            // board-aware cloud-proximity/density shaping like the other riders.
+            PieceType::Knightrider => evaluate_leaper_positioning(
+                x,
+                y,
+                piece.color(),
+                cloud_center.as_ref(),
+                PieceType::Knightrider,
+                cloud_avg_spread,
+                phase,
+            ),
             _ => 0,
         };
 
