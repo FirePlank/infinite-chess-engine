@@ -3861,10 +3861,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             continue;
         }
 
-        // BITBOARD: Fast capture detection
+        // BITBOARD: Fast capture detection (en passant captures a pawn on an
+        // adjacent square, so m.to is empty and must be detected separately).
         let captured_piece = game.board.get_piece(m.to.x, m.to.y);
-        let is_capture = captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
-        let captured_type = captured_piece.map(|p| p.piece_type());
+        let is_ep = game.is_en_passant(&m);
+        let is_capture =
+            is_ep || captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
+        let captured_type = if is_ep {
+            Some(PieceType::Pawn)
+        } else {
+            captured_piece.map(|p| p.piece_type())
+        };
         let is_promotion = m.promotion.is_some();
         let p_type = m.piece.piece_type();
         let is_royal_capture_win =
@@ -4650,9 +4657,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         let best_move_is_quiet = match best_move {
             Some(m) => {
-                // BITBOARD: Fast capture check
+                // BITBOARD: Fast capture check (incl. en passant)
                 let captured = game.board.get_piece(m.to.x, m.to.y);
-                let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
+                let is_capture = game.is_en_passant(&m)
+                    || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
                 !is_capture && m.promotion.is_none()
             }
             None => true, // No best move counts as "quiet"
@@ -4953,7 +4961,8 @@ fn quiescence(
         // Compute essential move properties
         let gives_check = StagedMoveGen::move_gives_check_fast(game, m);
         let captured = game.board.get_piece(m.to.x, m.to.y);
-        let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
+        let is_capture =
+            game.is_en_passant(m) || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
 
         // Skip remaining quiet moves
         // Exception: Recaptures of the square where the opponent just moved

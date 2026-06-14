@@ -9,12 +9,16 @@ pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     let mover_color = m.piece.color();
 
     // Material won by the move before any recapture: the captured piece (0 for a
-    // quiet, non-capturing move) plus the promotion gain if the move promotes.
-    // For a promotion the piece left standing on the square is the promoted
-    // piece, so that is what is at risk of recapture.
-    let captured_val = match game.board.get_piece(m.to.x, m.to.y) {
-        Some(p) => game.get_piece_value(p.piece_type(), p.color()),
-        None => 0,
+    // quiet, non-capturing move; a pawn for en passant) plus the promotion gain
+    // if the move promotes. For a promotion the piece left standing on the square
+    // is the promoted piece, so that is what is at risk of recapture.
+    let captured_val = if game.is_en_passant(m) {
+        game.get_piece_value(PieceType::Pawn, mover_color.opponent())
+    } else {
+        match game.board.get_piece(m.to.x, m.to.y) {
+            Some(p) => game.get_piece_value(p.piece_type(), p.color()),
+            None => 0,
+        }
     };
     let (promo_gain, mover_val) = match m.promotion {
         Some(promo) => {
@@ -53,12 +57,16 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     let target_x = m.to.x;
     let target_y = m.to.y;
 
-    // Material captured by the move itself. 0 for a quiet (non-capturing) move:
-    // SEE then measures whether the moved piece can be safely placed on the
-    // target square (the opponent may try to win it via the recapture sequence).
-    let captured_val = match game.board.get_piece(m.to.x, m.to.y) {
-        Some(p) => game.get_piece_value(p.piece_type(), p.color()),
-        None => 0,
+    // Material captured by the move itself. 0 for a quiet (non-capturing) move
+    // (SEE then measures whether the moved piece can be safely placed on the
+    // target square); a pawn for en passant (whose victim sits off m.to).
+    let captured_val = if game.is_en_passant(m) {
+        game.get_piece_value(PieceType::Pawn, m.piece.color().opponent())
+    } else {
+        match game.board.get_piece(m.to.x, m.to.y) {
+            Some(p) => game.get_piece_value(p.piece_type(), p.color()),
+            None => 0,
+        }
     };
 
     // The piece that ends up standing on the target square (and is thus exposed
@@ -514,5 +522,33 @@ mod tests {
             -p,
             "Promotion hanging the new queen to a pawn nets -pawn"
         );
+    }
+
+    #[test]
+    fn test_see_en_passant_wins_a_pawn() {
+        use crate::game::EnPassantState;
+        // Black pawn just double-pushed to (4,5); white pawn on (5,5) can capture
+        // en passant to the empty square (4,6), winning the pawn (undefended).
+        let mut game = create_test_game_from_icn("w (8;q|1;q) P5,5|p4,5");
+        game.turn = PlayerColor::White;
+        game.en_passant = Some(EnPassantState {
+            square: Coordinate::new(4, 6),
+            pawn_square: Coordinate::new(4, 5),
+        });
+        let m = Move::new(
+            Coordinate::new(5, 5),
+            Coordinate::new(4, 6),
+            Piece::new(PieceType::Pawn, PlayerColor::White),
+        );
+
+        assert!(game.is_en_passant(&m), "move should be detected as en passant");
+        let p = game.get_piece_value(PieceType::Pawn, PlayerColor::White);
+        assert_eq!(
+            static_exchange_eval_impl(&game, &m),
+            p,
+            "En passant should be valued as winning a pawn, not 0 (quiet)"
+        );
+        assert!(see_ge(&game, &m, 0));
+        assert!(!see_ge(&game, &m, p + 1));
     }
 }

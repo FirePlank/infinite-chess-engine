@@ -3214,6 +3214,19 @@ impl GameState {
         self.make_move(&m);
     }
 
+    /// True if `m` is an en-passant capture: a pawn moving onto the en-passant
+    /// square. The captured pawn sits on the adjacent `en_passant.pawn_square`,
+    /// so `m.to` itself is empty and ordinary `get_piece(m.to)` capture detection
+    /// misses it.
+    #[inline]
+    pub fn is_en_passant(&self, m: &Move) -> bool {
+        m.piece.piece_type() == PieceType::Pawn
+            && self
+                .en_passant
+                .as_ref()
+                .is_some_and(|ep| m.to.x == ep.square.x && m.to.y == ep.square.y)
+    }
+
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
             REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, pawn_key,
