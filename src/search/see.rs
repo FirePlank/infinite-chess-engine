@@ -87,6 +87,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         color: PlayerColor,
         pos: Coordinate,
         ray_idx: Option<usize>,
+        is_royal: bool,
     }
 
     // 1. Initial State
@@ -163,6 +164,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                             color: p.color(),
                             pos,
                             ray_idx: None,
+                            is_royal: p.piece_type().is_royal(),
                         });
                     }
                 }
@@ -196,6 +198,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                         color,
                         pos,
                         ray_idx: None,
+                        is_royal: false,
                     });
                 }
             }
@@ -231,11 +234,41 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
 
         if let Some((vx, vy, p)) = found_pos {
-            let pos = Coordinate::new(vx, vy);
-            if pos == m.from {
-                continue;
-            }
+            // When the first blocker on this ray is the moving piece itself, the
+            // square it vacates can expose a piece lined up behind it (a battery /
+            // x-ray) that bears on the target once the mover leaves. Look past the
+            // mover for that attacker instead of discarding the ray.
+            let (vx, vy, p) = if Coordinate::new(vx, vy) == m.from {
+                let behind = if r < 8 {
+                    game.spatial_indices
+                        .find_first_blocker(m.from.x, m.from.y, dx, dy)
+                } else if game.spatial_indices.has_knightrider[0]
+                    || game.spatial_indices.has_knightrider[1]
+                {
+                    let mut nb = None;
+                    let mut k = 1;
+                    while k < 128 {
+                        let x = m.from.x + dx * k;
+                        let y = m.from.y + dy * k;
+                        if let Some(np) = game.board.get_piece(x, y) {
+                            nb = Some((x, y, np));
+                            break;
+                        }
+                        k += 1;
+                    }
+                    nb
+                } else {
+                    None
+                };
+                match behind {
+                    Some(b) => b,
+                    None => continue,
+                }
+            } else {
+                (vx, vy, p)
+            };
 
+            let pos = Coordinate::new(vx, vy);
             let pt = p.piece_type();
             let dist = (vx - target_x).abs().max((vy - target_y).abs());
 
@@ -248,13 +281,14 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             };
 
             if can_attack {
-                // Check if we already found this piece in the 3x3 local scan (to avoid double-counting)
+                // Avoid double-counting a piece already added by the 3x3 scan.
                 if dist > 8 || !attackers.iter().any(|a| a.pos == pos) {
                     attackers.push(Attacker {
                         value: game.get_piece_value(pt, p.color()),
                         color: p.color(),
                         pos,
                         ray_idx: Some(r),
+                        is_royal: pt.is_royal(),
                     });
                 }
             }
@@ -280,6 +314,16 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
 
         if let Some(i) = best_i {
+            // A royal piece cannot recapture into a square the opponent still
+            // defends (that would be moving into check). Since a royal's value is
+            // the highest, it is only ever picked as the last attacker for its
+            // side, so if any enemy attacker remains the recapture is illegal and
+            // the exchange ends here.
+            if attackers[i].is_royal
+                && attackers.iter().any(|a| a.color == side.opponent())
+            {
+                break;
+            }
             let chosen = attackers.swap_remove(i);
             gain[depth] = occ_val - gain[depth - 1];
             occ_val = best_val;
@@ -324,6 +368,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                             color: np.color(),
                             pos: Coordinate::new(nx, ny),
                             ray_idx: Some(r),
+                            is_royal: npt.is_royal(),
                         });
                     }
                 }
@@ -550,5 +595,57 @@ mod tests {
         );
         assert!(see_ge(&game, &m, 0));
         assert!(!see_ge(&game, &m, p + 1));
+    }
+
+    #[test]
+    fn test_see_battery_xray_behind_mover() {
+        // Doubled white rooks on file 5 (5,4 behind 5,5) bear on a black rook at
+        // (5,8) that is defended by a black rook behind it at (5,9). The front
+        // rook captures, black recaptures, and the rear white rook x-rays through
+        // the square the mover vacated to win the exchange. Without battery
+        // discovery the rear rook is never seen and SEE collapses to 0.
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R5,5|R5,4|r5,8|r5,9");
+        game.turn = PlayerColor::White;
+
+        let m = Move::new(
+            Coordinate::new(5, 5),
+            Coordinate::new(5, 8),
+            Piece::new(PieceType::Rook, PlayerColor::White),
+        );
+
+        let r = game.get_piece_value(PieceType::Rook, PlayerColor::White);
+        assert_eq!(
+            static_exchange_eval_impl(&game, &m),
+            r,
+            "Rook battery should win a rook through the vacated square"
+        );
+        assert!(see_ge(&game, &m, 0));
+    }
+
+    #[test]
+    fn test_see_king_cannot_recapture_into_defense() {
+        // White rook captures a black pawn at (5,5). Black's rook on (5,8)
+        // recaptures, backed by a second black rook at (5,9) that x-rays the
+        // square once (5,8) vacates. The white king on (4,5) is the only piece
+        // that could recapture but cannot, since the square stays defended
+        // (moving in would be moving into check). Net: rook for a pawn.
+        let mut game =
+            create_test_game_from_icn("w (8;q|1;q) R5,1|K4,5|p5,5|r5,8|r5,9");
+        game.turn = PlayerColor::White;
+
+        let m = Move::new(
+            Coordinate::new(5, 1),
+            Coordinate::new(5, 5),
+            Piece::new(PieceType::Rook, PlayerColor::White),
+        );
+
+        let r = game.get_piece_value(PieceType::Rook, PlayerColor::White);
+        let p = game.get_piece_value(PieceType::Pawn, PlayerColor::White);
+        assert_eq!(
+            static_exchange_eval_impl(&game, &m),
+            p - r,
+            "King may not recapture into a defended square; rook is lost for a pawn"
+        );
+        assert!(!see_ge(&game, &m, 0));
     }
 }
