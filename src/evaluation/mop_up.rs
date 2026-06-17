@@ -820,19 +820,8 @@ fn evaluate_generic_overwhelming_mop_up(
             }
         }
 
-        // Ideal-distance shaping by piece type.
-        let (ideal_min, ideal_max) = ideal_distance(s.pt);
-        bonus += if dist < ideal_min {
-            -((ideal_min - dist) as i32) * 6
-        } else if dist <= ideal_max {
-            let mid = (ideal_min + ideal_max) / 2;
-            45 - ((dist - mid).abs() as i32) * 4
-        } else {
-            let over = (dist - ideal_max).min(80) as i32;
-            -(over * 4) - 8
-        };
-
-        // Sliders standing on a ray from the enemy king already have a cut.
+        // A slider sitting on a ray/diagonal from the enemy king already
+        // delivers a cut whose effectiveness does not decay with range.
         let is_ortho_slider = matches!(
             s.pt,
             PieceType::Rook
@@ -850,10 +839,30 @@ fn evaluate_generic_overwhelming_mop_up(
                 | PieceType::Archbishop
                 | PieceType::Amazon
         );
-        if is_ortho_slider && (dx == 0 || dy == 0) {
+        let on_ortho_ray = is_ortho_slider && (dx == 0 || dy == 0);
+        let on_diag_ray = is_diag_slider && dx != 0 && dx.abs() == dy.abs();
+        let on_ray = on_ortho_ray || on_diag_ray;
+
+        // Ideal-distance shaping by piece type. An on-ray slider is distance
+        // neutral past the ideal band rather than penalized for standing back,
+        // since its cut is range-independent.
+        let (ideal_min, ideal_max) = ideal_distance(s.pt);
+        bonus += if dist < ideal_min {
+            -((ideal_min - dist) as i32) * 6
+        } else if dist <= ideal_max {
+            let mid = (ideal_min + ideal_max) / 2;
+            45 - ((dist - mid).abs() as i32) * 4
+        } else if on_ray {
+            0
+        } else {
+            let over = (dist - ideal_max).min(80) as i32;
+            -(over * 4) - 8
+        };
+
+        if on_ortho_ray {
             bonus += 32;
         }
-        if is_diag_slider && dx != 0 && dx.abs() == dy.abs() {
+        if on_diag_ray {
             bonus += 22;
         }
 
