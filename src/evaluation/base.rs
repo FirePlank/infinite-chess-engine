@@ -661,7 +661,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         let dx = (x - ek.x).abs();
                                         let dy = (y - ek.y).abs();
                                         if dx <= 20 && dy <= 20 {
-                                            let leaper_attack_units = if matches!(pt, PieceType::Rose) {
+                                            let leaper_attack_units = if matches!(pt, PieceType::Hawk | PieceType::Rose) {
                                                 100
                                             } else if matches!(
                                                 pt,
