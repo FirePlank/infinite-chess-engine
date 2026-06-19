@@ -284,6 +284,23 @@ impl PieceType {
         )
     }
 
+    #[inline]
+    /// Check if this piece type is minor (more valuable than a pawn but less than a rook).
+    pub fn is_minor(&self) -> bool {
+        matches!(
+            self,
+            PieceType::Knight
+            | PieceType::Bishop
+            | PieceType::Camel
+            | PieceType::Zebra
+            | PieceType::Giraffe
+            | PieceType::Hawk
+            | PieceType::Centaur
+            | PieceType::Guard
+            | PieceType::Huygen
+        )
+    }
+
     /// Get all promotable piece types for dynamic promotion
     pub fn promotable_types() -> &'static [PieceType] {
         &[

@@ -1680,9 +1680,7 @@ impl GameState {
                 }
 
                 // Minor hash: Knights and Bishops
-                if piece.piece_type() == PieceType::Knight
-                    || piece.piece_type() == PieceType::Bishop
-                {
+                if piece.piece_type().is_minor() {
                     mih ^= piece_key(piece.piece_type(), piece.color(), x, y);
                 }
             }
@@ -3259,7 +3257,7 @@ impl GameState {
                 self.black_nonpawn_hash ^=
                     piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
             }
-            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            if piece.piece_type().is_minor() {
                 self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
             }
         }
@@ -3324,9 +3322,7 @@ impl GameState {
                     self.black_nonpawn_hash ^=
                         piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
                 }
-                if captured.piece_type() == PieceType::Knight
-                    || captured.piece_type() == PieceType::Bishop
-                {
+                if captured.piece_type().is_minor() {
                     self.minor_hash ^=
                         piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
                 }
@@ -3565,9 +3561,7 @@ impl GameState {
                     m.to.y,
                 );
             }
-            if final_piece.piece_type() == PieceType::Knight
-                || final_piece.piece_type() == PieceType::Bishop
-            {
+            if final_piece.piece_type().is_minor() {
                 self.minor_hash ^= crate::search::zobrist::piece_key(
                     final_piece.piece_type(),
                     final_piece.color(),
@@ -3701,7 +3695,7 @@ impl GameState {
                 self.black_nonpawn_hash ^=
                     piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
             }
-            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            if piece.piece_type().is_minor() {
                 self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.to.x, m.to.y);
             }
         }
@@ -3748,7 +3742,7 @@ impl GameState {
                 self.black_nonpawn_hash ^=
                     piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
             }
-            if piece.piece_type() == PieceType::Knight || piece.piece_type() == PieceType::Bishop {
+            if piece.piece_type().is_minor() {
                 self.minor_hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
             }
         }
@@ -3802,9 +3796,7 @@ impl GameState {
                         m.to.y,
                     );
                 }
-                if captured.piece_type() == PieceType::Knight
-                    || captured.piece_type() == PieceType::Bishop
-                {
+                if captured.piece_type().is_minor() {
                     self.minor_hash ^= crate::search::zobrist::piece_key(
                         captured.piece_type(),
                         captured.color(),
