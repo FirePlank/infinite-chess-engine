@@ -385,6 +385,10 @@ const EG_KING_RING_MISSING_PENALTY: i32 = 10; // Less penalty in EG
 const MG_KING_PAWN_SHIELD_BONUS: i32 = 18;
 const EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
 
+// A pawn only shelters the king when it is close in front; on an unbounded
+// board an ahead pawn could otherwise be arbitrarily far and fabricate cover.
+const KING_SHIELD_AHEAD_MAX_DIST: i64 = 3;
+
 const MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
 const EG_KING_PAWN_AHEAD_PENALTY: i32 = 0;
 
@@ -2494,12 +2498,12 @@ fn evaluate_king_shelter(
             on_file_count += 1;
             let py = pawns[k].1;
             if is_white {
-                if py > king.y {
+                if py > king.y && py - king.y <= KING_SHIELD_AHEAD_MAX_DIST {
                     has_pawn_ahead = true;
                 } else if py < king.y {
                     has_pawn_behind = true;
                 }
-            } else if py < king.y {
+            } else if py < king.y && king.y - py <= KING_SHIELD_AHEAD_MAX_DIST {
                 has_pawn_ahead = true;
             } else if py > king.y {
                 has_pawn_behind = true;
@@ -2513,9 +2517,11 @@ fn evaluate_king_shelter(
         }
     }
 
-    if has_pawn_ahead && !has_pawn_behind {
+    // A pawn ahead shelters the king regardless of any pawn behind it; only the
+    // absence of a forward pawn (with one behind) draws the penalty.
+    if has_pawn_ahead {
         safety += taper(MG_KING_PAWN_SHIELD_BONUS, EG_KING_PAWN_SHIELD_BONUS);
-    } else if !has_pawn_ahead && has_pawn_behind {
+    } else if has_pawn_behind {
         safety -= taper(MG_KING_PAWN_AHEAD_PENALTY, EG_KING_PAWN_AHEAD_PENALTY);
     }
 
