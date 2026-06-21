@@ -2874,8 +2874,6 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         let mut is_passed = true;
         let mut is_candidate = false;
         let mut stoppers = 0;
-        let mut attackers = 0;
-        let mut defenders = 0;
 
         // Structure checks
         let left_idx = white_pawns.partition_point(|&(x, _)| x < wx - 1);
@@ -2919,26 +2917,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                 if by > wy {
                     is_passed = false;
                     stoppers += 1;
-                    if dx == 0 {
-                        // Directly in front
-                    } else {
-                        // Lever/Attack square
-                        attackers += 1;
-                    }
                 }
                 k += 1;
-            }
-
-            // Check for friendly support (for candidate detection)
-            if dx != 0 {
-                let start_f = white_pawns.partition_point(|&(fx, _)| fx < target_file);
-                let mut kf = start_f;
-                while kf < white_pawns.len() && white_pawns[kf].0 == target_file {
-                    if white_pawns[kf].1 < wy {
-                        defenders += 1;
-                    }
-                    kf += 1;
-                }
             }
         }
 
@@ -2998,8 +2978,16 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             w_passed_score +=
                 base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
         } else {
-            // Check for candidate passer: no blockers on file, but attackers on adjacent files.
-            if stoppers > 0 && attackers == stoppers && defenders >= attackers {
+            // Candidate passer (Ethereal push model): not passed, but if the pawn
+            // advances it has at least as many friendly defenders of the push
+            // square as enemy attackers, so it can force a passer by trading.
+            // Counts are taken AT the push square and require it to be empty.
+            let can_advance = game.board.get_piece(wx, wy + 1).is_none();
+            let push_support = white_pawns.binary_search(&(wx - 1, wy)).is_ok() as i32
+                + white_pawns.binary_search(&(wx + 1, wy)).is_ok() as i32;
+            let push_threats = black_pawns.binary_search(&(wx - 1, wy + 2)).is_ok() as i32
+                + black_pawns.binary_search(&(wx + 1, wy + 2)).is_ok() as i32;
+            if stoppers > 0 && can_advance && push_support >= push_threats {
                 is_candidate = true;
             }
 
@@ -3027,8 +3015,6 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         let mut is_passed = true;
         let mut is_candidate = false;
         let mut stoppers = 0;
-        let mut attackers = 0;
-        let mut defenders = 0;
 
         // Structure checks
         let left_idx = black_pawns.partition_point(|&(x, _)| x < bx - 1);
@@ -3087,22 +3073,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                 if wy < by {
                     is_passed = false;
                     stoppers += 1;
-                    if dx != 0 {
-                        attackers += 1;
-                    }
                 }
                 k += 1;
-            }
-
-            if dx != 0 {
-                let start_f = black_pawns.partition_point(|&(fx, _)| fx < target_file);
-                let mut kf = start_f;
-                while kf < black_pawns.len() && black_pawns[kf].0 == target_file {
-                    if black_pawns[kf].1 > by {
-                        defenders += 1;
-                    }
-                    kf += 1;
-                }
             }
         }
 
@@ -3158,7 +3130,13 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             b_passed_score +=
                 base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
         } else {
-            if stoppers > 0 && attackers == stoppers && defenders >= attackers {
+            // Candidate passer at the push square (see white candidate branch).
+            let can_advance = game.board.get_piece(bx, by - 1).is_none();
+            let push_support = black_pawns.binary_search(&(bx - 1, by)).is_ok() as i32
+                + black_pawns.binary_search(&(bx + 1, by)).is_ok() as i32;
+            let push_threats = white_pawns.binary_search(&(bx - 1, by - 2)).is_ok() as i32
+                + white_pawns.binary_search(&(bx + 1, by - 2)).is_ok() as i32;
+            if stoppers > 0 && can_advance && push_support >= push_threats {
                 is_candidate = true;
             }
             if is_candidate {
