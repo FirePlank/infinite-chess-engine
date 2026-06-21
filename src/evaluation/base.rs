@@ -324,7 +324,9 @@ const PAWN_FAR_FROM_PROMO_PENALTY: i32 = 50; // Flat penalty for back pawns (no 
 // ==================== Development ====================
 
 // Minimum starting square penalty for minors
-const MIN_DEVELOPMENT_PENALTY: i32 = 6; // Moderate - not too aggressive
+const MINOR_DEVELOPMENT_PENALTY_THRESHOLD: i32 = 400; // Pieces below this value get a stronger penalty
+const MIN_MINOR_DEVELOPMENT_PENALTY: i32 = 9; // Slightly stronger for lower value pieces
+const MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 6; // Moderate - not too aggressive
 
 // King defender bonuses/penalties
 // Low-value pieces near own king = good (defense)
@@ -1730,23 +1732,27 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             }
         }
 
-        if pt != PieceType::Pawn && !pt.is_royal()
-            && game.starting_squares.contains(&Coordinate::new(x, y))
-        {
-            piece_score -= match pt {
-                PieceType::Knight | PieceType::Bishop => MIN_DEVELOPMENT_PENALTY + 3,
-                PieceType::Archbishop => MIN_DEVELOPMENT_PENALTY,
-                _ => 0,
+        if game.starting_squares.contains(&Coordinate::new(x, y)) {
+            piece_score -= if pt.is_minor() {
+                if piece_val < MINOR_DEVELOPMENT_PENALTY_THRESHOLD {
+                    MIN_MINOR_DEVELOPMENT_PENALTY
+                } else {
+                    MIN_MAJOR_DEVELOPMENT_PENALTY
+                }
+            } else if pt == PieceType::Archbishop {
+                MIN_MAJOR_DEVELOPMENT_PENALTY
+            } else {
+                0
             };
         }
 
-        let own_royals = if piece.color() == PlayerColor::White {
-            white_royals
-        } else {
-            black_royals
-        };
-        for &ok in own_royals {
-            if !pt.is_royal() && pt != PieceType::Pawn {
+        if !pt.is_royal() && pt != PieceType::Pawn {
+            let own_royals = if piece.color() == PlayerColor::White {
+                white_royals
+            } else {
+                black_royals
+            };
+            for &ok in own_royals {
                 let dist = (x - ok.x).abs().max((y - ok.y).abs());
                 if dist <= 3 {
                     if piece_val < KING_DEFENDER_VALUE_THRESHOLD {
