@@ -16,7 +16,9 @@ const PAWN_VALUE: i32 = 90;
 
 // White (Horde) Bonuses
 const PHALANX_BONUS: i32 = 12; // Side-by-side pawns
+const PHALANX_BONUS_PER_PAWN: i32 = 3;
 const SUPPORT_BONUS: i32 = 27; // Protected pawns
+const SUPPORT_BONUS_PER_PAWN: i32 = 6;
 const KING_ATTACK_BONUS: i32 = 20; // Pawns near enemy king
 
 // Black (Pieces) Bonuses/Penalties
@@ -34,11 +36,12 @@ fn get_pawn_advance_bonus(dist_to_promo: i32) -> i32 {
     match dist_to_promo {
         0 => 0,   // Promoted (not a pawn anymore)
         1 => 270, // Rank 7 - Huge threat
-        2 => 120, // Rank 6 - Major threat
+        2 => 125, // Rank 6 - Major threat
         3 => 50,  // Rank 5
-        4 => 20,  // Rank 4
-        5 => 10,  // Rank 3
-        _ => 5,   // Back ranks
+        4 => 25,  // Rank 4
+        5 => -5,  // Rank 3
+        6 => -20, // Rank 2 - Weak
+        _ => -60, // Back ranks - Much weaker
     }
 }
 
@@ -127,7 +130,7 @@ pub fn evaluate(game: &GameState) -> i32 {
         } else if neighbors > 0 {
             score += PHALANX_BONUS;
         }
-        score += neighbors * 4 + supporting_pawns * 6;
+        score += neighbors * PHALANX_BONUS_PER_PAWN + supporting_pawns * SUPPORT_BONUS_PER_PAWN;
 
         // King Attack Tropism
         let dist_to_king = (pawn.x - black_king_pos.x).abs() + (pawn.y - black_king_pos.y).abs();
@@ -145,7 +148,7 @@ pub fn evaluate(game: &GameState) -> i32 {
     };
     for (pos, ptype) in &black_pieces {
         // Breakthrough: Are we behind the pawn wall?
-        if pos.y < min_pawn_y && (*ptype == PieceType::Rook || *ptype == PieceType::Queen) {
+        if pos.y < min_pawn_y && *ptype == PieceType::Queen {
             score -= BREAKTHROUGH_BONUS; // Score is absolute, so subtract for Black advantage
         }
 
