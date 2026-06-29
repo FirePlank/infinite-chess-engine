@@ -387,6 +387,9 @@ const EG_KING_RING_MISSING_PENALTY: i32 = 10; // Less penalty in EG
 const MG_KING_PAWN_SHIELD_BONUS: i32 = 18;
 const EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
 
+const MG_KING_DEFENDER_UNIT_BONUS_PER_100: i32 = 8;
+const EG_KING_DEFENDER_UNIT_BONUS_PER_100: i32 = 0; // Shield less critical
+
 // A pawn only shelters the king when it is close in front; on an unbounded
 // board an ahead pawn could otherwise be arbitrarily far and fabricate cover.
 const KING_SHIELD_AHEAD_MAX_DIST: i64 = 3;
@@ -539,28 +542,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut b_attacking_tropism: i32 = 0;
     let mut b_defensive_tropism: i32 = 0;
 
-    let mut white_royal_tropisms: SmallVec<[_; 1]> = game.white_royals.iter().map(|r| RoyalTropismMetrics {
-        piece_type: game.board.get_piece(r.x, r.y).map(|p| p.piece_type()).unwrap_or(PieceType::Void),
-        x: r.x,
-        y: r.y,
-
-        // placeholders
-        tropism_addend: 0,
-        attacking_units: 0,
-        defender_units: 0,
-        defender_units_in_distance: [0; 8],
-    }).collect();
-    let mut black_royal_tropisms: SmallVec<[_; 1]> = game.black_royals.iter().map(|r| RoyalTropismMetrics {
-        piece_type: game.board.get_piece(r.x, r.y).map(|p| p.piece_type()).unwrap_or(PieceType::Void),
-        x: r.x,
-        y: r.y,
-
-        // placeholders
-        tropism_addend: 0,
-        attacking_units: 0,
-        defender_units: 0,
-        defender_units_in_distance: [0; 8],
-    }).collect();
+    let mut white_royal_tropisms: SmallVec<[_; 1]> = game.white_royals.iter().map(|r| RoyalTropismMetrics::new(
+        game.board.get_piece(r.x, r.y).map(|p| p.piece_type()).unwrap_or(PieceType::Void),
+        r.x,
+        r.y,
+    )).collect();
+    let mut black_royal_tropisms: SmallVec<[_; 1]> = game.black_royals.iter().map(|r| RoyalTropismMetrics::new(
+        game.board.get_piece(r.x, r.y).map(|p| p.piece_type()).unwrap_or(PieceType::Void),
+        r.x,
+        r.y,
+    )).collect();
 
     // Interaction threat constants
     const PAWN_THREATENS_MINOR: i32 = 25;
@@ -1217,33 +1208,31 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         let w_total_sliders = w_diag_count + w_ortho_count;
                         let b_total_sliders = b_diag_count + b_ortho_count;
                         for king in &mut white_royal_tropisms {
-                            let mut defender_bonus = 0;
                             for d in 1..8 {
                                 let defender_units_to_add = king.defender_units_in_distance[d as usize];
                                 king.defender_units += defender_units_to_add;
                                 if defender_units_to_add >= 200 {
-                                    defender_bonus = (300 + 100 * d - 100 * b_total_sliders).max(0);
+                                    king.defender_bonus = (300 + 100 * d - 100 * b_total_sliders).max(0);
                                 }
                             }
-                            king.defender_units += defender_bonus;
                         }
                         for king in &mut black_royal_tropisms {
-                            let mut defender_bonus = 0;
                             for d in 1..8 {
                                 let defender_units_to_add = king.defender_units_in_distance[d as usize];
                                 king.defender_units += defender_units_to_add;
                                 if defender_units_to_add >= 200 {
-                                    defender_bonus = (300 + 100 * d - 100 * w_total_sliders).max(0);
+                                    king.defender_bonus = (300 + 100 * d - 100 * w_total_sliders).max(0);
                                 }
                             }
-                            king.defender_units += defender_bonus;
                         }
                         for king in &mut white_royal_tropisms {
-                            let total_effective_units = w_total_sliders + (w_additional_attack_units + king.attacking_units - king.defender_units) / 100;
+                            let total_effective_units = w_total_sliders + (w_additional_attack_units + king.attacking_units
+                                - king.defender_units - king.defender_bonus) / 100;
                             king.tropism_addend = compute_tropism_addend(total_effective_units);
                         }
                         for king in &mut black_royal_tropisms {
-                            let total_effective_units = b_total_sliders + (b_additional_attack_units + king.attacking_units - king.defender_units) / 100;
+                            let total_effective_units = b_total_sliders + (b_additional_attack_units + king.attacking_units
+                                - king.defender_units - king.defender_bonus) / 100;
                             king.tropism_addend = compute_tropism_addend(total_effective_units);
                         }
 
@@ -1369,8 +1358,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         };
                         score += evaluate_king_safety_traced(
                             game,
-                            white_royals,
-                            black_royals,
+                            &white_royal_tropisms,
+                            &black_royal_tropisms,
                             final_phase,
                             tracer,
                             &ks_metrics,
@@ -1824,8 +1813,23 @@ pub struct RoyalTropismMetrics {
     attacking_units: i32,
     defender_units: i32,
     defender_units_in_distance: [i32; 8],
+    defender_bonus: i32,
     x: i64,
     y: i64,
+}
+impl RoyalTropismMetrics {
+    fn new(piece_type: PieceType, x: i64, y: i64) -> Self {
+        Self {
+            piece_type, x, y,
+
+            // Placeholders (filled in during processing)
+            tropism_addend: 0,
+            attacking_units: 0,
+            defender_units: 0,
+            defender_units_in_distance: [0; 8],
+            defender_bonus: 0,
+        }
+    }
 }
 
 /// Calculates the right distance to attack the other side and defend your own king.
@@ -1885,8 +1889,8 @@ pub struct KingSafetyMetrics {
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     game: &GameState,
-    white_royals: &[Coordinate],
-    black_royals: &[Coordinate],
+    white_royals: &[RoyalTropismMetrics],
+    black_royals: &[RoyalTropismMetrics],
     phase: i32,
     tracer: &mut T,
     metrics: &KingSafetyMetrics,
@@ -1903,10 +1907,10 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     let mut b_attack: i32 = 0;
 
     // Defense penalty (Shelter)
-    for &wk in white_royals {
+    for wk in white_royals {
         w_safety += evaluate_king_shelter(
             game,
-            &wk,
+            wk,
             PlayerColor::White,
             phase,
             metrics.urgency.0,
@@ -1916,10 +1920,10 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             w_ring_covered,
         );
     }
-    for &bk in black_royals {
+    for bk in black_royals {
         b_safety += evaluate_king_shelter(
             game,
-            &bk,
+            bk,
             PlayerColor::Black,
             phase,
             metrics.urgency.1,
@@ -2467,7 +2471,7 @@ fn evaluate_leaper_positioning(
 #[allow(clippy::too_many_arguments)]
 fn evaluate_king_shelter(
     _game: &GameState,
-    king: &Coordinate,
+    king: &RoyalTropismMetrics,
     color: PlayerColor,
     phase: i32,
     defense_urgency: i32,
@@ -2527,6 +2531,9 @@ fn evaluate_king_shelter(
     } else if has_pawn_behind {
         safety -= taper(MG_KING_PAWN_AHEAD_PENALTY, EG_KING_PAWN_AHEAD_PENALTY);
     }
+
+    // Also account for pieces near the king.
+    safety += king.defender_units * taper(MG_KING_DEFENDER_UNIT_BONUS_PER_100, EG_KING_DEFENDER_UNIT_BONUS_PER_100) / 100;
 
     if defense_urgency <= 10 {
         return safety;
