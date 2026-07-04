@@ -728,7 +728,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     } else if y > b_promo {
                                         black_pawns.push((x, y));
                                     }
-                                } else {
+                                } else if !pt.is_neutral_type() {
+                                    // Neutral pieces (obstacles/voids) carry no
+                                    // activity/attack score; they only aid king
+                                    // safety defensively (ring cover, ray blocking,
+                                    // defender units) via the main loop.
                                     piece_list.push((x, y, piece));
                                     // Rooks and Queens for support bonus
                                     if pt == PieceType::Rook
@@ -884,13 +888,14 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     let ady = dy.abs();
                                     let dist = adx.max(ady);
 
-                                    // Ring Cover
+                                    // Ring Cover: own pawn/guard, or a neutral wall
+                                    // (obstacle/void) which shields either king.
                                     if !w_king_ring_covered
                                         && dist == 1
-                                        && is_white
-                                        && (pt == PieceType::Pawn
-                                            || pt == PieceType::Guard
-                                            || pt == PieceType::Void)
+                                        && ((is_white
+                                            && (pt == PieceType::Pawn
+                                                || pt == PieceType::Guard))
+                                            || pt.is_neutral_type())
                                     {
                                         w_king_ring_covered = true;
                                     }
@@ -943,13 +948,14 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     let ady = dy.abs();
                                     let dist = adx.max(ady);
 
-                                    // Ring Cover
+                                    // Ring Cover: own pawn/guard, or a neutral wall
+                                    // (obstacle/void) which shields either king.
                                     if !b_king_ring_covered
                                         && dist == 1
-                                        && !is_white
-                                        && (pt == PieceType::Pawn
-                                            || pt == PieceType::Guard
-                                            || pt == PieceType::Void)
+                                        && ((piece.color() == PlayerColor::Black
+                                            && (pt == PieceType::Pawn
+                                                || pt == PieceType::Guard))
+                                            || pt.is_neutral_type())
                                     {
                                         b_king_ring_covered = true;
                                     }
