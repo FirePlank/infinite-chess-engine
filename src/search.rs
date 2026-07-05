@@ -2156,12 +2156,7 @@ fn search_with_searcher(
                 total_factors = total_factors.max(0.98);
             }
 
-            let mut total_time = searcher.hot.optimum_time_ms as f64 * total_factors;
-
-            // Cap for single legal move
-            if legal_moves.len() == 1 {
-                total_time = total_time.min(502.0);
-            }
+            let total_time = searcher.hot.optimum_time_ms as f64 * total_factors;
 
             let hard_limit = searcher.hot.maximum_time_ms as f64;
 
@@ -4975,7 +4970,6 @@ fn quiescence(
 
     for m in &tactical_moves {
         // Compute essential move properties
-        let gives_check = StagedMoveGen::move_gives_check_fast(game, m);
         let captured = game.board.get_piece(m.to.x, m.to.y);
         let is_capture =
             game.is_en_passant(m) || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
@@ -4987,7 +4981,14 @@ fn quiescence(
         let captures_royal_for_win = captured.is_some_and(|p| p.piece_type().is_royal())
             && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
-        if !in_check && legal_moves > 2 && !is_capture && !gives_check && !is_recapture {
+        // move_gives_check_fast is only needed to keep quiet checks; evaluate it
+        // last so it is skipped for captures/recaptures and the first few moves.
+        if !in_check
+            && legal_moves > 2
+            && !is_capture
+            && !is_recapture
+            && !StagedMoveGen::move_gives_check_fast(game, m)
+        {
             continue;
         }
 

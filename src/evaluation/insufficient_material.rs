@@ -583,14 +583,6 @@ fn compute(game: &crate::game::GameState) -> bool {
         return true;
     }
 
-    // Special: 2K + R vs K (one side has 2 kings with rook, other has just king)
-    if w.kings >= 2 && w.rooks == 1 && w_nr == 1 && b.kings >= 1 && b_nr == 0 {
-        return false;
-    }
-    if b.kings >= 2 && b.rooks == 1 && b_nr == 1 && w.kings >= 1 && w_nr == 0 {
-        return false;
-    }
-
     // Check both attack directions (decision tree directly)
     // Both sides must have a king to reach here (due to checkmate win condition requirement)
     let w_insuff = if bordered {
@@ -1022,14 +1014,6 @@ fn compute_game_handler(game: &crate::game::GameState) -> bool {
         && b_nr == 1
     {
         return true;
-    }
-
-    // Special: 2K + R vs K
-    if w.kings >= 2 && w.rooks == 1 && w_nr == 1 && b.kings >= 1 && b_nr == 0 {
-        return false;
-    }
-    if b.kings >= 2 && b.rooks == 1 && b_nr == 1 && w.kings >= 1 && w_nr == 0 {
-        return false;
     }
 
     let w_insuff = if bordered {

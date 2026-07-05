@@ -630,20 +630,6 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                     }
                                 } else {
                                     heavy_pieces.push((x, y, p));
-                                    match pt {
-                                        PieceType::Rook
-                                        | PieceType::Queen
-                                        | PieceType::Amazon
-                                        | PieceType::Chancellor
-                                        | PieceType::RoyalQueen => {
-                                            if p.color() == PlayerColor::White {
-                                                white_rq.push((x, y));
-                                            } else {
-                                                black_rq.push((x, y));
-                                            }
-                                        }
-                                        _ => {}
-                                    }
                                 }
                             }
                         }
