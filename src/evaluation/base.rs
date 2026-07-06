@@ -439,6 +439,35 @@ const PASSED_ENEMY_KING_DIST: [i32; 6] = [1, 2, 3, 4, 6, 9];
 const MG_PASSED_SAFE_PATH_BONUS: i32 = 40;
 const EG_PASSED_SAFE_PATH_BONUS: i32 = 80;
 
+/// Probe a square offset (dx, dy) from a piece at local tile index `idx`.
+/// Targets that stay inside the current 8x8 tile are read straight from the
+/// tile's bitboard/piece array, skipping the TileTable hash probe.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn tile_local_probe(
+    board: &crate::board::Board,
+    occ_all: u64,
+    piece_arr: &[u8; 64],
+    idx: usize,
+    x: i64,
+    y: i64,
+    dx: i64,
+    dy: i64,
+) -> Option<crate::board::Piece> {
+    let lx = (idx % 8) as i64 + dx;
+    let ly = (idx / 8) as i64 + dy;
+    if (0..8).contains(&lx) && (0..8).contains(&ly) {
+        let ti = (ly * 8 + lx) as usize;
+        if (occ_all >> ti) & 1 != 0 {
+            Some(crate::board::Piece::from_packed(piece_arr[ti]))
+        } else {
+            None
+        }
+    } else {
+        board.get_piece(x + dx, y + dy)
+    }
+}
+
 // Main Evaluation
 pub fn evaluate(game: &GameState) -> i32 {
     evaluate_inner(game)
@@ -935,8 +964,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     };
                                     let dy = if is_white { 1 } else { -1 };
                                     for dx in [-1i64, 1] {
-                                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
-                                            && target.color() == enemy
+                                        if let Some(target) = tile_local_probe(
+                                            &game.board,
+                                            tile.occ_all,
+                                            &tile.piece,
+                                            idx,
+                                            x,
+                                            y,
+                                            dx,
+                                            dy,
+                                        ) && target.color() == enemy
                                         {
                                             let tv = get_piece_value_base(target.piece_type());
                                             if tv >= 600 {
@@ -970,8 +1007,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         PlayerColor::White
                                     };
                                     for &(dx, dy) in &KNIGHT_OFFSETS {
-                                        if let Some(target) = game.board.get_piece(x + dx, y + dy)
-                                            && target.color() == enemy
+                                        if let Some(target) = tile_local_probe(
+                                            &game.board,
+                                            tile.occ_all,
+                                            &tile.piece,
+                                            idx,
+                                            x,
+                                            y,
+                                            dx,
+                                            dy,
+                                        ) && target.color() == enemy
                                         {
                                             let tv = get_piece_value_base(target.piece_type());
                                             let mv = piece_val;
