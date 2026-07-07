@@ -55,10 +55,11 @@ pub fn hash_coordinate(x: i64, y: i64) -> u64 {
     hx ^ hy.rotate_left(32) ^ hx.rotate_left(17).wrapping_add(hy)
 }
 
-/// Get the Zobrist key for a piece at a position
+/// Get the Zobrist key for a piece at a position.
 #[inline(always)]
 pub fn piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ PIECE_KEYS[piece_type as usize][color as usize]
+    (hash_coordinate(x, y) ^ PIECE_KEYS[piece_type as usize][color as usize])
+        .wrapping_mul(0x2545F4914F6CDD1D)
 }
 
 /// Pre-computed keys for effective castling rights
@@ -232,7 +233,8 @@ static REP_CASTLING_COMBINATIONS: [u64; 16] = {
 /// Secondary hash for a piece at a position.
 #[inline(always)]
 pub fn rep_piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ REP_PIECE_KEYS[piece_type as usize][color as usize]
+    (hash_coordinate(x, y) ^ REP_PIECE_KEYS[piece_type as usize][color as usize])
+        .wrapping_mul(0xBF58476D1CE4E5B9)
 }
 
 /// Secondary hash for en passant.
@@ -367,6 +369,21 @@ mod tests {
         let pawn_key = piece_key(PieceType::Pawn, color, 2, 2);
         let knight_key = piece_key(PieceType::Knight, color, 2, 2);
         assert_ne!(pawn_key, knight_key);
+    }
+
+    #[test]
+    fn test_piece_keys_not_xor_separable() {
+        use crate::board::PlayerColor;
+        let w = PlayerColor::White;
+        // Two pieces swapped between two squares must NOT produce the same combined
+        // hash (this would collide with XOR-separable keys).
+        let a = piece_key(PieceType::Rook, w, 3, 0) ^ piece_key(PieceType::Queen, w, 4, 0);
+        let b = piece_key(PieceType::Queen, w, 3, 0) ^ piece_key(PieceType::Rook, w, 4, 0);
+        assert_ne!(a, b, "primary piece keys are XOR-separable");
+
+        let ra = rep_piece_key(PieceType::Rook, w, 3, 0) ^ rep_piece_key(PieceType::Queen, w, 4, 0);
+        let rb = rep_piece_key(PieceType::Queen, w, 3, 0) ^ rep_piece_key(PieceType::Rook, w, 4, 0);
+        assert_ne!(ra, rb, "secondary (rep) piece keys are XOR-separable");
     }
 
     #[test]
