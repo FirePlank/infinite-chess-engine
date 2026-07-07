@@ -750,7 +750,7 @@ fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
             && y.knights == 0
             && (y.bishops_lb + y.bishops_db) == 0
             && no_exotic_pieces(y)
-            && y.non_royal() == y.pawns as u8
+            && y.non_royal() == y.pawns
     };
     if rb_vs_p(a, b) || rb_vs_p(b, a) {
         return true;
@@ -771,7 +771,7 @@ fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
             && y.knights == 0
             && (y.bishops_lb + y.bishops_db) == 0
             && no_exotic_pieces(y)
-            && y.non_royal() == y.pawns as u8
+            && y.non_royal() == y.pawns
     };
     if rn_vs_p(a, b) || rn_vs_p(b, a) {
         return true;

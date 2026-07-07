@@ -2235,10 +2235,10 @@ impl GameState {
                         if between {
                             // Must be at a prime distance from the checker (Huygen)
                             let dist_from_checker = (checker_sq.x - tx).abs();
-                            if is_prime_fast(dist_from_checker) {
-                                if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
-                                    out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
-                                }
+                            if is_prime_fast(dist_from_checker)
+                                && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
+                            {
+                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                             }
                         }
                     } else {
@@ -5286,7 +5286,7 @@ mod tests {
         let is_draw = crate::evaluation::insufficient_material::evaluate_insufficient_material(&game);
 
         // Should return true for K vs K
-        assert_eq!(is_draw, true);
+        assert!(is_draw);
     }
 
     #[test]
@@ -5332,10 +5332,8 @@ mod tests {
     fn test_recompute_correction_hashes() {
         let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
 
-        game.recompute_correction_hashes();
-
         // Pawn hash should be recomputed - just verify no panic
-        assert!(true);
+        game.recompute_correction_hashes();
     }
 
     #[test]
