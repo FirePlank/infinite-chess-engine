@@ -2161,27 +2161,27 @@ pub fn evaluate_queen(
         let same_rank = dy == 0;
         let same_diag = dx.abs() == dy.abs();
 
-        if same_file || same_rank || same_diag {
-            if is_clear_line_between_fast(&game.spatial_indices, &from, ek) {
-                let mut line_bonus = 15;
-                let lin_dist = dx.abs().max(dy.abs()) as i32;
-                let max_lin = 20;
-                let clamped = lin_dist.min(max_lin);
-                let diff = (clamped - QUEEN_IDEAL_LINE_DIST).abs();
-                let base = (max_lin - diff * 2).max(0);
-                line_bonus +=
-                    base * (taper(MG_KING_TROPISM_BONUS, EG_KING_TROPISM_BONUS) / 2).max(1);
-                let line_bonus = line_bonus
-                    + if (color == PlayerColor::White && y > ek.y)
-                        || (color == PlayerColor::Black && y < ek.y)
-                    {
-                        10
-                    } else {
-                        0
-                    };
-                bonus += line_bonus * king_mult / 100;
-                break;
-            }
+        if (same_file || same_rank || same_diag)
+            && is_clear_line_between_fast(&game.spatial_indices, &from, ek)
+        {
+            let mut line_bonus = 15;
+            let lin_dist = dx.abs().max(dy.abs()) as i32;
+            let max_lin = 20;
+            let clamped = lin_dist.min(max_lin);
+            let diff = (clamped - QUEEN_IDEAL_LINE_DIST).abs();
+            let base = (max_lin - diff * 2).max(0);
+            line_bonus +=
+                base * (taper(MG_KING_TROPISM_BONUS, EG_KING_TROPISM_BONUS) / 2).max(1);
+            let line_bonus = line_bonus
+                + if (color == PlayerColor::White && y > ek.y)
+                    || (color == PlayerColor::Black && y < ek.y)
+                {
+                    10
+                } else {
+                    0
+                };
+            bonus += line_bonus * king_mult / 100;
+            break;
         }
     }
 

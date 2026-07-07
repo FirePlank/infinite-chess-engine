@@ -1,10 +1,10 @@
-/// UCI protocol bridge for the infinite-chess engine, constrained to standard 8x8 chess.
-///
-/// Coordinate mapping:
-///   UCI file a-h  <->  internal x 1-8
-///   UCI rank 1-8  <->  internal y 1-8
-///
-/// The world border is fixed at (1, 8, 1, 8) and the Chess variant starting ICN is used.
+//! UCI protocol bridge for the infinite-chess engine, constrained to standard 8x8 chess.
+//!
+//! Coordinate mapping:
+//!   UCI file a-h  <->  internal x 1-8
+//!   UCI rank 1-8  <->  internal y 1-8
+//!
+//! The world border is fixed at (1, 8, 1, 8) and the Chess variant starting ICN is used.
 
 use hydrochess_wasm::board::PieceType;
 use hydrochess_wasm::game::GameState;
@@ -276,11 +276,8 @@ fn fen_char_to_icn(
     let has_special = match piece_char {
         'p' => {
             let starting_rank = if is_white { 2 } else { 7 };
-            if y == starting_rank {
-                true
-            } else {
-                false
-            }
+
+            y == starting_rank
         }
         'k' => {
             // King has castling right if any castling right for that color exists
@@ -293,21 +290,9 @@ fn fen_char_to_icn(
         'r' => {
             // Rook has castling right based on position
             if is_white && y == 1 {
-                if x == 1 && white_qs {
-                    true
-                } else if x == 8 && white_ks {
-                    true
-                } else {
-                    false
-                }
+                (x == 1 && white_qs) || (x == 8 && white_ks)
             } else if !is_white && y == 8 {
-                if x == 1 && black_qs {
-                    true
-                } else if x == 8 && black_ks {
-                    true
-                } else {
-                    false
-                }
+                (x == 1 && black_qs) || (x == 8 && black_ks)
             } else {
                 false
             }

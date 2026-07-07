@@ -414,12 +414,10 @@ mod tests {
 
     #[test]
     fn test_castling_rights_key_from_bitfield_all_combinations() {
-        for bits in 0..=15u8 {
+        for bits in 1..=15u8 {
             let h = castling_rights_key_from_bitfield(bits);
-            // bits=0 produces hash 0 (no castling rights), other combinations produce non-zero
-            if bits != 0 {
-                assert_ne!(h, 0);
-            }
+            // When bits != 0 (some castling rights are enabled), the hash should be non-zero
+            assert_ne!(h, 0);
         }
     }
 
@@ -536,12 +534,8 @@ mod tests {
 
     #[test]
     fn test_castling_combinations_table_coverage() {
-        for i in 0..16 {
-            let h = CASTLING_COMBINATIONS[i];
-            // When i=0 (no castling rights), hash is 0; otherwise should be non-zero
-            if i != 0 {
-                assert_ne!(h, 0);
-            }
-        }
+        // When all castling rights are disabled (bits = 0b0000), the hash should be 0
+        let h = castling_rights_key_from_bitfield(0);
+        assert_eq!(h, 0);
     }
 }
