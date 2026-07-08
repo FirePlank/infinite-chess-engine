@@ -708,9 +708,7 @@ pub fn get_current_tt_stats() -> SearchStats {
 
 /// Return the completed depth from the last search, or 0 if no search has run yet.
 pub fn get_completed_depth() -> usize {
-    GLOBAL_SEARCHER.with(|cell| {
-        cell.borrow().as_ref().map_or(0, |s| s.completed_depth)
-    })
+    GLOBAL_SEARCHER.with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth))
 }
 
 /// Reset the global search state.
@@ -1011,19 +1009,16 @@ impl Searcher {
                 )
                     as *mut [[[i32; 256]; 32]; PAWN_HISTORY_SIZE])
             },
-            tt: LocalTranspositionTable::new(
-                TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed),
-            ),
+            tt: LocalTranspositionTable::new(TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed)),
 
             #[cfg(feature = "nnue")]
             nnue_stack: {
-                let v: Vec<crate::nnue::NnueState> =
-                    (0..MAX_PLY + 2).map(|_| crate::nnue::NnueState::default()).collect();
+                let v: Vec<crate::nnue::NnueState> = (0..MAX_PLY + 2)
+                    .map(|_| crate::nnue::NnueState::default())
+                    .collect();
                 unsafe {
-                    Box::from_raw(
-                        Box::into_raw(v.into_boxed_slice())
-                            as *mut [crate::nnue::NnueState; MAX_PLY + 2],
-                    )
+                    Box::from_raw(Box::into_raw(v.into_boxed_slice())
+                        as *mut [crate::nnue::NnueState; MAX_PLY + 2])
                 }
             },
             #[cfg(feature = "nnue")]
@@ -1379,9 +1374,7 @@ impl Searcher {
         // External/inter-thread stop request (helper threads, or an analysis abort
         // written directly into shared wasm memory by the main thread). Polled even
         // with no time limit — unlimited searches must still be stoppable.
-        if self.hot.nodes & 8191 == 0
-            && GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.hot.nodes & 8191 == 0 && GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
             self.hot.stopped = true;
             return true;
         }
@@ -2119,14 +2112,7 @@ fn search_with_searcher(
 
         let score = if depth == 1 {
             // First iteration: full window
-            negamax_root(
-                searcher,
-                game,
-                depth,
-                -INFINITY,
-                INFINITY,
-                &mut legal_moves,
-            )
+            negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves)
         } else {
             // Aspiration window search
             let asp_win = aspiration_window();
@@ -2137,14 +2123,7 @@ fn search_with_searcher(
             let mut retries = 0;
 
             loop {
-                result = negamax_root(
-                    searcher,
-                    game,
-                    depth,
-                    alpha,
-                    beta,
-                    &mut legal_moves,
-                );
+                result = negamax_root(searcher, game, depth, alpha, beta, &mut legal_moves);
                 retries += 1;
 
                 if searcher.hot.stopped {
@@ -2166,14 +2145,8 @@ fn search_with_searcher(
 
                 // Fallback to full window if window gets too large or too many retries
                 if window_size > aspiration_max_window() || retries >= 4 {
-                    result = negamax_root(
-                        searcher,
-                        game,
-                        depth,
-                        -INFINITY,
-                        INFINITY,
-                        &mut legal_moves,
-                    );
+                    result =
+                        negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves);
                     break;
                 }
             }
@@ -2699,7 +2672,9 @@ pub fn get_best_moves_multipv(
         }
 
         // MultiPV > 1: Search with special root handling to collect multiple best moves
-        get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent, None, None, None)
+        get_best_moves_multipv_impl(
+            searcher, game, max_depth, multi_pv, silent, None, None, None,
+        )
     })
 }
 
@@ -3176,7 +3151,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                         excluded_move: None,
                     });
                 } else if target_alpha != -INFINITY {
-                    // The move failed to beat the K-th best: `score` is only an upper bound. 
+                    // The move failed to beat the K-th best: `score` is only an upper bound.
                     // Clamp it below target_alpha so it can never tie with an exactly-searched top-K move.
                     score = score.min(target_alpha - 1);
                 }
@@ -3290,7 +3265,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
         searcher.hot.min_depth_required = 0;
 
-        if !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
+        if on_depth.is_none() && !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
             break;
         }
 
@@ -3598,7 +3573,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             0
         };
         #[cfg(feature = "nnue")]
-        return searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(ply)), ply, prev_move_idx);
+        return searcher.adjusted_eval(
+            game,
+            evaluate(game, searcher.nnue_at(ply)),
+            ply,
+            prev_move_idx,
+        );
         #[cfg(not(feature = "nnue"))]
         return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
     }
@@ -4154,8 +4134,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // adjacent square, so m.to is empty and must be detected separately).
         let captured_piece = game.board.get_piece(m.to.x, m.to.y);
         let is_ep = game.is_en_passant(&m);
-        let is_capture =
-            is_ep || captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
+        let is_capture = is_ep || captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
         let captured_type = if is_ep {
             Some(PieceType::Pawn)
         } else {
@@ -4163,9 +4142,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         };
         let is_promotion = m.promotion.is_some();
         let p_type = m.piece.piece_type();
-        let is_royal_capture_win =
-            captured_type.is_some_and(|pt| pt.is_royal())
-                && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+        let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
+            && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
@@ -5664,7 +5642,7 @@ mod tests {
         // Check stats are populated
         assert!(stats.tt_capacity > 0);
     }
-    
+
     // ======================== Evaluation with Search Tests ========================
 
     #[test]
