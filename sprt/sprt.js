@@ -7,10 +7,9 @@
  *   node sprt.js --native - Run native iwasm-based SPRT (CLI mode)
  * 
  * Web mode:
- * - Treats root/pkg as the OLD engine snapshot
- * - Builds a NEW web WASM into root/pkg-new
- * - Copies both into sprt/web/pkg-old and sprt/web/pkg-new
- * - Starts `npx serve .` in sprt/web so browser UI can import both
+ * - Copies root/pkg-old (your baseline engine snapshot) to sprt/web/pkg-old
+ * - Builds the NEW web WASM (MT by default) into sprt/web/pkg-new
+ * - Starts `npx serve .` in sprt/web so the browser UI can import both
  * 
  * Native mode:
  * - Uses iwasm for high-performance testing
@@ -24,8 +23,6 @@ const { execSync, spawn } = require('child_process');
 
 const SPRT_DIR = __dirname;
 const PROJECT_ROOT = path.join(SPRT_DIR, '..');
-const CONFIG_PATH = path.join(PROJECT_ROOT, '.cargo', 'config.toml');
-const BACKUP_PATH = CONFIG_PATH + '.bak';
 
 // Root-level packages
 const ROOT_PKG_OLD = path.join(PROJECT_ROOT, 'pkg-old');
@@ -37,7 +34,6 @@ const WEB_PKG_NEW_DIR = path.join(WEB_DIR, 'pkg-new');
 
 // Check flags
 const isNativeMode = process.argv.includes('--native');
-const isMT = process.argv.includes('--mt');
 
 function hasIwasm() {
     try {
@@ -47,53 +43,6 @@ function hasIwasm() {
         return false;
     }
 }
-
-let configChanged = false;
-function modifyConfig() {
-    if (!isMT) return;
-    try {
-        if (fs.existsSync(CONFIG_PATH)) {
-            fs.copyFileSync(CONFIG_PATH, BACKUP_PATH);
-            let content = fs.readFileSync(CONFIG_PATH, 'utf8');
-            if (!content.includes('build-std')) {
-                content += '\n\n[unstable]\nbuild-std = ["panic_abort", "std"]\n';
-                fs.writeFileSync(CONFIG_PATH, content);
-                configChanged = true;
-                console.log("[web-sprt] Temporarily enabled build-std in .cargo/config.toml");
-            }
-        } else {
-            const dir = path.dirname(CONFIG_PATH);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(CONFIG_PATH, '[unstable]\nbuild-std = ["panic_abort", "std"]\n');
-            configChanged = true;
-            console.log("[web-sprt] Temporarily created .cargo/config.toml with build-std");
-        }
-    } catch (err) {
-        console.error("[web-sprt] Failed to modify .cargo/config.toml:", err.message);
-    }
-}
-
-function restoreConfig() {
-    if (configChanged) {
-        configChanged = false;
-        try {
-            if (fs.existsSync(BACKUP_PATH)) {
-                fs.copyFileSync(BACKUP_PATH, CONFIG_PATH);
-                fs.unlinkSync(BACKUP_PATH);
-                console.log("[web-sprt] Restored original .cargo/config.toml content");
-            } else {
-                fs.unlinkSync(CONFIG_PATH);
-                console.log("[web-sprt] Removed temporary .cargo/config.toml");
-            }
-        } catch (err) {
-            console.error("[web-sprt] Failed to restore .cargo/config.toml:", err.message);
-        }
-    }
-}
-
-// Ensure restoration on exit
-process.on('SIGINT', () => { restoreConfig(); process.exit(); });
-process.on('exit', restoreConfig);
 
 function copyDirectory(src, dest) {
     if (!fs.existsSync(src)) {
@@ -137,7 +86,9 @@ function snapshotOldFromRoot() {
 }
 
 function buildNewWebPkg() {
-    console.log(isMT ? '\n[web-sprt] Building NEW WASM (Multi-threaded / Lazy SMP)...' : '\n[web-sprt] Building NEW WASM (Single-threaded)...');
+    // MT (Lazy SMP) is the default build now — .cargo/config.toml carries the atomics/
+    // build-std flags persistently, so a plain wasm-pack build produces the threaded engine.
+    console.log('\n[web-sprt] Building NEW WASM (Multi-threaded / Lazy SMP is default)...');
     try {
         rmDirIfExists(WEB_PKG_NEW_DIR);
 
@@ -145,37 +96,15 @@ function buildNewWebPkg() {
         if (process.env.EVAL_TUNING === '1' || process.env.EVAL_TUNING === 'true') {
             features += ',eval_tuning';
         }
-        if (isMT) {
-            features += ',multithreading';
-            modifyConfig();
-        }
-
-        const env = { ...process.env };
-        if (isMT) {
-            env.RUSTFLAGS = [
-                "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
-                "-C", "link-arg=--shared-memory",
-                "-C", "link-arg=--max-memory=1073741824",
-                "-C", "link-arg=--import-memory",
-                "-C", "link-arg=--export=__wasm_init_tls",
-                "-C", "link-arg=--export=__tls_size",
-                "-C", "link-arg=--export=__tls_align",
-                "-C", "link-arg=--export=__tls_base"
-            ].join(" ");
-            env.RUSTUP_TOOLCHAIN = "nightly";
-        }
 
         execSync('wasm-pack build --target web --out-dir sprt/web/pkg-new --features ' + features, {
             cwd: PROJECT_ROOT,
             stdio: 'inherit',
-            env: env
+            env: process.env,
         });
     } catch (e) {
         console.error('[web-sprt] wasm-pack build failed:', e.message);
-        restoreConfig();
         process.exit(1);
-    } finally {
-        restoreConfig();
     }
     if (!fs.existsSync(WEB_PKG_NEW_DIR)) {
         console.error('[web-sprt] Build finished but pkg-new is missing:', WEB_PKG_NEW_DIR);
@@ -260,13 +189,14 @@ HydroChess SPRT Testing Helper
 
 Usage:
   node sprt.js              Run web-based SPRT (opens browser UI)
-  node sprt.js --mt         Run web-based SPRT with Multithreading (Lazy SMP)
   node sprt.js --native     Run native iwasm-based SPRT (CLI mode)
 
 Web Mode:
   Opens a browser UI for running SPRT tests with visual feedback.
-  Requires pkg-old directory with baseline engine build.
-  If --mt is passed, the NEW engine is built with threads.
+  Both engines are Multi-threaded (Lazy SMP) builds by default; pick the
+  thread count per engine in the UI (default 1 = single-threaded).
+  Requires a pkg-old directory with the baseline engine build:
+    wasm-pack build --target web --out-dir pkg-old
 
 Native Mode Options:
   --games N        Number of game pairs (default: 100)
@@ -279,7 +209,6 @@ Native Mode Options:
 
 Examples:
   node sprt.js                           # Web mode
-  node sprt.js --mt                      # Web mode with multithreading
   node sprt.js --native                  # Native mode, default settings
   node sprt.js --native --games 500      # Native mode, 500 game pairs
   node sprt.js --native --variant Core   # Test Core variant

@@ -8,7 +8,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use hydrochess_wasm::board::PlayerColor;
 use hydrochess_wasm::evaluation::{self};
-use hydrochess_wasm::game::GameState;
+use hydrochess_wasm::game::{GameState, WinCondition};
 use hydrochess_wasm::search::params::{
     self, EvalParams, SearchParams, TUNABLE_EVAL_PARAM_SPECS, TUNABLE_PARAM_SPECS,
 };
@@ -425,6 +425,20 @@ fn has_any_fully_legal_move(game: &mut GameState) -> bool {
 }
 
 fn terminal_reason(game: &mut GameState) -> Option<(&'static str, Option<bool>)> {
+    if game.has_lost_by_royal_capture() {
+        let opponent_win_condition = match game.turn {
+            PlayerColor::White => game.game_rules.black_win_condition,
+            PlayerColor::Black => game.game_rules.white_win_condition,
+            PlayerColor::Neutral => return None,
+        };
+        let reason = match opponent_win_condition {
+            WinCondition::RoyalCapture => "royalcapture",
+            WinCondition::AllRoyalsCaptured => "allroyalscaptured",
+            _ => return None,
+        };
+        return Some((reason, Some(game.turn == PlayerColor::Black)));
+    }
+
     let in_check = game.is_in_check();
     if !has_any_fully_legal_move(game) {
         let lost_by_mate = in_check && game.must_escape_check();

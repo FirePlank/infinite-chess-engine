@@ -74,22 +74,22 @@ pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -
     }
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
-        Some(Variant::Obstocean) => variants::obstocean::evaluate(game) + compute_mop_up_term(game),
-        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game) + compute_mop_up_term(game),
+        Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
+        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
         // Add new variants here as they get custom evaluators
         _ => {
             // Try NNUE first if applicable (standard pieces, kings present, weights loaded)
             if crate::nnue::is_applicable(game) {
                 if let Some(state) = nnue_state {
-                    crate::nnue::evaluate_with_state(game, state) + compute_mop_up_term(game)
+                    crate::nnue::evaluate_with_state(game, state)
                 } else {
-                    crate::nnue::evaluate(game) + compute_mop_up_term(game)
+                    crate::nnue::evaluate(game)
                 }
             } else {
-                base::evaluate(game) + compute_mop_up_term(game)
+                base::evaluate(game)
             }
         } // Default: use base for all others
-    };
+    } + compute_mop_up_term(game);
 
     // As the halfmove clock increases during shuffling, we slightly damp the
     // evaluation. This provides a gentle pressure to "get on with it" and
@@ -112,11 +112,11 @@ pub fn evaluate(game: &GameState) -> i32 {
     }
     let raw_eval = match game.variant {
         Some(Variant::Chess) => variants::chess::evaluate(game),
-        Some(Variant::Obstocean) => variants::obstocean::evaluate(game) + compute_mop_up_term(game),
-        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game) + compute_mop_up_term(game),
+        Some(Variant::Obstocean) => variants::obstocean::evaluate(game),
+        Some(Variant::PawnHorde) => variants::pawn_horde::evaluate(game),
         // Add new variants here as they get custom evaluators
-        _ => base::evaluate(game) + compute_mop_up_term(game), // Default: use base for all others
-    };
+        _ => base::evaluate(game), // Default: use base for all others
+    } + compute_mop_up_term(game);
 
     // As the halfmove clock increases during shuffling, we slightly damp the
     // evaluation. This provides a gentle pressure to "get on with it" and

@@ -3,8 +3,8 @@ use crate::moves::Move;
 
 use super::INFINITY;
 use super::tt_defs::{
-    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, clamp_to_i16, pack_coord, unpack_coord,
-    value_from_tt, value_to_tt,
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, eval_from_i16, eval_to_i16, pack_coord,
+    score_from_i16, score_to_i16, unpack_coord, value_from_tt, value_to_tt,
 };
 
 const ENTRIES_PER_BUCKET: usize = 4; // 4 × 16 = 64 bytes
@@ -177,6 +177,19 @@ pub struct LocalTranspositionTable {
 unsafe impl Sync for LocalTranspositionTable {}
 unsafe impl Send for LocalTranspositionTable {}
 
+/// Allocates `cap` zeroed buckets without a memset: TTBucket's all-zero bytes ARE its empty
+/// state, and calloc'd pages fault in lazily, so construction cost is independent of hash size.
+fn zeroed_buckets(cap: usize) -> Vec<TTBucket> {
+    unsafe {
+        let layout = std::alloc::Layout::array::<TTBucket>(cap).unwrap();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut TTBucket;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, cap, cap)
+    }
+}
+
 impl LocalTranspositionTable {
     pub fn new(size_mb: usize) -> Self {
         #[cfg(target_arch = "wasm32")]
@@ -191,7 +204,7 @@ impl LocalTranspositionTable {
             bits += 1;
         }
 
-        let mut _mem_anchor = vec![TTBucket::empty(); cap];
+        let mut _mem_anchor = zeroed_buckets(cap);
         let buckets = _mem_anchor.as_mut_ptr();
 
         LocalTranspositionTable {
@@ -215,13 +228,28 @@ impl LocalTranspositionTable {
         self.used
     }
 
+    /// Approximate fill level in permille (0-1000), sampling current-generation
+    /// occupancy like the shared TT. A running counter would pin at 1000 once
+    /// every slot has been touched and never reflect generation turnover.
     #[inline(always)]
     pub fn fill_permille(&self) -> u32 {
-        if self.capacity == 0 {
-            0
-        } else {
-            ((self.used as u64 * 1000) / self.capacity as u64) as u32
+        let num_buckets = self.mask + 1;
+        let sample = num_buckets.min(1000);
+        if sample == 0 {
+            return 0;
         }
+        let mut occ = 0u64;
+        unsafe {
+            for i in 0..sample {
+                let entries = &(*self.buckets.add(i)).entries;
+                for e in entries {
+                    if !e.is_empty() && e.relative_age(self.generation) == 0 {
+                        occ += 1;
+                    }
+                }
+            }
+        }
+        ((occ * 1000) / (sample as u64 * ENTRIES_PER_BUCKET as u64)) as u32
     }
 
     #[inline(always)]
@@ -268,16 +296,21 @@ impl LocalTranspositionTable {
 
         unsafe {
             let bucket_ptr = self.buckets.add(idx);
-            // Access entries directly without intermediate copy
-            let entries = &(*bucket_ptr).entries;
+            let entries = &mut (*bucket_ptr).entries;
 
             for e in entries {
                 if e.key16 != key16 || e.is_empty() {
                     continue;
                 }
 
+                // Refresh on hit (Stockfish tt.cpp): entries the search actually USES stay
+                // current-generation and win replacement fights; untouched stale entries age
+                // out. Without this, larger tables hoard dead deep entries at the expense of
+                // the live search's.
+                e.gen_bound = (self.generation & GENERATION_MASK) | (e.gen_bound & 0x07);
+
                 let score = value_from_tt(
-                    e.score16 as i32,
+                    score_from_i16(e.score16 as i32),
                     params.ply,
                     params.rule50_count,
                     params.rule_limit,
@@ -301,7 +334,7 @@ impl LocalTranspositionTable {
                 return Some(TTProbeResult {
                     cutoff_score: cutoff,
                     tt_score: score,
-                    eval: e.eval16 as i32,
+                    eval: eval_from_i16(e.eval16 as i32),
                     depth: e.depth,
                     flag: e.flag(),
                     is_pv: e.is_pv(),
@@ -330,7 +363,7 @@ impl LocalTranspositionTable {
             for (i, e) in entries.iter_mut().enumerate() {
                 if e.key16 == key16 && !e.is_empty() {
                     let store_eval = if params.static_eval != INFINITY + 1 {
-                        clamp_to_i16(params.static_eval)
+                        eval_to_i16(params.static_eval)
                     } else {
                         e.eval16
                     };
@@ -353,7 +386,7 @@ impl LocalTranspositionTable {
                                 params.is_pv,
                                 params.flag,
                             ),
-                            score16: clamp_to_i16(adj_score),
+                            score16: score_to_i16(adj_score),
                             eval16: store_eval,
                             move_data: old_move_data,
                         };
@@ -365,6 +398,7 @@ impl LocalTranspositionTable {
                     }
                     return;
                 }
+                // Priority = depth (+PV bonus), penalized by generation age.
                 let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
                     - (e.relative_age(self.generation) as i32);
                 if priority < worst {
@@ -377,8 +411,8 @@ impl LocalTranspositionTable {
                 key16,
                 depth: params.depth as u8,
                 gen_bound: TTEntry::pack_gen_bound(self.generation, params.is_pv, params.flag),
-                score16: clamp_to_i16(adj_score),
-                eval16: clamp_to_i16(params.static_eval),
+                score16: score_to_i16(adj_score),
+                eval16: eval_to_i16(params.static_eval),
                 move_data: NO_MOVE,
             };
             if let Some(m) = &params.best_move {

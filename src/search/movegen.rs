@@ -94,6 +94,10 @@ pub struct StagedMoveGen {
     // Pre-calculated continuation history pointers for the current ply:
     // [(idx, prev_cap, prev_ic, prev_piece, prev_to_h)]
     cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize, usize); 3]>,
+
+    // Side-to-move pin map, computed once per node and shared by the capture
+    // and quiet stages.
+    pins_cache: Option<rustc_hash::FxHashMap<crate::board::Coordinate, (i64, i64)>>,
 }
 
 /// Sorts moves with score >= limit to the front in descending order.
@@ -223,6 +227,7 @@ impl StagedMoveGen {
             skip_quiets: false,
             excluded_move: None,
             cont_history_indices: smallvec::SmallVec::new(),
+            pins_cache: None,
         }
     }
 
@@ -451,6 +456,10 @@ impl StagedMoveGen {
         if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
             let victim_val = game.get_piece_value(target.piece_type(), target.color());
             let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+            // Include promotion gain so capture-promotions sort by their true value.
+            let promo_gain = m
+                .promotion
+                .map_or(0, |pt| game.get_piece_value(pt, m.piece.color()) - attacker_val);
 
             let pt_idx = m.piece.piece_type() as usize;
             let target_idx = target.piece_type() as usize;
@@ -465,7 +474,7 @@ impl StagedMoveGen {
             let hist_idx = hash_move_dest(m);
             let history_score = searcher.history[pt_idx][hist_idx];
 
-            10 * victim_val - attacker_val + (cap_hist / 8) + (history_score / 8)
+            10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8) + (history_score / 8)
         } else {
             0
         }
@@ -523,14 +532,7 @@ impl StagedMoveGen {
 
         // Pawn history: 2 * pawnHistory[pawn_hash % SIZE][piece][to]
         let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
-        unsafe {
-            let val = *searcher
-                .pawn_history
-                .get_unchecked(ph_idx)
-                .get_unchecked(pt_idx)
-                .get_unchecked(idx);
-            score += 2 * val;
-        }
+        score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
         // Continuation history - Optimized using pre-calculated indices
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
@@ -540,7 +542,7 @@ impl StagedMoveGen {
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
             // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
             let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h]
-                [cur_from_hash][cur_to_hash];
+                [cur_from_hash][cur_to_hash] as i32;
             score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 
@@ -636,29 +638,37 @@ impl StagedMoveGen {
         false
     }
 
+    /// Compute and cache the side-to-move pin map, shared by the capture and
+    /// quiet stages.
+    fn ensure_pins(&mut self, game: &GameState) {
+        if self.pins_cache.is_none() {
+            let king_pos = if game.turn == PlayerColor::White {
+                game.white_royals.first().copied()
+            } else {
+                game.black_royals.first().copied()
+            };
+            self.pins_cache = Some(match king_pos {
+                Some(kp) => game.compute_pins(&kp, game.turn),
+                None => rustc_hash::FxHashMap::default(),
+            });
+        }
+    }
+
     fn generate_captures(&mut self, game: &GameState, searcher: &Searcher) {
         let mut captures = MoveList::new();
 
-        let king_pos = if game.turn == PlayerColor::White {
-            game.white_royals.first().copied()
-        } else {
-            game.black_royals.first().copied()
-        };
-        let pinned = if let Some(kp) = king_pos {
-            game.compute_pins(&kp, game.turn)
-        } else {
-            rustc_hash::FxHashMap::default()
-        };
-
-        let ctx = MoveGenContext {
-            pinned: &pinned,
-            special_rights: &game.special_rights,
-            en_passant: &game.en_passant,
-            game_rules: &game.game_rules,
-            indices: &game.spatial_indices,
-            enemy_king_pos: game.enemy_king_pos(),
-        };
-        get_quiescence_captures(&game.board, game.turn, &ctx, &mut captures);
+        self.ensure_pins(game);
+        {
+            let ctx = MoveGenContext {
+                pinned: self.pins_cache.as_ref().unwrap(),
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+            };
+            get_quiescence_captures(&game.board, game.turn, &ctx, &mut captures);
+        }
 
         for m in captures {
             if self.is_tt_move(&m) || self.is_excluded(&m) {
@@ -672,26 +682,18 @@ impl StagedMoveGen {
     fn generate_quiets(&mut self, game: &GameState, searcher: &Searcher) {
         let mut quiets = MoveList::new();
 
-        let king_pos = if game.turn == PlayerColor::White {
-            game.white_royals.first().copied()
-        } else {
-            game.black_royals.first().copied()
-        };
-        let pinned = if let Some(kp) = king_pos {
-            game.compute_pins(&kp, game.turn)
-        } else {
-            rustc_hash::FxHashMap::default()
-        };
-
-        let ctx = MoveGenContext {
-            pinned: &pinned,
-            special_rights: &game.special_rights,
-            en_passant: &game.en_passant,
-            game_rules: &game.game_rules,
-            indices: &game.spatial_indices,
-            enemy_king_pos: game.enemy_king_pos(),
-        };
-        get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+        self.ensure_pins(game);
+        {
+            let ctx = MoveGenContext {
+                pinned: self.pins_cache.as_ref().unwrap(),
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+            };
+            get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+        }
 
         for m in quiets {
             if self.is_tt_move(&m)
@@ -790,6 +792,8 @@ impl StagedMoveGen {
                     if let Some(m) = self.killer1
                         && !self.is_tt_move(&m)
                         && !self.is_excluded(&m)
+                        && !Self::is_capture(game, &m)
+                        && !game.is_en_passant(&m)
                         && Self::is_pseudo_legal(game, &m)
                     {
                         return Some(m);
@@ -807,6 +811,8 @@ impl StagedMoveGen {
                         && !self.is_tt_move(&m)
                         && !self.is_excluded(&m)
                         && !Self::moves_match(&m, &self.killer1)
+                        && !Self::is_capture(game, &m)
+                        && !game.is_en_passant(&m)
                         && Self::is_pseudo_legal(game, &m)
                     {
                         return Some(m);

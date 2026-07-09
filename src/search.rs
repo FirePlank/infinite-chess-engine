@@ -1,6 +1,6 @@
 use crate::board::{PieceType, PlayerColor};
 use crate::evaluation::evaluate;
-use crate::game::GameState;
+use crate::game::{GameState, WinCondition};
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures};
 use crate::search::params::{
     aspiration_fail_mult, aspiration_max_window, aspiration_window, delta_margin,
@@ -54,8 +54,6 @@ pub struct NegamaxContext<'a> {
     pub node_type: NodeType,
     pub was_null_move: bool,
     pub excluded_move: Option<Move>,
-    #[cfg(feature = "nnue")]
-    pub nnue: Option<&'a crate::nnue::NnueState>,
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -132,6 +130,24 @@ pub const fn mated_in(ply: usize) -> i32 {
 }
 
 #[inline(always)]
+fn win_condition_for_side(game: &GameState, color: PlayerColor) -> WinCondition {
+    match color {
+        PlayerColor::White => game.game_rules.white_win_condition,
+        PlayerColor::Black => game.game_rules.black_win_condition,
+        PlayerColor::Neutral => WinCondition::Checkmate,
+    }
+}
+
+#[inline(always)]
+fn opponent_win_condition_for_side(game: &GameState, color: PlayerColor) -> WinCondition {
+    match color {
+        PlayerColor::White => game.game_rules.black_win_condition,
+        PlayerColor::Black => game.game_rules.white_win_condition,
+        PlayerColor::Neutral => WinCondition::Checkmate,
+    }
+}
+
+#[inline(always)]
 pub const fn is_win(value: i32) -> bool {
     value > MATE_SCORE
 }
@@ -142,10 +158,27 @@ pub const fn is_loss(value: i32) -> bool {
 }
 
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// Global stop flag for all search threads.
+/// Also written externally (via [`crate::stop_flag_ptr`]) to abort an analysis mid-search
+/// when the wasm memory is shared, so `check_time` polls it every node batch.
 pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Transposition table size in MB used when (re)creating searchers and the shared TT.
+pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
+
+/// Sets the TT size for future searcher/shared-TT creations, and resizes the
+/// current thread's persistent searcher's local TT immediately if one exists.
+/// (An already-initialized shared TT can't be resized — respawn the worker for that.)
+pub fn set_tt_size_mb(mb: usize) {
+    TT_SIZE_MB.store(mb.clamp(1, 64), std::sync::atomic::Ordering::Relaxed);
+    GLOBAL_SEARCHER.with(|cell| {
+        if let Some(searcher) = cell.borrow_mut().as_mut() {
+            searcher.tt = LocalTranspositionTable::new(mb);
+        }
+    });
+}
 
 #[inline(always)]
 pub const fn is_decisive(value: i32) -> bool {
@@ -180,6 +213,36 @@ pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
 // Tracks successful moves under specific pawn structures.
 pub const PAWN_HISTORY_SIZE: usize = 8192;
 pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
+
+/// [pawn_hash % SIZE][piece_type][to_hash] -> history score.
+pub type PawnHistTable = [[[i16; 256]; 32]; PAWN_HISTORY_SIZE];
+
+/// Allocates a Box<T> with all-zero bytes without a memset (calloc: pages fault in on use).
+fn zeroed_box<T>() -> Box<T> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<T>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut T;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Box::from_raw(ptr)
+    }
+}
+
+/// One pawn-history table shared by every search thread (Stockfish shares pawn history
+/// across threads too). Concurrent i16 gravity updates race benignly, like the shared TT.
+#[cfg(feature = "multithreading")]
+mod shared_hist {
+    pub struct Shared<T>(pub std::cell::UnsafeCell<T>);
+    unsafe impl<T> Sync for Shared<T> {}
+
+    static PAWN: std::sync::OnceLock<Box<Shared<super::PawnHistTable>>> =
+        std::sync::OnceLock::new();
+
+    pub fn pawn_table() -> *mut super::PawnHistTable {
+        PAWN.get_or_init(|| super::zeroed_box()).0.get()
+    }
+}
 
 /// Determines which correction history tables to use.
 /// Set once at search start for zero runtime overhead.
@@ -238,6 +301,15 @@ pub use zobrist::{
 #[cfg(feature = "multithreading")]
 static SHARED_TT: OnceLock<SharedTranspositionTable> = OnceLock::new();
 
+/// Ensures the shared TT exists (sized by [`TT_SIZE_MB`] on first init).
+/// Required before any multithreaded search that sets [`USE_SHARED_TT`].
+#[cfg(feature = "multithreading")]
+pub(crate) fn init_shared_tt() {
+    SHARED_TT.get_or_init(|| {
+        SharedTranspositionTable::new(TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed))
+    });
+}
+
 /// Precomputed LMR table to avoid ln() calls at runtime.
 /// Indexed by [depth][moves_searched].
 static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
@@ -268,6 +340,9 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
         return reduction as i32;
     }
 
+    // depth can exceed MAX_PLY-1 after post-cap `depth += 1` bumps (hindsight
+    // extension, singularity); clamp to the last table row to avoid a panic.
+    let depth = depth.min(MAX_PLY - 1);
     table[depth][moves]
 }
 
@@ -581,6 +656,22 @@ pub struct MultiPVResult {
     pub stats: SearchStats,
 }
 
+/// Snapshot of the search state after a completed iterative-deepening depth,
+/// streamed to the analysis UI via the depth callback.
+pub struct DepthInfo<'a> {
+    pub depth: usize,
+    pub seldepth: usize,
+    pub nodes: u64,
+    pub qnodes: u64,
+    pub nps: u128,
+    pub time_ms: u128,
+    pub hashfull: u32,
+    pub lines: &'a [PVLine],
+}
+
+/// Callback invoked after each completed iterative-deepening depth.
+pub type DepthCallback<'a> = &'a mut dyn FnMut(&DepthInfo);
+
 /// Result from a single thread's search, used for Lazy SMP thread voting.
 /// The thread voting algorithm weights votes by:
 ///   (score - minScore + 14) * completedDepth
@@ -643,6 +734,11 @@ pub fn get_current_tt_stats() -> SearchStats {
         let searcher = opt.get_or_insert_with(|| Searcher::new(4000));
         build_search_stats(searcher)
     })
+}
+
+/// Return the completed depth from the last search, or 0 if no search has run yet.
+pub fn get_completed_depth() -> usize {
+    GLOBAL_SEARCHER.with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth))
 }
 
 /// Reset the global search state.
@@ -718,6 +814,10 @@ pub struct Searcher {
     // This distributes work across threads naturally
     pub thread_id: usize,
 
+    /// The detached-helper epoch this searcher belongs to (0 = not a detached helper).
+    /// check_time stops the search when the global epoch moves past it.
+    pub helper_epoch: u64,
+
     // Per-ply reusable move buffers using Stack/Heap-allocated MoveList (SmallVec)
     pub move_buffers: Vec<MoveList>,
 
@@ -730,7 +830,9 @@ pub struct Searcher {
     #[allow(clippy::type_complexity)]
     // Continuation history: [ply_offset_idx][is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
     // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
-    pub cont_history: Box<[[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
+    // i16: the gravity update self-bounds to ±16384 so i16 is lossless, keeping this
+    // (the search's hottest table) at 25MB per thread.
+    pub cont_history: Box<[[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -783,10 +885,27 @@ pub struct Searcher {
 
     /// Pawn History: [pawn_hash % SIZE][piece_type][to_hash]
     /// Tracks successful moves under specific pawn structure hashes.
-    pub pawn_history: Box<[[[i32; 256]; 32]; PAWN_HISTORY_SIZE]>,
+    /// MT builds use the process-wide shared table instead (see `shared_hist`).
+    #[cfg(not(feature = "multithreading"))]
+    pub pawn_history: Box<PawnHistTable>,
 
     pub plies_from_null: Box<[u8; MAX_PLY]>,
     pub tt: LocalTranspositionTable,
+
+    /// NNUE accumulator stack indexed by ply. `nnue_stack[ply]` holds the
+    /// accumulator for the position at that ply (AFTER the parent's move).
+    /// Sized `MAX_PLY + 2` to allow a child slot for the deepest ply.
+    /// Only maintained when `nnue_active` is true (i.e. NNUE is applicable
+    /// to the current root position).
+    #[cfg(feature = "nnue")]
+    pub nnue_stack: Box<[crate::nnue::NnueState; MAX_PLY + 2]>,
+    /// Scratch buffer used by singular extension to save/restore
+    /// `nnue_stack[ply+1]` across the singular verification search.
+    #[cfg(feature = "nnue")]
+    pub nnue_scratch: Box<crate::nnue::NnueState>,
+    /// Whether NNUE evaluation is currently active for this search.
+    #[cfg(feature = "nnue")]
+    pub nnue_active: bool,
 }
 
 impl Searcher {
@@ -860,14 +979,15 @@ impl Searcher {
             completed_depth: 0,
             silent: false,
             thread_id: 0,
+            helper_epoch: 0,
             move_buffers,
             move_history: vec![None; MAX_PLY],
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i32; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
+                    vec![0i16; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
                 )
-                    as *mut [[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3])
+                    as *mut [[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(
@@ -922,13 +1042,104 @@ impl Searcher {
                     Box::into_raw(vec![255u8; MAX_PLY].into_boxed_slice()) as *mut [u8; MAX_PLY]
                 )
             },
-            pawn_history: unsafe {
-                Box::from_raw(Box::into_raw(
-                    vec![0i32; PAWN_HISTORY_SIZE * 32 * 256].into_boxed_slice(),
-                )
-                    as *mut [[[i32; 256]; 32]; PAWN_HISTORY_SIZE])
+            #[cfg(not(feature = "multithreading"))]
+            pawn_history: zeroed_box(),
+            tt: LocalTranspositionTable::new(TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed)),
+
+            #[cfg(feature = "nnue")]
+            nnue_stack: {
+                let v: Vec<crate::nnue::NnueState> = (0..MAX_PLY + 2)
+                    .map(|_| crate::nnue::NnueState::default())
+                    .collect();
+                unsafe {
+                    Box::from_raw(Box::into_raw(v.into_boxed_slice())
+                        as *mut [crate::nnue::NnueState; MAX_PLY + 2])
+                }
             },
-            tt: LocalTranspositionTable::new(16),
+            #[cfg(feature = "nnue")]
+            nnue_scratch: Box::new(crate::nnue::NnueState::default()),
+            #[cfg(feature = "nnue")]
+            nnue_active: false,
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // NNUE accumulator stack helpers. The accumulator for the position at
+    // `ply` lives in `self.nnue_stack[ply]`. Helpers here update child slot
+    // `ply+1` before recursion without heap allocation.
+    // --------------------------------------------------------------------
+
+    /// Initialize `nnue_stack[0]` from the root position and mark NNUE as
+    /// active for the remainder of this search. Call once per top-level
+    /// search if NNUE applies; otherwise set `nnue_active = false`.
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_init_root(&mut self, game: &GameState) {
+        if crate::nnue::is_applicable(game) {
+            self.nnue_stack[0] = crate::nnue::NnueState::from_position(game);
+            self.nnue_active = true;
+        } else {
+            self.nnue_active = false;
+        }
+    }
+
+    /// Copy `nnue_stack[ply]` into `nnue_stack[ply+1]` and apply the
+    /// incremental feature delta for `m`. MUST be called while `game` is
+    /// still in the pre-move state (the same contract as
+    /// `NnueState::update_for_move`).
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_push_move(&mut self, game: &GameState, ply: usize, m: Move) {
+        if !self.nnue_active || ply + 1 >= self.nnue_stack.len() {
+            return;
+        }
+        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+        right[0].clone_from(&left[ply]);
+        right[0].update_for_move(game, m);
+    }
+
+    /// Copy `nnue_stack[ply]` into `nnue_stack[ply+1]` unchanged (used for
+    /// null-move search: a null move does not change piece positions, so
+    /// the accumulator is identical).
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_push_null(&mut self, ply: usize) {
+        if !self.nnue_active || ply + 1 >= self.nnue_stack.len() {
+            return;
+        }
+        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+        right[0].clone_from(&left[ply]);
+    }
+
+    /// Save `nnue_stack[ply]` to scratch (for singular extension, before
+    /// the inner verification search clobbers it).
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_save_scratch(&mut self, ply: usize) {
+        if !self.nnue_active || ply >= self.nnue_stack.len() {
+            return;
+        }
+        (*self.nnue_scratch).clone_from(&self.nnue_stack[ply]);
+    }
+
+    /// Restore `nnue_stack[ply]` from scratch (after singular verification).
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_restore_scratch(&mut self, ply: usize) {
+        if !self.nnue_active || ply >= self.nnue_stack.len() {
+            return;
+        }
+        self.nnue_stack[ply].clone_from(&*self.nnue_scratch);
+    }
+
+    /// Borrow the NNUE accumulator for a given ply if active.
+    #[cfg(feature = "nnue")]
+    #[inline]
+    pub fn nnue_at(&self, ply: usize) -> Option<&crate::nnue::NnueState> {
+        if self.nnue_active {
+            self.nnue_stack.get(ply)
+        } else {
+            None
         }
     }
 
@@ -999,8 +1210,11 @@ impl Searcher {
 
     /// Start a new search: reset per-search state and increment TT age (or clear if requested).
     pub fn new_search(&mut self) {
+        // Only the coordinating thread (thread_id 0) bumps the shared generation.
         #[cfg(feature = "multithreading")]
-        if let Some(tt) = SHARED_TT.get() {
+        if self.thread_id == 0
+            && let Some(tt) = SHARED_TT.get()
+        {
             tt.increment_age();
         }
         self.tt.increment_age();
@@ -1117,7 +1331,12 @@ impl Searcher {
             row.fill(0);
         }
 
-        // Reset pawn history
+        // Reset pawn history (racy-but-benign memset of the shared table in MT builds)
+        #[cfg(feature = "multithreading")]
+        unsafe {
+            std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+        }
+        #[cfg(not(feature = "multithreading"))]
         for table in self.pawn_history.iter_mut() {
             for row in table.iter_mut() {
                 row.fill(0);
@@ -1151,6 +1370,40 @@ impl Searcher {
         *entry += clamped - ((*entry * clamped.abs()) >> 14);
     }
 
+    /// Gravity-style capture-history update (mirrors `update_history`), clamped to
+    /// [-history_max_gravity, history_max_gravity]. Indexed by mover and victim type.
+    #[inline]
+    pub fn update_capture_history(&mut self, piece: PieceType, victim: PieceType, bonus: i32) {
+        let max_h = params::history_max_gravity();
+        let clamped = bonus.clamp(-max_h, max_h);
+        let entry = &mut self.capture_history[piece as usize][victim as usize];
+        *entry += clamped - ((*entry * clamped.abs()) >> 14);
+    }
+
+    /// Reads a pawn-history cell (shared table in MT builds, local otherwise).
+    #[inline(always)]
+    pub fn pawn_hist(&self, ph_idx: usize, pt_idx: usize, to_idx: usize) -> i32 {
+        #[cfg(feature = "multithreading")]
+        unsafe {
+            (*shared_hist::pawn_table())[ph_idx][pt_idx][to_idx] as i32
+        }
+        #[cfg(not(feature = "multithreading"))]
+        {
+            self.pawn_history[ph_idx][pt_idx][to_idx] as i32
+        }
+    }
+
+    /// Applies a (pre-clamped) gravity adjustment to a pawn-history cell.
+    #[inline(always)]
+    pub fn pawn_hist_apply(&mut self, ph_idx: usize, pt_idx: usize, to_idx: usize, adj: i32) {
+        #[cfg(feature = "multithreading")]
+        let entry = unsafe { &mut (*shared_hist::pawn_table())[ph_idx][pt_idx][to_idx] };
+        #[cfg(not(feature = "multithreading"))]
+        let entry = &mut self.pawn_history[ph_idx][pt_idx][to_idx];
+        let cur = *entry as i32;
+        *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
+    }
+
     /// Update pawn history for moves that caused beta cutoff.
     #[inline]
     pub fn update_pawn_history(
@@ -1163,8 +1416,7 @@ impl Searcher {
         let max_h = params::history_max_gravity();
         let clamped = bonus.clamp(-max_h, max_h);
         let ph_idx = (pawn_hash & PAWN_HISTORY_MASK) as usize;
-        let entry = &mut self.pawn_history[ph_idx][piece as usize][to_hash];
-        *entry += clamped - ((*entry * clamped.abs()) >> 14);
+        self.pawn_hist_apply(ph_idx, piece as usize, to_hash, clamped);
     }
 
     /// Update low ply history for moves that caused beta cutoff at low plies.
@@ -1182,7 +1434,25 @@ impl Searcher {
 
     #[inline]
     pub fn check_time(&mut self) -> bool {
-        // Fast-path: no time limit (used by offline test/perft helpers).
+        // External/inter-thread stop request (helper threads, or an analysis abort
+        // written directly into shared wasm memory by the main thread). Polled even
+        // with no time limit — unlimited searches must still be stoppable. Detached
+        // helpers additionally retire when their epoch is superseded (new position).
+        if self.hot.nodes & 8191 == 0 {
+            if GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                self.hot.stopped = true;
+                return true;
+            }
+            #[cfg(feature = "multithreading")]
+            if self.helper_epoch != 0
+                && HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != self.helper_epoch
+            {
+                self.hot.stopped = true;
+                return true;
+            }
+        }
+
+        // Fast-path: no time limit (unlimited analysis slices, offline test/perft helpers).
         if self.hot.time_limit_ms == u128::MAX {
             return false;
         }
@@ -1259,7 +1529,9 @@ impl Searcher {
         ply: usize,
         prev_move_idx: usize,
     ) -> i32 {
-        let color_idx = (game.turn as usize).min(1);
+        // PlayerColor is Neutral=0/White=1/Black=2. Map White->0, Black->1 so the
+        // `color_idx == 0` branch below correctly selects white_nonpawn_hash for White.
+        let color_idx = (game.turn as usize).saturating_sub(1);
 
         let total_correction = match self.corrhist_mode {
             CorrHistMode::PawnBased => {
@@ -1352,7 +1624,9 @@ impl Searcher {
         }
 
         let diff = search_score - static_eval;
-        let color_idx = (game.turn as usize).min(1);
+        // PlayerColor is Neutral=0/White=1/Black=2. Map White->0, Black->1 so the
+        // `color_idx == 0` branch below correctly selects white_nonpawn_hash for White.
+        let color_idx = (game.turn as usize).saturating_sub(1);
         let weight = ((depth * depth + 2 * depth + 1) as i32).clamp(1, 128);
         let scaled_diff = diff * CORRHIST_GRAIN;
 
@@ -1589,6 +1863,60 @@ impl Searcher {
         pv
     }
 
+    /// Extends a root PV line in place by walking transposition-table moves from the
+    /// line's end position, up to `target_len` total moves. Works on a clone of `game`,
+    /// validating every move and guarding against TT cycles — same technique as
+    /// {@link extract_pv_only}, generalized to a line that starts with a root move.
+    pub fn extend_pv_with_tt(&self, game: &GameState, pv: &mut Vec<Move>, target_len: usize) {
+        if pv.len() >= target_len {
+            return;
+        }
+
+        let mut temp_game = game.clone();
+        let mut seen_hashes = Vec::with_capacity(target_len);
+
+        // Advance to the end of the existing line, validating each move.
+        for m in pv.iter() {
+            let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
+            if piece_at_from.is_none() || piece_at_from != Some(m.piece) {
+                return; // Line no longer replayable; leave it as-is.
+            }
+            seen_hashes.push(temp_game.hash);
+            temp_game.make_move(m);
+        }
+
+        // Walk TT moves from here.
+        while pv.len() < target_len {
+            let hash = temp_game.hash;
+            if seen_hashes.contains(&hash) {
+                break;
+            }
+            seen_hashes.push(hash);
+
+            let tt_move = if let Some(m) = self.tt.probe_move(hash) {
+                Some(m)
+            } else {
+                #[cfg(feature = "multithreading")]
+                {
+                    SHARED_TT.get().and_then(|tt| tt.probe_move(hash))
+                }
+                #[cfg(not(feature = "multithreading"))]
+                None
+            };
+
+            let Some(m) = tt_move else { break };
+            let piece_at_from = temp_game.board.get_piece(m.from.x, m.from.y);
+            if piece_at_from.is_none() || piece_at_from != Some(m.piece) {
+                break;
+            }
+            temp_game.make_move(&m);
+            if temp_game.is_move_illegal() {
+                break;
+            }
+            pv.push(m);
+        }
+    }
+
     /// Format current searcher's PV as string
     pub fn format_pv(&self, game: &mut GameState, depth: usize) -> String {
         let pv = self.extract_pv_only(game, depth);
@@ -1780,19 +2108,15 @@ fn search_with_searcher(
         return None;
     }
 
-    // Initialize NNUE state if applicable
+    // Initialize NNUE accumulator stack for this search (stored on searcher).
     #[cfg(feature = "nnue")]
-    let nnue_state = if crate::nnue::is_applicable(game) {
-        Some(crate::nnue::NnueState::from_position(game))
-    } else {
-        None
-    };
+    searcher.nnue_init_root(game);
 
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
         #[cfg(feature = "nnue")]
-        let score = searcher.adjusted_eval(game, evaluate(game, nnue_state.as_ref()), 0, 0);
+        let score = searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0, 0);
         #[cfg(not(feature = "nnue"))]
         let score = searcher.adjusted_eval(game, evaluate(game), 0, 0);
         return Some((single, score));
@@ -1861,16 +2185,7 @@ fn search_with_searcher(
 
         let score = if depth == 1 {
             // First iteration: full window
-            negamax_root(
-                searcher,
-                game,
-                depth,
-                -INFINITY,
-                INFINITY,
-                &mut legal_moves,
-                #[cfg(feature = "nnue")]
-                nnue_state.as_ref(),
-            )
+            negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves)
         } else {
             // Aspiration window search
             let asp_win = aspiration_window();
@@ -1881,16 +2196,7 @@ fn search_with_searcher(
             let mut retries = 0;
 
             loop {
-                result = negamax_root(
-                    searcher,
-                    game,
-                    depth,
-                    alpha,
-                    beta,
-                    &mut legal_moves,
-                    #[cfg(feature = "nnue")]
-                    nnue_state.as_ref(),
-                );
+                result = negamax_root(searcher, game, depth, alpha, beta, &mut legal_moves);
                 retries += 1;
 
                 if searcher.hot.stopped {
@@ -1912,16 +2218,8 @@ fn search_with_searcher(
 
                 // Fallback to full window if window gets too large or too many retries
                 if window_size > aspiration_max_window() || retries >= 4 {
-                    result = negamax_root(
-                        searcher,
-                        game,
-                        depth,
-                        -INFINITY,
-                        INFINITY,
-                        &mut legal_moves,
-                        #[cfg(feature = "nnue")]
-                        nnue_state.as_ref(),
-                    );
+                    result =
+                        negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves);
                     break;
                 }
             }
@@ -2022,12 +2320,7 @@ fn search_with_searcher(
                 total_factors = total_factors.max(0.98);
             }
 
-            let mut total_time = searcher.hot.optimum_time_ms as f64 * total_factors;
-
-            // Cap for single legal move
-            if legal_moves.len() == 1 {
-                total_time = total_time.min(502.0);
-            }
+            let total_time = searcher.hot.optimum_time_ms as f64 * total_factors;
 
             let hard_limit = searcher.hot.maximum_time_ms as f64;
 
@@ -2095,13 +2388,10 @@ pub fn get_best_move_parallel(
     // Clear global stop flag
     GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
 
+    // Pool size (initThreadPool on wasm, RAYON_NUM_THREADS native) decides the thread count.
+    // Like Stockfish, gameplay MT gains come from best-thread VOTING at fixed time — not
+    // faster time-to-depth — so all pool threads participate.
     let num_threads = rayon::current_num_threads().max(1);
-
-    // WASM SharedArrayBuffer and Web Worker communication have significant overhead.
-    // Even 4 threads causes slowdown due to rayon/WebWorker scheduling costs.
-    // For WASM, limit to 2 threads max (main + 1 helper) for any positive benefit.
-    #[cfg(target_arch = "wasm32")]
-    let num_threads = num_threads.min(2);
 
     USE_SHARED_TT.store(num_threads > 1, std::sync::atomic::Ordering::Relaxed);
 
@@ -2118,17 +2408,17 @@ pub fn get_best_move_parallel(
         );
     }
 
-    // Initialize Shared TT for multithreaded search
-    #[cfg(feature = "multithreading")]
-    {
-        SHARED_TT.get_or_init(|| SharedTranspositionTable::new(64));
-    }
+    // Initialize Shared TT for multithreaded search (sized by set_hash_size, like the local TTs).
+    init_shared_tt();
 
     // Shared storage for thread results - all threads contribute to voting
     let results: Arc<Mutex<Vec<ThreadResult>>> =
         Arc::new(Mutex::new(Vec::with_capacity(num_threads)));
 
-    rayon::scope(|s| {
+    // in_place_scope, NOT scope: from outside the pool, `scope` migrates this closure onto a
+    // pool thread, so the "main" search would run on a random rayon worker (scattering the
+    // persistent thread-local searcher across threads move-to-move). in_place keeps it here.
+    rayon::in_place_scope(|s| {
         // Spawn helper threads (1..num_threads)
         for i in 1..num_threads {
             let results_clone = Arc::clone(&results);
@@ -2334,7 +2624,63 @@ pub fn get_best_move_parallel(
 /// Helper threads (thread_id > 0) skip the first move to distribute work.
 /// Uses persistent GLOBAL_SEARCHER - TT and histories persist across searches.
 /// Call reset_search_state() to clear for a new game.
-fn get_best_move_threaded(
+/// Analysis-helper lifecycle epoch. Bumping it (new position / stop) makes every running
+/// detached helper exit at its next slice boundary.
+#[cfg(feature = "multithreading")]
+pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Number of detached helpers currently searching (lets a resumed analysis — e.g. "go
+/// deeper" after the helpers retired at 'done' — know it must spawn a fresh batch).
+#[cfg(feature = "multithreading")]
+pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stops all detached analysis helpers (and any in-flight search) immediately.
+#[cfg(feature = "multithreading")]
+pub fn stop_analysis_helpers() {
+    HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Detached Lazy SMP analysis helper: ONE continuous unbounded iterative-deepening search
+/// on a rayon thread, feeding the shared TT while the main thread runs its sliced analysis.
+/// It searches straight through the worker's JS yields and retires within a node batch once
+/// its epoch is superseded (position change / stop) via check_time.
+#[cfg(feature = "multithreading")]
+pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
+    if HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != epoch {
+        return; // Superseded while queued behind the previous batch.
+    }
+    HELPERS_LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    game.recompute_piece_counts();
+    game.recompute_correction_hashes();
+
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let searcher = opt.get_or_insert_with(|| Searcher::new(u128::MAX));
+
+        // Unique RNG per helper for search diversity (mirrors get_best_move_threaded).
+        let base_seed = searcher.seed;
+        searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
+        searcher.new_search();
+
+        searcher.thread_id = thread_id;
+        searcher.helper_epoch = epoch;
+        // No time limit: only GLOBAL_STOP or an epoch bump ends this search.
+        searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
+        searcher.silent = true;
+        searcher.hot.timer.reset();
+        searcher.set_corrhist_mode(&mut game);
+        searcher.move_rule_limit = game
+            .game_rules
+            .move_rule_limit
+            .map_or(i32::MAX, |v| v as i32);
+
+        let _ = search_with_searcher(searcher, &mut game, MAX_PLY);
+        searcher.helper_epoch = 0;
+    });
+    HELPERS_LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn get_best_move_threaded(
     game: &mut GameState,
     max_depth: usize,
     opt_time_ms: u128,
@@ -2363,6 +2709,8 @@ fn get_best_move_threaded(
             searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
         }
 
+        searcher.thread_id = thread_id;
+
         // Initialize searcher for this search
         searcher.new_search();
 
@@ -2371,7 +2719,6 @@ fn get_best_move_threaded(
             .hot
             .set_time_limits(opt_time_ms, max_time_ms, is_soft_limit);
         searcher.silent = silent;
-        searcher.thread_id = thread_id;
         searcher.hot.timer.reset();
 
         // Set correction mode based on variant (zero overhead during search)
@@ -2400,6 +2747,9 @@ pub fn get_best_moves_multipv(
     silent: bool,
     is_soft_limit: bool,
 ) -> MultiPVResult {
+    // Clear any stale stop request (check_time polls GLOBAL_STOP).
+    GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+
     // Ensure fast per-color piece counts are in sync with the board
     game.recompute_piece_counts();
     // Initialize correction history hashes
@@ -2448,7 +2798,91 @@ pub fn get_best_moves_multipv(
         }
 
         // MultiPV > 1: Search with special root handling to collect multiple best moves
-        get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent)
+        get_best_moves_multipv_impl(
+            searcher, game, max_depth, multi_pv, silent, None, None, None,
+        )
+    })
+}
+
+/// Analysis driver: a time-sliced MultiPV search that streams a [`DepthInfo`] to
+/// `on_depth` after every completed iterative-deepening depth.
+///
+/// Designed to be called repeatedly with short `slice_ms` budgets from a worker that
+/// yields to its message queue between slices. Pass `start_depth = last_reached + 1`
+/// so each slice *resumes* the iterative deepening rather than re-walking from depth 1
+/// (the persistent TT makes the resumed depth cheap) — this is what lets "go deeper"
+/// actually progress instead of oscillating at the target depth. The first iteration
+/// always completes regardless of the slice budget (`min_depth_required`), so a slice
+/// always advances by at least one depth. Unlike the gameplay wrappers this always
+/// takes the MultiPV root path (even for `multi_pv == 1`) so every depth reports full
+/// PV lines.
+pub fn analyse_position(
+    game: &mut GameState,
+    max_depth: usize,
+    start_depth: usize,
+    slice_ms: u128,
+    multi_pv: usize,
+    on_depth: DepthCallback,
+) -> MultiPVResult {
+    // Clear any stale stop request (a stop may have been written externally).
+    GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    game.recompute_piece_counts();
+    game.recompute_correction_hashes();
+
+    let multi_pv = multi_pv.max(1);
+
+    // start_depth == 1 marks the first slice of a fresh position; anything higher is a
+    // resume of the same position's search, where we KEEP the accumulated heuristics
+    // (history, killers, PV, TT) so the resumed depth benefits from warm move ordering
+    // — a cold new_search() at a high depth would explode the node count.
+    let fresh = start_depth <= 1;
+
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let searcher = opt.get_or_insert_with(|| Searcher::new(slice_ms));
+
+        if fresh {
+            searcher.new_search();
+        } else {
+            // Light per-slice reset: clear only the counters/flags that are scoped to a
+            // single blocking call, preserving the search heuristics built up so far.
+            searcher.hot.nodes = 0;
+            searcher.hot.qnodes = 0;
+            searcher.hot.seldepth = 0;
+            searcher.hot.stopped = false;
+            searcher.hot.min_depth_required = 1;
+            searcher.hot.iter_start_ms = 0.0;
+            searcher.hot.total_time_ms = 0.0;
+        }
+        // No per-node time limit: `check_time` must never abort mid-depth, so every depth
+        // completes fully and its result is deterministic. Responsiveness instead comes
+        // from the between-depth deadline (whole depths only), passed to the impl below.
+        searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
+        searcher.silent = true;
+        searcher.hot.timer.reset();
+
+        searcher.set_corrhist_mode(game);
+        searcher.move_rule_limit = game
+            .game_rules
+            .move_rule_limit
+            .map_or(i32::MAX, |v| v as i32);
+
+        // slice_ms == 0 means "run to max_depth" (no deadline); otherwise stop after the
+        // first completed depth past the deadline, so a new position can be picked up
+        // within roughly slice_ms instead of waiting for the whole search.
+        let deadline = if slice_ms == 0 { None } else { Some(slice_ms) };
+
+        get_best_moves_multipv_impl(
+            searcher,
+            game,
+            max_depth,
+            multi_pv,
+            true,
+            Some(start_depth),
+            deadline,
+            Some(on_depth),
+        )
     })
 }
 
@@ -2510,6 +2944,9 @@ pub(crate) fn get_best_move_limited(
     silent: bool,
     is_soft_limit: bool,
 ) -> Option<(Move, i32, SearchStats)> {
+    // Clear any stale stop request (check_time polls GLOBAL_STOP).
+    GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+
     game.recompute_piece_counts();
     game.recompute_correction_hashes();
 
@@ -2571,8 +3008,16 @@ pub(crate) fn get_best_move_limited(
         }
 
         if multi_pv > 1 {
-            let result =
-                get_best_moves_multipv_impl(searcher, game, effective_depth, multi_pv, silent);
+            let result = get_best_moves_multipv_impl(
+                searcher,
+                game,
+                effective_depth,
+                multi_pv,
+                silent,
+                None,
+                None,
+                None,
+            );
             let stats = result.stats.clone();
             pick_best(&result, skill_level, &mut searcher.rng).map(|(m, eval)| (m, eval, stats))
         } else {
@@ -2589,14 +3034,17 @@ pub(crate) fn get_best_moves_multipv_impl(
     max_depth: usize,
     multi_pv: usize,
     silent: bool,
+    // When `Some`, resume iterative deepening at this depth instead of starting from 1
+    // (relies on a warm TT from a previous slice of the same position). Used by analysis.
+    resume_from_depth: Option<usize>,
+    // When `Some`, stop after finishing the first depth that ends past this elapsed-ms
+    // deadline. Only whole depths are ever committed, so results stay deterministic.
+    deadline_ms: Option<u128>,
+    mut on_depth: Option<DepthCallback>,
 ) -> MultiPVResult {
-    // Initialize NNUE state
+    // Initialize NNUE accumulator stack (stored on searcher).
     #[cfg(feature = "nnue")]
-    let nnue_state = if crate::nnue::is_applicable(game) {
-        Some(crate::nnue::NnueState::from_position(game))
-    } else {
-        None
-    };
+    searcher.nnue_init_root(game);
 
     // Get all legal moves upfront
     let moves = game.get_legal_moves();
@@ -2631,19 +3079,23 @@ pub(crate) fn get_best_moves_multipv_impl(
         };
     }
 
-    // If only one move, return immediately with a simple static eval as score.
-    if legal_root_moves.len() == 1 {
+    // Standard (gameplay) path: with a single legal move, skip the search entirely and
+    // return a static eval — the move is forced, so looking deeper at this root is wasted
+    // effort. Analysis mode (identified by the streaming `on_depth` callback) deliberately
+    // does NOT shortcut: it searches the forced move to the target depth so the reported
+    // eval reflects the resulting position's look-ahead, and streams a line per depth.
+    if legal_root_moves.len() == 1 && on_depth.is_none() {
         let single = legal_root_moves[0];
         let stats = build_search_stats(searcher);
         return MultiPVResult {
             lines: vec![PVLine {
                 mv: single,
                 #[cfg(feature = "nnue")]
-                score: searcher.adjusted_eval(game, evaluate(game, nnue_state.as_ref()), 0, 0),
+                score: searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0, 0),
                 #[cfg(not(feature = "nnue"))]
                 score: searcher.adjusted_eval(game, evaluate(game), 0, 0),
                 depth: 0,
-                pv: Vec::new(),
+                pv: vec![single],
             }],
             stats,
         };
@@ -2656,8 +3108,11 @@ pub(crate) fn get_best_moves_multipv_impl(
     let mut root_scores: Vec<(Move, i32, Vec<Move>)> = Vec::with_capacity(legal_root_moves.len());
     let mut best_lines: Vec<PVLine> = Vec::with_capacity(multi_pv);
 
-    // Lazy SMP: Helper threads start at different depths to create search diversity.
-    let start_depth = if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
+    // Resume point (analysis) takes precedence; otherwise Lazy SMP helper threads
+    // start at staggered depths for search diversity.
+    let start_depth = if let Some(resume) = resume_from_depth {
+        resume.clamp(1, max_depth)
+    } else if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
         2.min(max_depth)
     } else {
         1
@@ -2738,15 +3193,10 @@ pub(crate) fn get_best_moves_multipv_impl(
                 break;
             }
 
-            // Incremental NNUE Update
+            // Incremental NNUE accumulator update for the child position (ply 1).
+            // Must be called BEFORE make_move.
             #[cfg(feature = "nnue")]
-            let child_nnue = if let Some(parent_state) = nnue_state.as_ref() {
-                let mut next_state = parent_state.clone();
-                next_state.update_for_move(game, *m);
-                Some(next_state)
-            } else {
-                None
-            };
+            searcher.nnue_push_move(game, 0, *m);
 
             let undo = game.make_move(m);
 
@@ -2759,9 +3209,12 @@ pub(crate) fn get_best_moves_multipv_impl(
             // For MultiPV, we need to search all moves to get their scores.
             // First move gets aspiration window (or full), others use PVS logic.
             let mut score;
+            // Whether `score` is exact (came from a PV/full-window search).
+            let exact;
 
             if move_idx == 0 {
                 // first move: try aspiration window
+                exact = true;
                 score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
@@ -2773,8 +3226,6 @@ pub(crate) fn get_best_moves_multipv_impl(
                     node_type: NodeType::PV,
                     was_null_move: false,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: nnue_state.as_ref(),
                 });
 
                 // Fail Low or High -> Re-search with full window
@@ -2790,8 +3241,6 @@ pub(crate) fn get_best_moves_multipv_impl(
                         node_type: NodeType::PV,
                         was_null_move: false,
                         excluded_move: None,
-                        #[cfg(feature = "nnue")]
-                        nnue: child_nnue.as_ref(),
                     });
                 }
             } else {
@@ -2810,11 +3259,10 @@ pub(crate) fn get_best_moves_multipv_impl(
                     node_type: NodeType::Cut,
                     was_null_move: false,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: nnue_state.as_ref(),
                 });
 
-                if score > target_alpha && !searcher.hot.stopped {
+                exact = score > target_alpha && !searcher.hot.stopped;
+                if exact {
                     // Re-search with full window to get accurate score
                     score = -negamax(&mut NegamaxContext {
                         searcher,
@@ -2827,9 +3275,11 @@ pub(crate) fn get_best_moves_multipv_impl(
                         node_type: NodeType::PV,
                         was_null_move: false,
                         excluded_move: None,
-                        #[cfg(feature = "nnue")]
-                        nnue: child_nnue.as_ref(),
                     });
+                } else if target_alpha != -INFINITY {
+                    // The move failed to beat the K-th best: `score` is only an upper bound.
+                    // Clamp it below target_alpha so it can never tie with an exactly-searched top-K move.
+                    score = score.min(target_alpha - 1);
                 }
             };
 
@@ -2837,13 +3287,17 @@ pub(crate) fn get_best_moves_multipv_impl(
             game.undo_move(m, undo);
 
             if !searcher.hot.stopped {
-                // Extract PV for this move from ply 1's triangular row
-                let child_base = MAX_PLY; // ply 1 base offset
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
                 pv.push(*m);
-                for i in 0..searcher.pv_length[1] {
-                    if let Some(pv_move) = searcher.pv_table[child_base + i] {
-                        pv.push(pv_move);
+                if exact {
+                    // Extract PV for this move from ply 1's triangular row. Only valid
+                    // when a PV search just ran — otherwise the row belongs to an
+                    // earlier root move and would attach a garbage continuation.
+                    let child_base = MAX_PLY; // ply 1 base offset
+                    for i in 0..searcher.pv_length[1] {
+                        if let Some(pv_move) = searcher.pv_table[child_base + i] {
+                            pv.push(pv_move);
+                        }
                     }
                 }
                 root_scores.push((*m, score, pv));
@@ -2864,39 +3318,89 @@ pub(crate) fn get_best_moves_multipv_impl(
             break;
         }
 
-        // Sort by score descending
-        root_scores.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        // Whether this depth was searched to completion (every root move). A depth
+        // interrupted mid-way only has scores for the moves searched before the stop —
+        // committing those would shrink the MultiPV set (and corrupt gameplay move
+        // selection), so we keep the previous complete depth's lines instead. The one
+        // exception is the very first results, where a partial set is all we have.
+        let depth_completed = !searcher.hot.stopped;
 
-        // Reorder legal_root_moves by this iteration's scores for better PVS efficiency
-        // at the next depth - the previous best move will be searched first
-        legal_root_moves.clear();
-        for (mv, _, _) in &root_scores {
-            legal_root_moves.push(*mv);
+        if depth_completed || best_lines.is_empty() {
+            // Sort by score descending
+            root_scores.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+            // Reorder legal_root_moves by this iteration's scores for better PVS efficiency
+            // at the next depth - the previous best move will be searched first
+            legal_root_moves.clear();
+            for (mv, _, _) in &root_scores {
+                legal_root_moves.push(*mv);
+            }
+
+            // Update best_lines with results from this depth. Triangular-table PVs
+            // are often truncated by TT cutoffs, so extend each displayed line by
+            // walking TT moves toward the full search depth.
+            best_lines.clear();
+            for (mv, score, pv) in root_scores.iter().take(multi_pv) {
+                let mut pv = pv.clone();
+                searcher.extend_pv_with_tt(game, &mut pv, depth);
+                best_lines.push(PVLine {
+                    mv: *mv,
+                    score: *score,
+                    depth: depth.min(searcher.hot.seldepth.max(1)),
+                    pv,
+                });
+            }
+
+            if !silent {
+                searcher.print_multi_pv_depth(depth, &best_lines);
+            }
+
+            // Only stream a completed depth to the analysis UI (a partial first depth
+            // is committed above for correctness but not emitted, to avoid a flicker).
+            if depth_completed && let Some(cb) = on_depth.as_deref_mut() {
+                let time_ms = searcher.hot.timer.elapsed_ms();
+                #[cfg(feature = "multithreading")]
+                let hashfull = if let Some(tt) = SHARED_TT.get() {
+                    tt.fill_permille()
+                } else {
+                    searcher.tt.fill_permille()
+                };
+                #[cfg(not(feature = "multithreading"))]
+                let hashfull = searcher.tt.fill_permille();
+                cb(&DepthInfo {
+                    depth,
+                    seldepth: searcher.hot.seldepth,
+                    nodes: searcher.hot.nodes,
+                    qnodes: searcher.hot.qnodes,
+                    nps: if time_ms > 0 {
+                        (searcher.hot.nodes as u128 * 1000) / time_ms
+                    } else {
+                        0
+                    },
+                    time_ms,
+                    hashfull,
+                    lines: &best_lines,
+                });
+            }
+
+            searcher.prev_score = if !root_scores.is_empty() {
+                root_scores[0].1
+            } else {
+                -INFINITY
+            };
         }
-
-        // Update best_lines with results from this depth
-        best_lines.clear();
-        for (mv, score, pv) in root_scores.iter().take(multi_pv) {
-            best_lines.push(PVLine {
-                mv: *mv,
-                score: *score,
-                depth: depth.min(searcher.hot.seldepth.max(1)),
-                pv: pv.clone(),
-            });
-        }
-
-        if !silent {
-            searcher.print_multi_pv_depth(depth, &best_lines);
-        }
-
-        searcher.prev_score = if !root_scores.is_empty() {
-            root_scores[0].1
-        } else {
-            -INFINITY
-        };
         searcher.hot.min_depth_required = 0;
 
-        if !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
+        if on_depth.is_none() && !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
+            break;
+        }
+
+        // Analysis slicing: this depth completed, so if we're past the deadline stop here
+        // and let the caller resume at the next depth. Only whole depths are committed, so
+        // the result stays deterministic regardless of where the deadline lands.
+        if let Some(dl) = deadline_ms
+            && searcher.hot.timer.elapsed_ms() >= dl
+        {
             break;
         }
 
@@ -2953,8 +3457,6 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
         -INFINITY,
         INFINITY,
         &mut legal_moves,
-        #[cfg(feature = "nnue")]
-        None,
     );
     searcher.hot.nodes
 }
@@ -2965,10 +3467,8 @@ fn negamax_root(
     game: &mut GameState,
     depth: usize,
     mut alpha: i32,
-
     beta: i32,
     moves: &mut MoveList,
-    #[cfg(feature = "nnue")] nnue_state: Option<&crate::nnue::NnueState>,
 ) -> i32 {
     // Save original alpha for TT flag determination
     let alpha_orig = alpha;
@@ -3022,15 +3522,10 @@ fn negamax_root(
         // 1. Shared TT - threads benefit from each other's entries
         // 2. Slight timing differences - threads finish at different points
 
-        // Incremental NNUE Update
+        // Incremental NNUE accumulator update for the child position (ply 1).
+        // Must be called BEFORE make_move.
         #[cfg(feature = "nnue")]
-        let child_nnue = if let Some(parent_state) = nnue_state {
-            let mut next_state = parent_state.clone();
-            next_state.update_for_move(game, *m);
-            Some(next_state)
-        } else {
-            None
-        };
+        searcher.nnue_push_move(game, 0, *m);
 
         let undo = game.make_move(m);
 
@@ -3057,8 +3552,6 @@ fn negamax_root(
                 node_type: NodeType::PV,
                 was_null_move: false,
                 excluded_move: None,
-                #[cfg(feature = "nnue")]
-                nnue: child_nnue.as_ref(),
             });
         } else {
             // PVS: Null window first, then re-search if it improves alpha
@@ -3073,8 +3566,6 @@ fn negamax_root(
                 node_type: NodeType::Cut,
                 was_null_move: false,
                 excluded_move: None,
-                #[cfg(feature = "nnue")]
-                nnue: child_nnue.as_ref(),
             });
             if s > alpha && s < beta {
                 s = -negamax(&mut NegamaxContext {
@@ -3088,8 +3579,6 @@ fn negamax_root(
                     node_type: NodeType::PV,
                     was_null_move: false,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: child_nnue.as_ref(),
                 });
             }
             score = s;
@@ -3107,35 +3596,33 @@ fn negamax_root(
         if score > best_score {
             best_score = score;
             best_move = Some(*m);
+        }
+
+        if legal_moves == 1 || score > alpha {
+            searcher.best_move_root = Some(*m);
+            searcher.pv_table[0] = Some(*m);
+            let child_len = searcher.pv_length[1];
+            let child_base = MAX_PLY;
+            for j in 0..child_len {
+                searcher.pv_table[1 + j] = searcher.pv_table[child_base + j];
+            }
+            searcher.pv_length[0] = child_len + 1;
 
             if score > alpha {
                 alpha = score;
-
-                // if legal_moves > 1 {
-                //     searcher.hot.best_move_changes += 1.0;
-                // }
-
-                // Update PV using triangular indexing
-                // Root (ply 0) stores PV at pv_table[0..], child (ply 1) at pv_table[MAX_PLY..]
-                searcher.pv_table[0] = Some(*m); // Head of PV is this move
-                let child_len = searcher.pv_length[1];
-                let child_base = MAX_PLY;
-                for j in 0..child_len {
-                    searcher.pv_table[1 + j] = searcher.pv_table[child_base + j];
-                }
-                searcher.pv_length[0] = child_len + 1;
             }
+        }
+
+        // Track nodes spent on the first (best) root move. Accumulate across
+        // iterations so the ratio is comparable to the cumulative node count it is
+        // divided by (a single-iteration value can never reach the effort
+        // threshold). Recorded before the cutoff so a move-0 fail-high still counts.
+        if move_idx == 0 {
+            searcher.hot.best_move_nodes += searcher.hot.nodes - nodes_before_move;
         }
 
         if alpha >= beta {
             break;
-        }
-
-        // Track nodes spent on this move (effort)
-        // If this is the current first move in the list (most likely the best move),
-        // track its effort for time management.
-        if move_idx == 0 {
-            searcher.hot.best_move_nodes = searcher.hot.nodes - nodes_before_move;
         }
     }
 
@@ -3161,6 +3648,7 @@ fn negamax_root(
     } else {
         TTFlag::Exact
     };
+    let tt_best_move = searcher.pv_table[0].or(best_move);
     store_tt_with_shared(
         searcher,
         &StoreContext {
@@ -3170,7 +3658,7 @@ fn negamax_root(
             score: best_score,
             static_eval: INFINITY + 1, // Not computed at root normally, or already stored
             is_pv: true,
-            best_move,
+            best_move: tt_best_move,
             ply: 0,
         },
     );
@@ -3196,9 +3684,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Leaf node: transition to quiescence search
     if depth == 0 {
-        #[cfg(feature = "nnue")]
-        return quiescence(searcher, game, ply, 0, alpha, beta, node_type, ctx.nnue);
-        #[cfg(not(feature = "nnue"))]
         return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
     }
 
@@ -3214,7 +3699,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             0
         };
         #[cfg(feature = "nnue")]
-        return searcher.adjusted_eval(game, evaluate(game, ctx.nnue), ply, prev_move_idx);
+        return searcher.adjusted_eval(
+            game,
+            evaluate(game, searcher.nnue_at(ply)),
+            ply,
+            prev_move_idx,
+        );
         #[cfg(not(feature = "nnue"))]
         return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
     }
@@ -3362,7 +3852,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             raw = {
                 #[cfg(feature = "nnue")]
                 {
-                    evaluate(game, ctx.nnue)
+                    evaluate(game, searcher.nnue_at(ply))
                 }
                 #[cfg(not(feature = "nnue"))]
                 {
@@ -3494,9 +3984,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Razoring: if eval is really low, drop to qsearch
         if !is_pv && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32 {
-            #[cfg(feature = "nnue")]
-            return quiescence(searcher, game, ply, 0, alpha, beta, node_type, ctx.nnue);
-            #[cfg(not(feature = "nnue"))]
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }
 
@@ -3537,10 +4024,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
+                let saved_plies_from_null = game.plies_from_null;
                 let move_history_backup = searcher.move_history[ply].take();
                 let piece_history_backup = searcher.moved_piece_history[ply];
 
                 game.make_null_move();
+
+                // Null-move NNUE: child accumulator at ply+1 equals parent at ply
+                // because a null move changes no piece positions.
+                #[cfg(feature = "nnue")]
+                searcher.nnue_push_null(ply);
 
                 let r = nmp_reduction_base() + depth / nmp_reduction_div();
                 let null_score = -negamax(&mut NegamaxContext {
@@ -3554,12 +4047,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: NodeType::Cut,
                     was_null_move: true,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: None,
                 });
 
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
+                game.plies_from_null = saved_plies_from_null;
 
                 searcher.move_history[ply] = move_history_backup;
                 searcher.moved_piece_history[ply] = piece_history_backup;
@@ -3573,6 +4065,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // search without the null move permission. This helps identify zugzwang
                     // positions or cases where NMP was too optimistic.
                     if depth >= 16 {
+                        // Verification re-search at current ply: nnue_stack[ply]
+                        // is already valid for this position (no move was made).
                         let verify_score = negamax(&mut NegamaxContext {
                             searcher,
                             game,
@@ -3584,8 +4078,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                             node_type: NodeType::All,
                             was_null_move: false,
                             excluded_move: None,
-                            #[cfg(feature = "nnue")]
-                            nnue: None, // Verification search (re-search) also without NNUE for consistency
                         });
 
                         if verify_score >= beta {
@@ -3639,15 +4131,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 continue;
             }
 
-            // Incremental NNUE for ProbCut
+            // Incremental NNUE accumulator update for the child position.
+            // Must be called BEFORE make_move.
             #[cfg(feature = "nnue")]
-            let child_nnue = if let Some(parent_state) = ctx.nnue {
-                let mut next_state = parent_state.clone();
-                next_state.update_for_move(game, m);
-                Some(next_state)
-            } else {
-                None
-            };
+            searcher.nnue_push_move(game, ply, m);
 
             let undo = game.make_move(&m);
 
@@ -3657,18 +4144,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
 
             // Preliminary qsearch to verify
-            #[cfg(feature = "nnue")]
-            let mut val = -quiescence(
-                searcher,
-                game,
-                ply + 1,
-                0,
-                -prob_cut_beta,
-                -prob_cut_beta + 1,
-                NodeType::Cut,
-                child_nnue.as_ref(),
-            );
-            #[cfg(not(feature = "nnue"))]
             let mut val = -quiescence(
                 searcher,
                 game,
@@ -3692,8 +4167,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: NodeType::Cut, // Expected cut node
                     was_null_move: false,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: child_nnue.as_ref(),
                 });
             }
 
@@ -3783,12 +4256,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             continue;
         }
 
-        // BITBOARD: Fast capture detection
+        // BITBOARD: Fast capture detection (en passant captures a pawn on an
+        // adjacent square, so m.to is empty and must be detected separately).
         let captured_piece = game.board.get_piece(m.to.x, m.to.y);
-        let is_capture = captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
-        let captured_type = captured_piece.map(|p| p.piece_type());
+        let is_ep = game.is_en_passant(&m);
+        let is_capture = is_ep || captured_piece.is_some_and(|p| !p.piece_type().is_neutral_type());
+        let captured_type = if is_ep {
+            Some(PieceType::Pawn)
+        } else {
+            captured_piece.map(|p| p.piece_type())
+        };
         let is_promotion = m.promotion.is_some();
         let p_type = m.piece.piece_type();
+        let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
+            && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
@@ -3809,7 +4290,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if is_capture || gives_check {
                 // Capture/check pruning
-                if let Some(cap_type) = captured_type {
+                if let Some(cap_type) = captured_type.filter(|_| !is_royal_capture_win) {
                     let capt_hist = searcher.capture_history[p_type as usize][cap_type as usize];
 
                     // SEE pruning for captures: skip losing captures
@@ -3870,7 +4351,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Prefetch TT entry for child position BEFORE making the move.
         // This warms the cache so the TT probe in the recursive call is faster.
-        // Compute approximate child hash: toggle side + move piece from->to
+        // Compute approximate child hash: toggle side + move piece from->to.
         #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
         {
             let p_type = m.piece.piece_type();
@@ -3879,9 +4360,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 ^ SIDE_KEY
                 ^ piece_key(p_type, p_color, m.from.x, m.from.y)
                 ^ piece_key(p_type, p_color, m.to.x, m.to.y);
-            if let Some(m) = searcher.tt.probe_move(hash) {
-                let _ = m; // Prefetch logic could use move hint if supported
-            }
             #[cfg(feature = "multithreading")]
             if let Some(tt) = SHARED_TT.get() {
                 tt.prefetch_entry(child_hash);
@@ -3889,15 +4367,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.tt.prefetch_entry(child_hash);
         }
 
-        // Incremental NNUE Update
+        // Incremental NNUE accumulator update for the child position (ply+1).
+        // Must be called BEFORE make_move. If singular extension below runs and
+        // clobbers nnue_stack[ply+1], we re-push after the singular verification.
         #[cfg(feature = "nnue")]
-        let child_nnue = if let Some(parent_state) = ctx.nnue {
-            let mut next_state = parent_state.clone();
-            next_state.update_for_move(game, m);
-            Some(next_state)
-        } else {
-            None
-        };
+        searcher.nnue_push_move(game, ply, m);
 
         let mut undo = game.make_move(&m);
 
@@ -3933,7 +4407,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         legal_moves += 1;
 
-        // Calculate per-move extension (can be negative for negative extensions)
+        // Calculate per-move extension (can be negative for negative extensions).
         let mut extension: i32 = 0;
 
         let is_tt_move = tt_move
@@ -3961,6 +4435,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.in_check_history[ply] = in_check_backup;
             searcher.capture_history_stack[ply] = capture_backup;
 
+            // Save the child NNUE accumulator we just computed for `m`, so we can
+            // restore it after the singular recursion clobbers stack[ply+1] while
+            // exploring other moves. nnue_stack[ply] itself is not touched by
+            // singular (only children of singular write to [ply+1..]).
+            #[cfg(feature = "nnue")]
+            searcher.nnue_save_scratch(ply + 1);
+
             // Recursive search excluding the TT move (Stockfish excludedMove pattern)
             // This searches the full move tree minus the TT move at reduced depth,
             // providing accurate singularity verification.
@@ -3979,9 +4460,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 },
                 was_null_move: false,
                 excluded_move: Some(m),
-                #[cfg(feature = "nnue")]
-                nnue: ctx.nnue,
             });
+
+            // Restore the child accumulator for `m`
+            #[cfg(feature = "nnue")]
+            searcher.nnue_restore_scratch(ply + 1);
 
             // Re-make the TT move and restore state for child search
             undo = game.make_move(&m);
@@ -4068,8 +4551,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 node_type: child_type,
                 was_null_move: false,
                 excluded_move: None,
-                #[cfg(feature = "nnue")]
-                nnue: child_nnue.as_ref(),
             });
         } else {
             // Late Move Reductions
@@ -4091,7 +4572,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
-                let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
+                let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 reduction -= (hist_score + pawn_score) / 4096;
 
                 // Correction history adjustment
@@ -4137,7 +4618,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let value = searcher.history[p_type as usize][idx]
-                    + searcher.pawn_history[ph_idx][p_type as usize][idx];
+                    + searcher.pawn_hist(ph_idx, p_type as usize, idx);
 
                 if value < hlp_history_reduce() {
                     // Extra reduction based on poor history
@@ -4187,8 +4668,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 node_type: child_type,
                 was_null_move: false,
                 excluded_move: None,
-                #[cfg(feature = "nnue")]
-                nnue: child_nnue.as_ref(),
             });
 
             // Re-search at full depth if it looks promising
@@ -4233,8 +4712,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     node_type: research_type,
                     was_null_move: false,
                     excluded_move: None,
-                    #[cfg(feature = "nnue")]
-                    nnue: child_nnue.as_ref(),
                 });
 
                 // Post LMR continuation history update
@@ -4268,7 +4745,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                     [prev_piece][prev_to_hash][cf_hash][ct_hash];
 
                                 let adj = (lmr_bonus * CONT_WEIGHTS[idx]) / 1024;
-                                *entry += adj - ((*entry * adj.abs()) >> 14);
+                                let cur = *entry as i32;
+                                *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
                             }
                         }
                     }
@@ -4363,9 +4841,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     searcher.update_low_ply_history(ply, qidx, -bonus);
                 }
 
-                // Killer move heuristic (for non-captures)
-                searcher.killers[ply][1] = searcher.killers[ply][0];
-                searcher.killers[ply][0] = Some(m);
+                // Killer move heuristic (for non-captures).
+                // Skip when the move is already killer[0], so a repeated cutoff
+                // move doesn't shift a duplicate into killer[1] and kill that slot.
+                let already_killer0 = searcher.killers[ply][0].is_some_and(|k| {
+                    k.from == m.from && k.to == m.to && k.promotion == m.promotion
+                });
+                if !already_killer0 {
+                    searcher.killers[ply][1] = searcher.killers[ply][0];
+                    searcher.killers[ply][0] = Some(m);
+                }
 
                 // Countermove heuristic
                 if ply > 0 {
@@ -4408,24 +4893,26 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
                                 // Use gravity-based update
-                                *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
+                                let cur = *entry as i32;
+                                *entry =
+                                    (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
                             }
                         }
                     }
                 }
             } else if let Some(cap_type) = captured_type {
-                // Update capture history on beta cutoff
-                let bonus = 8 * (depth * depth) as i32;
-                let e =
-                    &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
-                *e += bonus - ((*e * bonus) >> 14);
+                // Reward the capture that produced the cutoff.
+                let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+                searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
             }
             break;
         } else if let Some(cap_type) = captured_type {
-            // Penalize captures that didn't cause a cutoff
-            let malus = 2 * depth as i32;
-            let e = &mut searcher.capture_history[m.piece.piece_type() as usize][cap_type as usize];
-            *e += -malus - ((*e * malus) >> 14);
+            // Penalize a capture searched before the cutoff that didn't produce one
+            // (symmetric magnitude with the cutoff bonus).
+            let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                .min(history_bonus_cap());
+            searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus);
         }
     }
 
@@ -4471,19 +4958,24 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         depth
     };
 
-    store_tt_with_shared(
-        searcher,
-        &StoreContext {
-            hash,
-            depth: tt_store_depth,
-            flag: tt_data_bound,
-            score: best_score,
-            static_eval: raw_eval,
-            is_pv: tt_pv,
-            best_move,
-            ply,
-        },
-    );
+    // Don't pollute the real TT entry during a singular-exclusion search: its
+    // score/bound exclude the best move and its best_move is not the true one.
+    // (The probe side is likewise gated on excluded_move.is_none().)
+    if excluded_move.is_none() {
+        store_tt_with_shared(
+            searcher,
+            &StoreContext {
+                hash,
+                depth: tt_store_depth,
+                flag: tt_data_bound,
+                score: best_score,
+                static_eval: raw_eval,
+                is_pv: tt_pv,
+                best_move,
+                ply,
+            },
+        );
+    }
 
     // Update TT Move History:
     // Tracks how reliable TT moves are: positive = TT moves tend to be best.
@@ -4543,7 +5035,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                             let entry = &mut searcher.cont_history[idx][anc_cap][anc_ic][anc_piece]
                                 [anc_to][opponent_from_hash][opponent_to_hash];
-                            *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
+                            let cur = *entry as i32;
+                            *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
                         }
                     }
                 }
@@ -4559,8 +5052,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                     let pawn_adj =
                         (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
-                    let pentry = &mut searcher.pawn_history[ph_idx][prev_pt][prev_idx];
-                    *pentry += pawn_adj - ((*pentry * pawn_adj.abs()) >> 14);
+                    searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
                 }
             }
         }
@@ -4573,9 +5065,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         let best_move_is_quiet = match best_move {
             Some(m) => {
-                // BITBOARD: Fast capture check
+                // BITBOARD: Fast capture check (incl. en passant)
                 let captured = game.board.get_piece(m.to.x, m.to.y);
-                let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
+                let is_capture = game.is_en_passant(&m)
+                    || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
                 !is_capture && m.promotion.is_none()
             }
             None => true, // No best move counts as "quiet"
@@ -4617,13 +5110,12 @@ fn quiescence(
     mut alpha: i32,
     beta: i32,
     node_type: NodeType,
-    #[cfg(feature = "nnue")] nnue: Option<&crate::nnue::NnueState>,
 ) -> i32 {
     let is_pv = node_type == NodeType::PV;
     // Check for max ply
     if ply >= MAX_PLY - 1 {
         #[cfg(feature = "nnue")]
-        return evaluate(game, nnue);
+        return evaluate(game, searcher.nnue_at(ply));
         #[cfg(not(feature = "nnue"))]
         return evaluate(game);
     }
@@ -4652,6 +5144,11 @@ fn quiescence(
         return VALUE_DRAW;
     }
 
+    // Royal capture loss must be resolved before TT probes.
+    if game.has_lost_by_royal_capture() {
+        return -MATE_VALUE + ply as i32;
+    }
+
     if searcher.check_time() {
         return 0;
     }
@@ -4675,22 +5172,23 @@ fn quiescence(
         },
     );
 
-    let (tt_hit, tt_value, tt_data_static_eval, tt_data_bound, pv_hit) = if let Some(res) = tt_probe
-    {
-        (
-            true,
-            if res.tt_score == INFINITY + 1 {
-                None
-            } else {
-                Some(res.tt_score)
-            },
-            res.eval,
-            res.flag,
-            res.is_pv,
-        )
-    } else {
-        (false, None, INFINITY + 1, TTFlag::None, false)
-    };
+    let (tt_hit, tt_value, tt_data_static_eval, tt_data_bound, pv_hit, tt_move) =
+        if let Some(res) = tt_probe {
+            (
+                true,
+                if res.tt_score == INFINITY + 1 {
+                    None
+                } else {
+                    Some(res.tt_score)
+                },
+                res.eval,
+                res.flag,
+                res.is_pv,
+                res.best_move,
+            )
+        } else {
+            (false, None, INFINITY + 1, TTFlag::None, false, None)
+        };
 
     // TT Cutoff for QSearch
     if !is_pv
@@ -4709,19 +5207,20 @@ fn quiescence(
         }
     }
 
-    // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
-    if game.has_lost_by_royal_capture() {
-        return -MATE_VALUE + ply as i32;
-    }
-    // Only treat check specially if we must escape (checkmate-based win condition)
+    // Checkmate checks are legal constraints. RoyalCapture checks are not
+    // terminal, but qsearch must resolve them with evasion moves; otherwise a
+    // side can stand-pat while its royal is captured on the next ply.
     let must_escape = in_check && game.must_escape_check();
+    let must_resolve_royal_capture =
+        in_check && opponent_win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+    let tactical_check = must_escape || must_resolve_royal_capture;
 
     // Step 4. Static evaluation
     let mut unadjusted_static_eval = INFINITY + 1;
     let mut best_value;
     let mut best_move: Option<Move> = None;
 
-    if must_escape {
+    if tactical_check {
         best_value = -INFINITY;
     } else {
         // Calculate previous move index for correction history
@@ -4737,7 +5236,7 @@ fn quiescence(
             if unadjusted_static_eval == INFINITY + 1 {
                 #[cfg(feature = "nnue")]
                 {
-                    unadjusted_static_eval = evaluate(game, nnue);
+                    unadjusted_static_eval = evaluate(game, searcher.nnue_at(ply));
                 }
                 #[cfg(not(feature = "nnue"))]
                 {
@@ -4763,7 +5262,7 @@ fn quiescence(
         } else {
             #[cfg(feature = "nnue")]
             {
-                unadjusted_static_eval = evaluate(game, nnue);
+                unadjusted_static_eval = evaluate(game, searcher.nnue_at(ply));
             }
             #[cfg(not(feature = "nnue"))]
             {
@@ -4789,7 +5288,7 @@ fn quiescence(
                         static_eval: unadjusted_static_eval,
                         is_pv: false,
                         best_move: None,
-                        ply: 0,
+                        ply,
                     },
                 );
             }
@@ -4801,18 +5300,34 @@ fn quiescence(
         }
     }
 
+    if !tactical_check && !tt_hit {
+        store_tt_with_shared(
+            searcher,
+            &StoreContext {
+                hash,
+                depth: 0,
+                flag: TTFlag::None,
+                score: 0,
+                static_eval: unadjusted_static_eval,
+                is_pv: false,
+                best_move: None,
+                ply,
+            },
+        );
+    }
+
     if ply >= MAX_PLY - 1 {
         return best_value;
     }
 
     // Qsearch depth limit: prevents exponential blowup from check/evasion chains.
-    // When must_escape, stand-pat is disabled and ALL evasions recurse.
+    // When tactical_check is true, stand-pat is disabled and evasions recurse.
     if qs_ply >= MAX_QSEARCH_DEPTH {
-        if must_escape {
+        if tactical_check {
             // Stand-pat was suppressed; return static eval as an approximation.
             #[cfg(feature = "nnue")]
             {
-                return evaluate(game, nnue);
+                return evaluate(game, searcher.nnue_at(ply));
             }
             #[cfg(not(feature = "nnue"))]
             return evaluate(game);
@@ -4824,8 +5339,9 @@ fn quiescence(
     std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
     tactical_moves.clear();
 
-    if must_escape {
-        // In check and must escape - only generate evasion moves
+    if tactical_check {
+        // In check: checkmate variants require evasions; RoyalCapture qsearch
+        // uses the same narrow evasion set to resolve whether capture is forced.
         game.get_evasion_moves_into(&mut tactical_moves);
     } else {
         // Normal quiescence: generate captures only
@@ -4854,6 +5370,18 @@ fn quiescence(
     // Sort captures by MVV-LVA
     sort_captures(game, &mut tactical_moves);
 
+    // Try the TT move first if it was generated here: it caused a cutoff or was
+    // best at this position before, so it is a strong first try. Only hoisted when
+    // already present in the list (no legality risk).
+    if let Some(tt) = tt_move
+        && let Some(idx) = tactical_moves
+            .iter()
+            .position(|m| m.from == tt.from && m.to == tt.to && m.promotion == tt.promotion)
+        && idx > 0
+    {
+        tactical_moves.swap(0, idx);
+    }
+
     let mut legal_moves = 0;
     let delta_margin = delta_margin();
 
@@ -4868,19 +5396,38 @@ fn quiescence(
 
     for m in &tactical_moves {
         // Compute essential move properties
-        let gives_check = StagedMoveGen::move_gives_check_fast(game, m);
         let captured = game.board.get_piece(m.to.x, m.to.y);
-        let is_capture = captured.is_some_and(|p| !p.piece_type().is_neutral_type());
+        let is_capture =
+            game.is_en_passant(m) || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
 
         // Skip remaining quiet moves
         // Exception: Recaptures of the square where the opponent just moved
         let is_recapture = prev_sq.is_some_and(|sq| sq == m.to);
 
-        if !in_check && legal_moves > 2 && !is_capture && !gives_check && !is_recapture {
+        let captures_royal_for_win = captured.is_some_and(|p| p.piece_type().is_royal())
+            && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+
+        // Obstocean breakout: a pawn capturing a (neutral) obstacle is the variant's
+        // defining line-opening tactic, but it classifies as "quiet" because the
+        // victim is neutral. Exempt it from the quiet-move cutoff; it still faces the
+        // SEE/delta prune below, which bounds node growth (unlike a blanket exemption).
+        let is_obstocean_breakout = game.variant == Some(crate::Variant::Obstocean)
+            && m.piece.piece_type() == PieceType::Pawn
+            && captured.is_some_and(|p| p.piece_type() == PieceType::Obstacle);
+
+        // move_gives_check_fast is only needed to keep quiet checks; evaluate it
+        // last so it is skipped for captures/recaptures and the first few moves.
+        if !in_check
+            && legal_moves > 2
+            && !is_capture
+            && !is_recapture
+            && !is_obstocean_breakout
+            && !StagedMoveGen::move_gives_check_fast(game, m)
+        {
             continue;
         }
 
-        if !in_check && !is_loss(best_value) && !is_recapture {
+        if !captures_royal_for_win && !in_check && !is_loss(best_value) && !is_recapture {
             let see_gain = static_exchange_eval(game, m);
             if see_gain < 0 {
                 continue;
@@ -4895,6 +5442,11 @@ fn quiescence(
             continue;
         }
 
+        // Incremental NNUE accumulator update for the child position (ply+1).
+        // Must be called BEFORE make_move.
+        #[cfg(feature = "nnue")]
+        searcher.nnue_push_move(game, ply, *m);
+
         let undo = game.make_move(m);
 
         if fast_legal.is_err() && game.is_move_illegal() {
@@ -4904,15 +5456,13 @@ fn quiescence(
 
         legal_moves += 1;
 
-        // Incremental NNUE Update
-        #[cfg(feature = "nnue")]
-        let child_nnue = if let Some(parent_state) = nnue {
-            let mut next_state = parent_state.clone();
-            next_state.update_for_move(game, *m);
-            Some(next_state)
-        } else {
-            None
-        };
+        // Maintain the per-node move link so deeper qsearch nodes read the right
+        // previous move: prev_sq (the recapture-exception square) and the
+        // correction-history previous-move index both key off these at ply - 1.
+        let prev_entry_backup = searcher.prev_move_stack[ply];
+        let move_history_backup = searcher.move_history[ply].take();
+        searcher.prev_move_stack[ply] = (hash_move_from(m), hash_move_dest(m));
+        searcher.move_history[ply] = Some(*m);
 
         let score = -quiescence(
             searcher,
@@ -4922,11 +5472,12 @@ fn quiescence(
             -beta,
             -alpha,
             node_type,
-            #[cfg(feature = "nnue")]
-            child_nnue.as_ref(),
         );
 
         game.undo_move(m, undo);
+
+        searcher.prev_move_stack[ply] = prev_entry_backup;
+        searcher.move_history[ply] = move_history_backup;
 
         if searcher.hot.stopped {
             std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
@@ -4948,7 +5499,7 @@ fn quiescence(
     }
 
     if legal_moves == 0 {
-        let checkmate = in_check && game.must_escape_check();
+        let checkmate = tactical_check;
         let no_pieces = !game.has_pieces(game.turn);
         if checkmate || no_pieces {
             std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
@@ -4980,13 +5531,15 @@ fn quiescence(
             static_eval: unadjusted_static_eval,
             is_pv: pv_hit,
             best_move,
-            ply: 0,
+            ply,
         },
     );
 
-    // Update correction history for QSearch
-    // We learn from the search result relative to the static evaluation
-    if !must_escape {
+    // Update correction history for QSearch.
+    // We learn from the search result relative to the static evaluation, so only
+    // when a real static eval was computed (tactical_check nodes leave the eval
+    // at the INFINITY+1 sentinel, e.g. royal-capture resolution while in check).
+    if !tactical_check {
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
             from_hash ^ to_hash
@@ -5031,6 +5584,137 @@ mod tests {
         assert!(CORRHIST_SIZE.is_power_of_two());
         assert!(LASTMOVE_CORRHIST_SIZE.is_power_of_two());
         assert!(LOW_PLY_HISTORY_ENTRIES.is_power_of_two());
+    }
+
+    /// Native replica of the wasm MT analyse path (lib.rs): Lazy SMP helpers filling the
+    /// shared TT while the main thread runs the MultiPV analysis. Panics here reproduce
+    /// (with real backtraces) the `unreachable` crashes seen on wasm rayon workers.
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn test_mt_analyse_with_helpers() {
+        reset_world_bounds();
+        let mut game = GameState::new();
+        game.setup_position_from_icn(crate::Variant::Chess.starting_icn());
+
+        GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+        init_shared_tt();
+        USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let helper_game = game.clone();
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for i in 1..4usize {
+                let mut game_clone = helper_game.clone();
+                handles.push(s.spawn(move || {
+                    let _ = get_best_move_threaded(&mut game_clone, 12, 2_000, 2_000, true, i, true);
+                }));
+            }
+
+            let mut cb = |_: &DepthInfo| {};
+            let result = analyse_position(&mut game, 10, 1, 2_000, 2, &mut cb);
+            GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(!result.lines.is_empty(), "MT analyse should produce PV lines");
+
+            for handle in handles {
+                handle.join().expect("helper thread panicked");
+            }
+        });
+
+        USE_SHARED_TT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Time-to-depth benchmark mirroring the wasm analysis worker's 180ms slice cadence.
+    /// Env-driven so each config runs in a fresh process:
+    ///   BENCH_MODE=st|mt_sliced|mt_full  BENCH_TT_MB=16  BENCH_THREADS=8  BENCH_DEPTH=18
+    /// Run: cargo test --release --features multithreading bench_time_to_depth -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(feature = "multithreading")]
+    fn bench_time_to_depth() {
+        let mode = std::env::var("BENCH_MODE").unwrap_or_else(|_| "st".into());
+        let tt_mb: usize = std::env::var("BENCH_TT_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
+        let threads: usize = std::env::var("BENCH_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+        let target: usize = std::env::var("BENCH_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(18);
+        #[allow(non_snake_case)]
+        let SLICE_MS: u128 = std::env::var("BENCH_SLICE").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
+
+        reset_world_bounds();
+        set_tt_size_mb(tt_mb);
+        let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+
+        // Startpos + a normal opening, like a real analysis position (BENCH_POS picks one).
+        let pos: usize = std::env::var("BENCH_POS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let moves = match pos {
+            1 => "5,2>5,4|5,7>5,5|7,1>6,3|2,8>3,6|6,1>2,5|7,8>6,6|4,2>4,3|6,8>2,4|3,1>7,5|4,8>5,7",
+            2 => "4,2>4,4|4,7>4,5|3,2>3,4|5,7>5,6|2,1>3,3|7,8>6,6|3,1>6,4|6,8>5,7",
+            3 => "7,1>6,3|4,7>4,5|3,2>3,4|3,7>3,6|4,2>4,4|7,8>6,6|2,1>3,3|5,7>5,6",
+            _ => panic!("unknown BENCH_POS"),
+        };
+        let icn = format!("{} {}", crate::Variant::Chess.starting_icn(), moves);
+        let mut game = GameState::new();
+        game.setup_position_from_icn(&icn);
+
+        let use_mt = mode.starts_with("mt");
+        if use_mt {
+            init_shared_tt();
+            USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let t0 = std::time::Instant::now();
+        let mut reached = 0usize;
+        let helper_game = game.clone();
+
+        let mut cb = |info: &DepthInfo| {
+            println!("depth {:2} at {:6}ms nodes {}", info.depth, t0.elapsed().as_millis(), info.nodes);
+        };
+
+        match mode.as_str() {
+            // Exactly the wasm worker loop: 180ms slices, resume at reached+1, no helpers.
+            "st" => {
+                while reached < target {
+                    let start = (reached + 1).min(target);
+                    GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let r = analyse_position(&mut game, target, start, SLICE_MS, 1, &mut cb);
+                    let d = r.lines.first().map_or(0, |l| l.depth);
+                    if d <= reached { break; }
+                    reached = d;
+                }
+            }
+            // The shipped wasm design: detached helpers spawned once, main sliced like the worker.
+            "mt_detached" => {
+                let epoch = HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                for i in 1..threads {
+                    let gc = helper_game.clone();
+                    rayon::spawn(move || helper_run(gc, epoch, i));
+                }
+                while reached < target {
+                    let start = (reached + 1).min(target);
+                    let r = analyse_position(&mut game, target, start, SLICE_MS, 1, &mut cb);
+                    let d = r.lines.first().map_or(0, |l| l.depth);
+                    if d <= reached { break; }
+                    reached = d;
+                }
+                stop_analysis_helpers();
+            }
+            // Helpers persist for the WHOLE search; main runs unsliced to target.
+            "mt_full" => {
+                GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                rayon::in_place_scope(|s| {
+                    for i in 1..threads {
+                        let mut gc = helper_game.clone();
+                        s.spawn(move |_| {
+                            let _ = get_best_move_threaded(&mut gc, target, 600_000, 600_000, true, i, true);
+                        });
+                    }
+                    let _ = analyse_position(&mut game, target, 1, 0, 1, &mut cb);
+                    GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+            other => panic!("unknown BENCH_MODE {other}"),
+        }
+        println!("TOTAL {}ms mode={} tt={}MB threads={}", t0.elapsed().as_millis(), mode, tt_mb, threads);
+        USE_SHARED_TT.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ======================== Timer Tests ========================
@@ -5593,18 +6277,6 @@ mod tests {
         // Qsearch should return static eval on quiet position
         let alpha = -10000;
         let beta = 10000;
-        #[cfg(feature = "nnue")]
-        let score = quiescence(
-            &mut searcher,
-            &mut game,
-            0,
-            0,
-            alpha,
-            beta,
-            NodeType::PV,
-            None,
-        );
-        #[cfg(not(feature = "nnue"))]
         let score = quiescence(&mut searcher, &mut game, 0, 0, alpha, beta, NodeType::PV);
         assert!(score.abs() < 500); // Should be near zero for balanced empty board
         assert_eq!(searcher.hot.qnodes, 1);

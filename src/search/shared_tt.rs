@@ -4,8 +4,8 @@ use crate::moves::Move;
 
 use super::INFINITY;
 use super::tt_defs::{
-    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, clamp_to_i16, pack_coord, unpack_coord,
-    value_from_tt, value_to_tt,
+    TTFlag, TTProbeParams, TTProbeResult, TTStoreParams, eval_from_i16, eval_to_i16, pack_coord,
+    score_from_i16, score_to_i16, unpack_coord, value_from_tt, value_to_tt,
 };
 
 const ENTRIES_PER_BUCKET: usize = 4;
@@ -35,13 +35,6 @@ unsafe impl Send for TTEntry {}
 use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
 impl TTEntry {
-    pub fn empty() -> Self {
-        TTEntry {
-            metadata: UnsafeCell::new(0),
-            move_data: UnsafeCell::new(NO_MOVE),
-        }
-    }
-
     #[inline]
     pub fn read(&self, key16: u16, params_hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
@@ -51,27 +44,31 @@ impl TTEntry {
             }
 
             let mdata = std::ptr::read_volatile(self.move_data.get());
-            if std::ptr::read_volatile(self.metadata.get()) != meta {
-                return None;
-            }
 
             let d = (meta >> 16) as u8;
             let gb = (meta >> 24) as u8;
             let score = (meta >> 32) as u16 as i16 as i32;
             let eval = (meta >> 48) as u16 as i16 as i32;
 
-            // Integrity check: secondary verification by XORing the key into move_data.
-            // This prevents "ABA" tearing where move_data is updated by another thread
-            // but metadata matches a previous state.
+            // XOR the probing key into move_data: a move stored by a colliding/other position
+            // decodes to garbage and gets rejected by the guards below.
             let hash_key = params_hash >> 16; // Use matching bits from the full hash
             let decoded_mdata = mdata ^ hash_key;
 
-            let best_move = if decoded_mdata == NO_MOVE {
+            let pt_raw = (decoded_mdata & 0x1F) as u8;
+            let cl_raw = ((decoded_mdata >> 5) & 0x03) as u8;
+            let pr = ((decoded_mdata >> 7) & 0x1F) as u8;
+
+            // Guarded decode: invalid discriminants (torn/foreign move) → no move, keep the hit.
+            let best_move = if decoded_mdata == NO_MOVE
+                || pt_raw > PieceType::Pawn as u8
+                || cl_raw > PlayerColor::Black as u8
+                || pr > PieceType::Pawn as u8
+            {
                 None
             } else {
-                let pt = PieceType::from_u8((decoded_mdata & 0x1F) as u8);
-                let cl = PlayerColor::from_u8(((decoded_mdata >> 5) & 0x03) as u8);
-                let pr = ((decoded_mdata >> 7) & 0x1F) as u8;
+                let pt = PieceType::from_u8(pt_raw);
+                let cl = PlayerColor::from_u8(cl_raw);
 
                 let fx = unpack_coord(decoded_mdata >> 12);
                 let fy = unpack_coord(decoded_mdata >> 25);
@@ -178,18 +175,6 @@ impl TTEntry {
 pub struct TTBucket {
     entries: [TTEntry; ENTRIES_PER_BUCKET],
 }
-impl TTBucket {
-    pub fn empty() -> Self {
-        TTBucket {
-            entries: [
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-            ],
-        }
-    }
-}
 
 pub struct SharedTranspositionTable {
     buckets: Vec<TTBucket>,
@@ -216,10 +201,16 @@ impl SharedTranspositionTable {
             bits += 1;
         }
 
-        let mut buckets = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buckets.push(TTBucket::empty());
-        }
+        // Zeroed allocation, no memset: all-zero bytes are the empty state, and calloc'd
+        // pages fault in lazily, so construction cost is independent of hash size.
+        let buckets: Vec<TTBucket> = unsafe {
+            let layout = std::alloc::Layout::array::<TTBucket>(cap).unwrap();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut TTBucket;
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            Vec::from_raw_parts(ptr, cap, cap)
+        };
 
         SharedTranspositionTable {
             buckets,
@@ -304,8 +295,25 @@ impl SharedTranspositionTable {
         let key16 = self.hash_key16(params.hash);
         for e in &self.buckets[self.bucket_index(params.hash)].entries {
             if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16, params.hash) {
-                let score =
-                    value_from_tt(score, params.ply, params.rule50_count, params.rule_limit);
+                // Refresh on hit (Stockfish-style): keep USED entries current-generation so
+                // they win replacement fights; untouched stale ones age out. Racy vs a
+                // concurrent write, which at worst loses one refresh — benign.
+                unsafe {
+                    let r#gen = *self.generation.get();
+                    let meta = std::ptr::read_volatile(e.metadata.get());
+                    let new_gb =
+                        ((r#gen & GENERATION_MASK) | (((meta >> 24) as u8) & 0x07)) as u64;
+                    std::ptr::write_volatile(
+                        e.metadata.get(),
+                        (meta & !(0xFFu64 << 24)) | (new_gb << 24),
+                    );
+                }
+                let score = value_from_tt(
+                    score_from_i16(score),
+                    params.ply,
+                    params.rule50_count,
+                    params.rule_limit,
+                );
                 let flag = TTEntry::flag(gen_bound);
                 let mut cutoff = INFINITY + 1;
                 if depth as usize >= params.depth {
@@ -322,7 +330,7 @@ impl SharedTranspositionTable {
                 return Some(TTProbeResult {
                     cutoff_score: cutoff,
                     tt_score: score,
-                    eval,
+                    eval: eval_from_i16(eval),
                     depth,
                     flag,
                     is_pv: TTEntry::is_pv(gen_bound),
@@ -358,7 +366,7 @@ impl SharedTranspositionTable {
                 let old_eval = (meta >> 48) as i16;
 
                 // Decode old move for preservation
-                let old_move_data = mdata;
+                let old_move_data = mdata ^ (params.hash >> 16);
 
                 let store_move = params.best_move.as_ref();
                 let mdata_to_write = if let Some(m) = store_move {
@@ -390,7 +398,7 @@ impl SharedTranspositionTable {
                 };
 
                 let store_eval = if params.static_eval != INFINITY + 1 {
-                    clamp_to_i16(params.static_eval)
+                    eval_to_i16(params.static_eval)
                 } else {
                     old_eval
                 };
@@ -406,13 +414,12 @@ impl SharedTranspositionTable {
                 if params.flag == TTFlag::Exact
                     || (params.depth as i32 + pv_bonus) > (old_depth as i32 - 4)
                     || rel_age != 0
-                    || params.depth == 0
                 {
                     let new_meta = (key16 as u64)
                         | ((params.depth as u64) << 16)
                         | ((TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag) as u64)
                             << 24)
-                        | (((clamp_to_i16(adj_score) as u16) as u64) << 32)
+                        | (((score_to_i16(adj_score) as u16) as u64) << 32)
                         | (((store_eval as u16) as u64) << 48);
 
                     unsafe {
@@ -431,6 +438,7 @@ impl SharedTranspositionTable {
             let egb = (meta >> 24) as u8;
             let rel_age = (r#gen.wrapping_sub(egb & GENERATION_MASK)) & GENERATION_MASK;
 
+            // Age weighted by 1 (matches the local TT).
             let mut prio =
                 (ed as i32 + 3 + if TTEntry::is_pv(egb) { 2 } else { 0 }) - rel_age as i32;
             if (meta & 0xFFFF) == 0 && egb == 0 {
@@ -442,25 +450,16 @@ impl SharedTranspositionTable {
                 replace_idx = i;
             }
         }
-
-        let new_prio = params.depth as i32
-            + if params.flag == TTFlag::Exact || params.is_pv {
-                2
-            } else {
-                0
-            };
-
-        if new_prio >= worst {
-            bucket.entries[replace_idx].write(
-                key16,
-                clamp_to_i16(adj_score),
-                clamp_to_i16(params.static_eval),
-                params.depth as u8,
-                TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
-                &params.best_move,
-                params.hash,
-            );
-        }
+        
+        bucket.entries[replace_idx].write(
+            key16,
+            score_to_i16(adj_score),
+            eval_to_i16(params.static_eval),
+            params.depth as u8,
+            TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
+            &params.best_move,
+            params.hash,
+        );
     }
 
     pub fn increment_age(&self) {
@@ -547,5 +546,110 @@ mod tests {
         let decoded = res.best_move.unwrap();
         assert_eq!(decoded.from, m.from);
         assert_eq!(decoded.to, m.to);
+    }
+
+    #[test]
+    fn test_move_survives_best_move_none_restore() {
+        // Regression test for F37: a key-match store with best_move=None (preserve the
+        // existing move) used to read the move_data RAW (already XOR-protected) and
+        // feed it straight into the unconditional `^ hash_key` re-protect at the end,
+        // double-XORing it into garbage. The move must still decode correctly after a
+        // second store to the SAME position that doesn't supply a move.
+        let tt = SharedTranspositionTable::new(1);
+        let hash = 0x1357924680ABCDEFu64;
+        let m = Move {
+            from: Coordinate::new(3, 1),
+            to: Coordinate::new(3, 3),
+            piece: Piece::new(PieceType::Pawn, PlayerColor::White),
+            promotion: None,
+            rook_coord: None,
+        };
+        tt.store(&TTStoreParams {
+            hash,
+            depth: 8,
+            flag: TTFlag::Exact,
+            score: 20,
+            static_eval: 15,
+            is_pv: true,
+            best_move: Some(m),
+            ply: 0,
+        });
+        // Re-store the same position with a deeper search but no move supplied - this
+        // must hit the key-match path and preserve the previously stored move.
+        tt.store(&TTStoreParams {
+            hash,
+            depth: 9,
+            flag: TTFlag::Exact,
+            score: 25,
+            static_eval: 15,
+            is_pv: true,
+            best_move: None,
+            ply: 0,
+        });
+        let res = tt
+            .probe(&TTProbeParams {
+                hash,
+                alpha: -1000,
+                beta: 1000,
+                depth: 0,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+            .unwrap();
+        let decoded = res
+            .best_move
+            .expect("move should survive a best_move=None re-store");
+        assert_eq!(decoded.from, m.from);
+        assert_eq!(decoded.to, m.to);
+    }
+
+    #[test]
+    fn test_shallow_store_does_not_clobber_deep_entry() {
+        // Regression test for F38: the key-match replacement condition had an extra
+        // `|| params.depth == 0` clause (absent from the single-threaded tt.rs), so
+        // ANY depth-0 store (e.g. an eager static-eval store) unconditionally evicted
+        // an existing deep, same-generation, non-exact-beating entry's metadata.
+        let tt = SharedTranspositionTable::new(1);
+        let hash = 0x1122334455667788u64;
+        tt.store(&TTStoreParams {
+            hash,
+            depth: 10,
+            flag: TTFlag::Exact,
+            score: 100,
+            static_eval: 90,
+            is_pv: false,
+            best_move: None,
+            ply: 0,
+        });
+        // Same generation, non-exact, shallow: none of the replacement conditions
+        // should be met, so this must NOT overwrite the deep entry above.
+        tt.store(&TTStoreParams {
+            hash,
+            depth: 0,
+            flag: TTFlag::UpperBound,
+            score: -500,
+            static_eval: -500,
+            is_pv: false,
+            best_move: None,
+            ply: 0,
+        });
+        let res = tt
+            .probe(&TTProbeParams {
+                hash,
+                alpha: -1000,
+                beta: 1000,
+                depth: 10,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+            .unwrap();
+        assert_eq!(
+            res.depth, 10,
+            "a depth-0 store must not clobber a deep entry's metadata"
+        );
+        assert_eq!(res.tt_score, 100);
+        assert_eq!(res.flag, TTFlag::Exact);
     }
 }

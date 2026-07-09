@@ -43,20 +43,23 @@ fn normalize_coord(coord: i64) -> u64 {
     ((coord << 1) ^ (coord >> 63)) as u64
 }
 
-/// Hash a coordinate into a u64
+/// Hash a coordinate into a u64.
+/// The +1 offset prevents normalize_coord(0)==0 from causing piece_key to degenerate
+/// to the bare PIECE_KEY constant at the origin, which eliminated coordinate separation.
 #[inline(always)]
 pub fn hash_coordinate(x: i64, y: i64) -> u64 {
-    let nx = normalize_coord(x);
-    let ny = normalize_coord(y);
+    let nx = normalize_coord(x).wrapping_add(1);
+    let ny = normalize_coord(y).wrapping_add(1);
     let hx = nx.wrapping_mul(0x9E3779B185EBCA87);
     let hy = ny.wrapping_mul(0xC2B2AE3D27D4EB4F);
     hx ^ hy.rotate_left(32) ^ hx.rotate_left(17).wrapping_add(hy)
 }
 
-/// Get the Zobrist key for a piece at a position
+/// Get the Zobrist key for a piece at a position.
 #[inline(always)]
 pub fn piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ PIECE_KEYS[piece_type as usize][color as usize]
+    (hash_coordinate(x, y) ^ PIECE_KEYS[piece_type as usize][color as usize])
+        .wrapping_mul(0x2545F4914F6CDD1D)
 }
 
 /// Pre-computed keys for effective castling rights
@@ -141,6 +144,14 @@ pub fn pawn_special_right_key(x: i64, y: i64) -> u64 {
     hash_coordinate(x, y) ^ PAWN_SPECIAL_RIGHT_MIXER
 }
 
+/// Key for exact castling special rights when a 4-bit castling summary is ambiguous.
+const CASTLING_SPECIAL_RIGHT_MIXER: u64 = 0x6D1B54A32F9C0E77;
+
+#[inline(always)]
+pub fn castling_special_right_key(x: i64, y: i64) -> u64 {
+    hash_coordinate(x, y) ^ CASTLING_SPECIAL_RIGHT_MIXER
+}
+
 /// Key for pawn structure hash (used by correction history).
 /// Includes only pawn positions, helps CoaIP variants.
 const PAWN_KEY_MIXER: u64 = 0xABCDEF0123456789;
@@ -156,10 +167,97 @@ const MATERIAL_KEY_MIXER: u64 = 0xFEDCBA9876543210;
 
 #[inline(always)]
 pub fn material_key(piece_type: PieceType, color: PlayerColor) -> u64 {
-    // Use piece type as a simple hash - no position dependency
     let pt = piece_type as u64;
     let c = color as u64;
-    MATERIAL_KEY_MIXER.wrapping_mul(pt.wrapping_add(1)) ^ c.wrapping_mul(0x517CC1B727220A95)
+    let hp = pt.wrapping_add(1).wrapping_mul(0x9E3779B185EBCA87);
+    let hc = c.wrapping_add(1).wrapping_mul(0xC2B2AE3D27D4EB4F);
+    MATERIAL_KEY_MIXER ^ hp ^ hc.rotate_left(32)
+}
+
+// Secondary Zobrist keys for repetition detection (independent seed).
+// When both hash_stack and rep_hash_stack match, false positive probability ~2^-128.
+static REP_PIECE_KEYS: [[u64; NUM_COLORS]; NUM_PIECE_TYPES] = {
+    const fn splitmix64(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+        x ^ (x >> 31)
+    }
+
+    let mut keys = [[0u64; NUM_COLORS]; NUM_PIECE_TYPES];
+    let mut seed = 0xFEDCBA9876543210u64; // different seed from primary
+
+    let mut i = 0;
+    while i < NUM_PIECE_TYPES {
+        let mut j = 0;
+        while j < NUM_COLORS {
+            seed = splitmix64(seed);
+            keys[i][j] = seed;
+            j += 1;
+        }
+        i += 1;
+    }
+    keys
+};
+
+pub const REP_SIDE_KEY: u64 = 0x517CC1B727220A95;
+
+const REP_EN_PASSANT_KEY_MIXER: u64 = 0x3141592653589793;
+
+const REP_PAWN_SPECIAL_RIGHT_MIXER: u64 = 0x2718281828459045;
+
+const REP_CASTLING_SPECIAL_RIGHT_MIXER: u64 = 0x9D8E7F6A5B4C3D21;
+
+const REP_CASTLING_RIGHTS_KEYS: [u64; 4] = [
+    0xA0B1C2D3E4F50607,
+    0x0817263544536271,
+    0xF1E2D3C4B5A69788,
+    0x89786756453423A1,
+];
+
+static REP_CASTLING_COMBINATIONS: [u64; 16] = {
+    let mut table = [0u64; 16];
+    let mut i = 0;
+    while i < 16 {
+        let mut h = 0u64;
+        if i & 1 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[0]; }
+        if i & 2 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[1]; }
+        if i & 4 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[2]; }
+        if i & 8 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[3]; }
+        table[i] = h;
+        i += 1;
+    }
+    table
+};
+
+/// Secondary hash for a piece at a position.
+#[inline(always)]
+pub fn rep_piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
+    (hash_coordinate(x, y) ^ REP_PIECE_KEYS[piece_type as usize][color as usize])
+        .wrapping_mul(0xBF58476D1CE4E5B9)
+}
+
+/// Secondary hash for en passant.
+#[inline(always)]
+pub fn rep_en_passant_key(x: i64, y: i64) -> u64 {
+    hash_coordinate(x, y) ^ REP_EN_PASSANT_KEY_MIXER
+}
+
+/// Secondary hash for pawn double-push right.
+#[inline(always)]
+pub fn rep_pawn_special_right_key(x: i64, y: i64) -> u64 {
+    hash_coordinate(x, y) ^ REP_PAWN_SPECIAL_RIGHT_MIXER
+}
+
+#[inline(always)]
+pub fn rep_castling_special_right_key(x: i64, y: i64) -> u64 {
+    hash_coordinate(x, y) ^ REP_CASTLING_SPECIAL_RIGHT_MIXER
+}
+
+/// Secondary hash for castling rights from a 4-bit bitfield.
+#[inline(always)]
+pub fn rep_castling_rights_key_from_bitfield(bits: u8) -> u64 {
+    REP_CASTLING_COMBINATIONS[(bits & 0xF) as usize]
 }
 
 #[cfg(test)]
@@ -207,6 +305,7 @@ mod tests {
         let h_pos = hash_coordinate(7, 7);
         let h_neg = hash_coordinate(-1, -1);
 
+        assert_ne!(h0, 0); // origin must produce a non-zero coordinate hash
         assert_ne!(h0, h_pos);
         assert_ne!(h0, h_neg);
         assert_ne!(h_pos, h_neg);
@@ -233,6 +332,36 @@ mod tests {
     }
 
     #[test]
+    fn test_rep_piece_keys_unique() {
+        let mut keys = Vec::new();
+        for row in REP_PIECE_KEYS {
+            for key in row {
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), NUM_PIECE_TYPES * NUM_COLORS);
+    }
+
+    #[test]
+    fn test_rep_keys_independent_from_primary() {
+        use crate::board::PlayerColor;
+        // Verify secondary keys differ from primary keys for the same inputs
+        let pt = PieceType::Pawn;
+        assert_ne!(
+            piece_key(pt, PlayerColor::White, 3, 4),
+            rep_piece_key(pt, PlayerColor::White, 3, 4)
+        );
+        assert_ne!(en_passant_key(3, 5), rep_en_passant_key(3, 5));
+        assert_ne!(
+            castling_rights_key_from_bitfield(0b0011),
+            rep_castling_rights_key_from_bitfield(0b0011)
+        );
+        assert_ne!(SIDE_KEY, REP_SIDE_KEY);
+    }
+
+    #[test]
     fn test_piece_key_different_types() {
         use crate::board::PlayerColor;
 
@@ -240,6 +369,21 @@ mod tests {
         let pawn_key = piece_key(PieceType::Pawn, color, 2, 2);
         let knight_key = piece_key(PieceType::Knight, color, 2, 2);
         assert_ne!(pawn_key, knight_key);
+    }
+
+    #[test]
+    fn test_piece_keys_not_xor_separable() {
+        use crate::board::PlayerColor;
+        let w = PlayerColor::White;
+        // Two pieces swapped between two squares must NOT produce the same combined
+        // hash (this would collide with XOR-separable keys).
+        let a = piece_key(PieceType::Rook, w, 3, 0) ^ piece_key(PieceType::Queen, w, 4, 0);
+        let b = piece_key(PieceType::Queen, w, 3, 0) ^ piece_key(PieceType::Rook, w, 4, 0);
+        assert_ne!(a, b, "primary piece keys are XOR-separable");
+
+        let ra = rep_piece_key(PieceType::Rook, w, 3, 0) ^ rep_piece_key(PieceType::Queen, w, 4, 0);
+        let rb = rep_piece_key(PieceType::Queen, w, 3, 0) ^ rep_piece_key(PieceType::Rook, w, 4, 0);
+        assert_ne!(ra, rb, "secondary (rep) piece keys are XOR-separable");
     }
 
     #[test]
@@ -270,12 +414,10 @@ mod tests {
 
     #[test]
     fn test_castling_rights_key_from_bitfield_all_combinations() {
-        for bits in 0..=15u8 {
+        for bits in 1..=15u8 {
             let h = castling_rights_key_from_bitfield(bits);
-            // bits=0 produces hash 0 (no castling rights), other combinations produce non-zero
-            if bits != 0 {
-                assert_ne!(h, 0);
-            }
+            // When bits != 0 (some castling rights are enabled), the hash should be non-zero
+            assert_ne!(h, 0);
         }
     }
 
@@ -368,8 +510,10 @@ mod tests {
     #[test]
     fn test_normalize_coord_zero() {
         let n = normalize_coord(0);
-        // normalize_coord(0) produces 0 via the bitwise operation
+        // normalize_coord(0) produces 0 via the zigzag bitwise operation
         assert_eq!(n, 0);
+        // hash_coordinate(0, 0) is non-zero because we apply wrapping_add(1) before multiplying
+        assert_ne!(hash_coordinate(0, 0), 0);
     }
 
     #[test]
@@ -390,12 +534,8 @@ mod tests {
 
     #[test]
     fn test_castling_combinations_table_coverage() {
-        for i in 0..16 {
-            let h = CASTLING_COMBINATIONS[i];
-            // When i=0 (no castling rights), hash is 0; otherwise should be non-zero
-            if i != 0 {
-                assert_ne!(h, 0);
-            }
-        }
+        // When all castling rights are disabled (bits = 0b0000), the hash should be 0
+        let h = castling_rights_key_from_bitfield(0);
+        assert_eq!(h, 0);
     }
 }

@@ -218,7 +218,7 @@ const EG_BACKWARD_PENALTY: i32 = 20;
 
 // Connected pawn bonus by rank (rank 1..=8, index 0 unused)
 #[rustfmt::skip]
-const CONNECTED_BONUS: [i32; 8] = [0, 0, 7, 8, 12, 29, 48, 0];
+const CONNECTED_BONUS: [i32; 8] = [0, 0, 7, 8, 12, 29, 48, 86];
 
 // Passed pawn bonus by relative rank [0..8], rank 0/1 unused
 #[rustfmt::skip]

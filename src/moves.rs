@@ -113,9 +113,6 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
             let idx = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             let packed = tile.piece[idx];
-            if packed == 0 {
-                continue;
-            }
             let p = Piece::from_packed(packed);
             let lx = (idx % 8) as i64;
             let ly = (idx / 8) as i64;
@@ -248,8 +245,8 @@ pub fn is_path_clear_locally(
 
     while cur_x != to.x || cur_y != to.y {
         let idx = local_index(cur_x, cur_y);
-        // Direct array access - O(1)
-        if tile.piece[idx] != 0 {
+        let bit = 1u64 << idx;
+        if (tile.occ_all & bit) != 0 {
             return Some(false);
         }
         cur_x += step_x;
@@ -723,7 +720,7 @@ impl Move {
 }
 
 #[inline]
-fn is_enemy_piece(piece: &Piece, our_color: PlayerColor) -> bool {
+pub fn is_enemy_piece(piece: &Piece, our_color: PlayerColor) -> bool {
     piece.color() != our_color && piece.piece_type() != PieceType::Void
 }
 
@@ -792,6 +789,11 @@ pub fn get_quiescence_captures(
     out: &mut MoveList,
 ) {
     use crate::tiles::TILE_SIZE;
+
+    // Use get_quiescence_captures from evaluation/obstocean_search.rs when the variant is Obstocean.
+    if ctx.game_rules.variant == Some(crate::Variant::Obstocean) {
+        return crate::evaluation::variants::obstocean_search::get_quiescence_captures(board, turn, ctx, out);
+    }
 
     out.clear();
 
@@ -970,7 +972,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         }
         PieceType::King => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out);
-            generate_castling_moves_into(board, from, piece, special_rights, indices, out);
+            generate_castling_moves_into(board, from, piece, special_rights, game_rules, indices, out);
         }
         PieceType::Guard => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out)
@@ -1116,7 +1118,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         PieceType::RoyalCentaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
-            generate_castling_moves_into(board, from, piece, special_rights, indices, out);
+            generate_castling_moves_into(board, from, piece, special_rights, game_rules, indices, out);
         }
         PieceType::Huygen => {
             generate_huygen_moves_into(board, from, piece, indices, MoveGenType::All, out)
@@ -1434,7 +1436,7 @@ pub fn is_square_attacked(
 }
 
 /// Generate only quiet (non-capture) pawn promotions for quiescence search.
-fn generate_pawn_quiet_promotions(
+pub fn generate_pawn_quiet_promotions(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -1601,6 +1603,7 @@ fn generate_castling_moves(
     from: &Coordinate,
     piece: &Piece,
     special_rights: &FxHashSet<Coordinate>,
+    game_rules: &GameRules,
     indices: &SpatialIndices,
 ) -> MoveList {
     let mut moves = MoveList::new();
@@ -1617,7 +1620,7 @@ fn generate_castling_moves(
             // Must be same color and a valid castling partner (rook-like piece, not pawn)
             if target_piece.color() == piece.color()
                 && target_piece.piece_type() != PieceType::Pawn
-                && !piece.piece_type().is_royal()
+                && !target_piece.piece_type().is_royal()
             {
                 let dx = coord.x - from.x;
                 let dy = coord.y - from.y;
@@ -1641,6 +1644,11 @@ fn generate_castling_moves(
 
                     if clear {
                         let opponent = piece.color().opponent();
+                        let opponent_can_checkmate = match piece.color() {
+                            PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
+                            PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
+                            PlayerColor::Neutral => true,
+                        };
 
                         let path_1 = from.x + dir;
                         let path_2 = from.x + (dir * 2);
@@ -1649,9 +1657,10 @@ fn generate_castling_moves(
                         let pos_2 = Coordinate::new(path_2, from.y);
 
                         {
-                            if !is_square_attacked(board, from, opponent, indices)
-                                && !is_square_attacked(board, &pos_1, opponent, indices)
-                                && !is_square_attacked(board, &pos_2, opponent, indices)
+                            if !opponent_can_checkmate
+                                || (!is_square_attacked(board, from, opponent, indices)
+                                    && !is_square_attacked(board, &pos_1, opponent, indices)
+                                    && !is_square_attacked(board, &pos_2, opponent, indices))
                             {
                                 let to_x = from.x + (dir * 2);
                                 let mut castling_move =
@@ -1685,7 +1694,7 @@ fn generate_castling_moves(
 
 /// Generate only sliding captures for quiescence search.
 /// Uses O(log n) SpatialIndices for infinite-range blocker detection.
-fn generate_sliding_capture_moves(
+pub fn generate_sliding_capture_moves(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -1797,7 +1806,7 @@ fn generate_quiets_for_piece(
         PieceType::King => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             // Castling is always a quiet move
-            let castling = generate_castling_moves(board, from, piece, special_rights, indices);
+            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Guard => {
@@ -1810,7 +1819,7 @@ fn generate_quiets_for_piece(
         PieceType::RoyalCentaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
-            let castling = generate_castling_moves(board, from, piece, special_rights, indices);
+            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Hawk => {
@@ -1907,7 +1916,7 @@ fn generate_quiets_for_piece(
                 out,
             );
             // Castling support for RoyalQueen
-            let castling = generate_castling_moves(board, from, piece, special_rights, indices);
+            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Chancellor => {
@@ -2080,7 +2089,7 @@ fn generate_pawn_quiet_moves(
 /// Generate leaper moves directly into an output buffer
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 #[inline]
-fn generate_leaper_moves_into(
+pub fn generate_leaper_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -2127,7 +2136,7 @@ fn generate_leaper_moves_into(
 /// Generate compass moves directly into an output buffer
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 #[inline]
-fn generate_compass_moves_into(
+pub fn generate_compass_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -2984,7 +2993,7 @@ fn find_blocker_via_indices(
 }
 
 /// Huygen move generation using precomputed primes and spatial indices.
-fn generate_huygen_moves_into(
+pub fn generate_huygen_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -3209,7 +3218,7 @@ pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
 /// Generate rose moves directly into an output buffer.
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 #[inline(always)]
-fn generate_rose_moves_into(
+pub fn generate_rose_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -3414,6 +3423,7 @@ fn generate_castling_moves_into(
     from: &Coordinate,
     piece: &Piece,
     special_rights: &FxHashSet<Coordinate>,
+    game_rules: &GameRules,
     indices: &SpatialIndices,
     out: &mut MoveList,
 ) {
@@ -3446,12 +3456,18 @@ fn generate_castling_moves_into(
 
                 if clear {
                     let opponent = piece.color().opponent();
+                    let opponent_can_checkmate = match piece.color() {
+                        PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
+                        PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
+                        PlayerColor::Neutral => true,
+                    };
                     let pos_1 = Coordinate::new(from.x + dir, from.y);
                     let pos_2 = Coordinate::new(from.x + dir * 2, from.y);
 
-                    if !is_square_attacked(board, from, opponent, indices)
-                        && !is_square_attacked(board, &pos_1, opponent, indices)
-                        && !is_square_attacked(board, &pos_2, opponent, indices)
+                    if !opponent_can_checkmate
+                        || (!is_square_attacked(board, from, opponent, indices)
+                            && !is_square_attacked(board, &pos_1, opponent, indices)
+                            && !is_square_attacked(board, &pos_2, opponent, indices))
                     {
                         let mut castling_move =
                             Move::new(*from, Coordinate::new(from.x + dir * 2, from.y), *piece);
@@ -3479,7 +3495,7 @@ pub fn generate_sliding_quiets_into(ctx: &SlidingMoveContext, out: &mut MoveList
 /// Generate knightrider moves directly into an output buffer
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 #[inline]
-fn generate_knightrider_moves_into(
+pub fn generate_knightrider_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
@@ -3531,7 +3547,7 @@ mod tests {
         let _guard = get_bounds_lock().lock().unwrap_or_else(|e| e.into_inner());
         f()
     }
-
+    
     // ======================== Bounds Tests ========================
 
     #[test]
@@ -4048,7 +4064,7 @@ mod tests {
             let from = Coordinate::new(5, 1);
             let piece = Piece::new(PieceType::King, PlayerColor::White);
 
-            let moves = generate_castling_moves(&game.board, &from, &piece, &game.special_rights, &game.spatial_indices);
+            let moves = generate_castling_moves(&game.board, &from, &piece, &game.special_rights, &game.game_rules, &game.spatial_indices);
 
             // Test that the function runs without panicking and returns a MoveList
             // Castling availability depends on variant rules and board state

@@ -2,25 +2,46 @@ import initOld, * as wasmOld from './pkg-old/hydrochess_wasm.js';
 const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
+// Either build may be MT (both default to the threaded build now). A build exposes
+// initThreadPool only when compiled with Lazy SMP, so its presence is the MT probe.
+const initThreadPoolOld = wasmOld.initThreadPool;
 const initThreadPoolNew = wasmNew.initThreadPool;
 import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode, getVariantsWithCustomEval } from './variants.js';
 
+let isOldEngineMT = false;
 let isNewEngineMT = false;
 
+/** Highest concurrency that keeps games x threads-per-game within the machine's cores.
+ * Engines alternate within a game (only one searches at a time), so a game's peak demand
+ * is the larger of the two engines' pool sizes. */
+function mtConcurrencyCap(oldThreads, newThreads) {
+    const hc = navigator.hardwareConcurrency || 4;
+    const perGame = Math.max(1, oldThreads, newThreads);
+    return Math.max(1, Math.floor(hc / perGame));
+}
+
+/** Reads the current per-engine thread selections (1 for a single-threaded / ST build). */
+function currentThreadCounts() {
+    const o = isOldEngineMT ? Math.min(16, Math.max(1, parseInt(sprtMtThreadsOldEl.value, 10) || 1)) : 1;
+    const n = isNewEngineMT ? Math.min(16, Math.max(1, parseInt(sprtMtThreadsNewEl.value, 10) || 1)) : 1;
+    return { o, n };
+}
+
+/** Shows the thread inputs only for engines that are actually MT, and keeps the
+ * concurrency field auto-capped to what the machine's cores can run in parallel. */
 function updateMTUI() {
-    if (isNewEngineMT) {
-        sprtConcurrencyEl.value = "1";
-        sprtConcurrencyEl.disabled = true;
-        sprtConcurrencyEl.title = "Concurrency locked to 1 game while Multithreading is active.";
+    const anyMT = isOldEngineMT || isNewEngineMT;
 
-        // Dim the label
-        const label = sprtConcurrencyEl.previousElementSibling;
-        if (label && label.tagName === 'LABEL') {
-            label.classList.add('disabled-label');
-            label.textContent = 'Concurrency (locked for MT)';
-        }
+    // Show/enable each engine's thread input only when that build supports threads.
+    sprtMtThreadsOldEl.closest('.form-group').style.display = isOldEngineMT ? '' : 'none';
+    sprtMtThreadsNewEl.closest('.form-group').style.display = isNewEngineMT ? '' : 'none';
 
-        // Add MT indicator to header if not already there
+    if (anyMT) {
+        const { o, n } = currentThreadCounts();
+        const cap = mtConcurrencyCap(o, n);
+        sprtConcurrencyEl.value = String(cap);
+        sprtConcurrencyEl.title = 'Auto-capped so (concurrent games) x (max threads/game) fits your ' + (navigator.hardwareConcurrency || '?') + ' cores.';
+
         if (!document.getElementById('mtBadge')) {
             const h1 = document.querySelector('header h1');
             const badge = document.createElement('span');
@@ -29,13 +50,12 @@ function updateMTUI() {
             badge.textContent = 'MT';
             h1.appendChild(badge);
         }
+        log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
-        log('Multithreaded engine detected. Concurrency locked to 1 game for stability.', 'info');
-
-        // Set MT defaults: 3+0.03 STC
+        // Default to a fast STC for MT experiments.
         sprtTcMode.value = 'standard';
         sprtTimeControlEl.value = '3+0.03';
-        updateTcUi(); // Sync the UI labels and disabled states
+        updateTcUi();
     }
 }
 
@@ -49,11 +69,19 @@ const sprtBetaEl = document.getElementById('sprtBeta');
 const sprtTcMode = document.getElementById('sprtTcMode');
 const sprtTimeControlEl = document.getElementById('sprtTimeControl');
 const sprtConcurrencyEl = document.getElementById('sprtConcurrency');
+const sprtMtThreadsOldEl = document.getElementById('sprtMtThreadsOld');
+const sprtMtThreadsNewEl = document.getElementById('sprtMtThreadsNew');
+const sprtHashOldEl = document.getElementById('sprtHashOld');
+const sprtHashNewEl = document.getElementById('sprtHashNew');
+// Changing either engine's thread count re-derives the concurrency cap so they stay consistent.
+sprtMtThreadsOldEl.addEventListener('change', () => updateMTUI());
+sprtMtThreadsNewEl.addEventListener('change', () => updateMTUI());
 const sprtMinGames = document.getElementById('sprtMinGames');
 const sprtMaxGames = document.getElementById('sprtMaxGames');
 const sprtMaxMoves = document.getElementById('sprtMaxMoves');
 const sprtMaterialThresholdEl = document.getElementById('sprtMaterialAdjudication');
 const sprtSearchNoiseEl = document.getElementById('sprtSearchNoise');
+const sprtVariantPresetsEl = document.getElementById('sprtVariantPresets');
 const sprtVariantsEl = document.getElementById('sprtVariants');
 const runSprtBtn = document.getElementById('runSprt');
 const stopSprtBtn = document.getElementById('stopSprt');
@@ -110,6 +138,10 @@ const CONFIG = {
     minGames: 500,
     maxMoves: 300,
     concurrency: navigator.hardwareConcurrency || 1,
+    mtThreadsOld: 1,
+    mtThreadsNew: 1,
+    hashOldMb: 16,
+    hashNewMb: 16,
     materialThreshold: 0,
 
     searchNoise: 50,
@@ -158,19 +190,106 @@ function getRandomOpening() {
 }
 
 // Variant management functions
+const VARIANT_PRESETS = {
+    Default: [ // base-eval standard variants (no multi-king, AllPieces, and no Abundance)
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Knightline',
+        'Scattered_Leapers',
+    ],
+    All: true, // every variant implemented here
+    Site: [ // variants on the public site except Abundance and Showcases
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Pawn_Horde',
+        'Knightline',
+        'Obstocean',
+        'Chess',
+    ],
+    Base_full: [ // all base-eval variants + multi-king + AllPieces
+        'Classical',
+        'Confined_Classical',
+        'Classical_Plus',
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+        'Palace',
+        'Pawndard',
+        'Core',
+        'Standarch',
+        'Space_Classic',
+        'Space',
+        'Knightline',
+        'Scattered_Leapers',
+        'Double_King_Classical',
+        'Double_King_Chess',
+        'Triple_King_Maze',
+        'All_Pieces_Classical',
+    ],
+    Multi_king: [ // variants with 2+ kings per side
+        'Double_King_Classical',
+        'Double_King_Chess',
+        'Triple_King_Maze',
+    ],
+    Coaip: [ // "Chess on an Infinite Plane" family
+        'CoaIP',
+        'CoaIP_HO',
+        'CoaIP_RO',
+        'CoaIP_NO',
+    ],
+};
+
 function loadVariants() {
     availableVariants = getAllVariants();
+    populateVariantPresets();
     populateVariantDropdown();
-    loadVariantSelection();
+    loadVariantSelection('Saved');
+}
+
+function populateVariantPresets() {
+    Object.keys(VARIANT_PRESETS).forEach(preset => {
+        const btn = document.createElement('button');
+        btn.addEventListener('click', () => loadVariantSelection(preset));
+
+        // Fill in the content and styles
+        if (preset === 'Default') {
+            btn.textContent = 'Default (base only)';
+            btn.classList.add('btn', 'btn-sm');
+        } else {
+            btn.textContent = preset.replace(/_/g, ' ');
+            btn.classList.add('btn', 'btn-secondary', 'btn-sm');
+        }
+
+        sprtVariantPresetsEl.appendChild(btn);
+    });
 }
 
 function populateVariantDropdown() {
     // Get variants with custom eval (these will be disabled by default for SPRT stability)
     const customEvalVariants = new Set(getVariantsWithCustomEval());
-
-    // Variants to disable by default: custom evals AND Abundance
-    const defaultsDisabled = new Set(customEvalVariants);
-    defaultsDisabled.add('Abundance');
 
     sprtVariantsEl.innerHTML = '';
     availableVariants.forEach(variant => {
@@ -179,32 +298,62 @@ function populateVariantDropdown() {
 
         // Mark variants with custom eval in the dropdown
         option.textContent = customEvalVariants.has(variant)
-            ? `${variant} (custom eval)`
-            : variant;
+            ? `${variant.replace(/_/g, ' ')} (custom eval)`
+            : variant.replace(/_/g, ' ');
 
-        // Default: deselect variants that are disabled by default
-        option.selected = !defaultsDisabled.has(variant);
         sprtVariantsEl.appendChild(option);
     });
 }
 
-function loadVariantSelection() {
-    const saved = localStorage.getItem('sprtSelectedVariants');
-    if (saved) {
-        try {
-            const savedArray = JSON.parse(saved);
+function loadVariantSelection(preset) {
+    switch (preset) {
+        case 'All':
+            Array.from(sprtVariantsEl.options).forEach(option => {
+                option.selected = true;
+            });
+            break;
+
+        case 'Saved':
+            // Selects the previously saved variant selection from localStorage,
+            // or default variants if nothing is saved.
+            const saved = localStorage.getItem('sprtSelectedVariants');
+            if (!saved) {
+                loadVariantSelection('Default');
+                return;
+            }
+
+            try {
+                const savedArray = JSON.parse(saved);
+                // Clear all selections first
+                Array.from(sprtVariantsEl.options).forEach(option => {
+                    option.selected = false;
+                });
+                // Apply saved selections
+                savedArray.forEach(variantName => {
+                    const option = Array.from(sprtVariantsEl.options).find(opt => opt.value === variantName);
+                    if (option) option.selected = true;
+                });
+            } catch (e) {
+                console.warn('Failed to load saved variant selection:', e);
+            }
+            break;
+
+        default:
+            // Load the variants in the specified preset
+            const variants = VARIANT_PRESETS[preset];
+            if (!variants) {
+                console.warn('Preset is not there:', preset);
+                return;
+            }
             // Clear all selections first
             Array.from(sprtVariantsEl.options).forEach(option => {
                 option.selected = false;
             });
-            // Apply saved selections
-            savedArray.forEach(variantName => {
+            // Select the variants in the preset
+            variants.forEach(variantName => {
                 const option = Array.from(sprtVariantsEl.options).find(opt => opt.value === variantName);
                 if (option) option.selected = true;
             });
-        } catch (e) {
-            console.warn('Failed to load saved variant selection:', e);
-        }
     }
     updateSelectedVariants();
 }
@@ -429,6 +578,10 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
             termination = 'Loss on engine failure (no move returned)';
         } else if (endReason === 'horde_elimination') {
             termination = `Win by capturing all White pieces in ${displayVariantName}`;
+        } else if (endReason === 'allroyalscaptured') {
+            termination = 'All royals captured';
+        } else if (endReason === 'royalcapture') {
+            termination = 'Royal capture';
         } else if (endReason === 'checkmate') {
             termination = 'Checkmate';
         } else if (endReason === 'stalemate') {
@@ -469,9 +622,7 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         }
     } catch (e) {
         // Fallback to Classical if variant missing for some reason
-        if (VARIANTS.Classical && typeof VARIANTS.Classical.position === 'string') {
-            startPositionStr = VARIANTS.Classical.position;
-        }
+        startPositionStr = getVariantData('Classical').position;
     }
 
     if (!startPositionStr) {
@@ -670,15 +821,17 @@ async function initWasm() {
         await initOld();
         await initNew();
 
+        isOldEngineMT = (typeof initThreadPoolOld === 'function');
         isNewEngineMT = (typeof initThreadPoolNew === 'function');
 
         wasmReady = true;
         setStatus('ready', 'WASM loaded and ready');
         runSprtBtn.disabled = false;
 
-        if (isNewEngineMT) {
-            updateMTUI();
-        } else {
+        // Always sync the UI: show/hide per-engine thread inputs and cap concurrency.
+        // Default threads stay 1, so an MT build still plays single-threaded unless raised.
+        updateMTUI();
+        if (!isOldEngineMT && !isNewEngineMT) {
             sprtConcurrencyEl.value = CONFIG.concurrency;
         }
 
@@ -842,9 +995,23 @@ async function runSprt() {
     } else {
         CONFIG.concurrency = parseInt(rawConcurrency, 10) || 1;
     }
+    {
+        const { o, n } = currentThreadCounts();
+        CONFIG.mtThreadsOld = o;
+        CONFIG.mtThreadsNew = n;
+    }
+    CONFIG.hashOldMb = Math.min(64, Math.max(1, parseInt(sprtHashOldEl.value, 10) || 16));
+    CONFIG.hashNewMb = Math.min(64, Math.max(1, parseInt(sprtHashNewEl.value, 10) || 16));
+    if (CONFIG.mtThreadsOld > 1 || CONFIG.mtThreadsNew > 1) {
+        const cap = mtConcurrencyCap(CONFIG.mtThreadsOld, CONFIG.mtThreadsNew);
+        if (CONFIG.concurrency > cap) {
+            log('Concurrency lowered ' + CONFIG.concurrency + ' -> ' + cap + ' so games x max(threads) fits your cores.', 'warn');
+            CONFIG.concurrency = cap;
+        }
+    }
     CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
     const maxGamesVal = (sprtMaxGames.value || '').trim().toLowerCase();
-    CONFIG.maxGames = (maxGamesVal === 'unlimited' || maxGamesVal === '') ? null : (Number.isFinite(parseInt(maxGamesVal, 10)) ? parseInt(maxGamesVal, 10) : null);
+    CONFIG.maxGames = (maxGamesVal === 'unlimited' || maxGamesVal === '') ? Infinity : (Number.isFinite(parseInt(maxGamesVal, 10)) ? parseInt(maxGamesVal, 10) : Infinity);
     const valMoves = parseInt(sprtMaxMoves.value, 10);
     CONFIG.maxMoves = (Number.isFinite(valMoves) && valMoves > 0) ? valMoves : Infinity;
     {
@@ -974,6 +1141,10 @@ async function runSprt() {
             timeControl: tcParams.tcString,
             variantName, // Add variant to the message
             oldStrength: currentOldStrength,
+            mtThreadsOld: runConfig.mtThreadsOld,
+            mtThreadsNew: runConfig.mtThreadsNew,
+            hashOldMb: runConfig.hashOldMb,
+            hashNewMb: runConfig.hashNewMb,
         });
         return true;
     }

@@ -122,6 +122,46 @@ const VARIANTS = {
         worldBorder: 0,
         hasCustomEval: true,
     },
+    // Custom variant that uses all fairy leapers
+    Scattered_Leapers: {
+        position: 'P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|R1,1+|r1,8+|r8,8+|B3,1|B6,1|b3,8|b6,8|GU2,1|gu2,8|K5,1+|k5,8+|gu7,8|P11,1+|P-2,1+|P-5,0+|P14,0+|p-2,8+|p-5,9+|p11,8+|p14,9+|nr4,9|NR4,0|CA9,-2|ca9,11|ca0,11|ze-3,12|ze12,12|ZE12,-3|GI-5,-6|GI14,-6|gi14,15|gi-5,15|ha-1,14|ha10,14|P6,2+|RO7,-6|p8,7+|ZE-3,-3|CA0,-2|GU7,1|R8,1+|HA10,-5|HA-1,-5|ro7,15',
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+        },
+    },
+    // Custom variants that uses more than 1 king
+    Double_King_Classical: {
+        position: 'k5,8+|k4,8+|n2,8|n7,8|r1,8+|r8,8+|b3,8|b6,8|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|K5,1+|K4,1+|N2,1|N7,1|R1,1+|R8,1+|B3,1|B6,1|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+',
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+            win_conditions: { white: ['allroyalscaptured'], black: ['allroyalscaptured'] },
+        },
+    },
+    Double_King_Chess: {
+        position: "k5,8+|k4,8+|n2,8|n7,8|r1,8+|r8,8+|b3,8|b6,8|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|K5,1+|K4,1+|N2,1|N7,1|R1,1+|R8,1+|B3,1|B6,1|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+",
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+        },
+        worldBorder: 0,
+    },
+    Triple_King_Maze: {
+        // variant created by Nikita
+        position: "vo0,0|vo1,0|vo2,0|vo3,0|vo4,0|vo5,0|vo10,0|vo0,9|vo10,1|vo10,2|vo10,9|vo9,9|vo6,9|vo8,9|vo7,9|vo0,8|vo0,7|vo0,4|vo0,3|vo10,6|vo10,5|vo3,9|vo3,6|vo3,5|vo3,4|vo3,3|vo7,5|vo7,4|vo7,3|vo4,9|vo5,9|vo6,0|vo7,0|vo-2,7|vo-1,7|vo11,2|vo12,2|vo-6,12|vo-6,11|vo-6,6|vo-6,5|vo-6,2|vo-6,-1|vo-6,-2|vo-6,-3|vo16,-3|vo16,-2|vo16,-1|vo16,2|vo16,4|vo16,7|vo16,10|vo16,11|vo16,12|vo-3,4|vo-3,3|vo-3,2|vo-3,1|vo-3,-3|vo-3,0|vo-3,7|vo-3,9|vo-3,8|vo13,2|vo13,1|vo13,0|vo13,5|vo13,6|vo13,7|vo13,8|vo13,9|vo0,-3|vo1,-3|vo2,-3|vo5,-3|vo8,12|vo9,12|vo10,12|vo-3,12|vo0,12|vo10,-3|vo13,-3|vo13,12|vo0,14|vo0,13|vo10,-4|vo10,-5|vo15,7|vo-5,2|vo-4,2|vo-3,-4|vo-3,-5|vo13,14|vo13,13|vo-6,10|vo16,3|vo-6,7|vo6,-3|vo7,-3|vo3,12|vo4,12|vo5,12|vo-8,-6|vo-7,-6|vo-6,-6|vo-3,-6|vo13,15|vo16,15|vo17,15|vo18,15|vo-2,-6|vo-1,-6|vo0,-6|vo1,-6|vo2,-6|vo3,-6|vo7,-6|vo8,-6|vo9,-6|vo10,-6|vo0,15|vo1,15|vo2,15|vo3,15|vo7,15|vo8,15|vo9,15|vo10,15|vo11,15|vo12,15|vo11,-6|vo12,-6|vo13,-6|vo16,-6|vo17,-6|vo18,-6|vo-3,15|vo-2,15|vo-1,15|vo-8,15|vo-7,15|vo-6,15|vo7,6|vo14,7|k5,7|k-8,17|k18,17|q5,17|n14,14|n-4,14|n14,8|n0,11|n0,10|n10,11|n10,10|r-8,14|r-7,13|r-2,8|r-1,8|r17,13|r18,14|r5,16|b5,6|b4,13|b6,13|b-7,17|b-7,16|b17,17|b17,16|b7,7|b3,7|p4,8+|p5,8+|p6,8+|p15,6+|p-5,8+|p1,9+|p2,9+|p8,8+|p9,8+|p-8,8+|p-7,8+|p17,4+|p18,4+|K5,2|K-8,-8|K18,-8|Q5,-8|N14,-5|N-4,-5|N-4,1|N10,-1|N10,-2|N0,-1|N0,-2|R17,-4|R11,1|R12,1|R18,-5|R-8,-5|R-7,-4|R5,-7|B5,3|B4,-4|B6,-4|B5,-2|B-7,-7|B-7,-8|B17,-7|B17,-8|B7,2|B3,2|P4,1+|P5,1+|P6,1+|P15,1+|P-5,3+|P8,0+|P9,0+|P1,1+|P2,1+|P17,1+|P18,1+|P-8,5+|P-7,5+|b5,11",
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+            win_conditions: { white: ['checkmate'], black: ['allroyalscaptured'] },
+            move_rule: 200,
+        },
+        worldBorder: 0,
+    },
+    All_Pieces_Classical: {
+        // Classical setup, allpiecescaptured win condition (tests base eval)
+        position: "P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|R1,1+|R8,1+|r1,8+|r8,8+|N2,1|N7,1|n2,8|n7,8|B3,1|B6,1|b3,8|b6,8|Q4,1|q4,8|K5,1+|k5,8+",
+        game_rules: {
+            promotions_allowed: ['q', 'r', 'b', 'n'],
+            win_conditions: { white: ['allpiecescaptured'], black: ['allpiecescaptured'] },
+        },
+    },
 };
 
 // Get variant position and special rights
@@ -231,17 +271,25 @@ function generateSetupICN(variantName, startTurn, halfmoveClock, fullmoveNumber,
     // 3. Move Rule Limit (50-move rule)
     const moveLimit = vdata.game_rules.move_rule || 100;
 
-    // 4. Moves string: "from1,y1>to1,y1|from2,y2>to2,y2"
+    // 4. Win conditions
+    let winConditionStr = vdata.game_rules.win_conditions.white[0] + ',' + vdata.game_rules.win_conditions.black[0];
+    if (winConditionStr == 'checkmate,checkmate') {
+        winConditionStr = '';
+    } else {
+        winConditionStr += ' ';
+    }
+
+    // 5. Moves string: "from1,y1>to1,y1|from2,y2>to2,y2"
     const movesStr = moveHistoryList.map(h => {
         let m = `${h.from}>${h.to}`;
         if (h.promotion) m += `=${h.promotion}`;
         return m;
     }).join('|');
 
-    // 5. Include variant tag so engine recognizes the variant
+    // 6. Include variant tag so engine recognizes the variant
     const variantTag = `[Variant "${variantName}"] `;
 
-    return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
+    return `${variantTag}${startTurn} ${halfmoveClock}/${moveLimit} ${fullmoveNumber} ${promoToken} ${boundsToken} ${winConditionStr}${startPosStr}${movesStr ? ' ' + movesStr : ''}`;
 }
 
 export { VARIANTS, getVariantData, getAllVariants, getVariantsWithCustomEval, engineLetterToICNCode, generateSetupICN };

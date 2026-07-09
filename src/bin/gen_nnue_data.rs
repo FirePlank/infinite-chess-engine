@@ -664,8 +664,9 @@ fn build_threat_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
 
 /// Check if position is suitable for NNUE (standard pieces only)
 fn is_nnue_applicable(gs: &GameState) -> bool {
-    // Must have at least one royal piece per side
-    if gs.white_royals.is_empty() || gs.black_royals.is_empty() {
+    // The RelKP encoding anchors on exactly one king per side; multi-royal
+    // positions cannot be represented and must not enter the training set.
+    if gs.white_royals.len() != 1 || gs.black_royals.len() != 1 {
         return false;
     }
 
@@ -715,8 +716,8 @@ impl SampleRecord {
     /// Write record to binary output
     fn write_to<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writer.write_all(&[self.stm])?;
-        writer.write_all(&[self.relkp_white.len() as u8])?;
-        writer.write_all(&[self.relkp_black.len() as u8])?;
+        writer.write_all(&(self.relkp_white.len() as u16).to_le_bytes())?;
+        writer.write_all(&(self.relkp_black.len() as u16).to_le_bytes())?;
         writer.write_all(&(self.threat_white.len() as u16).to_le_bytes())?;
         writer.write_all(&(self.threat_black.len() as u16).to_le_bytes())?;
 
@@ -1328,15 +1329,15 @@ fn verify_data_file(path: &str) {
             break;
         }
 
-        let mut header = [0u8; 6];
+        let mut header = [0u8; 8];
         if reader.read_exact(&mut header).is_err() {
             break;
         }
 
-        let relkp_white_len = header[0] as usize;
-        let relkp_black_len = header[1] as usize;
-        let threat_white_len = u16::from_le_bytes([header[2], header[3]]) as usize;
-        let threat_black_len = u16::from_le_bytes([header[4], header[5]]) as usize;
+        let relkp_white_len = u16::from_le_bytes([header[0], header[1]]) as usize;
+        let relkp_black_len = u16::from_le_bytes([header[2], header[3]]) as usize;
+        let threat_white_len = u16::from_le_bytes([header[4], header[5]]) as usize;
+        let threat_black_len = u16::from_le_bytes([header[6], header[7]]) as usize;
 
         // Skip feature data
         let features_size =

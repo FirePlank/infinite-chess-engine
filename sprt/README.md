@@ -64,19 +64,18 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
 | `--old-strength <N>` | `3` | Strength level for old engine (1-3) |
-| `--games <PATH>` | — | Write game ICNs to a JSON |
-| `--results <PATH>` | — | Write results to a JSON |
-| `--variants <LIST>` | all except custom eval | Comma-separated variant list |
+| `--games <PATH>` | — | Write game ICNs to a JSON; flushed every `--save-interval` games |
+| `--results <PATH>` | — | Write results summary to a JSON |
+| `--resume <PATH>` | — | Resume from a `--games` JSON; reconstructs W/L/D and auto-detects TC and variants |
+| `--save-interval <N>` | `50` | How often to flush `--games` (games completed) |
+| `--variants <LIST\|PRESET>` | `base_only` | Comma-separated variants, or a preset: `base_only` (15), `base_full` (19), `site` (17), `multi_king` (3), `coaip` (4), `all` (23) |
 | `--verbose` | off | Print detailed game info |
 
 ### Example: Small regression test
 
 ```bash
 cargo run --release --bin sprt --features sprt -- run --old-bin target/release/sprt_old \
-  --tc 1+0.01 \
-  --concurrency 8 \
-  --max-games 200 \
-  --games games.json
+  --tc 1+0.01 --concurrency 8 --max-games 200 --games games.json
 ```
 
 Afterwards you can drop the games JSON into [the ICN validator](https://infinitechess.org/icnvalidator) to catch illegal moves or bad terminations, though some discrepancies are expected in certain insufficient material and Huygen mate cases.
@@ -207,14 +206,28 @@ cargo run --bin spsa --features param_tuning -- apply
 
 Checkpoints are saved to `sprt/spsa_checkpoints/` by default and resume automatically unless `--fresh` is passed.
 
+---
+
+## Game Review Tool
+
+The web UI also includes an interactive game review tool (`web/review/`) for analyzing game positions and moves:
+
+### Features
+
+- **Move Classification**: Automatically classifies moves as Best, Excellent, Good, Inaccuracy, Mistake, Blunder, or Forced
+- **Evaluation Graph**: Visual representation of position evaluation throughout the game with hover tooltips
+- **Move List**: Interactive move list showing evaluation after each move with classification symbols
+- **Accuracy Stats**: Per-side accuracy percentages and classification breakdowns
+
+---
+
 ## Project Structure
 
 - `src/bin/sprt.rs` — Native CLI (SPRT manager + search subprocess)
 - `sprt.js` — Build and server script (web UI)
 - `src/bin/spsa.rs` — Match-based SPSA CLI (runner + search subprocess + apply/revert)
-- `web/` — Web UI for running SPRT tests
-- `web/pkg-old/` — Baseline WebAssembly package
-- `web/pkg-new/` — Modified WebAssembly package
+- `web/` — Web UI for running SPRT and game review
+- `web/review/` — Game review tool
 
 ### References
 

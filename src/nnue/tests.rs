@@ -188,6 +188,86 @@ fn test_incremental_king_move_black() {
     );
 }
 
+#[test]
+fn test_incremental_king_capture_white() {
+    // White king captures a black pawn: K5,4 -> p6,5. This exercises both the
+    // friendly re-accumulation (capture-skip) and the enemy accumulator capture
+    // removal in a single king move, the most intricate incremental branch.
+    let start_icn = "w 0/100 1 (8|1) K5,4+|k5,8+|p6,5+";
+    let game = setup_game(start_icn);
+    let mut state = NnueState::from_position(&game);
+
+    let from = Coordinate::new(5, 4);
+    let to = Coordinate::new(6, 5);
+    let piece = Piece::new(PieceType::King, PlayerColor::White);
+
+    let m = crate::moves::Move {
+        from,
+        to,
+        piece,
+        promotion: None,
+        rook_coord: None,
+    };
+
+    state.update_for_move(&game, m);
+
+    let mut game_after = game.clone();
+    game_after.board.remove_piece(&from.x, &from.y);
+    game_after.board.set_piece(to.x, to.y, piece); // overwrites captured pawn
+    game_after.white_royals.clear();
+    game_after.white_royals.push(to);
+    game_after.recompute_piece_counts();
+
+    let state_scratch = NnueState::from_position(&game_after);
+    assert_eq!(
+        state.rel_acc_white, state_scratch.rel_acc_white,
+        "White acc mismatch on king capture"
+    );
+    assert_eq!(
+        state.rel_acc_black, state_scratch.rel_acc_black,
+        "Black acc mismatch on king capture"
+    );
+}
+
+#[test]
+fn test_incremental_king_capture_black() {
+    // Symmetric case: black king captures a white pawn: k6,6 -> P5,5.
+    let start_icn = "b 0/100 1 (8|1) K1,1+|k6,6+|P5,5+";
+    let game = setup_game(start_icn);
+    let mut state = NnueState::from_position(&game);
+
+    let from = Coordinate::new(6, 6);
+    let to = Coordinate::new(5, 5);
+    let piece = Piece::new(PieceType::King, PlayerColor::Black);
+
+    let m = crate::moves::Move {
+        from,
+        to,
+        piece,
+        promotion: None,
+        rook_coord: None,
+    };
+
+    state.update_for_move(&game, m);
+
+    let mut game_after = game.clone();
+    game_after.board.remove_piece(&from.x, &from.y);
+    game_after.board.set_piece(to.x, to.y, piece); // overwrites captured pawn
+    game_after.black_royals.clear();
+    game_after.black_royals.push(to);
+    game_after.recompute_piece_counts();
+
+    let state_scratch = NnueState::from_position(&game_after);
+    assert_eq!(
+        state.rel_acc_white, state_scratch.rel_acc_white,
+        "White acc mismatch on black king capture"
+    );
+    assert_eq!(
+        state.rel_acc_black, state_scratch.rel_acc_black,
+        "Black acc mismatch on black king capture"
+    );
+}
+
 // Verify ThreatEdges features are generated
 #[test]
 fn test_threat_active_lists() {

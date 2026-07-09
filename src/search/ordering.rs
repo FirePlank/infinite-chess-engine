@@ -36,7 +36,11 @@ pub fn score_move(
     if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
         let victim_val = game.get_piece_value(target.piece_type(), target.color());
         let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
-        let mvv_lva = victim_val * 10 - attacker_val;
+        // Include promotion gain so capture-promotions sort by their true value.
+        let promo_gain = m
+            .promotion
+            .map_or(0, |pt| game.get_piece_value(pt, m.piece.color()) - attacker_val);
+        let mvv_lva = (victim_val + promo_gain) * 10 - attacker_val;
 
         // SEE threshold check
         let is_winning = super::see_ge(game, m, see_winning_threshold());
@@ -91,7 +95,7 @@ pub fn score_move(
 
             // Pawn history heuristic
             let ph_idx = (game.pawn_hash & crate::search::PAWN_HISTORY_MASK) as usize;
-            score += 2 * searcher.pawn_history[ph_idx][pt_idx][idx];
+            score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
             // Continuation history
             let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
@@ -111,15 +115,16 @@ pub fn score_move(
                         let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                         let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece]
-                            [prev_to_hash][cur_from_hash][cur_to_hash];
+                            [prev_to_hash][cur_from_hash][cur_to_hash]
+                            as i32;
                         score += (val * CONT_WEIGHTS[idx]) / 1024;
                     }
                 }
             }
 
-            // Low-ply history bonus:
+            // Low-ply history bonus (same index as the writer and the staged picker).
             if ply < LOW_PLY_HISTORY_SIZE {
-                let move_hash = hash_move_for_lowply(m);
+                let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
                 score += 8 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
             }
         }
@@ -170,46 +175,41 @@ pub fn sort_moves(
     }
 }
 
-/// Sort moves at root - always full sort since we examine all moves
-/// For Lazy SMP, helper threads (thread_id > 0) get slight scoring variation
-/// to explore different move orderings and maximize search diversity.
+/// Sort moves at root - always full sort since we examine all moves.
+#[inline]
 pub fn sort_moves_root(
     searcher: &Searcher,
     game: &GameState,
     moves: &mut MoveList,
     tt_move: &Option<Move>,
 ) {
-    let thread_id = searcher.thread_id;
-
-    if thread_id == 0 {
-        // Main thread: standard sorting
-        sort_moves(searcher, game, moves, 0, tt_move);
-    } else {
-        // Helper threads: add variation to move scores based on thread_id
-        // This makes different threads explore different move orderings
-        // while still respecting TT move priority
-        moves.sort_by_cached_key(|m| {
-            let base_score = score_move(searcher, game, m, 0, tt_move);
-            // Add pseudo-random variation based on thread_id and move hash
-            // The variation is small so TT moves and winning captures still stay on top
-            let move_hash = hash_move_dest(m) ^ hash_move_from(m);
-            let variation = ((move_hash.wrapping_mul(thread_id)) % 50) as i32;
-            -(base_score + variation)
-        });
-    }
+    sort_moves(searcher, game, moves, 0, tt_move);
 }
 
-/// Fast capture sorting using MVV-LVA only (no SEE for qsearch captures)
+/// MVV-LVA ordering key. Promotion gain is added to the victim value so
+/// promotions (including quiet ones) sort by their true material swing.
+#[inline]
+fn capture_sort_key(game: &GameState, m: &Move) -> i32 {
+    let attacker_color = m.piece.color();
+    let attacker_val = game.get_piece_value(m.piece.piece_type(), attacker_color);
+    let victim_val = game
+        .board
+        .get_piece(m.to.x, m.to.y)
+        .map_or(0, |t| game.get_piece_value(t.piece_type(), t.color()));
+    let promo_gain = m
+        .promotion
+        .map_or(0, |pt| game.get_piece_value(pt, attacker_color) - attacker_val);
+    (victim_val + promo_gain) * 10 - attacker_val
+}
+
+/// Fast capture sorting using MVV-LVA + promotion value (no SEE for qsearch).
 #[allow(clippy::needless_range_loop)]
 pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
     // For captures, use selection sort since qsearch usually has few captures
     if moves.len() <= 16 {
         let mut scores = [0i32; 128];
         for (i, m) in moves.iter().enumerate() {
-            if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
-                scores[i] = game.get_piece_value(target.piece_type(), target.color()) * 10
-                    - game.get_piece_value(m.piece.piece_type(), m.piece.color());
-            }
+            scores[i] = capture_sort_key(game, m);
         }
 
         for i in 0..moves.len().saturating_sub(1) {
@@ -229,14 +229,7 @@ pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
             }
         }
     } else {
-        moves.sort_by_cached_key(|m| {
-            if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
-                -(game.get_piece_value(target.piece_type(), target.color()) * 10
-                    - game.get_piece_value(m.piece.piece_type(), m.piece.color()))
-            } else {
-                0
-            }
-        });
+        moves.sort_by_cached_key(|m| -capture_sort_key(game, m));
     }
 }
 
@@ -268,15 +261,6 @@ pub fn hash_coord_32(x: i64, y: i64) -> usize {
     ((h ^ (h >> 32)) & 0x1F) as usize
 }
 
-/// Hash move for low-ply history table (1024 entries)
-#[inline]
-pub fn hash_move_for_lowply(m: &Move) -> usize {
-    let piece = m.piece.piece_type() as u64;
-    let from_hash =
-        (m.from.x.wrapping_abs() as u64) ^ (m.from.y.wrapping_abs() as u64).rotate_left(8);
-    let to_hash = (m.to.x.wrapping_abs() as u64) ^ (m.to.y.wrapping_abs() as u64).rotate_left(16);
-    ((piece ^ from_hash ^ to_hash) & LOW_PLY_HISTORY_MASK as u64) as usize
-}
 
 #[cfg(test)]
 mod tests {

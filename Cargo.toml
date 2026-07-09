@@ -71,7 +71,9 @@ clap = { version = "4.5.60", features = ["derive"], optional = true }
 ctrlc = { version = "3.5", optional = true }
 
 [features]
-default = []
+# MT (Lazy SMP) is on by default so a bare `wasm-pack build` ships the threaded engine.
+# Build a single-threaded engine with `--no-default-features`.
+default = ["multithreading"]
 param_tuning = ["serde_json", "rand", "rayon", "clap", "ctrlc"]
 eval_tuning = ["param_tuning"]
 search_tuning = ["param_tuning"]
@@ -100,3 +102,6 @@ wasm-opt = ["-O4"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4"]
+
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = ["-O4", "-g"]

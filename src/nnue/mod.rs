@@ -33,7 +33,9 @@ use crate::game::GameState;
 /// - No obstacles, voids, or fairy pieces are present
 #[inline]
 pub fn is_applicable(gs: &GameState) -> bool {
-    if gs.white_royals.is_empty() || gs.black_royals.is_empty() {
+    // The RelKP encoding anchors on a single king per side; a second same-color
+    // king cannot be represented, so multi-royal positions fall back to HCE.
+    if gs.white_royals.len() != 1 || gs.black_royals.len() != 1 {
         return false;
     }
 

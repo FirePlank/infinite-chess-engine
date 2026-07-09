@@ -5,4 +5,5 @@
 
 pub mod chess;
 pub mod obstocean;
+pub mod obstocean_search;
 pub mod pawn_horde;

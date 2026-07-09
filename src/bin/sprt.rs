@@ -8,7 +8,7 @@ use hydrochess_wasm::Variant;
 use hydrochess_wasm::board::{Coordinate, PieceType, PlayerColor};
 use hydrochess_wasm::game::GameState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -110,6 +110,14 @@ enum Commands {
         /// Git commit SHA for the old engine (overrides the value embedded in the old binary)
         #[arg(long)]
         old_commit: Option<String>,
+
+        /// Path to a games JSON file to resume from; reconstructs W/L/D and auto-detects TC and variants
+        #[arg(long)]
+        resume: Option<String>,
+
+        /// Save the --games file every N completed games when --games is set (0 = every game)
+        #[arg(long, default_value_t = 50)]
+        save_interval: usize,
     },
 
     /// Print the commit SHA and date baked into this binary at build time (JSON output).
@@ -296,6 +304,8 @@ struct Config {
     verbose: bool,
     new_commit_info: Option<CommitInfo>,
     old_commit_info: Option<CommitInfo>,
+    resume_pair_offset: usize,
+    save_interval: usize,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -385,6 +395,108 @@ fn move_to_string(m: &hydrochess_wasm::moves::Move) -> String {
 
 fn is_ctrl_c_exit_code(code: Option<i32>) -> bool {
     matches!(code, Some(130) | Some(-1073741510))
+}
+
+fn parse_icn_tag(icn: &str, tag: &str) -> Option<String> {
+    let prefix = format!("[{} \"", tag);
+    let start = icn.find(&prefix)? + prefix.len();
+    let end = start + icn[start..].find('"')?;
+    Some(icn[start..end].to_string())
+}
+
+struct ResumeState {
+    games: Vec<String>,
+    wins: usize,
+    losses: usize,
+    draws: usize,
+    per_variant_stats: HashMap<String, (usize, usize, usize)>,
+    resume_pair_offset: usize,
+    detected_tc: Option<String>,
+    detected_variants: Vec<String>,
+}
+
+fn load_resume_state(path: &str) -> ResumeState {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read resume file '{}': {}", path, e));
+    let games: Vec<String> = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse resume file '{}': {}", path, e));
+
+    let mut wins = 0usize;
+    let mut losses = 0usize;
+    let mut draws = 0usize;
+    let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
+    let mut max_game_idx: Option<usize> = None;
+    let mut detected_tc: Option<String> = None;
+    let mut seen_variants: HashSet<String> = HashSet::new();
+    let mut detected_variants: Vec<String> = Vec::new();
+
+    for icn in &games {
+        if let Some(event) = parse_icn_tag(icn, "Event") {
+            if let Some(idx_str) = event.strip_prefix("SPRT Test Game ") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    max_game_idx = Some(max_game_idx.map_or(idx, |m| m.max(idx)));
+                }
+            }
+        }
+
+        let result_tag = parse_icn_tag(icn, "Result");
+        let white_player = parse_icn_tag(icn, "White");
+        let new_plays_white = white_player.as_deref() == Some("HydroChess New");
+
+        let result = match result_tag.as_deref() {
+            Some("1-0") => {
+                if new_plays_white { GameResult::Win } else { GameResult::Loss }
+            }
+            Some("0-1") => {
+                if new_plays_white { GameResult::Loss } else { GameResult::Win }
+            }
+            _ => GameResult::Draw,
+        };
+
+        match result {
+            GameResult::Win => wins += 1,
+            GameResult::Loss => losses += 1,
+            GameResult::Draw => draws += 1,
+        }
+
+        if let Some(variant) = parse_icn_tag(icn, "Variant") {
+            if seen_variants.insert(variant.clone()) {
+                detected_variants.push(variant.clone());
+            }
+            let stats = per_variant_stats.entry(variant).or_insert((0, 0, 0));
+            match result {
+                GameResult::Win => stats.0 += 1,
+                GameResult::Loss => stats.1 += 1,
+                GameResult::Draw => stats.2 += 1,
+            }
+        }
+
+        if detected_tc.is_none() {
+            detected_tc = parse_icn_tag(icn, "TimeControl");
+        }
+    }
+
+    let resume_pair_offset = max_game_idx.map_or(0, |idx| idx / 2 + 1);
+
+    ResumeState {
+        games,
+        wins,
+        losses,
+        draws,
+        per_variant_stats,
+        resume_pair_offset,
+        detected_tc,
+        detected_variants,
+    }
+}
+
+fn save_games_file(path: &str, game_logs: &[String]) {
+    let tmp_path = format!("{}.tmp", path);
+    if let Ok(json_data) = serde_json::to_string_pretty(game_logs) {
+        if std::fs::write(&tmp_path, &json_data).is_ok() {
+            let _ = std::fs::rename(&tmp_path, path);
+        }
+    }
 }
 
 /// Parse a bestmove output line like "8,8 6,8" or "1,7 1,8 q" into
@@ -554,40 +666,62 @@ fn make_position_key(game: &GameState) -> String {
 }
 
 fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
+    use hydrochess_wasm::game::WinCondition;
+
+    // Determine what the opponent must do to beat the current player.
+    let opp_wc = match game.turn {
+        PlayerColor::White => game.game_rules.black_win_condition,
+        PlayerColor::Black => game.game_rules.white_win_condition,
+        PlayerColor::Neutral => return None,
+    };
+
+    // ── AllPiecesCaptured ──────────────────────────────────────────────────────
+    // Game over when the current player has zero pieces AND zero royals.
+    // This MUST be checked before has_lost_by_royal_capture() because capturing
+    // the king (the last piece) sets royals=0, which causes that function to return
+    // true and fall into the wrong `_ => None` branch, silently skipping termination
+    // and also bypassing the fifty-move rule check below.
+    if opp_wc == WinCondition::AllPiecesCaptured {
+        let has_royals = match game.turn {
+            PlayerColor::White => !game.white_royals.is_empty(),
+            PlayerColor::Black => !game.black_royals.is_empty(),
+            _ => false,
+        };
+        if !game.has_pieces(game.turn) && !has_royals {
+            return Some(TerminalState::AllPiecesCaptured {
+                white_won: game.turn == PlayerColor::Black,
+            });
+        }
+        // Not yet over (opponent still has pieces/royals left to capture).
+        // Fall through so the fifty-move rule and other draw checks still run.
+
+    // ── RoyalCapture / AllRoyalsCaptured ──────────────────────────────────────
+    // Only run for win conditions that actually target royals.
+    } else if game.has_lost_by_royal_capture() {
+        return match opp_wc {
+            WinCondition::RoyalCapture => Some(TerminalState::RoyalCapture {
+                white_won: game.turn == PlayerColor::Black,
+            }),
+            WinCondition::AllRoyalsCaptured => Some(TerminalState::AllRoyalsCaptured {
+                white_won: game.turn == PlayerColor::Black,
+            }),
+            // Checkmate: losing royals is not a direct win condition here;
+            // fall through to legal-move detection below.
+            _ => return None,
+        };
+    }
+
+    // ── No legal moves → checkmate / stalemate / piece-loss ───────────────────
     let in_check = game.is_in_check();
     let has_legal_move = has_any_fully_legal_move(game);
     if !has_legal_move {
         let lost_by_mate = in_check && game.must_escape_check();
         let lost_by_piece_capture = !game.has_pieces(game.turn);
-        let lost_by_royal_capture = game.has_lost_by_royal_capture();
 
         if lost_by_mate {
             return Some(TerminalState::Checkmate {
                 white_won: game.turn == PlayerColor::Black,
             });
-        }
-
-        if lost_by_royal_capture {
-            // Determine if it's RoyalCapture (one royal) or AllRoyalsCaptured (all royals)
-            let opponent_win_condition = match game.turn {
-                PlayerColor::White => game.game_rules.black_win_condition,
-                PlayerColor::Black => game.game_rules.white_win_condition,
-                PlayerColor::Neutral => return Some(TerminalState::Draw("stalemate")),
-            };
-
-            return match opponent_win_condition {
-                hydrochess_wasm::game::WinCondition::RoyalCapture => {
-                    Some(TerminalState::RoyalCapture {
-                        white_won: game.turn == PlayerColor::Black,
-                    })
-                }
-                hydrochess_wasm::game::WinCondition::AllRoyalsCaptured => {
-                    Some(TerminalState::AllRoyalsCaptured {
-                        white_won: game.turn == PlayerColor::Black,
-                    })
-                }
-                _ => Some(TerminalState::Draw("stalemate")),
-            };
         }
 
         if lost_by_piece_capture {
@@ -599,6 +733,7 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
         return Some(TerminalState::Draw("stalemate"));
     }
 
+    // ── Draw conditions ────────────────────────────────────────────────────────
     if hydrochess_wasm::evaluation::insufficient_material::evaluate_insufficient_material_game_handler(game) {
         return Some(TerminalState::Draw("insufficient_material"));
     }
@@ -697,6 +832,13 @@ fn play_game(
             break;
         }
 
+        // Check for threefold repetition using manual position key tracking
+        let current_key = make_position_key(&game);
+        let repetition_count = *repetition_counts.get(&current_key).unwrap_or(&0);
+        if repetition_count >= 3 {
+            return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
+        }
+
         // Terminal state checks always run before adjudication or engine search.
         if let Some(terminal) = with_variant_bounds(variant, || detect_terminal_state(&game)) {
             match terminal {
@@ -752,13 +894,6 @@ fn play_game(
                     return game_outcome!(GameResult::Draw, reason, "1/2-1/2");
                 }
             }
-        }
-
-        // Check for threefold repetition using manual position key tracking
-        let current_key = make_position_key(&game);
-        let repetition_count = *repetition_counts.get(&current_key).unwrap_or(&0);
-        if repetition_count >= 3 {
-            return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
         }
 
         // Material adjudication (after terminal checks, only if both engines agree)
@@ -1348,6 +1483,8 @@ fn main() {
             verbose,
             new_commit,
             old_commit,
+            resume,
+            save_interval,
         }) => {
             let concurrency = concurrency.unwrap_or_else(|| {
                 std::thread::available_parallelism()
@@ -1357,102 +1494,215 @@ fn main() {
             let actual_new_bin = if let Some(path) = new_bin {
                 path
             } else {
-                println!("No --new-bin provided. Building current source...");
+                println!("No --new-bin provided. Using current binary...");
                 let ext = std::env::consts::EXE_EXTENSION;
-                let binary_name = if ext.is_empty() {
+                if ext.is_empty() {
                     "target/release/sprt".to_string()
                 } else {
                     format!("target/release/sprt.{}", ext)
-                };
-                let backup_name = if ext.is_empty() {
-                    "target/release/sprt_backup".to_string()
-                } else {
-                    format!("target/release/sprt_backup.{}", ext)
-                };
-
-                // Move old binary out of the way so linker can write freely
-                let _ = std::fs::rename(&binary_name, &backup_name);
-
-                let status = Command::new("cargo")
-                    .args(["build", "--release", "--features=sprt", "--bin", "sprt"])
-                    .status()
-                    .expect("Failed to execute cargo build");
-                if !status.success() {
-                    panic!("Failed to build new binary automatically.");
                 }
-
-                // Copy newly built binary to sprt_new
-                let dst = if ext.is_empty() {
-                    "target/release/sprt_new".to_string()
-                } else {
-                    format!("target/release/sprt_new.{}", ext)
-                };
-
-                std::fs::copy(&binary_name, &dst).unwrap_or_else(|e| {
-                    panic!("Failed to copy {} to {}: {}", binary_name, dst, e);
-                });
-
-                // Clean up backup
-                let _ = std::fs::remove_file(&backup_name);
-
-                dst
             };
 
-            let parsed_variants = if variants == "all" {
-                vec![
-                    Variant::Classical,
-                    Variant::ConfinedClassical,
-                    Variant::ClassicalPlus,
-                    Variant::CoaIP,
-                    Variant::CoaIPHO,
-                    Variant::CoaIPRO,
-                    Variant::CoaIPNO,
-                    Variant::Palace,
-                    Variant::Pawndard,
-                    Variant::Core,
-                    Variant::Standarch,
-                    Variant::SpaceClassic,
-                    Variant::Space,
-                    Variant::Abundance,
-                    Variant::PawnHorde,
-                    Variant::Knightline,
-                    Variant::Obstocean,
-                    Variant::Chess,
-                    Variant::ScatteredLeapers,
-                ]
-            } else {
-                let mut parsed = Vec::new();
-                for name in variants.split(',') {
-                    let name_lower = name.to_lowercase().replace(' ', "_");
-                    let known = matches!(
-                        name_lower.as_str(),
-                        "classical"
-                            | "confined_classical"
-                            | "classical_plus"
-                            | "coaip"
-                            | "coaip_ho"
-                            | "coaip_ro"
-                            | "coaip_no"
-                            | "palace"
-                            | "pawndard"
-                            | "core"
-                            | "standarch"
-                            | "space_classic"
-                            | "space"
-                            | "abundance"
-                            | "pawn_horde"
-                            | "knightline"
-                            | "obstocean"
-                            | "chess"
-                            | "scattered_leapers"
-                    );
-                    if !known {
-                        eprintln!("Error: Unknown variant '{}'", name);
-                        std::process::exit(1);
-                    }
-                    parsed.push(Variant::parse(name));
+            // Default CLI values used to detect whether user explicitly overrode them
+            const DEFAULT_TC_STR: &str = "10+0.1";
+            const DEFAULT_VARIANTS_STR: &str = "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers";
+
+            // Load resume state if --resume was provided
+            let resume_state_opt: Option<ResumeState> = resume.as_deref().and_then(|path| {
+                if std::path::Path::new(path).exists() {
+                    Some(load_resume_state(path))
+                } else {
+                    println!("Resume file '{}' not found, starting fresh.", path);
+                    None
                 }
-                parsed
+            });
+
+            let resume_pair_offset_val =
+                resume_state_opt.as_ref().map_or(0, |rs| rs.resume_pair_offset);
+
+            // Auto-detect TC from resume if the user didn't supply an explicit value
+            let tc = match &resume_state_opt {
+                Some(rs) if tc == DEFAULT_TC_STR => rs.detected_tc.clone().unwrap_or(tc),
+                _ => tc,
+            };
+
+            // Auto-detect variants from resume if the user didn't supply an explicit value
+            let variants = match &resume_state_opt {
+                Some(rs)
+                    if variants == DEFAULT_VARIANTS_STR && !rs.detected_variants.is_empty() =>
+                {
+                    rs.detected_variants.join(",")
+                }
+                _ => variants,
+            };
+
+            // ── Variant presets ──────────────────────────────────────────────────────
+            // all      — every variant in the engine
+            // site     — variants live on the public site (image order), no Abundance/Showcase
+            // base_only — base-eval standard variants; no multi-king, no AllPieces, no Abundance
+            //             Default for testing base.rs changes against typical positions.
+            // base_full — all base-eval variants including multi-king and AllPiecesClassical
+            // multi_king — only the double/triple-king variants
+            // coaip    — only the Chess-on-an-Infinite-Plane family
+
+            // Every variant in the engine
+            const ALL_VARIANTS: &[Variant] = &[
+                Variant::Classical,
+                Variant::ConfinedClassical,
+                Variant::ClassicalPlus,
+                Variant::CoaIP,
+                Variant::CoaIPHO,
+                Variant::CoaIPRO,
+                Variant::CoaIPNO,
+                Variant::Palace,
+                Variant::Pawndard,
+                Variant::Core,
+                Variant::Standarch,
+                Variant::SpaceClassic,
+                Variant::Space,
+                Variant::Abundance,
+                Variant::PawnHorde,
+                Variant::Knightline,
+                Variant::Obstocean,
+                Variant::Chess,
+                Variant::ScatteredLeapers,
+                Variant::DoubleKingClassical,
+                Variant::DoubleKingChess,
+                Variant::TripleKingMaze,
+                Variant::AllPiecesClassical,
+            ];
+
+            // Variants live on the public site (image order), minus Abundance and Showcase
+            const SITE_VARIANTS: &[Variant] = &[
+                Variant::Classical,
+                Variant::ConfinedClassical,
+                Variant::ClassicalPlus,
+                Variant::CoaIP,
+                Variant::CoaIPHO,
+                Variant::CoaIPRO,
+                Variant::CoaIPNO,
+                Variant::Palace,
+                Variant::Pawndard,
+                Variant::Core,
+                Variant::Standarch,
+                Variant::SpaceClassic,
+                Variant::Space,
+                Variant::PawnHorde,
+                Variant::Knightline,
+                Variant::Obstocean,
+                Variant::Chess,
+            ];
+
+            // Standard base-eval variants — no Chess/Obstocean/PawnHorde custom evals,
+            // no multi-king, no AllPiecesClassical, no Abundance.
+            // Best default for testing base.rs changes.
+            const BASE_ONLY_VARIANTS: &[Variant] = &[
+                Variant::Classical,
+                Variant::ConfinedClassical,
+                Variant::ClassicalPlus,
+                Variant::CoaIP,
+                Variant::CoaIPHO,
+                Variant::CoaIPRO,
+                Variant::CoaIPNO,
+                Variant::Palace,
+                Variant::Pawndard,
+                Variant::Core,
+                Variant::Standarch,
+                Variant::SpaceClassic,
+                Variant::Space,
+                Variant::Knightline,
+                Variant::ScatteredLeapers,
+            ];
+
+            // All base-eval variants including multi-king and AllPiecesClassical.
+            // Use when you specifically want coverage of the exotic base-eval positions.
+            const BASE_FULL_VARIANTS: &[Variant] = &[
+                Variant::Classical,
+                Variant::ConfinedClassical,
+                Variant::ClassicalPlus,
+                Variant::CoaIP,
+                Variant::CoaIPHO,
+                Variant::CoaIPRO,
+                Variant::CoaIPNO,
+                Variant::Palace,
+                Variant::Pawndard,
+                Variant::Core,
+                Variant::Standarch,
+                Variant::SpaceClassic,
+                Variant::Space,
+                Variant::Knightline,
+                Variant::ScatteredLeapers,
+                Variant::DoubleKingClassical,
+                Variant::DoubleKingChess,
+                Variant::TripleKingMaze,
+                Variant::AllPiecesClassical,
+            ];
+
+            // Only the double/triple-king variants
+            const MULTI_KING_VARIANTS: &[Variant] = &[
+                Variant::DoubleKingClassical,
+                Variant::DoubleKingChess,
+                Variant::TripleKingMaze,
+            ];
+
+            // Only the Chess-on-an-Infinite-Plane family
+            const COAIP_VARIANTS: &[Variant] = &[
+                Variant::CoaIP,
+                Variant::CoaIPHO,
+                Variant::CoaIPRO,
+                Variant::CoaIPNO,
+            ];
+
+            let parsed_variants = match variants.trim().to_lowercase().as_str() {
+                "all"        => ALL_VARIANTS.to_vec(),
+                "site"       => SITE_VARIANTS.to_vec(),
+                "base_only"  => BASE_ONLY_VARIANTS.to_vec(),
+                "base_full"  => BASE_FULL_VARIANTS.to_vec(),
+                "multi_king" => MULTI_KING_VARIANTS.to_vec(),
+                "coaip"      => COAIP_VARIANTS.to_vec(),
+                _ => {
+                    let mut parsed = Vec::new();
+                    for name in variants.split(',') {
+                        let name_trimmed = name.trim();
+                        let name_lower = name_trimmed.to_lowercase().replace(' ', "_");
+                        let known = matches!(
+                            name_lower.as_str(),
+                            "classical"
+                                | "confined_classical"
+                                | "classical_plus"
+                                | "coaip"
+                                | "coaip_ho"
+                                | "coaip_ro"
+                                | "coaip_no"
+                                | "palace"
+                                | "pawndard"
+                                | "core"
+                                | "standarch"
+                                | "space_classic"
+                                | "space"
+                                | "abundance"
+                                | "pawn_horde"
+                                | "knightline"
+                                | "obstocean"
+                                | "chess"
+                                | "scattered_leapers"
+                                | "double_king_classical"
+                                | "double_king_chess"
+                                | "triple_king_maze"
+                                | "all_pieces_classical"
+                        );
+                        if !known {
+                            eprintln!(
+                                "Error: Unknown variant or preset '{}'. \
+                                 Valid presets: all, site, base_only, base_full, multi_king, coaip",
+                                name_trimmed
+                            );
+                            std::process::exit(1);
+                        }
+                        parsed.push(Variant::parse(name_trimmed));
+                    }
+                    parsed
+                }
             };
 
             let mut config = Config {
@@ -1478,6 +1728,8 @@ fn main() {
                 verbose,
                 new_commit_info: None,
                 old_commit_info: None,
+                resume_pair_offset: resume_pair_offset_val,
+                save_interval: save_interval.max(1),
             };
 
             // Resolve old commit info: explicit CLI arg > query the old binary itself.
@@ -1503,7 +1755,7 @@ fn main() {
                 try_get_commit_info_from_git("HEAD")
             };
 
-            let games_path = games;
+            let games_path = games.or_else(|| resume.clone());
             let results_path = results;
 
             ctrlc::set_handler(move || {
@@ -1531,11 +1783,6 @@ fn main() {
                 );
             }
 
-            println!("\nStarting SPRT with Configuration:");
-            print_commit_context(&config.new_commit_info, &config.old_commit_info);
-            print_settings_context(&config);
-            println!();
-
             let (lower, upper) = (
                 (config.beta / (1.0 - config.alpha)).ln(),
                 ((1.0 - config.beta) / config.alpha).ln(),
@@ -1544,9 +1791,33 @@ fn main() {
             let mut losses = 0;
             let mut draws = 0;
             let mut timeout_losses = 0;
-            let mut game_logs = Vec::new();
+            let mut game_logs: Vec<String> = Vec::new();
             let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
             let mut last_status_len = 0;
+
+            // Apply resume state: seed W/L/D, per-variant stats, and prior game logs
+            if let Some(rs) = resume_state_opt {
+                wins = rs.wins;
+                losses = rs.losses;
+                draws = rs.draws;
+                per_variant_stats = rs.per_variant_stats;
+                game_logs = rs.games;
+            }
+
+            println!("\nStarting SPRT with Configuration:");
+            print_commit_context(&config.new_commit_info, &config.old_commit_info);
+            print_settings_context(&config);
+            if config.resume_pair_offset > 0 {
+                println!(
+                    "  Resuming: {} games loaded ({}W / {}L / {}D), next pair = {}",
+                    wins + losses + draws,
+                    wins,
+                    losses,
+                    draws,
+                    config.resume_pair_offset
+                );
+            }
+            println!();
 
             let (tx, rx) = std::sync::mpsc::channel();
             let config_clone = config.clone();
@@ -1562,7 +1833,7 @@ fn main() {
                             let tx = tx.clone();
                             let config = config_clone.clone();
                             scope.spawn(move |_| {
-                                let mut pair_idx = worker_idx;
+                                let mut pair_idx = config.resume_pair_offset + worker_idx;
                                 let step = config.concurrency.max(1);
 
                                 loop {
@@ -1644,6 +1915,9 @@ fn main() {
                 });
             });
 
+            // Track how many games were saved so we know when the next batch is due
+            let mut last_save_len = game_logs.len();
+
             for pair_outcomes in rx {
                 for outcome in pair_outcomes {
                     if outcome.termination_reason == "interrupted" {
@@ -1673,6 +1947,14 @@ fn main() {
                         GameResult::Win => stats.0 += 1,
                         GameResult::Loss => stats.1 += 1,
                         GameResult::Draw => stats.2 += 1,
+                    }
+                }
+
+                // Batch save: write the games file periodically so progress is not lost on crash
+                if let Some(ref path) = games_path {
+                    if game_logs.len().saturating_sub(last_save_len) >= config.save_interval {
+                        save_games_file(path, &game_logs);
+                        last_save_len = game_logs.len();
                     }
                 }
 

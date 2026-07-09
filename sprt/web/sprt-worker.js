@@ -13,25 +13,29 @@ import initOld, * as wasmOld from './pkg-old/hydrochess_wasm.js';
 const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
-const initThreadPool = wasmNew.initThreadPool;
+// Both builds may be MT now; each exposes its own initThreadPool when threaded.
+const initThreadPoolOld = wasmOld.initThreadPool;
+const initThreadPoolNew = wasmNew.initThreadPool;
 import { getVariantData, getAllVariants, generateSetupICN } from './variants.js';
 
 let wasmReady = false;
-let threadPoolInitialized = false;
+const poolInitialized = { old: false, new: false };
 
-// async function tryInitThreadPool(count) {
-//     if (threadPoolInitialized) return;
-//     if (typeof initThreadPool !== 'function') return;
-
-//     try {
-//         console.log(`[sprt-worker] Initializing thread pool with ${count} threads...`);
-//         await initThreadPool(count);
-//         threadPoolInitialized = true;
-//         console.log(`[sprt-worker] Thread pool initialized.`);
-//     } catch (e) {
-//         console.warn(`[sprt-worker] Failed to initialize thread pool:`, e);
-//     }
-// }
+// Brings up one engine's Lazy SMP pool. A single-threaded build exports no initThreadPool
+// (nothing to do). The pool must be up before any search, else get_best_move_parallel hits
+// an uninitialized rayon pool. count <= 1 means run that engine single-threaded (no pool).
+async function tryInitThreadPool(which, initFn, count) {
+    if (poolInitialized[which]) return;
+    if (typeof initFn !== 'function' || count <= 1) return;
+    try {
+        console.log(`[sprt-worker] Initializing ${which}-engine thread pool with ${count} threads...`);
+        await initFn(count);
+        poolInitialized[which] = true;
+        console.log(`[sprt-worker] ${which}-engine thread pool initialized.`);
+    } catch (e) {
+        console.warn(`[sprt-worker] Failed to initialize ${which}-engine thread pool:`, e);
+    }
+}
 
 function getVariantPosition(variantName, clock = null) {
     const variantData = getVariantData(variantName);
@@ -477,13 +481,20 @@ function formatClock(ms) {
     return `${hStr}:${mStr}:${sStr}.${dec}`;
 }
 
-async function ensureInit() {
+async function ensureInit(mtThreadsOld, mtThreadsNew, hashOldMb, hashNewMb) {
     if (!wasmReady) {
         await initOld();
         await initNew();
 
-        // Detect thread support and initialize pool if available
-        // await tryInitThreadPool(2);
+        // Per-engine hash sizes from the UI, applied before the first search so the
+        // (shared) TT is built at the right size. Old builds may not export this.
+        if (hashOldMb && typeof wasmOld.set_hash_size === 'function') wasmOld.set_hash_size(hashOldMb);
+        if (hashNewMb && typeof wasmNew.set_hash_size === 'function') wasmNew.set_hash_size(hashNewMb);
+
+        // Bring up each engine's Lazy SMP pool (no-op for a single-threaded build or count 1).
+        // Pools are sized once per worker, so the first runGame message decides the counts.
+        await tryInitThreadPool('old', initThreadPoolOld, Math.min(16, Math.max(1, mtThreadsOld || 1)));
+        await tryInitThreadPool('new', initThreadPoolNew, Math.min(16, Math.max(1, mtThreadsNew || 1)));
 
         wasmReady = true;
     }
@@ -520,6 +531,45 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
     let lastEvalNew = null;
     let lastEvalOld = null;
 
+    const isRoyalPiece = (piece) => piece && ['k', 'y', 'd'].includes(piece.piece_type);
+    const startingRoyalCounts = {
+        w: startPosition.board.pieces.filter((p) => p.player === 'w' && isRoyalPiece(p)).length,
+        b: startPosition.board.pieces.filter((p) => p.player === 'b' && isRoyalPiece(p)).length,
+    };
+
+    function getWinConditionFor(color) {
+        const variantData = getVariantData(variantName);
+        const side = color === 'w' ? 'white' : 'black';
+        const conditions = variantData.game_rules && variantData.game_rules.win_conditions && variantData.game_rules.win_conditions[side];
+        return Array.isArray(conditions) && conditions.length > 0 ? conditions[0] : 'checkmate';
+    }
+
+    function getRoyalCaptureTerminal() {
+        const sideToMove = position.turn;
+        if (sideToMove !== 'w' && sideToMove !== 'b') return null;
+
+        const currentRoyalCount = position.board.pieces.filter((p) => p.player === sideToMove && isRoyalPiece(p)).length;
+        const startingRoyalCount = startingRoyalCounts[sideToMove] || 0;
+        if (startingRoyalCount === 0) return null;
+
+        const winningColor = sideToMove === 'w' ? 'b' : 'w';
+        const opponentWinCondition = getWinConditionFor(winningColor);
+        let reason = null;
+
+        if (opponentWinCondition === 'royalcapture' && currentRoyalCount < startingRoyalCount) {
+            reason = 'royalcapture';
+        } else if (opponentWinCondition === 'allroyalscaptured' && currentRoyalCount === 0) {
+            reason = 'allroyalscaptured';
+        }
+
+        if (!reason) return null;
+
+        const result = winningColor === newColor ? 'win' : 'loss';
+        const result_token = winningColor === 'w' ? '1-0' : '0-1';
+        for (const s of texelSamples) s.result_token = result_token;
+        return { result, reason, winningColor };
+    }
+
     function recordRepetition() {
         const key = makePositionKey(position);
         const prev = repetitionCounts.get(key) || 0;
@@ -530,6 +580,20 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
     // Helper for definitive terminal check (mate/stalemate) to prioritize over adjudication
     const getTerminalResult = (context = "") => {
+        const royalTerminal = getRoyalCaptureTerminal();
+        if (royalTerminal) {
+            const label = royalTerminal.reason === 'allroyalscaptured'
+                ? 'All royals captured'
+                : 'Royal capture';
+            moveLines.push('# ' + label + context);
+            return {
+                result: royalTerminal.result,
+                log: moveLines.join('\n'),
+                reason: royalTerminal.reason,
+                samples: texelSamples
+            };
+        }
+
         try {
             const icnString = generateSetupICN(
                 variantName,
@@ -1042,7 +1106,7 @@ self.onmessage = async (e) => {
     const msg = e.data;
     if (msg.type === 'runGame') {
         try {
-            await ensureInit();
+            await ensureInit(msg.mtThreadsOld, msg.mtThreadsNew, msg.hashOldMb, msg.hashNewMb);
 
             const gamePromise = playSingleGame(
                 msg.timePerMove,
