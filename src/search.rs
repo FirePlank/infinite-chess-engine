@@ -165,6 +165,45 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 /// when the wasm memory is shared, so `check_time` polls it every node batch.
 pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
 
+/// Per-thread node counter for thread-aggregated NPS (Stockfish-style: total nodes across all
+/// search threads / wall-clock). Each slot is cache-line aligned so threads publishing their
+/// own counts never bounce a shared line (no false sharing).
+#[cfg(feature = "multithreading")]
+#[repr(align(64))]
+pub(crate) struct NodeSlot(std::sync::atomic::AtomicU64);
+
+#[cfg(feature = "multithreading")]
+pub(crate) const SEARCH_NODE_SLOTS: usize = 16;
+#[cfg(feature = "multithreading")]
+pub(crate) static SEARCH_THREAD_NODES: [NodeSlot; SEARCH_NODE_SLOTS] =
+    [const { NodeSlot(std::sync::atomic::AtomicU64::new(0)) }; SEARCH_NODE_SLOTS];
+
+/// Publishes `nodes` to thread `id`'s slot (wraps if id exceeds the slot count).
+#[cfg(feature = "multithreading")]
+#[inline(always)]
+pub(crate) fn publish_thread_nodes(id: usize, nodes: u64) {
+    SEARCH_THREAD_NODES[id & (SEARCH_NODE_SLOTS - 1)]
+        .0
+        .store(nodes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Zeroes every thread's node slot; called at analysis start so retired helpers don't linger.
+#[cfg(feature = "multithreading")]
+pub(crate) fn reset_search_nodes() {
+    for slot in SEARCH_THREAD_NODES.iter() {
+        slot.0.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Total nodes searched across all threads this search.
+#[cfg(feature = "multithreading")]
+pub(crate) fn aggregate_search_nodes() -> u64 {
+    SEARCH_THREAD_NODES
+        .iter()
+        .map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed))
+        .sum()
+}
+
 /// Transposition table size in MB used when (re)creating searchers and the shared TT.
 pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
 
@@ -1439,6 +1478,10 @@ impl Searcher {
         // with no time limit — unlimited searches must still be stoppable. Detached
         // helpers additionally retire when their epoch is superseded (new position).
         if self.hot.nodes & 8191 == 0 {
+            // Publish this thread's node count for thread-aggregated NPS.
+            #[cfg(feature = "multithreading")]
+            publish_thread_nodes(self.thread_id, self.hot.nodes);
+
             if GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
                 self.hot.stopped = true;
                 return true;
@@ -2860,6 +2903,7 @@ pub fn analyse_position(
         // from the between-depth deadline (whole depths only), passed to the impl below.
         searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
         searcher.silent = true;
+        searcher.thread_id = 0; // Main analysis thread owns node slot 0; helpers use 1..N.
         searcher.hot.timer.reset();
 
         searcher.set_corrhist_mode(game);
@@ -3042,6 +3086,13 @@ pub(crate) fn get_best_moves_multipv_impl(
     deadline_ms: Option<u128>,
     mut on_depth: Option<DepthCallback>,
 ) -> MultiPVResult {
+    // Analysis start (streaming callback present): reset the per-thread node counters so the
+    // aggregated NPS counts only this position's search, not retired helpers from the last one.
+    #[cfg(feature = "multithreading")]
+    if on_depth.is_some() {
+        reset_search_nodes();
+    }
+
     // Initialize NNUE accumulator stack (stored on searcher).
     #[cfg(feature = "nnue")]
     searcher.nnue_init_root(game);
@@ -3367,13 +3418,24 @@ pub(crate) fn get_best_moves_multipv_impl(
                 };
                 #[cfg(not(feature = "multithreading"))]
                 let hashfull = searcher.tt.fill_permille();
+
+                // Thread-aggregated node count (Stockfish-style: total across all search
+                // threads). Publish this thread's latest count first, then sum every slot.
+                #[cfg(feature = "multithreading")]
+                let report_nodes = {
+                    publish_thread_nodes(searcher.thread_id, searcher.hot.nodes);
+                    aggregate_search_nodes()
+                };
+                #[cfg(not(feature = "multithreading"))]
+                let report_nodes = searcher.hot.nodes;
+
                 cb(&DepthInfo {
                     depth,
                     seldepth: searcher.hot.seldepth,
-                    nodes: searcher.hot.nodes,
+                    nodes: report_nodes,
                     qnodes: searcher.hot.qnodes,
                     nps: if time_ms > 0 {
-                        (searcher.hot.nodes as u128 * 1000) / time_ms
+                        (report_nodes as u128 * 1000) / time_ms
                     } else {
                         0
                     },
