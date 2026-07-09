@@ -42,11 +42,11 @@ cargo --version
 
 ---
 
-## 2. Add WebAssembly Target
+## 2. WebAssembly Target & Toolchain
 
-```bash
-rustup target add wasm32-unknown-unknown
-```
+`rust-toolchain.toml` pins the nightly toolchain and lists the `wasm32-unknown-unknown`
+target and `rust-src` component, so rustup provisions them automatically the first time you
+build in this directory. No manual `rustup target add` or `rustup toolchain install` is needed.
 
 ---
 
@@ -71,8 +71,8 @@ wasm-pack --version
 git clone <repository-url>
 cd <repository-directory>
 
-# Build for browser
-wasm-pack build --target web
+# Build for browser (multi-threaded / Lazy SMP by default)
+wasm-pack build --target web --release
 ```
 
 The built WASM package will be in the `pkg/` directory.
@@ -104,25 +104,22 @@ cargo llvm-cov --lib
 
 ---
 
-## 5. Multi-threaded Build
+## 5. Threading
 
-The engine supports parallel search in WebAssembly. This requires a nightly Rust toolchain and specific compilation flags to enable shared memory and atomics.
+Parallel search (Lazy SMP) in WebAssembly needs shared memory and atomics, which require a
+nightly toolchain, `build-std`, and specific link flags. These are all committed to the
+repository — `rust-toolchain.toml` pins the toolchain and `.cargo/config.toml` carries the
+`build-std` and target flags — and the `multithreading` Cargo feature is on by default. So the
+standard build produces the multi-threaded engine:
 
-### Setup for Multithreading
+```bash
+wasm-pack build --target web --release            # multi-threaded (default)
+wasm-pack build --target web --release --no-default-features   # single-threaded
+```
 
-1.  **Install Nightly Rust**:
-    ```bash
-    rustup toolchain install nightly
-    rustup component add rust-src --toolchain nightly
-    ```
-
-2.  **Build with Helper Script**:
-    Use the provided `build_mt.js` script to build the engine with the correct flags and feature set:
-    ```bash
-    node build_mt.js
-    ```
-
-This script handles the complex configuration required for WASM threads and uses `wasm-pack` to generate the correct JS/WASM bindings in the `pkg/` directory.
+Parallel WASM requires the page to be cross-origin isolated (`Cross-Origin-Opener-Policy:
+same-origin` and `Cross-Origin-Embedder-Policy: require-corp`); without those headers the
+engine still loads but runs single-threaded.
 
 ---
 

@@ -30,14 +30,13 @@ A Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https
 
 ```bash
 # 1. Install Rust and wasm-pack (see docs/SETUP.md for details)
-rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
 
-# 2. Build for browser (Single-threaded)
-wasm-pack build --target web
+# 2. Build for browser (Multi-threaded / Lazy SMP is the default)
+wasm-pack build --target web --release
 
-# 3. Build for browser (Multi-threaded)
-node build_mt.js
+# 3. Build a single-threaded engine instead
+wasm-pack build --target web --release --no-default-features
 
 # 4. Output is in pkg/
 ```

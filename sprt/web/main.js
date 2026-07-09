@@ -2,25 +2,46 @@ import initOld, * as wasmOld from './pkg-old/hydrochess_wasm.js';
 const EngineOld = wasmOld.Engine;
 import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
 const EngineNew = wasmNew.Engine;
+// Either build may be MT (both default to the threaded build now). A build exposes
+// initThreadPool only when compiled with Lazy SMP, so its presence is the MT probe.
+const initThreadPoolOld = wasmOld.initThreadPool;
 const initThreadPoolNew = wasmNew.initThreadPool;
 import { getVariantData, getAllVariants, generateSetupICN, engineLetterToICNCode, getVariantsWithCustomEval } from './variants.js';
 
+let isOldEngineMT = false;
 let isNewEngineMT = false;
 
+/** Highest concurrency that keeps games x threads-per-game within the machine's cores.
+ * Engines alternate within a game (only one searches at a time), so a game's peak demand
+ * is the larger of the two engines' pool sizes. */
+function mtConcurrencyCap(oldThreads, newThreads) {
+    const hc = navigator.hardwareConcurrency || 4;
+    const perGame = Math.max(1, oldThreads, newThreads);
+    return Math.max(1, Math.floor(hc / perGame));
+}
+
+/** Reads the current per-engine thread selections (1 for a single-threaded / ST build). */
+function currentThreadCounts() {
+    const o = isOldEngineMT ? Math.min(16, Math.max(1, parseInt(sprtMtThreadsOldEl.value, 10) || 1)) : 1;
+    const n = isNewEngineMT ? Math.min(16, Math.max(1, parseInt(sprtMtThreadsNewEl.value, 10) || 1)) : 1;
+    return { o, n };
+}
+
+/** Shows the thread inputs only for engines that are actually MT, and keeps the
+ * concurrency field auto-capped to what the machine's cores can run in parallel. */
 function updateMTUI() {
-    if (isNewEngineMT) {
-        sprtConcurrencyEl.value = "1";
-        sprtConcurrencyEl.disabled = true;
-        sprtConcurrencyEl.title = "Concurrency locked to 1 game while Multithreading is active.";
+    const anyMT = isOldEngineMT || isNewEngineMT;
 
-        // Dim the label
-        const label = sprtConcurrencyEl.previousElementSibling;
-        if (label && label.tagName === 'LABEL') {
-            label.classList.add('disabled-label');
-            label.textContent = 'Concurrency (locked for MT)';
-        }
+    // Show/enable each engine's thread input only when that build supports threads.
+    sprtMtThreadsOldEl.closest('.form-group').style.display = isOldEngineMT ? '' : 'none';
+    sprtMtThreadsNewEl.closest('.form-group').style.display = isNewEngineMT ? '' : 'none';
 
-        // Add MT indicator to header if not already there
+    if (anyMT) {
+        const { o, n } = currentThreadCounts();
+        const cap = mtConcurrencyCap(o, n);
+        sprtConcurrencyEl.value = String(cap);
+        sprtConcurrencyEl.title = 'Auto-capped so (concurrent games) x (max threads/game) fits your ' + (navigator.hardwareConcurrency || '?') + ' cores.';
+
         if (!document.getElementById('mtBadge')) {
             const h1 = document.querySelector('header h1');
             const badge = document.createElement('span');
@@ -29,13 +50,12 @@ function updateMTUI() {
             badge.textContent = 'MT';
             h1.appendChild(badge);
         }
+        log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
-        log('Multithreaded engine detected. Concurrency locked to 1 game for stability.', 'info');
-
-        // Set MT defaults: 3+0.03 STC
+        // Default to a fast STC for MT experiments.
         sprtTcMode.value = 'standard';
         sprtTimeControlEl.value = '3+0.03';
-        updateTcUi(); // Sync the UI labels and disabled states
+        updateTcUi();
     }
 }
 
@@ -49,6 +69,13 @@ const sprtBetaEl = document.getElementById('sprtBeta');
 const sprtTcMode = document.getElementById('sprtTcMode');
 const sprtTimeControlEl = document.getElementById('sprtTimeControl');
 const sprtConcurrencyEl = document.getElementById('sprtConcurrency');
+const sprtMtThreadsOldEl = document.getElementById('sprtMtThreadsOld');
+const sprtMtThreadsNewEl = document.getElementById('sprtMtThreadsNew');
+const sprtHashOldEl = document.getElementById('sprtHashOld');
+const sprtHashNewEl = document.getElementById('sprtHashNew');
+// Changing either engine's thread count re-derives the concurrency cap so they stay consistent.
+sprtMtThreadsOldEl.addEventListener('change', () => updateMTUI());
+sprtMtThreadsNewEl.addEventListener('change', () => updateMTUI());
 const sprtMinGames = document.getElementById('sprtMinGames');
 const sprtMaxGames = document.getElementById('sprtMaxGames');
 const sprtMaxMoves = document.getElementById('sprtMaxMoves');
@@ -111,6 +138,10 @@ const CONFIG = {
     minGames: 500,
     maxMoves: 300,
     concurrency: navigator.hardwareConcurrency || 1,
+    mtThreadsOld: 1,
+    mtThreadsNew: 1,
+    hashOldMb: 16,
+    hashNewMb: 16,
     materialThreshold: 0,
 
     searchNoise: 50,
@@ -790,15 +821,17 @@ async function initWasm() {
         await initOld();
         await initNew();
 
+        isOldEngineMT = (typeof initThreadPoolOld === 'function');
         isNewEngineMT = (typeof initThreadPoolNew === 'function');
 
         wasmReady = true;
         setStatus('ready', 'WASM loaded and ready');
         runSprtBtn.disabled = false;
 
-        if (isNewEngineMT) {
-            updateMTUI();
-        } else {
+        // Always sync the UI: show/hide per-engine thread inputs and cap concurrency.
+        // Default threads stay 1, so an MT build still plays single-threaded unless raised.
+        updateMTUI();
+        if (!isOldEngineMT && !isNewEngineMT) {
             sprtConcurrencyEl.value = CONFIG.concurrency;
         }
 
@@ -962,6 +995,20 @@ async function runSprt() {
     } else {
         CONFIG.concurrency = parseInt(rawConcurrency, 10) || 1;
     }
+    {
+        const { o, n } = currentThreadCounts();
+        CONFIG.mtThreadsOld = o;
+        CONFIG.mtThreadsNew = n;
+    }
+    CONFIG.hashOldMb = Math.min(64, Math.max(1, parseInt(sprtHashOldEl.value, 10) || 16));
+    CONFIG.hashNewMb = Math.min(64, Math.max(1, parseInt(sprtHashNewEl.value, 10) || 16));
+    if (CONFIG.mtThreadsOld > 1 || CONFIG.mtThreadsNew > 1) {
+        const cap = mtConcurrencyCap(CONFIG.mtThreadsOld, CONFIG.mtThreadsNew);
+        if (CONFIG.concurrency > cap) {
+            log('Concurrency lowered ' + CONFIG.concurrency + ' -> ' + cap + ' so games x max(threads) fits your cores.', 'warn');
+            CONFIG.concurrency = cap;
+        }
+    }
     CONFIG.minGames = parseInt(sprtMinGames.value, 10) || 500;
     const maxGamesVal = (sprtMaxGames.value || '').trim().toLowerCase();
     CONFIG.maxGames = (maxGamesVal === 'unlimited' || maxGamesVal === '') ? Infinity : (Number.isFinite(parseInt(maxGamesVal, 10)) ? parseInt(maxGamesVal, 10) : Infinity);
@@ -1094,6 +1141,10 @@ async function runSprt() {
             timeControl: tcParams.tcString,
             variantName, // Add variant to the message
             oldStrength: currentOldStrength,
+            mtThreadsOld: runConfig.mtThreadsOld,
+            mtThreadsNew: runConfig.mtThreadsNew,
+            hashOldMb: runConfig.hashOldMb,
+            hashNewMb: runConfig.hashNewMb,
         });
         return true;
     }

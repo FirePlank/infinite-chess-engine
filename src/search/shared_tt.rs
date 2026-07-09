@@ -35,13 +35,6 @@ unsafe impl Send for TTEntry {}
 use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
 impl TTEntry {
-    pub fn empty() -> Self {
-        TTEntry {
-            metadata: UnsafeCell::new(0),
-            move_data: UnsafeCell::new(NO_MOVE),
-        }
-    }
-
     #[inline]
     pub fn read(&self, key16: u16, params_hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         unsafe {
@@ -51,27 +44,31 @@ impl TTEntry {
             }
 
             let mdata = std::ptr::read_volatile(self.move_data.get());
-            if std::ptr::read_volatile(self.metadata.get()) != meta {
-                return None;
-            }
 
             let d = (meta >> 16) as u8;
             let gb = (meta >> 24) as u8;
             let score = (meta >> 32) as u16 as i16 as i32;
             let eval = (meta >> 48) as u16 as i16 as i32;
 
-            // Integrity check: secondary verification by XORing the key into move_data.
-            // This prevents "ABA" tearing where move_data is updated by another thread
-            // but metadata matches a previous state.
+            // XOR the probing key into move_data: a move stored by a colliding/other position
+            // decodes to garbage and gets rejected by the guards below.
             let hash_key = params_hash >> 16; // Use matching bits from the full hash
             let decoded_mdata = mdata ^ hash_key;
 
-            let best_move = if decoded_mdata == NO_MOVE {
+            let pt_raw = (decoded_mdata & 0x1F) as u8;
+            let cl_raw = ((decoded_mdata >> 5) & 0x03) as u8;
+            let pr = ((decoded_mdata >> 7) & 0x1F) as u8;
+
+            // Guarded decode: invalid discriminants (torn/foreign move) → no move, keep the hit.
+            let best_move = if decoded_mdata == NO_MOVE
+                || pt_raw > PieceType::Pawn as u8
+                || cl_raw > PlayerColor::Black as u8
+                || pr > PieceType::Pawn as u8
+            {
                 None
             } else {
-                let pt = PieceType::from_u8((decoded_mdata & 0x1F) as u8);
-                let cl = PlayerColor::from_u8(((decoded_mdata >> 5) & 0x03) as u8);
-                let pr = ((decoded_mdata >> 7) & 0x1F) as u8;
+                let pt = PieceType::from_u8(pt_raw);
+                let cl = PlayerColor::from_u8(cl_raw);
 
                 let fx = unpack_coord(decoded_mdata >> 12);
                 let fy = unpack_coord(decoded_mdata >> 25);
@@ -178,18 +175,6 @@ impl TTEntry {
 pub struct TTBucket {
     entries: [TTEntry; ENTRIES_PER_BUCKET],
 }
-impl TTBucket {
-    pub fn empty() -> Self {
-        TTBucket {
-            entries: [
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-                TTEntry::empty(),
-            ],
-        }
-    }
-}
 
 pub struct SharedTranspositionTable {
     buckets: Vec<TTBucket>,
@@ -216,10 +201,16 @@ impl SharedTranspositionTable {
             bits += 1;
         }
 
-        let mut buckets = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buckets.push(TTBucket::empty());
-        }
+        // Zeroed allocation, no memset: all-zero bytes are the empty state, and calloc'd
+        // pages fault in lazily, so construction cost is independent of hash size.
+        let buckets: Vec<TTBucket> = unsafe {
+            let layout = std::alloc::Layout::array::<TTBucket>(cap).unwrap();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut TTBucket;
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            Vec::from_raw_parts(ptr, cap, cap)
+        };
 
         SharedTranspositionTable {
             buckets,
@@ -304,6 +295,19 @@ impl SharedTranspositionTable {
         let key16 = self.hash_key16(params.hash);
         for e in &self.buckets[self.bucket_index(params.hash)].entries {
             if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16, params.hash) {
+                // Refresh on hit (Stockfish-style): keep USED entries current-generation so
+                // they win replacement fights; untouched stale ones age out. Racy vs a
+                // concurrent write, which at worst loses one refresh — benign.
+                unsafe {
+                    let r#gen = *self.generation.get();
+                    let meta = std::ptr::read_volatile(e.metadata.get());
+                    let new_gb =
+                        ((r#gen & GENERATION_MASK) | (((meta >> 24) as u8) & 0x07)) as u64;
+                    std::ptr::write_volatile(
+                        e.metadata.get(),
+                        (meta & !(0xFFu64 << 24)) | (new_gb << 24),
+                    );
+                }
                 let score = value_from_tt(
                     score_from_i16(score),
                     params.ply,
@@ -434,6 +438,7 @@ impl SharedTranspositionTable {
             let egb = (meta >> 24) as u8;
             let rel_age = (r#gen.wrapping_sub(egb & GENERATION_MASK)) & GENERATION_MASK;
 
+            // Age weighted by 1 (matches the local TT).
             let mut prio =
                 (ed as i32 + 3 + if TTEntry::is_pv(egb) { 2 } else { 0 }) - rel_age as i32;
             if (meta & 0xFFFF) == 0 && egb == 0 {

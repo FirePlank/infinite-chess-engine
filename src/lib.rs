@@ -222,7 +222,18 @@ extern "C" {
 
 #[wasm_bindgen]
 pub fn reset_engine_state() {
+    #[cfg(feature = "multithreading")]
+    crate::search::stop_analysis_helpers();
     crate::search::reset_search_state();
+}
+
+/// Retires all detached Lazy SMP analysis helpers and aborts any in-flight search.
+/// Call when the analysis of a position is finished (or on stop), so idle helper
+/// threads don't keep burning CPU. No-op on single-threaded builds.
+#[wasm_bindgen]
+pub fn stop_analysis_helpers() {
+    #[cfg(feature = "multithreading")]
+    crate::search::stop_analysis_helpers();
 }
 
 /// Byte offset of the global stop flag inside wasm linear memory.
@@ -926,54 +937,42 @@ impl Engine {
             let _ = on_info.call1(&JsValue::NULL, &js_info);
         };
 
-        // Multithreaded build with an initialized thread pool: helper threads run a plain
-        // search on the same position to fill the shared TT (Lazy SMP) while the main
-        // thread runs the MultiPV analysis. GLOBAL_STOP must be cleared before helpers
-        // launch and set once the main slice finishes so they wind down promptly.
+        // Multithreaded build with an initialized thread pool: DETACHED helpers run a plain
+        // search on the same position, filling the shared TT (Lazy SMP), while this thread
+        // runs the sliced MultiPV analysis. Helpers spawn once per position and keep searching
+        // through the worker's JS yields; they retire when the epoch bumps (next position, or
+        // stop_analysis_helpers), never here.
         #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
         {
-            let num_threads = rayon::current_num_threads().max(1);
+            // Helpers = pool size - 1, capped at 3: the site exposes up to 4 analysis threads.
+            let num_threads = rayon::current_num_threads().max(1).min(4);
             if num_threads > 1 {
-                /// The scope closure must be `Send`, but the captured JS callback (and the
-                /// engine's game state) are only ever touched by the main thread inside the
-                /// scope — helpers get their own clones — so asserting `Send` is sound.
-                struct MainThreadOnly<T>(T);
-                unsafe impl<T> Send for MainThreadOnly<T> {}
-
-                search::GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
                 search::init_shared_tt();
                 search::USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
 
-                let helper_game = self.game.clone();
-                let main_ctx = MainThreadOnly((&mut self.game, &mut callback));
-
-                let result = rayon::scope(move |s| {
-                    // Force capturing the whole wrapper — precise closure capture would
-                    // otherwise capture its (non-Send) fields individually.
-                    let main_ctx = main_ctx;
+                // New position, or a resume with no batch alive (e.g. "go deeper" after the
+                // helpers retired at done): retire any previous batch, launch a fresh one.
+                if start_depth <= 1
+                    || search::HELPERS_LIVE.load(std::sync::atomic::Ordering::Relaxed) == 0
+                {
+                    let epoch = search::HELPER_EPOCH
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    search::GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
                     for i in 1..num_threads {
-                        let mut game_clone = helper_game.clone();
-                        s.spawn(move |_| {
-                            let _ = search::get_best_move_threaded(
-                                &mut game_clone,
-                                max_depth,
-                                slice_ms,
-                                slice_ms,
-                                true,
-                                i,
-                                true,
-                            );
-                        });
+                        let game_clone = self.game.clone();
+                        rayon::spawn(move || search::helper_run(game_clone, epoch, i));
                     }
+                }
 
-                    let MainThreadOnly((game, callback)) = main_ctx;
-                    let result = search::analyse_position(
-                        game, max_depth, start_depth, slice_ms, multi_pv, callback,
-                    );
-                    search::GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
-                    result
-                });
-
+                let result = search::analyse_position(
+                    &mut self.game,
+                    max_depth,
+                    start_depth,
+                    slice_ms,
+                    multi_pv,
+                    &mut callback,
+                );
                 return self.analysis_result_to_js(&result);
             }
         }

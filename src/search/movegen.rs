@@ -532,14 +532,7 @@ impl StagedMoveGen {
 
         // Pawn history: 2 * pawnHistory[pawn_hash % SIZE][piece][to]
         let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
-        unsafe {
-            let val = *searcher
-                .pawn_history
-                .get_unchecked(ph_idx)
-                .get_unchecked(pt_idx)
-                .get_unchecked(idx);
-            score += 2 * val;
-        }
+        score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
         // Continuation history - Optimized using pre-calculated indices
         let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
@@ -549,7 +542,7 @@ impl StagedMoveGen {
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
             // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
             let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h]
-                [cur_from_hash][cur_to_hash];
+                [cur_from_hash][cur_to_hash] as i32;
             score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 

@@ -214,6 +214,36 @@ pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
 pub const PAWN_HISTORY_SIZE: usize = 8192;
 pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
 
+/// [pawn_hash % SIZE][piece_type][to_hash] -> history score.
+pub type PawnHistTable = [[[i16; 256]; 32]; PAWN_HISTORY_SIZE];
+
+/// Allocates a Box<T> with all-zero bytes without a memset (calloc: pages fault in on use).
+fn zeroed_box<T>() -> Box<T> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<T>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut T;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Box::from_raw(ptr)
+    }
+}
+
+/// One pawn-history table shared by every search thread (Stockfish shares pawn history
+/// across threads too). Concurrent i16 gravity updates race benignly, like the shared TT.
+#[cfg(feature = "multithreading")]
+mod shared_hist {
+    pub struct Shared<T>(pub std::cell::UnsafeCell<T>);
+    unsafe impl<T> Sync for Shared<T> {}
+
+    static PAWN: std::sync::OnceLock<Box<Shared<super::PawnHistTable>>> =
+        std::sync::OnceLock::new();
+
+    pub fn pawn_table() -> *mut super::PawnHistTable {
+        PAWN.get_or_init(|| super::zeroed_box()).0.get()
+    }
+}
+
 /// Determines which correction history tables to use.
 /// Set once at search start for zero runtime overhead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -784,6 +814,10 @@ pub struct Searcher {
     // This distributes work across threads naturally
     pub thread_id: usize,
 
+    /// The detached-helper epoch this searcher belongs to (0 = not a detached helper).
+    /// check_time stops the search when the global epoch moves past it.
+    pub helper_epoch: u64,
+
     // Per-ply reusable move buffers using Stack/Heap-allocated MoveList (SmallVec)
     pub move_buffers: Vec<MoveList>,
 
@@ -796,7 +830,9 @@ pub struct Searcher {
     #[allow(clippy::type_complexity)]
     // Continuation history: [ply_offset_idx][is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
     // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
-    pub cont_history: Box<[[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
+    // i16: the gravity update self-bounds to ±16384 so i16 is lossless, keeping this
+    // (the search's hottest table) at 25MB per thread.
+    pub cont_history: Box<[[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -849,7 +885,9 @@ pub struct Searcher {
 
     /// Pawn History: [pawn_hash % SIZE][piece_type][to_hash]
     /// Tracks successful moves under specific pawn structure hashes.
-    pub pawn_history: Box<[[[i32; 256]; 32]; PAWN_HISTORY_SIZE]>,
+    /// MT builds use the process-wide shared table instead (see `shared_hist`).
+    #[cfg(not(feature = "multithreading"))]
+    pub pawn_history: Box<PawnHistTable>,
 
     pub plies_from_null: Box<[u8; MAX_PLY]>,
     pub tt: LocalTranspositionTable,
@@ -941,14 +979,15 @@ impl Searcher {
             completed_depth: 0,
             silent: false,
             thread_id: 0,
+            helper_epoch: 0,
             move_buffers,
             move_history: vec![None; MAX_PLY],
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i32; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
+                    vec![0i16; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
                 )
-                    as *mut [[[[[[[i32; 32]; 32]; 32]; 32]; 2]; 2]; 3])
+                    as *mut [[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(
@@ -1003,12 +1042,8 @@ impl Searcher {
                     Box::into_raw(vec![255u8; MAX_PLY].into_boxed_slice()) as *mut [u8; MAX_PLY]
                 )
             },
-            pawn_history: unsafe {
-                Box::from_raw(Box::into_raw(
-                    vec![0i32; PAWN_HISTORY_SIZE * 32 * 256].into_boxed_slice(),
-                )
-                    as *mut [[[i32; 256]; 32]; PAWN_HISTORY_SIZE])
-            },
+            #[cfg(not(feature = "multithreading"))]
+            pawn_history: zeroed_box(),
             tt: LocalTranspositionTable::new(TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed)),
 
             #[cfg(feature = "nnue")]
@@ -1296,7 +1331,12 @@ impl Searcher {
             row.fill(0);
         }
 
-        // Reset pawn history
+        // Reset pawn history (racy-but-benign memset of the shared table in MT builds)
+        #[cfg(feature = "multithreading")]
+        unsafe {
+            std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+        }
+        #[cfg(not(feature = "multithreading"))]
         for table in self.pawn_history.iter_mut() {
             for row in table.iter_mut() {
                 row.fill(0);
@@ -1340,6 +1380,30 @@ impl Searcher {
         *entry += clamped - ((*entry * clamped.abs()) >> 14);
     }
 
+    /// Reads a pawn-history cell (shared table in MT builds, local otherwise).
+    #[inline(always)]
+    pub fn pawn_hist(&self, ph_idx: usize, pt_idx: usize, to_idx: usize) -> i32 {
+        #[cfg(feature = "multithreading")]
+        unsafe {
+            (*shared_hist::pawn_table())[ph_idx][pt_idx][to_idx] as i32
+        }
+        #[cfg(not(feature = "multithreading"))]
+        {
+            self.pawn_history[ph_idx][pt_idx][to_idx] as i32
+        }
+    }
+
+    /// Applies a (pre-clamped) gravity adjustment to a pawn-history cell.
+    #[inline(always)]
+    pub fn pawn_hist_apply(&mut self, ph_idx: usize, pt_idx: usize, to_idx: usize, adj: i32) {
+        #[cfg(feature = "multithreading")]
+        let entry = unsafe { &mut (*shared_hist::pawn_table())[ph_idx][pt_idx][to_idx] };
+        #[cfg(not(feature = "multithreading"))]
+        let entry = &mut self.pawn_history[ph_idx][pt_idx][to_idx];
+        let cur = *entry as i32;
+        *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
+    }
+
     /// Update pawn history for moves that caused beta cutoff.
     #[inline]
     pub fn update_pawn_history(
@@ -1352,8 +1416,7 @@ impl Searcher {
         let max_h = params::history_max_gravity();
         let clamped = bonus.clamp(-max_h, max_h);
         let ph_idx = (pawn_hash & PAWN_HISTORY_MASK) as usize;
-        let entry = &mut self.pawn_history[ph_idx][piece as usize][to_hash];
-        *entry += clamped - ((*entry * clamped.abs()) >> 14);
+        self.pawn_hist_apply(ph_idx, piece as usize, to_hash, clamped);
     }
 
     /// Update low ply history for moves that caused beta cutoff at low plies.
@@ -1373,10 +1436,20 @@ impl Searcher {
     pub fn check_time(&mut self) -> bool {
         // External/inter-thread stop request (helper threads, or an analysis abort
         // written directly into shared wasm memory by the main thread). Polled even
-        // with no time limit — unlimited searches must still be stoppable.
-        if self.hot.nodes & 8191 == 0 && GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
-            self.hot.stopped = true;
-            return true;
+        // with no time limit — unlimited searches must still be stoppable. Detached
+        // helpers additionally retire when their epoch is superseded (new position).
+        if self.hot.nodes & 8191 == 0 {
+            if GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                self.hot.stopped = true;
+                return true;
+            }
+            #[cfg(feature = "multithreading")]
+            if self.helper_epoch != 0
+                && HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != self.helper_epoch
+            {
+                self.hot.stopped = true;
+                return true;
+            }
         }
 
         // Fast-path: no time limit (unlimited analysis slices, offline test/perft helpers).
@@ -2315,13 +2388,10 @@ pub fn get_best_move_parallel(
     // Clear global stop flag
     GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
 
+    // Pool size (initThreadPool on wasm, RAYON_NUM_THREADS native) decides the thread count.
+    // Like Stockfish, gameplay MT gains come from best-thread VOTING at fixed time — not
+    // faster time-to-depth — so all pool threads participate.
     let num_threads = rayon::current_num_threads().max(1);
-
-    // WASM SharedArrayBuffer and Web Worker communication have significant overhead.
-    // Even 4 threads causes slowdown due to rayon/WebWorker scheduling costs.
-    // For WASM, limit to 2 threads max (main + 1 helper) for any positive benefit.
-    #[cfg(target_arch = "wasm32")]
-    let num_threads = num_threads.min(2);
 
     USE_SHARED_TT.store(num_threads > 1, std::sync::atomic::Ordering::Relaxed);
 
@@ -2338,17 +2408,17 @@ pub fn get_best_move_parallel(
         );
     }
 
-    // Initialize Shared TT for multithreaded search
-    #[cfg(feature = "multithreading")]
-    {
-        SHARED_TT.get_or_init(|| SharedTranspositionTable::new(64));
-    }
+    // Initialize Shared TT for multithreaded search (sized by set_hash_size, like the local TTs).
+    init_shared_tt();
 
     // Shared storage for thread results - all threads contribute to voting
     let results: Arc<Mutex<Vec<ThreadResult>>> =
         Arc::new(Mutex::new(Vec::with_capacity(num_threads)));
 
-    rayon::scope(|s| {
+    // in_place_scope, NOT scope: from outside the pool, `scope` migrates this closure onto a
+    // pool thread, so the "main" search would run on a random rayon worker (scattering the
+    // persistent thread-local searcher across threads move-to-move). in_place keeps it here.
+    rayon::in_place_scope(|s| {
         // Spawn helper threads (1..num_threads)
         for i in 1..num_threads {
             let results_clone = Arc::clone(&results);
@@ -2554,6 +2624,62 @@ pub fn get_best_move_parallel(
 /// Helper threads (thread_id > 0) skip the first move to distribute work.
 /// Uses persistent GLOBAL_SEARCHER - TT and histories persist across searches.
 /// Call reset_search_state() to clear for a new game.
+/// Analysis-helper lifecycle epoch. Bumping it (new position / stop) makes every running
+/// detached helper exit at its next slice boundary.
+#[cfg(feature = "multithreading")]
+pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Number of detached helpers currently searching (lets a resumed analysis — e.g. "go
+/// deeper" after the helpers retired at 'done' — know it must spawn a fresh batch).
+#[cfg(feature = "multithreading")]
+pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stops all detached analysis helpers (and any in-flight search) immediately.
+#[cfg(feature = "multithreading")]
+pub fn stop_analysis_helpers() {
+    HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Detached Lazy SMP analysis helper: ONE continuous unbounded iterative-deepening search
+/// on a rayon thread, feeding the shared TT while the main thread runs its sliced analysis.
+/// It searches straight through the worker's JS yields and retires within a node batch once
+/// its epoch is superseded (position change / stop) via check_time.
+#[cfg(feature = "multithreading")]
+pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
+    if HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != epoch {
+        return; // Superseded while queued behind the previous batch.
+    }
+    HELPERS_LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    game.recompute_piece_counts();
+    game.recompute_correction_hashes();
+
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let searcher = opt.get_or_insert_with(|| Searcher::new(u128::MAX));
+
+        // Unique RNG per helper for search diversity (mirrors get_best_move_threaded).
+        let base_seed = searcher.seed;
+        searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
+        searcher.new_search();
+
+        searcher.thread_id = thread_id;
+        searcher.helper_epoch = epoch;
+        // No time limit: only GLOBAL_STOP or an epoch bump ends this search.
+        searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
+        searcher.silent = true;
+        searcher.hot.timer.reset();
+        searcher.set_corrhist_mode(&mut game);
+        searcher.move_rule_limit = game
+            .game_rules
+            .move_rule_limit
+            .map_or(i32::MAX, |v| v as i32);
+
+        let _ = search_with_searcher(searcher, &mut game, MAX_PLY);
+        searcher.helper_epoch = 0;
+    });
+    HELPERS_LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn get_best_move_threaded(
     game: &mut GameState,
     max_depth: usize,
@@ -4446,7 +4572,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
-                let pawn_score = searcher.pawn_history[ph_idx][p_type as usize][hist_idx];
+                let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 reduction -= (hist_score + pawn_score) / 4096;
 
                 // Correction history adjustment
@@ -4492,7 +4618,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let idx = hash_move_dest(&m);
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let value = searcher.history[p_type as usize][idx]
-                    + searcher.pawn_history[ph_idx][p_type as usize][idx];
+                    + searcher.pawn_hist(ph_idx, p_type as usize, idx);
 
                 if value < hlp_history_reduce() {
                     // Extra reduction based on poor history
@@ -4619,7 +4745,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                     [prev_piece][prev_to_hash][cf_hash][ct_hash];
 
                                 let adj = (lmr_bonus * CONT_WEIGHTS[idx]) / 1024;
-                                *entry += adj - ((*entry * adj.abs()) >> 14);
+                                let cur = *entry as i32;
+                                *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
                             }
                         }
                     }
@@ -4766,7 +4893,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                                 let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
                                 // Use gravity-based update
-                                *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
+                                let cur = *entry as i32;
+                                *entry =
+                                    (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
                             }
                         }
                     }
@@ -4906,7 +5035,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                             let entry = &mut searcher.cont_history[idx][anc_cap][anc_ic][anc_piece]
                                 [anc_to][opponent_from_hash][opponent_to_hash];
-                            *entry += weighted_adj - ((*entry * weighted_adj.abs()) >> 14);
+                            let cur = *entry as i32;
+                            *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
                         }
                     }
                 }
@@ -4922,8 +5052,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                     let pawn_adj =
                         (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
-                    let pentry = &mut searcher.pawn_history[ph_idx][prev_pt][prev_idx];
-                    *pentry += pawn_adj - ((*pentry * pawn_adj.abs()) >> 14);
+                    searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
                 }
             }
         }
@@ -5455,6 +5584,137 @@ mod tests {
         assert!(CORRHIST_SIZE.is_power_of_two());
         assert!(LASTMOVE_CORRHIST_SIZE.is_power_of_two());
         assert!(LOW_PLY_HISTORY_ENTRIES.is_power_of_two());
+    }
+
+    /// Native replica of the wasm MT analyse path (lib.rs): Lazy SMP helpers filling the
+    /// shared TT while the main thread runs the MultiPV analysis. Panics here reproduce
+    /// (with real backtraces) the `unreachable` crashes seen on wasm rayon workers.
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn test_mt_analyse_with_helpers() {
+        reset_world_bounds();
+        let mut game = GameState::new();
+        game.setup_position_from_icn(crate::Variant::Chess.starting_icn());
+
+        GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+        init_shared_tt();
+        USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let helper_game = game.clone();
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for i in 1..4usize {
+                let mut game_clone = helper_game.clone();
+                handles.push(s.spawn(move || {
+                    let _ = get_best_move_threaded(&mut game_clone, 12, 2_000, 2_000, true, i, true);
+                }));
+            }
+
+            let mut cb = |_: &DepthInfo| {};
+            let result = analyse_position(&mut game, 10, 1, 2_000, 2, &mut cb);
+            GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(!result.lines.is_empty(), "MT analyse should produce PV lines");
+
+            for handle in handles {
+                handle.join().expect("helper thread panicked");
+            }
+        });
+
+        USE_SHARED_TT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Time-to-depth benchmark mirroring the wasm analysis worker's 180ms slice cadence.
+    /// Env-driven so each config runs in a fresh process:
+    ///   BENCH_MODE=st|mt_sliced|mt_full  BENCH_TT_MB=16  BENCH_THREADS=8  BENCH_DEPTH=18
+    /// Run: cargo test --release --features multithreading bench_time_to_depth -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(feature = "multithreading")]
+    fn bench_time_to_depth() {
+        let mode = std::env::var("BENCH_MODE").unwrap_or_else(|_| "st".into());
+        let tt_mb: usize = std::env::var("BENCH_TT_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
+        let threads: usize = std::env::var("BENCH_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+        let target: usize = std::env::var("BENCH_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(18);
+        #[allow(non_snake_case)]
+        let SLICE_MS: u128 = std::env::var("BENCH_SLICE").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
+
+        reset_world_bounds();
+        set_tt_size_mb(tt_mb);
+        let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+
+        // Startpos + a normal opening, like a real analysis position (BENCH_POS picks one).
+        let pos: usize = std::env::var("BENCH_POS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let moves = match pos {
+            1 => "5,2>5,4|5,7>5,5|7,1>6,3|2,8>3,6|6,1>2,5|7,8>6,6|4,2>4,3|6,8>2,4|3,1>7,5|4,8>5,7",
+            2 => "4,2>4,4|4,7>4,5|3,2>3,4|5,7>5,6|2,1>3,3|7,8>6,6|3,1>6,4|6,8>5,7",
+            3 => "7,1>6,3|4,7>4,5|3,2>3,4|3,7>3,6|4,2>4,4|7,8>6,6|2,1>3,3|5,7>5,6",
+            _ => panic!("unknown BENCH_POS"),
+        };
+        let icn = format!("{} {}", crate::Variant::Chess.starting_icn(), moves);
+        let mut game = GameState::new();
+        game.setup_position_from_icn(&icn);
+
+        let use_mt = mode.starts_with("mt");
+        if use_mt {
+            init_shared_tt();
+            USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let t0 = std::time::Instant::now();
+        let mut reached = 0usize;
+        let helper_game = game.clone();
+
+        let mut cb = |info: &DepthInfo| {
+            println!("depth {:2} at {:6}ms nodes {}", info.depth, t0.elapsed().as_millis(), info.nodes);
+        };
+
+        match mode.as_str() {
+            // Exactly the wasm worker loop: 180ms slices, resume at reached+1, no helpers.
+            "st" => {
+                while reached < target {
+                    let start = (reached + 1).min(target);
+                    GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let r = analyse_position(&mut game, target, start, SLICE_MS, 1, &mut cb);
+                    let d = r.lines.first().map_or(0, |l| l.depth);
+                    if d <= reached { break; }
+                    reached = d;
+                }
+            }
+            // The shipped wasm design: detached helpers spawned once, main sliced like the worker.
+            "mt_detached" => {
+                let epoch = HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                for i in 1..threads {
+                    let gc = helper_game.clone();
+                    rayon::spawn(move || helper_run(gc, epoch, i));
+                }
+                while reached < target {
+                    let start = (reached + 1).min(target);
+                    let r = analyse_position(&mut game, target, start, SLICE_MS, 1, &mut cb);
+                    let d = r.lines.first().map_or(0, |l| l.depth);
+                    if d <= reached { break; }
+                    reached = d;
+                }
+                stop_analysis_helpers();
+            }
+            // Helpers persist for the WHOLE search; main runs unsliced to target.
+            "mt_full" => {
+                GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+                rayon::in_place_scope(|s| {
+                    for i in 1..threads {
+                        let mut gc = helper_game.clone();
+                        s.spawn(move |_| {
+                            let _ = get_best_move_threaded(&mut gc, target, 600_000, 600_000, true, i, true);
+                        });
+                    }
+                    let _ = analyse_position(&mut game, target, 1, 0, 1, &mut cb);
+                    GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+            other => panic!("unknown BENCH_MODE {other}"),
+        }
+        println!("TOTAL {}ms mode={} tt={}MB threads={}", t0.elapsed().as_millis(), mode, tt_mb, threads);
+        USE_SHARED_TT.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ======================== Timer Tests ========================

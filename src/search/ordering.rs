@@ -95,7 +95,7 @@ pub fn score_move(
 
             // Pawn history heuristic
             let ph_idx = (game.pawn_hash & crate::search::PAWN_HISTORY_MASK) as usize;
-            score += 2 * searcher.pawn_history[ph_idx][pt_idx][idx];
+            score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
             // Continuation history
             let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
@@ -115,7 +115,8 @@ pub fn score_move(
                         let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                         let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece]
-                            [prev_to_hash][cur_from_hash][cur_to_hash];
+                            [prev_to_hash][cur_from_hash][cur_to_hash]
+                            as i32;
                         score += (val * CONT_WEIGHTS[idx]) / 1024;
                     }
                 }
@@ -174,33 +175,15 @@ pub fn sort_moves(
     }
 }
 
-/// Sort moves at root - always full sort since we examine all moves
-/// For Lazy SMP, helper threads (thread_id > 0) get slight scoring variation
-/// to explore different move orderings and maximize search diversity.
+/// Sort moves at root - always full sort since we examine all moves.
+#[inline]
 pub fn sort_moves_root(
     searcher: &Searcher,
     game: &GameState,
     moves: &mut MoveList,
     tt_move: &Option<Move>,
 ) {
-    let thread_id = searcher.thread_id;
-
-    if thread_id == 0 {
-        // Main thread: standard sorting
-        sort_moves(searcher, game, moves, 0, tt_move);
-    } else {
-        // Helper threads: add variation to move scores based on thread_id
-        // This makes different threads explore different move orderings
-        // while still respecting TT move priority
-        moves.sort_by_cached_key(|m| {
-            let base_score = score_move(searcher, game, m, 0, tt_move);
-            // Add pseudo-random variation based on thread_id and move hash
-            // The variation is small so TT moves and winning captures still stay on top
-            let move_hash = hash_move_dest(m) ^ hash_move_from(m);
-            let variation = ((move_hash.wrapping_mul(thread_id)) % 50) as i32;
-            -(base_score + variation)
-        });
-    }
+    sort_moves(searcher, game, moves, 0, tt_move);
 }
 
 /// MVV-LVA ordering key. Promotion gain is added to the victim value so

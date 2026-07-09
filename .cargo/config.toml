@@ -1,2 +1,19 @@
+# Multi-threaded wasm (Lazy SMP) is the DEFAULT build: `wasm-pack build --target web
+# --release` now produces the shared-memory MT engine with no extra flags or scripts.
+# build-std rebuilds std with the atomics target-feature (prebuilt std lacks it); the
+# link-args set up shared/imported memory + the TLS exports wasm-bindgen-rayon needs.
+# (rust-toolchain.toml already pins the nightly + rust-src + wasm target this requires.)
+[unstable]
+build-std = ["panic_abort", "std"]
+
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128"]
+rustflags = [
+    "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
+    "-C", "link-arg=--shared-memory",
+    "-C", "link-arg=--max-memory=2147483648",
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--export=__wasm_init_tls",
+    "-C", "link-arg=--export=__tls_size",
+    "-C", "link-arg=--export=__tls_align",
+    "-C", "link-arg=--export=__tls_base",
+]

@@ -177,6 +177,19 @@ pub struct LocalTranspositionTable {
 unsafe impl Sync for LocalTranspositionTable {}
 unsafe impl Send for LocalTranspositionTable {}
 
+/// Allocates `cap` zeroed buckets without a memset: TTBucket's all-zero bytes ARE its empty
+/// state, and calloc'd pages fault in lazily, so construction cost is independent of hash size.
+fn zeroed_buckets(cap: usize) -> Vec<TTBucket> {
+    unsafe {
+        let layout = std::alloc::Layout::array::<TTBucket>(cap).unwrap();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut TTBucket;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, cap, cap)
+    }
+}
+
 impl LocalTranspositionTable {
     pub fn new(size_mb: usize) -> Self {
         #[cfg(target_arch = "wasm32")]
@@ -191,7 +204,7 @@ impl LocalTranspositionTable {
             bits += 1;
         }
 
-        let mut _mem_anchor = vec![TTBucket::empty(); cap];
+        let mut _mem_anchor = zeroed_buckets(cap);
         let buckets = _mem_anchor.as_mut_ptr();
 
         LocalTranspositionTable {
@@ -283,13 +296,18 @@ impl LocalTranspositionTable {
 
         unsafe {
             let bucket_ptr = self.buckets.add(idx);
-            // Access entries directly without intermediate copy
-            let entries = &(*bucket_ptr).entries;
+            let entries = &mut (*bucket_ptr).entries;
 
             for e in entries {
                 if e.key16 != key16 || e.is_empty() {
                     continue;
                 }
+
+                // Refresh on hit (Stockfish tt.cpp): entries the search actually USES stay
+                // current-generation and win replacement fights; untouched stale entries age
+                // out. Without this, larger tables hoard dead deep entries at the expense of
+                // the live search's.
+                e.gen_bound = (self.generation & GENERATION_MASK) | (e.gen_bound & 0x07);
 
                 let score = value_from_tt(
                     score_from_i16(e.score16 as i32),
@@ -380,6 +398,7 @@ impl LocalTranspositionTable {
                     }
                     return;
                 }
+                // Priority = depth (+PV bonus), penalized by generation age.
                 let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
                     - (e.relative_age(self.generation) as i32);
                 if priority < worst {
