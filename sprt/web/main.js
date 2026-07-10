@@ -27,16 +27,22 @@ function currentThreadCounts() {
     return { o, n };
 }
 
-/** Shows the thread inputs only for engines that are actually MT, and keeps the
- * concurrency field auto-capped to what the machine's cores can run in parallel. */
-function updateMTUI() {
-    const anyMT = isOldEngineMT || isNewEngineMT;
+/** Re-derives ONLY the concurrency cap from the current per-engine thread counts. Called when
+ * the user edits a thread input — it must not touch time control or any other setting. */
+function recomputeConcurrencyCap() {
+    if (!isOldEngineMT && !isNewEngineMT) return;
+    const { o, n } = currentThreadCounts();
+    sprtConcurrencyEl.value = String(mtConcurrencyCap(o, n));
+}
 
+/** One-time MT setup on load: reveals the per-engine thread inputs, seeds the concurrency cap,
+ * adds the badge, and picks a fast default time control. Not called again on thread edits. */
+function updateMTUI() {
     // Show/enable each engine's thread input only when that build supports threads.
     sprtMtThreadsOldEl.closest('.form-group').style.display = isOldEngineMT ? '' : 'none';
     sprtMtThreadsNewEl.closest('.form-group').style.display = isNewEngineMT ? '' : 'none';
 
-    if (anyMT) {
+    if (isOldEngineMT || isNewEngineMT) {
         const { o, n } = currentThreadCounts();
         const cap = mtConcurrencyCap(o, n);
         sprtConcurrencyEl.value = String(cap);
@@ -52,7 +58,7 @@ function updateMTUI() {
         }
         log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
-        // Default to a fast STC for MT experiments.
+        // Default to a fast STC for MT experiments (once, at load — not on every thread edit).
         sprtTcMode.value = 'standard';
         sprtTimeControlEl.value = '3+0.03';
         updateTcUi();
@@ -73,9 +79,9 @@ const sprtMtThreadsOldEl = document.getElementById('sprtMtThreadsOld');
 const sprtMtThreadsNewEl = document.getElementById('sprtMtThreadsNew');
 const sprtHashOldEl = document.getElementById('sprtHashOld');
 const sprtHashNewEl = document.getElementById('sprtHashNew');
-// Changing either engine's thread count re-derives the concurrency cap so they stay consistent.
-sprtMtThreadsOldEl.addEventListener('change', () => updateMTUI());
-sprtMtThreadsNewEl.addEventListener('change', () => updateMTUI());
+// Changing either engine's thread count re-derives ONLY the concurrency cap — nothing else.
+sprtMtThreadsOldEl.addEventListener('change', recomputeConcurrencyCap);
+sprtMtThreadsNewEl.addEventListener('change', recomputeConcurrencyCap);
 const sprtMinGames = document.getElementById('sprtMinGames');
 const sprtMaxGames = document.getElementById('sprtMaxGames');
 const sprtMaxMoves = document.getElementById('sprtMaxMoves');

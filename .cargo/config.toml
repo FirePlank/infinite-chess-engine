@@ -12,6 +12,9 @@ rustflags = [
     "-C", "link-arg=--shared-memory",
     "-C", "link-arg=--max-memory=2147483648",
     "-C", "link-arg=--import-memory",
+    # Nightlies from 2026-05-06 dropped the implicit __heap_base export (rust-lang/rust#156174);
+    # wasm-bindgen threading needs it exported explicitly.
+    "-C", "link-arg=--export=__heap_base",
     "-C", "link-arg=--export=__wasm_init_tls",
     "-C", "link-arg=--export=__tls_size",
     "-C", "link-arg=--export=__tls_align",

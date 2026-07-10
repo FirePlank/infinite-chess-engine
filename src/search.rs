@@ -2674,6 +2674,7 @@ pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic
 /// Number of detached helpers currently searching (lets a resumed analysis — e.g. "go
 /// deeper" after the helpers retired at 'done' — know it must spawn a fresh batch).
 #[cfg(feature = "multithreading")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Stops all detached analysis helpers (and any in-flight search) immediately.
@@ -2688,6 +2689,7 @@ pub fn stop_analysis_helpers() {
 /// It searches straight through the worker's JS yields and retires within a node batch once
 /// its epoch is superseded (position change / stop) via check_time.
 #[cfg(feature = "multithreading")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
     if HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != epoch {
         return; // Superseded while queued behind the previous batch.
@@ -3453,7 +3455,16 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
         searcher.hot.min_depth_required = 0;
 
-        if on_depth.is_none() && !best_lines.is_empty() && best_lines[0].score.abs() > MATE_SCORE {
+        // Proven mate: deeper search can't change a forced result, so stop at THIS depth rather
+        // than grinding to max_depth (which misreports how deep the mate was actually found).
+        // Gameplay stops on the best line; analysis waits until every shown PV line is a mate.
+        let mate_resolved = !best_lines.is_empty()
+            && if on_depth.is_none() {
+                best_lines[0].score.abs() > MATE_SCORE
+            } else {
+                best_lines.iter().all(|l| l.score.abs() > MATE_SCORE)
+            };
+        if mate_resolved {
             break;
         }
 
