@@ -343,6 +343,12 @@ pub struct JsAnalysisInfo {
     /// TT fill in permille (0-1000).
     pub hashfull: u32,
     pub lines: Vec<JsAnalysisLine>,
+    /// Winning color at a terminal (game-over) position: `"w"` or `"b"` when the side
+    /// to move has been checkmated or lost all its pieces. Absent when the position is
+    /// not game-over or is a stalemate / draw. (Terminal itself is detected client-side
+    /// from `lines` being empty; this only adds *who* won.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub victor: Option<String>,
 }
 
 /// Formats a move as the site's compact ICN token, casing the promotion
@@ -392,6 +398,8 @@ fn build_js_info(info: &search::DepthInfo) -> JsAnalysisInfo {
         time_ms: info.time_ms as f64,
         hashfull: info.hashfull,
         lines: info.lines.iter().map(pv_line_to_js).collect(),
+        // Streamed per-depth updates always have lines, so they are never terminal.
+        victor: None,
     }
 }
 
@@ -1027,8 +1035,19 @@ impl Engine {
 
 impl Engine {
     /// Builds the final slice summary returned by [`Engine::analyse`].
-    fn analysis_result_to_js(&self, result: &search::MultiPVResult) -> JsValue {
+    fn analysis_result_to_js(&mut self, result: &search::MultiPVResult) -> JsValue {
         let depth = result.lines.first().map_or(0, |l| l.depth);
+
+        // Empty lines mean the search produced no move. If the root is genuinely
+        // terminal (not an early abort — `terminal_winner` re-checks for a legal move),
+        // report the winner so the client's eval gauge can fill with the victor's color
+        // instead of dropping to even. `None` for a stalemate/draw or a non-terminal root.
+        let victor = if result.lines.is_empty() {
+            self.game.terminal_winner().map(|c| c.to_str().to_string())
+        } else {
+            None
+        };
+
         let info = JsAnalysisInfo {
             depth: depth as u32,
             seldepth: depth as u32,
@@ -1037,6 +1056,7 @@ impl Engine {
             time_ms: 0.0,
             hashfull: result.stats.tt_fill_permille,
             lines: result.lines.iter().map(pv_line_to_js).collect(),
+            victor,
         };
         serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL)
     }

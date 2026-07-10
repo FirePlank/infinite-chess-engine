@@ -1527,6 +1527,28 @@ impl GameState {
         self.has_pieces(self.turn)
     }
 
+    /// Returns the winning color if this root is a decisive game-over — the side to
+    /// move has been checkmated, or has lost all of its pieces (loss-by-capture
+    /// variants). Returns `None` when the side to move still has a legal move (not
+    /// terminal) or the position is a stalemate / draw. The win-vs-draw split mirrors
+    /// the no-legal-moves scoring in the negamax terminal handler.
+    pub fn terminal_winner(&mut self) -> Option<PlayerColor> {
+        // Terminal iff no pseudo-legal move survives legality filtering. Cheap: this
+        // runs once per analysis slice, and terminal positions have few moves to test.
+        let pseudo = self.get_legal_moves();
+        let has_legal = pseudo.iter().any(|m| {
+            let undo = self.make_move(m);
+            let legal = !self.is_move_illegal();
+            self.undo_move(m, undo);
+            legal
+        });
+        if has_legal {
+            return None; // A legal move exists — not game over.
+        }
+        let lost = (self.is_in_check() && self.must_escape_check()) || !self.has_pieces(self.turn);
+        lost.then(|| self.turn.opponent()) // Side to move lost ⇒ opponent wins.
+    }
+
     /// Check if position is a draw by 50-move rule (or variant specific limit)
     pub fn is_fifty(&self) -> bool {
         // Don't check during null move search
