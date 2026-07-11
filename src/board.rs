@@ -519,12 +519,21 @@ impl Board {
         // Check if we are overwriting an existing piece
         let old_piece = tile.get_piece(idx);
 
-        // Update bitmasks
+        // Clear every plane for this square so a replaced piece (e.g. a
+        // capture victim) leaves no stale type bits behind.
         let bit = 1u64 << idx;
         tile.occ_all &= !bit;
         tile.occ_white &= !bit;
         tile.occ_black &= !bit;
         tile.occ_void &= !bit;
+        tile.occ_pawns &= !bit;
+        tile.occ_knights &= !bit;
+        tile.occ_bishops &= !bit;
+        tile.occ_rooks &= !bit;
+        tile.occ_queens &= !bit;
+        tile.occ_kings &= !bit;
+        tile.occ_diag_sliders &= !bit;
+        tile.occ_ortho_sliders &= !bit;
 
         tile.set_piece(idx, piece);
 
@@ -675,6 +684,42 @@ mod tests {
     #[test]
     fn test_piece_size() {
         assert_eq!(std::mem::size_of::<Piece>(), 1, "Piece should be 1 byte");
+    }
+
+    #[test]
+    fn test_set_piece_overwrite_clears_type_planes() {
+        use crate::tiles::{local_index, tile_coords};
+
+        // Knight overwrites rook (capture path in make_move): no rook/slider
+        // bits may survive on the square.
+        let mut board = Board::new();
+        board.set_piece(5, 5, Piece::new(PieceType::Rook, PlayerColor::Black));
+        board.set_piece(5, 5, Piece::new(PieceType::Knight, PlayerColor::White));
+
+        let (cx, cy) = tile_coords(5, 5);
+        let bit = 1u64 << local_index(5, 5);
+        let tile = board.tiles.get_tile(cx, cy).unwrap();
+        assert_eq!(tile.occ_rooks & bit, 0, "stale rook bit after overwrite");
+        assert_eq!(
+            tile.occ_ortho_sliders & bit,
+            0,
+            "stale ortho-slider bit after overwrite"
+        );
+        assert_eq!(tile.occ_black & bit, 0, "stale color bit after overwrite");
+        assert_ne!(tile.occ_knights & bit, 0, "knight bit missing");
+        assert_ne!(tile.occ_white & bit, 0, "white bit missing");
+
+        // Queen overwrites pawn: no pawn bit may survive (SEE reads occ_pawns).
+        board.set_piece(6, 6, Piece::new(PieceType::Pawn, PlayerColor::Black));
+        board.set_piece(6, 6, Piece::new(PieceType::Queen, PlayerColor::White));
+
+        let (cx, cy) = tile_coords(6, 6);
+        let bit = 1u64 << local_index(6, 6);
+        let tile = board.tiles.get_tile(cx, cy).unwrap();
+        assert_eq!(tile.occ_pawns & bit, 0, "stale pawn bit after overwrite");
+        assert_ne!(tile.occ_queens & bit, 0, "queen bit missing");
+        assert_ne!(tile.occ_diag_sliders & bit, 0, "diag-slider bit missing");
+        assert_ne!(tile.occ_ortho_sliders & bit, 0, "ortho-slider bit missing");
     }
 
     #[test]
