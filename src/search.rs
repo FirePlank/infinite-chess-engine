@@ -4372,8 +4372,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         let see_margin = (see_capture_linear() * depth as i32
                             + capt_hist / see_capture_hist_div())
                         .max(0);
-                        let see_value = static_exchange_eval(game, &m);
-                        if see_value < -see_margin {
+                        if !see_ge(game, &m, -see_margin) {
                             continue;
                         }
                     }
@@ -4408,8 +4407,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // SEE pruning for quiets: skip moves with bad SEE
                 // Threshold: -25 * adj_lmr_depth²
                 let see_threshold = -see_quiet_quad() * adj_lmr_depth * adj_lmr_depth;
-                let see_value = static_exchange_eval(game, &m);
-                if see_value < see_threshold {
+                if !see_ge(game, &m, see_threshold) {
                     continue;
                 }
             }
