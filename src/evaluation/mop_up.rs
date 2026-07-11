@@ -127,6 +127,37 @@ const SLIDER_STANDOFF_CAP: i64 = 40;
 // itself. Weighted above the sandwich so two walls prefer the front+side
 // box over the parallel corridor a runner can race along forever.
 const ORTHO_FLIGHT_SIDE: i32 = 70;
+
+// ===== Dedicated K+2R vs K (two-rook lawnmower) =====
+// Two rooks + our king mate a lone king on the unbounded board by the rolling
+// (lawnmower) technique: the rooks cut the two escape lines AHEAD of the
+// fleeing king while our king walls the near two sides, so the king is boxed
+// and driven into our king. The generic net treats the rooks as independent
+// cut lines and settles for a safe two-file corridor the king runs up forever;
+// this case-specific term instead scores the FINITE box and its perimeter, so
+// the only way the enemy can stop the box shrinking is to flee toward our
+// king — which is the win.
+/// A confining side (rook line or our king) counts only within this range.
+const TR_SIDE_RANGE: i64 = 200;
+/// Each of the four sides the king is bounded on.
+const TR_SIDE_CLOSED: i32 = 150;
+/// All four sides bounded: a finite cage exists.
+const TR_FULL_CAGE: i32 = 400;
+/// An open side is an escape lane; the search must slam it shut.
+const TR_OPEN_SIDE: i32 = 300;
+/// A closed side scores higher the tighter its wall sits, out to this range.
+const TR_TIGHT_NEAR: i64 = 24;
+const TR_TIGHT_STEP: i32 = 6;
+/// Our king marching in, per Chebyshev step closer (up to TR_APPROACH_MAX).
+const TR_APPROACH_STEP: i32 = 12;
+const TR_APPROACH_MAX: i64 = 100;
+const TR_OPPOSITION: i32 = 200;
+/// Connected (mutually defended) rooks are safe from harassment.
+const TR_CONNECTED: i32 = 80;
+/// A rook the enemy king attacks that neither our king nor its partner
+/// defends is hanging — refuse the sacrifice unconditionally.
+const TR_HANG: i32 = 800;
+
 const LEAPER_ENGAGE_STEP: i32 = 8;
 const LEAPER_ENGAGE_CAP: i64 = 24;
 const OPPOSITE_SIDE_BONUS: i32 = 10;
@@ -999,6 +1030,91 @@ struct KingRelation {
     king_dist: i64,
 }
 
+/// Dedicated K+2R-vs-K evaluation (unbounded board), winner's perspective.
+/// The enemy king is bounded on each of the four sides by whichever is nearer,
+/// a rook's cutting line or our king; a fully bounded king is a finite cage,
+/// and shrinking that cage's perimeter drives the king toward our king (the
+/// only side it can flee without the rooks capping it). Rook safety is scored
+/// explicitly so the search never drifts a rook into capture.
+fn evaluate_two_rook_drive(
+    kr: KingRelation,
+    enemy_king: &Coordinate,
+    our_king: &Coordinate,
+    r1: (i64, i64),
+    r2: (i64, i64),
+) -> i32 {
+    let (ex, ey) = (enemy_king.x, enemy_king.y);
+    let (okx, oky) = (our_king.x, our_king.y);
+    let mut bonus = 0i32;
+
+    // Closing distance on each side: nearest rook cut-line or our king.
+    let inf = i64::MAX;
+    let mut up = inf;
+    let mut down = inf;
+    let mut right = inf;
+    let mut left = inf;
+    let mut consider = |x: i64, y: i64| {
+        if y > ey {
+            up = up.min(y - ey);
+        }
+        if y < ey {
+            down = down.min(ey - y);
+        }
+        if x > ex {
+            right = right.min(x - ex);
+        }
+        if x < ex {
+            left = left.min(ex - x);
+        }
+    };
+    // A rook cuts with BOTH its rank and file; our king walls the sides it is on.
+    consider(r1.0, r1.1);
+    consider(r2.0, r2.1);
+    consider(okx, oky);
+
+    // Score each side: a bounded side rewards more the tighter its wall sits;
+    // an open side is an escape lane the search must slam shut.
+    for d in [up, down, right, left] {
+        if d <= TR_SIDE_RANGE {
+            bonus += TR_SIDE_CLOSED + (TR_TIGHT_NEAR - d).max(0) as i32 * TR_TIGHT_STEP;
+        } else {
+            bonus -= TR_OPEN_SIDE;
+        }
+    }
+    let caged = up <= TR_SIDE_RANGE
+        && down <= TR_SIDE_RANGE
+        && right <= TR_SIDE_RANGE
+        && left <= TR_SIDE_RANGE;
+    if caged {
+        bonus += TR_FULL_CAGE;
+    }
+
+    // Our king marches in — the near walls of the cage.
+    bonus += (TR_APPROACH_MAX - kr.king_dist.min(TR_APPROACH_MAX)) as i32 * TR_APPROACH_STEP;
+    if kr.king_dist <= 2 {
+        bonus += TR_OPPOSITION;
+    }
+
+    // Rook safety. Connected rooks (shared rank/file, clear vs a bare king)
+    // defend each other; a rook the enemy king attacks and no friendly unit
+    // guards is hanging.
+    let connected = r1.0 == r2.0 || r1.1 == r2.1;
+    if connected {
+        bonus += TR_CONNECTED;
+    }
+    for (rx, ry) in [r1, r2] {
+        let attacked = (rx - ex).abs() <= 1 && (ry - ey).abs() <= 1;
+        if attacked {
+            let king_guards = (rx - okx).abs() <= 1 && (ry - oky).abs() <= 1;
+            if !king_guards && !connected {
+                bonus -= TR_HANG;
+            }
+        }
+    }
+
+    bonus
+}
+
 /// Unified mating-net evaluation for the piece-coordination (unbounded) model.
 ///
 /// Scores are tiered so the search always has a monotone progress gradient:
@@ -1028,6 +1144,30 @@ fn evaluate_mating_net(
     let ex = enemy_king.x;
     let ey = enemy_king.y;
     let mut bonus: i32 = 0;
+
+    // Pure K+2R vs a bare king: the rolling lawnmower needs our king as the
+    // near wall, so it has its own dedicated drive evaluation (the generic
+    // tiers settle for a safe corridor the king runs up forever).
+    if bareish
+        && material.ortho_count == 2
+        && material.total_non_pawn_pieces == 2
+        && material.queen_count == 0
+        && material.amazon_count == 0
+        && material.chancellor_count == 0
+        && material.archbishops == 0
+        && material.diag_light == 0
+        && material.diag_dark == 0
+        && pieces.len() == 2
+        && let Some(ok) = our_king
+    {
+        return evaluate_two_rook_drive(
+            kr,
+            enemy_king,
+            ok,
+            (pieces[0].x, pieces[0].y),
+            (pieces[1].x, pieces[1].y),
+        );
+    }
 
     // Leaper-led armies (one wall or none, no queen) mate with the moving
     // pocket: king pushes from behind, leapers lead ahead of the runner.
@@ -2002,12 +2142,14 @@ mod tests {
 
     #[test]
     fn test_smart_mop_up_axis_sandwich_bonus() {
-        // Two rooks above and below the enemy king (vertical sandwich) should
-        // score higher than two rooks both above (no sandwich).
+        // Three rooks (so the position uses the generic net, not the dedicated
+        // K+2R drive): rooks above and below the enemy king (vertical sandwich)
+        // should score higher than rooks both above (no sandwich). The third
+        // rook is placed identically in both to isolate the sandwich term.
         let sandwich =
-            create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,2|R10,18");
+            create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,2|R10,18|R60,10");
         let no_sandwich =
-            create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,18|R10,19");
+            create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,18|R10,19|R60,10");
         let ek = Coordinate::new(10, 10);
         let s_sand = evaluate_lone_king_endgame(
             &sandwich,
