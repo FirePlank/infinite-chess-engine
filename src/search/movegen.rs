@@ -132,6 +132,7 @@ impl StagedMoveGen {
         game: &GameState,
     ) -> Self {
         let is_in_check = Self::is_in_check(game);
+        let tt_move = tt_move.map(|m| Self::reconstruct_castling_partner(game, m));
         let tt_valid = tt_move.is_some() && Self::is_pseudo_legal(game, &tt_move.unwrap());
 
         // Set initial stage based on TT move availability
@@ -171,6 +172,7 @@ impl StagedMoveGen {
         debug_assert!(!Self::is_in_check(game), "ProbCut not used when in check");
 
         // TT move valid only if it's a capture and pseudo-legal
+        let tt_move = tt_move.map(|m| Self::reconstruct_castling_partner(game, m));
         let tt_valid = tt_move.is_some()
             && Self::is_capture(game, &tt_move.unwrap())
             && Self::is_pseudo_legal(game, &tt_move.unwrap());
@@ -267,6 +269,38 @@ impl StagedMoveGen {
     #[inline]
     fn is_excluded(&self, m: &Move) -> bool {
         Self::moves_match(m, &self.excluded_move)
+    }
+
+    /// TT/killer moves are decoded without their castling rook partner, so a
+    /// castling move (a royal stepping two squares) arrives with
+    /// `rook_coord: None` and fails pseudo-legality. Rebuild the partner from
+    /// the current position using the same nearest-eligible-partner rule move
+    /// generation uses, so the castling move validates and is tried rather than
+    /// being silently dropped (a generated castling move otherwise matches the
+    /// invalid TT move on from/to and gets skipped as "already tried").
+    fn reconstruct_castling_partner(game: &GameState, mut m: Move) -> Move {
+        if m.rook_coord.is_some() || !m.piece.piece_type().is_royal() {
+            return m;
+        }
+        let dx = m.to.x - m.from.x;
+        if dx.abs() != 2 {
+            return m;
+        }
+        let dir = if dx > 0 { 1i64 } else { -1i64 };
+        if let Some(row) = game.spatial_indices.rows.get(&m.from.y) {
+            if let Some((partner_x, packed)) = row.find_nearest(m.to.x, dir) {
+                let partner = crate::board::Piece::from_packed(packed);
+                let partner_coord = crate::board::Coordinate::new(partner_x, m.from.y);
+                if partner.color() == m.piece.color()
+                    && partner.piece_type() != PieceType::Pawn
+                    && !partner.piece_type().is_royal()
+                    && game.special_rights.contains(&partner_coord)
+                {
+                    m.rook_coord = Some(partner_coord);
+                }
+            }
+        }
+        m
     }
 
     #[inline]
@@ -1056,6 +1090,40 @@ mod tests {
             &no_enemy_royal,
             &queen
         ));
+    }
+
+    #[test]
+    fn tt_castling_move_survives_missing_rook_coord() {
+        // King e1 and rook h1 both retain rights; kingside castling is legal.
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1+|R8,1+|k5,8");
+
+        let castle = game
+            .get_legal_moves()
+            .into_iter()
+            .find(|m| m.piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() == 2)
+            .expect("kingside castling should be legal");
+        assert!(castle.rook_coord.is_some(), "generated castling has a partner");
+
+        // Simulate the TT/killer round-trip, which drops the rook partner.
+        let tt_decoded = Move {
+            rook_coord: None,
+            ..castle
+        };
+
+        let searcher = Searcher::new(1000);
+        let mut picker = StagedMoveGen::new(Some(tt_decoded), 0, 2, &searcher, &game);
+
+        let mut found = false;
+        while let Some(m) = picker.next(&game, &searcher) {
+            if m.from == castle.from && m.to == castle.to {
+                found = true;
+                assert!(
+                    m.rook_coord.is_some(),
+                    "emitted castling move lost its rook partner"
+                );
+            }
+        }
+        assert!(found, "castling move was dropped when it was the TT move");
     }
 
     #[test]
