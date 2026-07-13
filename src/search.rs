@@ -745,6 +745,72 @@ pub struct ThreadResult {
     pub thread_id: usize,
 }
 
+/// Pick the winning thread's result index by weighted voting — a faithful port
+/// of Stockfish `get_best_thread` (stockfish-classic/src/thread.cpp).
+///
+/// Each move accrues `(score - minScore + 14) * completedDepth` votes. Then:
+/// - if the current best is decisive (proven win or loss), the higher score
+///   wins — shortest mate when winning, longest resistance / escape when losing;
+/// - otherwise switch to a proven win, or to a non-losing thread with more votes,
+///   but never to a proven loss.
+///
+/// The move key includes the promotion type so distinct promotions to the same
+/// square don't share votes (a two-square castling move is already distinct via
+/// its destination coordinate).
+#[cfg(feature = "multithreading")]
+fn select_best_thread(all_results: &[ThreadResult]) -> usize {
+    let min_score = all_results.iter().map(|r| r.score).min().unwrap_or(0);
+
+    let move_key = |m: &Move| {
+        (
+            m.from.x,
+            m.from.y,
+            m.to.x,
+            m.to.y,
+            m.promotion.map_or(0u8, |pt| pt as u8),
+        )
+    };
+
+    let mut votes: rustc_hash::FxHashMap<(i64, i64, i64, i64, u8), i64> =
+        rustc_hash::FxHashMap::default();
+    for r in all_results {
+        let vote_value = (r.score - min_score + 14) as i64 * r.completed_depth as i64;
+        *votes.entry(move_key(&r.best_move)).or_insert(0) += vote_value;
+    }
+
+    let thread_voting_value =
+        |r: &ThreadResult| -> i64 { (r.score - min_score + 14) as i64 * r.completed_depth as i64 };
+
+    let mut best_idx = 0;
+    for (i, r) in all_results.iter().enumerate() {
+        let best = &all_results[best_idx];
+
+        let best_vote = votes.get(&move_key(&best.best_move)).copied().unwrap_or(0);
+        let new_vote = votes.get(&move_key(&r.best_move)).copied().unwrap_or(0);
+
+        let best_in_proven_win = is_win(best.score);
+        let new_in_proven_win = is_win(r.score);
+        let best_in_proven_loss = best.score != -INFINITY && is_loss(best.score);
+
+        // Prefer threads with a non-truncated PV on exact vote ties.
+        let better_voting_with_pv = thread_voting_value(r) * (if r.pv_length > 2 { 1 } else { 0 })
+            > thread_voting_value(best) * (if best.pv_length > 2 { 1 } else { 0 });
+
+        if best_in_proven_win || best_in_proven_loss {
+            if r.score > best.score {
+                best_idx = i;
+            }
+        } else if new_in_proven_win
+            || (!is_loss(r.score)
+                && (new_vote > best_vote || (new_vote == best_vote && better_voting_with_pv)))
+        {
+            best_idx = i;
+        }
+    }
+
+    best_idx
+}
+
 thread_local! {
     pub(crate) static GLOBAL_SEARCHER: RefCell<Option<Searcher>> = const { RefCell::new(None) };
 }
@@ -2499,7 +2565,6 @@ pub fn get_best_move_parallel(
     silent: bool,
     is_soft_limit: bool,
 ) -> Option<(Move, i32, SearchStats)> {
-    use rustc_hash::FxHashMap;
     use std::sync::{Arc, Mutex};
 
     // Clear global stop flag
@@ -2618,83 +2683,8 @@ pub fn get_best_move_parallel(
         return None;
     }
 
-    // ========================================================================
-    // Thread Voting Algorithm
-    // ========================================================================
-
-    // Step 1: Find minimum score among all threads
-    let min_score = all_results.iter().map(|r| r.score).min().unwrap_or(0);
-
-    // Step 2: Build vote map - each move gets weighted votes from threads
-    // Vote weight = (score - minScore + 14) * completedDepth
-    // The +14 ensures even the worst-scoring thread contributes positively
-    let mut votes: FxHashMap<(i64, i64, i64, i64), i64> = FxHashMap::default();
-
-    for r in &all_results {
-        let move_key = (
-            r.best_move.from.x,
-            r.best_move.from.y,
-            r.best_move.to.x,
-            r.best_move.to.y,
-        );
-        let vote_value = (r.score - min_score + 14) as i64 * r.completed_depth as i64;
-        *votes.entry(move_key).or_insert(0) += vote_value;
-    }
-
-    // Step 3: Select best thread
-    let mut best_idx = 0;
-
-    // Helper to compute voting value for a thread
-    let thread_voting_value =
-        |r: &ThreadResult| -> i64 { (r.score - min_score + 14) as i64 * r.completed_depth as i64 };
-
-    for (i, r) in all_results.iter().enumerate() {
-        let best = &all_results[best_idx];
-
-        let best_move_key = (
-            best.best_move.from.x,
-            best.best_move.from.y,
-            best.best_move.to.x,
-            best.best_move.to.y,
-        );
-        let new_move_key = (
-            r.best_move.from.x,
-            r.best_move.from.y,
-            r.best_move.to.x,
-            r.best_move.to.y,
-        );
-
-        let best_vote = votes.get(&best_move_key).copied().unwrap_or(0);
-        let new_vote = votes.get(&new_move_key).copied().unwrap_or(0);
-
-        let best_in_proven_win = is_win(best.score);
-        let new_in_proven_win = is_win(r.score);
-        let best_in_proven_loss = best.score != -INFINITY && is_loss(best.score);
-        let new_in_proven_loss = r.score != -INFINITY && is_loss(r.score);
-
-        // Prefer threads with longer PVs (more trustworthy)
-        let better_voting_with_pv = thread_voting_value(r) * (if r.pv_length > 2 { 1 } else { 0 })
-            > thread_voting_value(best) * (if best.pv_length > 2 { 1 } else { 0 });
-
-        if best_in_proven_win {
-            // Already in a winning position: pick the fastest mate
-            if r.score > best.score {
-                best_idx = i;
-            }
-        } else if best_in_proven_loss {
-            // In a losing position: pick the longest resistance
-            if new_in_proven_loss && r.score < best.score {
-                best_idx = i;
-            }
-        } else if new_in_proven_win
-            || new_in_proven_loss
-            || (!is_loss(r.score)
-                && (new_vote > best_vote || (new_vote == best_vote && better_voting_with_pv)))
-        {
-            best_idx = i;
-        }
-    }
-
+    // Select the winning thread by Stockfish-style weighted voting.
+    let best_idx = select_best_thread(&all_results);
     let best_result = &all_results[best_idx];
 
     // Aggregate total nodes from all threads for accurate NPS reporting
@@ -6054,6 +6044,97 @@ mod tests {
     }
 
     // ======================== get_best_move Tests ========================
+
+    #[cfg(feature = "multithreading")]
+    fn thread_result(
+        from: (i64, i64),
+        to: (i64, i64),
+        promo: Option<PieceType>,
+        score: i32,
+        depth: usize,
+    ) -> ThreadResult {
+        ThreadResult {
+            best_move: Move {
+                from: Coordinate::new(from.0, from.1),
+                to: Coordinate::new(to.0, to.1),
+                piece: Piece::new(PieceType::Pawn, PlayerColor::White),
+                promotion: promo,
+                rook_coord: None,
+            },
+            score,
+            completed_depth: depth,
+            pv_length: 5,
+            nodes: 0,
+            thread_id: 0,
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn select_best_thread_matches_stockfish_voting() {
+        let win = MATE_VALUE - 20; // proven win
+        let loss = -MATE_VALUE + 20; // proven loss
+        let long_loss = -MATE_VALUE + 60; // loss, but longer resistance
+
+        // (a) A losing best must yield to a normal (or winning) thread.
+        assert_eq!(
+            select_best_thread(&[
+                thread_result((1, 1), (1, 2), None, loss, 10),
+                thread_result((2, 2), (2, 3), None, 50, 10),
+            ]),
+            1,
+            "a normal thread must override a losing best"
+        );
+
+        // (b) A normal best must never be replaced by a proven loss.
+        assert_eq!(
+            select_best_thread(&[
+                thread_result((1, 1), (1, 2), None, 50, 10),
+                thread_result((2, 2), (2, 3), None, loss, 10),
+            ]),
+            0,
+            "a proven loss must not override a normal best"
+        );
+
+        // (c) Between two losses, pick the longest resistance (higher score).
+        assert_eq!(
+            select_best_thread(&[
+                thread_result((1, 1), (1, 2), None, loss, 10),
+                thread_result((2, 2), (2, 3), None, long_loss, 10),
+            ]),
+            1,
+            "should pick the longest resistance, not the faster loss"
+        );
+
+        // Winning best: pick the fastest mate (higher score).
+        assert_eq!(
+            select_best_thread(&[
+                thread_result((1, 1), (1, 2), None, win, 10),
+                thread_result((2, 2), (2, 3), None, win + 5, 10),
+            ]),
+            1,
+            "should pick the fastest mate"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn select_best_thread_distinguishes_promotions() {
+        // Two threads promote to Q vs N on the same square. If promotion were
+        // ignored they would share a vote key and their combined weight (280)
+        // would beat the a1a2 thread (240). Keyed by promotion, each has 140,
+        // so the higher-voted a1a2 move wins.
+        let results = [
+            thread_result((5, 7), (5, 8), Some(PieceType::Queen), 50, 10),
+            thread_result((5, 7), (5, 8), Some(PieceType::Knight), 50, 10),
+            thread_result((1, 1), (1, 2), None, 60, 10),
+        ];
+        assert_eq!(
+            select_best_thread(&results),
+            2,
+            "distinct promotions must not pool their votes"
+        );
+    }
 
     #[test]
     fn test_get_best_move_simple_position() {
