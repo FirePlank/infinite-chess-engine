@@ -2452,8 +2452,13 @@ fn search_with_searcher(
             searcher.hot.stopped = true;
         }
 
-        // Check if we found mate or time is up
-        if searcher.hot.stopped || best_score.abs() > MATE_SCORE {
+        // A bare mate score isn't a stop condition — a deeper search may find a shorter
+        // mate. Only bail early when mate-in-3 or worse, and only the time-managed main
+        // thread does so (helpers and fixed-depth/infinite searches keep going).
+        let mate_shortcut = searcher.thread_id == 0
+            && searcher.hot.time_limit_ms != u128::MAX
+            && (best_score >= mate_in(3) || best_score == mated_in(2));
+        if searcher.hot.stopped || mate_shortcut {
             break;
         }
 
@@ -3523,14 +3528,16 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
         searcher.hot.min_depth_required = 0;
 
-        // Proven mate: deeper search can't change a forced result, so stop at THIS depth rather
-        // than grinding to max_depth (which misreports how deep the mate was actually found).
-        // Gameplay stops on the best line; analysis waits until every shown PV line is a mate.
-        let mate_resolved = !best_lines.is_empty()
-            && if on_depth.is_none() {
-                best_lines[0].score.abs() > MATE_SCORE
-            } else {
-                best_lines.iter().all(|l| l.score.abs() > MATE_SCORE)
+        // A mate score isn't itself a stop condition — a deeper search may find a shorter
+        // mate. Only bail early once every shown line mates within 3 plies (or we're
+        // getting mated in 2), and only under time management, not analysis/fixed-depth.
+        let time_managed = searcher.hot.time_limit_ms != u128::MAX;
+        let mate_resolved = time_managed
+            && !best_lines.is_empty()
+            && {
+                let worst = best_lines.last().unwrap().score;
+                let best = best_lines[0].score;
+                worst >= mate_in(3) || best == mated_in(2)
             };
         if mate_resolved {
             break;
