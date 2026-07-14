@@ -81,6 +81,65 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         None => (0, game.get_piece_value(m.piece.piece_type(), mover_color)),
     };
 
+    /// Helper function to determine if a piece can attack the target legally.
+    /// Accounts for pinned pieces.
+    #[inline(always)]
+    fn can_piece_legally_attack(
+        game: &GameState,
+        pos: &Coordinate,
+        target: &Coordinate,
+        color: PlayerColor,
+    ) -> bool {
+        // If the opponent's win condition does not require check evasion, then the piece can attack freely.
+        let opponent_win_condition = if color == PlayerColor::White {
+            game.game_rules.black_win_condition
+        } else {
+            game.game_rules.white_win_condition
+        };
+        if !opponent_win_condition.requires_check_evasion() {
+            return true
+        }
+
+        // Is there a king of the same color on the board?
+        let king_pos = if color == PlayerColor::White {
+            game.white_royals.first().copied()
+        } else {
+            game.black_royals.first().copied()
+        };
+        let Some(king) = king_pos else {
+            // No king - can't be pinned
+            return true;
+        };
+
+        // Is piece on a slider ray from king?
+        let dx = pos.x - king.x;
+        let dy = pos.y - king.y;
+
+        let on_slider_ray = dx == 0  // Vertical (same file)
+            || dy == 0               // Horizontal (same rank)  
+            || dx.abs() == dy.abs(); // Diagonal
+
+        if !on_slider_ray {
+            // Cannot be pinned
+            return true;
+        }
+
+        // If it's not pinned, it can attack, otherwise, check if the attack
+        // direction is on the same line with the pinned direction.
+        let pin_direction = if color == PlayerColor::White {
+            game.pinned_white.get(&(pos.x, pos.y))
+        } else {
+            game.pinned_black.get(&(pos.x, pos.y))
+        };
+
+        if let Some(&(pdx, pdy)) = pin_direction {
+            (target.x - pos.x) * pdy == (target.y - pos.y) * pdx
+        } else {
+            true
+        }
+    }
+
+    /// Represents an attacker looking on the target square.
     #[derive(Clone, Copy, Debug)]
     struct Attacker {
         value: i32,
@@ -313,7 +372,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             }
         }
 
-        if let Some(i) = best_i {
+        if let Some(mut i) = best_i {
             // A royal piece cannot recapture into a square the opponent still
             // defends (that would be moving into check). Since a royal's value is
             // the highest, it is only ever picked as the last attacker for its
@@ -324,6 +383,28 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             {
                 break;
             }
+
+            // If the piece is pinned, do a full rescan of the best attacker that is not pinned
+            if !can_piece_legally_attack(game, &attackers[i].pos, &m.to, attackers[i].color) {
+                let mut found_nothing = true;
+                best_val = i32::MAX;
+
+                for j in 0..attackers.len() {
+                    let a = &attackers[j];
+                    if a.color == side && a.value < best_val
+                        && can_piece_legally_attack(game, &a.pos, &m.to, a.color)
+                    {
+                        found_nothing = false;
+                        best_val = a.value;
+                        i = j;
+                    }
+                }
+
+                if found_nothing {
+                    break;
+                }
+            }
+
             let chosen = attackers.swap_remove(i);
             gain[depth] = occ_val - gain[depth - 1];
             occ_val = best_val;
@@ -620,6 +701,75 @@ mod tests {
             "Rook battery should win a rook through the vacated square"
         );
         assert!(see_ge(&game, &m, 0));
+    }
+
+    #[test]
+    fn test_see_pinned_piece_cannot_recapture() {
+        // White has a bishop on (1,5) and a rook on (3,3) that are looking at the
+        // black bishop on (3,7), which is only defended by the black queen at
+        // (3,8). However, the black bishop at (6,6) pins the white rook to the
+        // white king at (1,1), preventing it from recapturing the bishop because
+        // it would expose the king to check. Without pin detection, the black
+        // queen is captured by the pinned rook, which is an illegal move.
+        let mut game = create_test_game_from_icn("w (8;q|1;q) K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6");
+        game.turn = PlayerColor::White;
+
+        let m = Move::new(
+            Coordinate::new(1, 5),
+            Coordinate::new(3, 7),
+            Piece::new(PieceType::Bishop, PlayerColor::White),
+        );
+
+        assert_eq!(
+            static_exchange_eval_impl(&game, &m),
+            0,
+            "The white rook is pinned to the white king; the black queen should take the bishop."
+        );
+    }
+
+    #[test]
+    fn test_see_piece_is_not_pinned_in_all_pieces_captured() {
+        // Same condition as the test above but this time, the rook is not pinned
+        // since the king can be captured in AllRoyalsCaptured win condition.
+        let mut game = create_test_game_from_icn("w (8;q|1;q) allroyalscaptured K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6");
+        game.turn = PlayerColor::White;
+
+        let m = Move::new(
+            Coordinate::new(1, 5),
+            Coordinate::new(3, 7),
+            Piece::new(PieceType::Bishop, PlayerColor::White),
+        );
+
+        assert_ne!(
+            static_exchange_eval_impl(&game, &m),
+            0,
+            "The black queen should not take the bishop, because the rook is not pinned to the king in AllPiecesCaptured."
+        );
+    }
+
+    #[test]
+    fn test_see_pinned_piece_can_recapture_on_same_line() {
+        // White has a bishop on (1,5) and a rook on (3,3) that are looking at the
+        // black bishop on (3,7), which is only defended by the black queen at
+        // (3,8). It is fine for the white rook to take the black bishop because
+        // if the black queen takes, the white bishop can take the queen even if
+        // it's "pinned" to the king at (0,4) in the same pin direction.
+        let mut game = create_test_game_from_icn("w 1 (8;q|1;q) K0,4|R3,3|B1,5|b3,7|q3,8|k1,10");
+        game.turn = PlayerColor::White;
+
+        let m = Move::new(
+            Coordinate::new(3, 3),
+            Coordinate::new(3, 7),
+            Piece::new(PieceType::Rook, PlayerColor::White),
+        );
+
+        let b = game.get_piece_value(PieceType::Bishop, PlayerColor::White);
+        assert_eq!(
+            static_exchange_eval_impl(&game, &m),
+            b,
+            "The black queen should not take the bishop because the pinned white bishop can recapture the black queen, \
+            as it is in the same direction as the pin."
+        );
     }
 
     #[test]
