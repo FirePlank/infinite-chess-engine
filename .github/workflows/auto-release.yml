@@ -1,0 +1,94 @@
+name: Auto Release
+
+# Accumulates the SPRT Elo reported in commit messages and cuts a strength-based
+# version bump when the gain since the last release crosses a threshold:
+#   >= 150 Elo since the last vX.0.0  -> major (X+1).0.0   (checked first)
+#   >= 30  Elo since the last release -> minor X.(Y+1).0
+# On a bump it builds the wasm engine and attaches pkg/ as a zip to the release.
+# See scripts/elo_release.py for the parsing and decision logic.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Never react to the bot's own version-bump commit.
+    if: ${{ !contains(github.event.head_commit.message, '[skip-release]') }}
+
+    steps:
+      - name: Checkout full history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Decide version bump
+        id: decide
+        run: python scripts/elo_release.py --notes-file RELEASE_NOTES.md
+
+      # --- Everything below runs only when a release is warranted. Cargo.toml
+      # already carries the bumped version, so the wasm build embeds it. ---
+
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        if: steps.decide.outputs.release == 'true'
+        run: rustup show
+
+      - name: Cache Rust build artifacts
+        if: steps.decide.outputs.release == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        if: steps.decide.outputs.release == 'true'
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build wasm engine (multithreaded, default)
+        if: steps.decide.outputs.release == 'true'
+        run: wasm-pack build --target web --release
+
+      - name: Zip pkg/
+        if: steps.decide.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          cd pkg
+          zip -r "../hydrochess-wasm-v${VERSION}.zip" .
+
+      - name: Commit, tag, and publish release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+          LEVEL: ${{ steps.decide.outputs.level }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml
+          git commit -m "chore(release): v${VERSION} (${LEVEL}) [skip-release]"
+          git tag "v${VERSION}"
+          git push origin HEAD:main
+          git push origin "v${VERSION}"
+
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file RELEASE_NOTES.md \
+            "hydrochess-wasm-v${VERSION}.zip"

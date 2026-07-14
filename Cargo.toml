@@ -1,6 +1,6 @@
 [package]
 name = "hydrochess-wasm"
-version = "1.0.0"
+version = "2.0.0"
 authors = ["FirePlank <44502537+FirePlank@users.noreply.github.com>"]
 edition = "2024"
 repository = "https://github.com/FirePlank/infinite-chess-engine"
