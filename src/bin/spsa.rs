@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
-use hydrochess_wasm::board::PlayerColor;
-use hydrochess_wasm::evaluation::{self};
-use hydrochess_wasm::game::{GameState, WinCondition};
-use hydrochess_wasm::search::params::{
+use apeiron::board::PlayerColor;
+use apeiron::evaluation::{self};
+use apeiron::game::{GameState, WinCondition};
+use apeiron::search::params::{
     self, EvalParams, SearchParams, TUNABLE_EVAL_PARAM_SPECS, TUNABLE_PARAM_SPECS,
 };
-use hydrochess_wasm::{Engine, Variant};
+use apeiron::{Engine, Variant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -386,7 +386,7 @@ fn score_to_elo(score: f64) -> f64 {
     let clamped = score.clamp(0.001, 0.999);
     -400.0 * ((1.0 / clamped) - 1.0).log10()
 }
-fn move_to_string(m: &hydrochess_wasm::moves::Move) -> String {
+fn move_to_string(m: &apeiron::moves::Move) -> String {
     let mut s = format!("{},{} {},{}", m.from.x, m.from.y, m.to.x, m.to.y);
     if let Some(p) = m.promotion {
         s.push_str(&format!(" {}", p.to_site_code().to_lowercase()));
@@ -480,11 +480,11 @@ fn play_game(
     let eval_fn = |g: &GameState| {
         #[cfg(feature = "nnue")]
         {
-            hydrochess_wasm::evaluation::evaluate(g, None)
+            apeiron::evaluation::evaluate(g, None)
         }
         #[cfg(not(feature = "nnue"))]
         {
-            hydrochess_wasm::evaluation::evaluate(g)
+            apeiron::evaluation::evaluate(g)
         }
     };
 

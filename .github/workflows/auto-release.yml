@@ -70,7 +70,7 @@ jobs:
         run: |
           cd pkg
           # Exclude local dev markers (dotfiles) that aren't build output.
-          zip -r "../hydrochess-wasm-v${VERSION}.zip" . -x ".*"
+          zip -r "../apeiron-wasm-v${VERSION}.zip" . -x ".*"
 
       - name: Commit, tag, and publish release
         if: steps.decide.outputs.release == 'true'
@@ -92,4 +92,4 @@ jobs:
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file RELEASE_NOTES.md \
-            "hydrochess-wasm-v${VERSION}.zip"
+            "apeiron-wasm-v${VERSION}.zip"

@@ -3,10 +3,10 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
-use hydrochess_wasm::Engine;
-use hydrochess_wasm::Variant;
-use hydrochess_wasm::board::{Coordinate, PieceType, PlayerColor};
-use hydrochess_wasm::game::GameState;
+use apeiron::Engine;
+use apeiron::Variant;
+use apeiron::board::{Coordinate, PieceType, PlayerColor};
+use apeiron::game::GameState;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -385,7 +385,7 @@ fn format_clock(ms: u64) -> String {
     format!("{}:{:02}:{:02}.{}", h, m, s, dec)
 }
 
-fn move_to_string(m: &hydrochess_wasm::moves::Move) -> String {
+fn move_to_string(m: &apeiron::moves::Move) -> String {
     let mut s = format!("{},{} {},{}", m.from.x, m.from.y, m.to.x, m.to.y);
     if let Some(p) = m.promotion {
         s.push_str(&format!(" {}", p.to_site_code().to_lowercase()));
@@ -441,7 +441,7 @@ fn load_resume_state(path: &str) -> ResumeState {
 
         let result_tag = parse_icn_tag(icn, "Result");
         let white_player = parse_icn_tag(icn, "White");
-        let new_plays_white = white_player.as_deref() == Some("HydroChess New");
+        let new_plays_white = white_player.as_deref() == Some("Apeiron New");
 
         let result = match result_tag.as_deref() {
             Some("1-0") => {
@@ -666,7 +666,7 @@ fn make_position_key(game: &GameState) -> String {
 }
 
 fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
-    use hydrochess_wasm::game::WinCondition;
+    use apeiron::game::WinCondition;
 
     // Determine what the opponent must do to beat the current player.
     let opp_wc = match game.turn {
@@ -734,7 +734,7 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
     }
 
     // ── Draw conditions ────────────────────────────────────────────────────────
-    if hydrochess_wasm::evaluation::insufficient_material::evaluate_insufficient_material_game_handler(game) {
+    if apeiron::evaluation::insufficient_material::evaluate_insufficient_material_game_handler(game) {
         return Some(TerminalState::Draw("insufficient_material"));
     }
 
@@ -752,7 +752,7 @@ fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
         .lock()
         .expect("world bounds lock poisoned");
     let bounds = variant.get_default_bounds();
-    hydrochess_wasm::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
+    apeiron::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
     f()
 }
 
@@ -783,9 +783,9 @@ fn play_game(
 
     let get_eval = |g: &GameState| {
         #[cfg(feature = "nnue")]
-        return with_variant_bounds(variant, || hydrochess_wasm::evaluation::evaluate(g, None));
+        return with_variant_bounds(variant, || apeiron::evaluation::evaluate(g, None));
         #[cfg(not(feature = "nnue"))]
-        return with_variant_bounds(variant, || hydrochess_wasm::evaluation::evaluate(g));
+        return with_variant_bounds(variant, || apeiron::evaluation::evaluate(g));
     };
 
     /// Helper to create an outcome return value
@@ -1358,8 +1358,8 @@ fn get_board_setup_icn(game: &GameState) -> String {
 
     // Include win conditions if they differ from standard checkmate
     let win_cond_token = if game.game_rules.white_win_condition
-        != hydrochess_wasm::game::WinCondition::Checkmate
-        || game.game_rules.black_win_condition != hydrochess_wasm::game::WinCondition::Checkmate
+        != apeiron::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != apeiron::game::WinCondition::Checkmate
     {
         format!(
             "{:?},{:?}",
@@ -1406,14 +1406,14 @@ fn generate_icn(
     icn.push_str(&format!("[TimeControl \"{}\"] ", config.tc));
 
     let white = if new_plays_white {
-        "HydroChess New"
+        "Apeiron New"
     } else {
-        "HydroChess Old"
+        "Apeiron Old"
     };
     let black = if new_plays_white {
-        "HydroChess Old"
+        "Apeiron Old"
     } else {
-        "HydroChess New"
+        "Apeiron New"
     };
     icn.push_str(&format!("[White \"{}\"] ", white));
     icn.push_str(&format!("[Black \"{}\"] ", black));

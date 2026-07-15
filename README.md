@@ -1,11 +1,11 @@
-# HydroChess
+# Apeiron
 
 A Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https://www.infinitechess.org/).
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
 ## Elo Gain Over Time
-<img src="https://res.cloudinary.com/fireplank/image/upload/elo-history.svg" alt="HydroChess Elo gain history" width="900" />
+<img src="https://res.cloudinary.com/fireplank/image/upload/elo-history.svg" alt="Apeiron Elo gain history" width="900" />
 
 ## Documentation
 
@@ -50,7 +50,7 @@ For detailed setup instructions, see **[docs/SETUP.md](docs/SETUP.md)**.
 ### JavaScript API
 
 ```javascript
-import init, { Engine } from './pkg/hydrochess_wasm.js';
+import init, { Engine } from './pkg/apeiron.js';
 
 await init();
 
@@ -79,7 +79,7 @@ const moves = engine.get_legal_moves_js();
 To use parallel search, you must initialize the WASM module's thread pool:
 
 ```javascript
-import init, { Engine, initThreadPool } from './pkg/hydrochess_wasm.js';
+import init, { Engine, initThreadPool } from './pkg/apeiron.js';
 
 await init();
 await initThreadPool(navigator.hardwareConcurrency);

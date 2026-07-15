@@ -15,7 +15,7 @@ If you want implementation detail, use symbol search and the [DeepWiki](https://
 
 ## Bird's-eye view
 
-HydroChess is an engine for chess on an effectively unbounded plane, with support for fairy-piece variants.
+Apeiron is an engine for chess on an effectively unbounded plane, with support for fairy-piece variants.
 
 The architecture is built around one central decision: **`GameState` owns the position**. Search, evaluation, and the public API all work through it.
 

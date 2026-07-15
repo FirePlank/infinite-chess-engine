@@ -1,8 +1,8 @@
-use hydrochess_wasm::Variant;
-use hydrochess_wasm::board::PlayerColor;
-use hydrochess_wasm::evaluation::insufficient_material::evaluate_insufficient_material;
-use hydrochess_wasm::game::GameState;
-use hydrochess_wasm::search;
+use apeiron::Variant;
+use apeiron::board::PlayerColor;
+use apeiron::evaluation::insufficient_material::evaluate_insufficient_material;
+use apeiron::game::GameState;
+use apeiron::search;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
 use rayon::prelude::*;

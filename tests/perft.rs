@@ -1,7 +1,7 @@
 #![cfg(not(coverage))]
-use hydrochess_wasm::board::{Board, Piece, PieceType, PlayerColor};
-use hydrochess_wasm::game::GameState;
-use hydrochess_wasm::search::negamax_node_count_for_depth;
+use apeiron::board::{Board, Piece, PieceType, PlayerColor};
+use apeiron::game::GameState;
+use apeiron::search::negamax_node_count_for_depth;
 use std::time::Instant;
 
 fn format_duration(duration: std::time::Duration) -> String {
@@ -51,7 +51,7 @@ fn run_single_search_test(
 #[test]
 fn run_search_only_suite() {
     println!("\n================================================================");
-    println!("Running Search-Only Suite for HydroChess (5 runs, averaged)");
+    println!("Running Search-Only Suite for Apeiron (5 runs, averaged)");
     println!("================================================================");
 
     const NUM_RUNS: usize = 5;

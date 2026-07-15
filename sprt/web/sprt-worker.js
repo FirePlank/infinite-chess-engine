@@ -9,9 +9,9 @@ function engineLetterToSiteCode(letter) {
     return map[letter] || letter.toUpperCase();
 }
 
-import initOld, * as wasmOld from './pkg-old/hydrochess_wasm.js';
+import initOld, * as wasmOld from './pkg-old/apeiron.js';
 const EngineOld = wasmOld.Engine;
-import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
+import initNew, * as wasmNew from './pkg-new/apeiron.js';
 const EngineNew = wasmNew.Engine;
 // Both builds may be MT now; each exposes its own initThreadPool when threaded.
 const initThreadPoolOld = wasmOld.initThreadPool;
@@ -901,7 +901,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             } catch (e) {
                 // Illegal move from the engine: side that moved loses. Do NOT
                 // record the move itself in history so ICN remains playable.
-                moveLines.push('# Illegal move from ' + (engineName === 'new' ? 'HydroChess New' : 'HydroChess Old') +
+                moveLines.push('# Illegal move from ' + (engineName === 'new' ? 'Apeiron New' : 'Apeiron Old') +
                     ': ' + (move && move.from && move.to ? (move.from + '>' + move.to) : 'null') +
                     ' (' + (e && e.message ? e.message : String(e)) + ')');
                 const result = engineName === 'new' ? 'loss' : 'win';

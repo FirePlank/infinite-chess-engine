@@ -1,6 +1,6 @@
-import initOld, * as wasmOld from './pkg-old/hydrochess_wasm.js';
+import initOld, * as wasmOld from './pkg-old/apeiron.js';
 const EngineOld = wasmOld.Engine;
-import initNew, * as wasmNew from './pkg-new/hydrochess_wasm.js';
+import initNew, * as wasmNew from './pkg-new/apeiron.js';
 const EngineNew = wasmNew.Engine;
 // Either build may be MT (both default to the threaded build now). A build exposes
 // initThreadPool only when compiled with Lazy SMP, so its presence is the MT probe.
@@ -544,8 +544,8 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         resultToken = whiteWon ? '1-0' : '0-1';
     }
 
-    const whiteEngine = newPlaysWhite ? 'HydroChess New' : 'HydroChess Old';
-    const blackEngine = newPlaysWhite ? 'HydroChess Old' : 'HydroChess New';
+    const whiteEngine = newPlaysWhite ? 'Apeiron New' : 'Apeiron Old';
+    const blackEngine = newPlaysWhite ? 'Apeiron Old' : 'Apeiron New';
 
     const displayVariantName = variantName || 'Classical';
 

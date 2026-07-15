@@ -600,8 +600,8 @@ export class NativeWasmRunner {
             resultToken = whiteWon ? '1-0' : '0-1';
         }
 
-        const whiteEngine = newPlaysWhite ? 'HydroChess New' : 'HydroChess Old';
-        const blackEngine = newPlaysWhite ? 'HydroChess Old' : 'HydroChess New';
+        const whiteEngine = newPlaysWhite ? 'Apeiron New' : 'Apeiron Old';
+        const blackEngine = newPlaysWhite ? 'Apeiron Old' : 'Apeiron New';
         const displayVariantName = variantName || 'Classical';
 
         const headerList = [

@@ -7,7 +7,7 @@
  * Based on the proven sprt-worker.js infrastructure.
  */
 
-import init, { Engine } from './pkg-spsa/hydrochess.js';
+import init, { Engine } from './pkg-spsa/apeiron.js';
 import { getVariantData, generateSetupICN } from './variants.js';
 
 let wasmReady = false;

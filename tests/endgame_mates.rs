@@ -10,9 +10,9 @@
 
 #![cfg(not(coverage))]
 
-use hydrochess_wasm::board::{Board, Piece, PieceType, PlayerColor};
-use hydrochess_wasm::game::GameState;
-use hydrochess_wasm::search::get_best_move;
+use apeiron::board::{Board, Piece, PieceType, PlayerColor};
+use apeiron::game::GameState;
+use apeiron::search::get_best_move;
 
 /// Helper to create a minimal endgame position
 /// white_has_king: if false, white has no king (only pieces)
@@ -47,7 +47,7 @@ fn create_endgame(
     // Recalculate material score
     let mut score = 0;
     for (_, _, piece) in game.board.iter() {
-        let val = hydrochess_wasm::evaluation::get_piece_value_base(piece.piece_type());
+        let val = apeiron::evaluation::get_piece_value_base(piece.piece_type());
         match piece.color() {
             PlayerColor::White => score += val,
             PlayerColor::Black => score -= val,

@@ -1,4 +1,4 @@
-import initWasm, * as wasm from '../pkg-new/hydrochess_wasm.js';
+import initWasm, * as wasm from '../pkg-new/apeiron.js';
 import { getVariantData, generateSetupICN } from '../variants.js';
 
 const Engine = wasm.Engine;

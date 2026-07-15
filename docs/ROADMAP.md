@@ -1,6 +1,6 @@
 # Roadmap
 
-This document outlines the high-level goals, planned features, and known technical debt for HydroChess. It serves as a guide for contributors to understand the project's direction and where they can help.
+This document outlines the high-level goals, planned features, and known technical debt for Apeiron. It serves as a guide for contributors to understand the project's direction and where they can help.
 
 **[← Back to README](../README.md)** | **[Contribution Guide](CONTRIBUTING.md)**
 

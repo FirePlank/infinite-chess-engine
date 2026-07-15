@@ -1,4 +1,4 @@
-use hydrochess_wasm::{Variant, evaluation, game::GameState};
+use apeiron::{Variant, evaluation, game::GameState};
 use std::time::Instant;
 
 #[inline]

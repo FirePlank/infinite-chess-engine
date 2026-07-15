@@ -1,6 +1,6 @@
 # Setup Guide
 
-This guide walks you through setting up your development environment for HydroChess WASM.
+This guide walks you through setting up your development environment for Apeiron WASM.
 
 **[← Back to README](../README.md)** | **[Contributing Guide](CONTRIBUTING.md)** | **[Roadmap](ROADMAP.md)**
 

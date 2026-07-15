@@ -1,5 +1,5 @@
-use hydrochess_wasm::evaluation::base::debug_evaluate;
-use hydrochess_wasm::game::GameState;
+use apeiron::evaluation::base::debug_evaluate;
+use apeiron::game::GameState;
 use std::env;
 
 fn main() {

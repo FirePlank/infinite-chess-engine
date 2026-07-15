@@ -3,7 +3,7 @@
 //! A cooperative chess problem solver where both sides work together to achieve checkmate.
 //! Uses parallel exhaustive search with a thread-safe Transposition Table.
 
-use hydrochess_wasm::{
+use apeiron::{
     board::{Coordinate, PlayerColor},
     game::GameState,
     moves::{Move, MoveList},
@@ -632,7 +632,7 @@ impl HelpmateSolver {
             rustc_hash::FxHashMap::default()
         };
 
-        let ctx = hydrochess_wasm::moves::MoveGenContext {
+        let ctx = apeiron::moves::MoveGenContext {
             special_rights: &state.special_rights,
             en_passant: &state.en_passant,
             game_rules: &state.game_rules,
@@ -650,7 +650,7 @@ impl HelpmateSolver {
 
             if !in_z {
                 // Optimization: Sliders can influence from far away, but only if they are somewhat aligned
-                if !hydrochess_wasm::attacks::is_slider(pt) {
+                if !apeiron::attacks::is_slider(pt) {
                     continue;
                 }
 
@@ -665,7 +665,7 @@ impl HelpmateSolver {
             }
 
             piece_buf.clear();
-            hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+            apeiron::moves::get_pseudo_legal_moves_for_piece_into(
                 &state.board,
                 &piece,
                 &Coordinate::new(px, py),
@@ -676,7 +676,7 @@ impl HelpmateSolver {
             if must_check {
                 for m in &piece_buf {
                     // Fast check filter before full validation
-                    if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(
+                    if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(
                         state, m,
                     ) {
                         moves.push(*m);
@@ -687,7 +687,7 @@ impl HelpmateSolver {
                     // Strict Neighborhood Filter:
                     // 1. King moves are allowed
                     // 2. Non-King moves MUST end near the King (Chebyshev dist <= 3)
-                    let is_k = m.piece.piece_type() == hydrochess_wasm::board::PieceType::King;
+                    let is_k = m.piece.piece_type() == apeiron::board::PieceType::King;
                     if is_k {
                         moves.push(*m);
                     } else {
@@ -764,7 +764,7 @@ impl HelpmateSolver {
         for (px, py, piece) in pieces {
             let in_z = px >= min_x && px <= max_x && py >= min_y && py <= max_y;
             if !in_z {
-                if !hydrochess_wasm::attacks::is_slider(piece.piece_type()) {
+                if !apeiron::attacks::is_slider(piece.piece_type()) {
                     continue;
                 }
                 let ax = px == tk.x || px == ok.x;
@@ -779,7 +779,7 @@ impl HelpmateSolver {
             piece_buf.clear();
 
             {
-                let ctx = hydrochess_wasm::moves::MoveGenContext {
+                let ctx = apeiron::moves::MoveGenContext {
                     special_rights: &state.special_rights,
                     en_passant: &state.en_passant,
                     game_rules: &state.game_rules,
@@ -788,7 +788,7 @@ impl HelpmateSolver {
                     pinned: &pinned,
                 };
 
-                hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+                apeiron::moves::get_pseudo_legal_moves_for_piece_into(
                     &state.board,
                     &piece,
                     &Coordinate::new(px, py),
@@ -803,7 +803,7 @@ impl HelpmateSolver {
                 let m = unsafe { piece_buf.get_unchecked(i) };
 
                 // FAST CHECK: Only process moves that give check
-                if hydrochess_wasm::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
+                if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
                 {
                     let undo = state.make_move(m);
 
@@ -851,8 +851,8 @@ impl HelpmateSolver {
                         break;
                     }
                     // Keep skipping the king itself
-                    let piece = hydrochess_wasm::board::Piece::from_packed(packed);
-                    if piece.piece_type() == hydrochess_wasm::board::PieceType::King
+                    let piece = apeiron::board::Piece::from_packed(packed);
+                    if piece.piece_type() == apeiron::board::PieceType::King
                         && piece.color() == self.target_mated_side
                     {
                         continue;
@@ -862,8 +862,8 @@ impl HelpmateSolver {
                     let dist = (x - target_pos.x).abs().max((y - target_pos.y).abs());
 
                     let effective_dist = match piece.piece_type() {
-                        hydrochess_wasm::board::PieceType::Knight => (dist + 1) / 2,
-                        hydrochess_wasm::board::PieceType::Pawn => dist,
+                        apeiron::board::PieceType::Knight => (dist + 1) / 2,
+                        apeiron::board::PieceType::Pawn => dist,
                         _ => dist, // Sliders are powerful, count as normal distance (or 1)
                     };
 
@@ -1046,14 +1046,14 @@ fn main() {
         max_y = max_y.saturating_add(buffer);
 
         let (cur_min_x, cur_max_x, cur_min_y, cur_max_y) =
-            hydrochess_wasm::moves::get_coord_bounds();
+            apeiron::moves::get_coord_bounds();
 
         let final_min_x = min_x.max(cur_min_x);
         let final_max_x = max_x.min(cur_max_x);
         let final_min_y = min_y.max(cur_min_y);
         let final_max_y = max_y.min(cur_max_y);
 
-        hydrochess_wasm::moves::set_world_bounds(
+        apeiron::moves::set_world_bounds(
             final_min_x,
             final_max_x,
             final_min_y,

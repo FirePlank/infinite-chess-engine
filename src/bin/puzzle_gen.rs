@@ -1,10 +1,10 @@
 use csv::Writer;
-use hydrochess_wasm::Variant;
-use hydrochess_wasm::board::{Coordinate, PieceType, PlayerColor};
-use hydrochess_wasm::evaluation::get_piece_value_base;
-use hydrochess_wasm::game::GameState;
-use hydrochess_wasm::moves::{Move, MoveGenContext, MoveList};
-use hydrochess_wasm::search;
+use apeiron::Variant;
+use apeiron::board::{Coordinate, PieceType, PlayerColor};
+use apeiron::evaluation::get_piece_value_base;
+use apeiron::game::GameState;
+use apeiron::moves::{Move, MoveGenContext, MoveList};
+use apeiron::search;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -334,7 +334,7 @@ fn is_suitable_for_puzzle(state: &GameState) -> bool {
 fn detect_themes(
     initial_state: &mut GameState,
     final_state: &GameState,
-    pv: &[hydrochess_wasm::moves::Move],
+    pv: &[apeiron::moves::Move],
     winner: PlayerColor,
     themes: &mut std::collections::HashSet<String>,
 ) {
@@ -392,7 +392,7 @@ fn detect_themes(
 
 fn additional_theme_logic(
     initial_state: &mut GameState,
-    pv: &[hydrochess_wasm::moves::Move],
+    pv: &[apeiron::moves::Move],
     winner: PlayerColor,
     themes: &mut std::collections::HashSet<String>,
 ) {
@@ -415,7 +415,7 @@ fn additional_theme_logic(
         };
 
         let mut move_list = MoveList::new();
-        hydrochess_wasm::moves::get_pseudo_legal_moves_for_piece_into(
+        apeiron::moves::get_pseudo_legal_moves_for_piece_into(
             &initial_state.board,
             &piece,
             &first_move.to,
@@ -429,7 +429,7 @@ fn additional_theme_logic(
                 && target_piece.color() == winner.opponent()
             {
                 let is_king = target_piece.piece_type() == PieceType::King;
-                let is_undefended = !hydrochess_wasm::moves::is_square_attacked(
+                let is_undefended = !apeiron::moves::is_square_attacked(
                     &initial_state.board,
                     &m.to,
                     winner.opponent(),
@@ -472,7 +472,7 @@ fn additional_theme_logic(
             let to_target = initial_state.board.get_piece(mv.to.x, mv.to.y);
 
             if to_target.is_some()
-                && !hydrochess_wasm::moves::is_square_attacked(
+                && !apeiron::moves::is_square_attacked(
                     &initial_state.board,
                     &mv.to,
                     winner.opponent(),
@@ -492,7 +492,7 @@ fn additional_theme_logic(
                     initial_state.white_royals.first().copied()
                 };
                 if let Some(ksq) = opponent_king {
-                    let revealed_check = hydrochess_wasm::moves::is_square_attacked(
+                    let revealed_check = apeiron::moves::is_square_attacked(
                         &sandbox_board,
                         &ksq,
                         winner,
@@ -520,7 +520,7 @@ fn additional_theme_logic(
                     }
                     let mut sandbox = initial_state.board.clone();
                     sandbox.remove_piece(&ox, &oy);
-                    if hydrochess_wasm::moves::is_square_attacked(
+                    if apeiron::moves::is_square_attacked(
                         &sandbox,
                         &okp,
                         winner,
@@ -566,7 +566,7 @@ fn get_checkers_count(state: &GameState) -> usize {
 
     for (ax, ay, p) in state.board.iter() {
         if p.color() == their_color
-            && hydrochess_wasm::moves::is_piece_attacking_square(
+            && apeiron::moves::is_piece_attacking_square(
                 &state.board,
                 &p,
                 &Coordinate::new(ax, ay),
@@ -585,7 +585,7 @@ fn cook_mate(
     state: &mut GameState,
     winner: PlayerColor,
     depth: i32,
-) -> Option<Vec<hydrochess_wasm::moves::Move>> {
+) -> Option<Vec<apeiron::moves::Move>> {
     if state.is_in_check() && state.get_legal_moves().is_empty() {
         return Some(vec![]);
     }
@@ -634,7 +634,7 @@ fn cook_advantage(
     state: &mut GameState,
     winner: PlayerColor,
     depth: i32,
-) -> Option<Vec<hydrochess_wasm::moves::Move>> {
+) -> Option<Vec<apeiron::moves::Move>> {
     if depth <= 0 {
         return Some(vec![]);
     }

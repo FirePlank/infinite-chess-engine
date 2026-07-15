@@ -10,7 +10,7 @@
 //! - Rayon-based parallel game generation
 //! - Compact binary output format for efficient training
 
-use hydrochess_wasm::{
+use apeiron::{
     Variant,
     board::{Coordinate, Piece, PieceType, PlayerColor},
     evaluation,

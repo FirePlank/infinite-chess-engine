@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HydroChess SPRT Testing Helper
+ * Apeiron SPRT Testing Helper
  *
  * Usage:
  *   node sprt.js          - Run web-based SPRT (opens browser UI)
@@ -185,7 +185,7 @@ function runNativeSprt() {
     // Show help if requested
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
         console.log(`
-HydroChess SPRT Testing Helper
+Apeiron SPRT Testing Helper
 
 Usage:
   node sprt.js              Run web-based SPRT (opens browser UI)

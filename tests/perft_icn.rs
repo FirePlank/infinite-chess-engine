@@ -1,6 +1,6 @@
 #![cfg(not(coverage))]
-use hydrochess_wasm::board::{Coordinate, PieceType};
-use hydrochess_wasm::game::GameState;
+use apeiron::board::{Coordinate, PieceType};
+use apeiron::game::GameState;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PerftStats {
@@ -140,7 +140,7 @@ pub fn perft(game: &mut GameState, depth: usize) -> PerftStats {
             let mid_y = m.from.y;
             let mid_coord = Coordinate::new(mid_x, mid_y);
 
-            if hydrochess_wasm::moves::is_square_attacked(
+            if apeiron::moves::is_square_attacked(
                 &game.board,
                 &mid_coord,
                 game.turn.opponent(),
@@ -201,7 +201,7 @@ pub fn perft(game: &mut GameState, depth: usize) -> PerftStats {
                             }
                             let dir = (op_m.to.x - op_m.from.x).signum();
                             let mid_coord = Coordinate::new(op_m.from.x + dir, op_m.from.y);
-                            if hydrochess_wasm::moves::is_square_attacked(
+                            if apeiron::moves::is_square_attacked(
                                 &game.board,
                                 &mid_coord,
                                 game.turn.opponent(),

@@ -6,13 +6,13 @@
 //!
 //! The world border is fixed at (1, 8, 1, 8) and the Chess variant starting ICN is used.
 
-use hydrochess_wasm::board::PieceType;
-use hydrochess_wasm::game::GameState;
-use hydrochess_wasm::moves::set_world_bounds;
-use hydrochess_wasm::search;
+use apeiron::board::PieceType;
+use apeiron::game::GameState;
+use apeiron::moves::set_world_bounds;
+use apeiron::search;
 use std::io::{self, BufRead, Write};
 
-const ENGINE_NAME: &str = "HydroChess";
+const ENGINE_NAME: &str = "Apeiron";
 const ENGINE_AUTHOR: &str = "FirePlank";
 
 /// The standard Chess variant ICN (8x8, bounded 1,8,1,8).
@@ -441,7 +441,7 @@ impl GoParams {
 }
 
 fn run_go(state: &mut UciState, params: GoParams) {
-    use hydrochess_wasm::board::PlayerColor;
+    use apeiron::board::PlayerColor;
 
     // Set clock on a temporary Engine wrapper via search directly.
     // We call search_native equivalent by building time limits ourselves.

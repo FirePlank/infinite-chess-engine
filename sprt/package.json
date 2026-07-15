@@ -1,7 +1,7 @@
 {
-  "name": "hydrochess-sprt",
+  "name": "apeiron-sprt",
   "version": "1.0.0",
-  "description": "SPRT testing tool for HydroChess engine",
+  "description": "SPRT testing tool for Apeiron engine",
   "main": "sprt.js",
   "type": "commonjs",
   "scripts": {
