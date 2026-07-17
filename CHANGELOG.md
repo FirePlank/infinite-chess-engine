@@ -97,7 +97,7 @@ Commit: `e6803a73732817a8f0729fe1ee8cfc8505affae7` • [compare to v0](https://g
   - Few movegen problems, which fixes some problems with the knightrider, rose, and other pieces. This reduces the number of illegal moves the engine makes.
 
 ## Apeiron 0 (2025-11-28)
-Commit: `ee4943c08f6f262fe3bfba3e0c424ec5b1785266`
+Commit: `ee4943c08f6f262fe3bfba3e0c424ec5b1785266` • [initial version](https://github.com/FirePlank/infinite-chess-engine/commit/ee4943c08f6f262fe3bfba3e0c424ec5b1785266)
 
 - **The first released version of the infinite chess engine!**
 - The current engine was not very good at that time.
