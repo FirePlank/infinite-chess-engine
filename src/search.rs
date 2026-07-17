@@ -4442,9 +4442,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // In-move pruning at shallow depths (not in PV, have material, not losing)
         if !is_pv && game.has_non_pawn_material(game.turn) && !is_loss(best_score) {
-            // Late move pruning: skip quiet moves after seeing enough
+            // Late move pruning: skip quiet moves after seeing enough.
+            const LMP_QUAD_DEPTH: usize = 4;
+            const LMP_LINEAR_SLOPE: usize = 6;
             let improving_div = if improving { 1 } else { 2 };
-            let lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
+            let dq = depth.min(LMP_QUAD_DEPTH);
+            let lmp_count = (lmp_base()
+                + dq * dq * lmp_depth_mult()
+                + (depth - dq) * LMP_LINEAR_SLOPE)
+                / improving_div;
 
             // Signal movegen to skip quiet generation entirely (truly lazy)
             if legal_moves >= lmp_count {
