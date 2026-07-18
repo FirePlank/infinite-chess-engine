@@ -508,7 +508,7 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     if black_np < 3
         && white_np > 1
         && white_np <= 10
-        && game.white_pawn_count == 0
+        && (game.white_pawn_count == 0 || game.black_pawn_count == 0)
         && !game.black_royals.is_empty()
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::Black)
         && scale > 0
@@ -518,7 +518,7 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     if white_np < 3
         && black_np > 1
         && black_np <= 10
-        && game.black_pawn_count == 0
+        && (game.black_pawn_count == 0 || game.white_pawn_count == 0)
         && !game.white_royals.is_empty()
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::White)
         && scale > 0
@@ -1984,9 +1984,16 @@ mod tests {
         let bare = create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|R3,3|k9,9");
         assert_eq!(active_mop_up(&bare), Some((PlayerColor::White, 100)));
 
-        // Winner with pawns: promotion is the plan, not the net.
+        // Winner with pawns vs a pawnless bare king: the pieces mate and the
+        // extra pawn is irrelevant to the plan, so the net still applies.
         let winner_pawns = create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|P3,3|k9,9");
-        assert_eq!(active_mop_up(&winner_pawns), None);
+        assert_eq!(active_mop_up(&winner_pawns), Some((PlayerColor::White, 100)));
+
+        // ...but with pawns on BOTH sides it stays out: the defender pawn is
+        // promotion counterplay that can break the net (a race, not a mop-up).
+        let both_pawned =
+            create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|P3,3|k9,9|p8,8");
+        assert_eq!(active_mop_up(&both_pawned), None);
 
         // K+R vs K+3P: a race, not a mop-up (pawn defenders need a
         // queen-up surplus). The SPRT-fatal +16 shape.
