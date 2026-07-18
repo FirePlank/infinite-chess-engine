@@ -756,6 +756,10 @@ fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Max-ply adjudication threshold in White-ahead centipawns: both engines must
+/// agree the position is at least this decisive to break a move-cap draw.
+const MAXPLY_ADJUDICATION_CP: f64 = 1000.0;
+
 fn play_game(
     config: &Config,
     variant: Variant,
@@ -779,6 +783,10 @@ fn play_game(
     let mut repetition_counts: HashMap<String, usize> = HashMap::new();
     let mut last_eval_new: Option<i32> = None;
     let mut last_eval_old: Option<i32> = None;
+    // Each engine's last search score in White-ahead centipawns (positive =
+    // White winning), for the max-ply adjudication when both engines agree.
+    let mut last_wscore_new: Option<f64> = None;
+    let mut last_wscore_old: Option<f64> = None;
     let termination_reason;
 
     let get_eval = |g: &GameState| {
@@ -1083,6 +1091,12 @@ fn play_game(
                 if game.turn == PlayerColor::White {
                     s = -s;
                 }
+                // `s` here is Black-ahead; -s is White-ahead. Record per engine.
+                if is_new_turn {
+                    last_wscore_new = Some(-s);
+                } else {
+                    last_wscore_old = Some(-s);
+                }
                 // Convert mate scores (>= 800000 cp) to [%mate N] format
                 if s.abs() >= 800000.0 {
                     let mate_in = if s > 0.0 {
@@ -1301,6 +1315,35 @@ fn play_game(
     let final_repetition_count = *repetition_counts.get(&final_key).unwrap_or(&0);
     if final_repetition_count >= 3 {
         return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
+    }
+
+    // Max-ply adjudication: if both engines' last score agrees one side is ahead
+    // by >= +10 pawns, award that side the point instead of scoring a draw.
+    if let (Some(wn), Some(wo)) = (last_wscore_new, last_wscore_old) {
+        let side = |w: f64| {
+            if w >= MAXPLY_ADJUDICATION_CP {
+                Some(true)
+            } else if w <= -MAXPLY_ADJUDICATION_CP {
+                Some(false)
+            } else {
+                None
+            }
+        };
+        if let (Some(sn), Some(so)) = (side(wn), side(wo))
+            && sn == so
+        {
+            let white_won = sn;
+            let result = if white_won == new_plays_white {
+                GameResult::Win
+            } else {
+                GameResult::Loss
+            };
+            return game_outcome!(
+                result,
+                "adjudication",
+                if white_won { "1-0" } else { "0-1" }
+            );
+        }
     }
 
     game_outcome!(GameResult::Draw, "max_moves", "1/2-1/2")
