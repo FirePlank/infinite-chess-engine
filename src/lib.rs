@@ -610,6 +610,11 @@ impl Engine {
 
     /// Derive an effective time limit for this move from the current clock and game state.
     fn effective_time_limit_ms(&self, requested_limit_ms: u32) -> (u128, u128, bool) {
+        // Below this many increments of base clock, spend this fraction of the
+        // increment per move so the clock stops shrinking and long games survive.
+        const LOW_CLOCK_SURVIVE_INC_MULT: u64 = 6;
+        const LOW_CLOCK_SURVIVE_FRAC: f64 = 0.9;
+
         let Some(clock) = self.clock else {
             // No clock info: use the fixed per-move limit as a soft limit.
             // The search can use up to this time freely without flagging risk.
@@ -731,6 +736,17 @@ impl Engine {
         let absolute_cap = ((remaining_ms as f64) * 0.825 - move_overhead as f64) as u64;
         let optimum = optimum.min(absolute_cap.max(min_think_ms));
         let maximum = maximum.min(absolute_cap.max(min_think_ms));
+
+        // Long infinite-chess games outrun the allocator's ~50-move horizon, so
+        // near flag time spend under the increment instead of the 82.5% cap.
+        let (optimum, maximum) = if inc_ms > 0
+            && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT)
+        {
+            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64).max(min_think_ms);
+            (optimum.min(survive), maximum.min(survive))
+        } else {
+            (optimum, maximum)
+        };
 
         // Timed games are hard limits (risk of flagging).
         (optimum as u128, maximum as u128, false)
