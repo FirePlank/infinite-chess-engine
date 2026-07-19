@@ -24,6 +24,7 @@ pub struct MoveGenContext<'a> {
 }
 
 // World border for infinite chess.
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 static COORD_MIN_X: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
 static COORD_MAX_X: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
@@ -511,7 +512,7 @@ pub struct SpatialIndices {
     /// Key: (x, y, dir_index) where dir_index encodes the 8 cardinal/diagonal directions.
     /// Value: Sorted list of valid interception distances for that slider position/direction.
     #[serde(skip)]
-    pub slider_cache: std::cell::RefCell<FxHashMap<(i64, i64, u8), Vec<i64>>>,
+    pub slider_cache: std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>,
 
     // Fairy piece existence flags per color for O(1) early-exit in attack detection
     // [0] = white, [1] = black
@@ -2577,12 +2578,12 @@ fn generate_sliding_moves_impl(
             };
             let cache_key = (from.x, from.y, dir_index);
 
-            // Check cache first
+            // Check cache first. Value is Arc<[i64]>: a hit is a refcount bump,
+            // not a Vec copy, and per-thread game clones share the arc too.
             let cached = indices.slider_cache.borrow().get(&cache_key).cloned();
-            let mut target_dists: Vec<i64> = Vec::with_capacity(64);
 
-            if let Some(cached_dists) = cached {
-                target_dists.extend(cached_dists);
+            let target_dists: Arc<[i64]> = if let Some(cached_dists) = cached {
+                cached_dists
             } else {
                 dist_counts.clear();
                 royal_dists.clear();
@@ -2910,15 +2911,16 @@ fn generate_sliding_moves_impl(
                 shared_targets.sort_unstable();
                 shared_targets.dedup();
 
-                target_dists.extend(shared_targets.clone());
+                let arc: Arc<[i64]> = Arc::from(shared_targets);
                 indices
                     .slider_cache
                     .borrow_mut()
-                    .insert(cache_key, shared_targets);
-            }
+                    .insert(cache_key, arc.clone());
+                arc
+            };
 
             // Generate moves from target_dists
-            for d in target_dists {
+            for &d in target_dists.iter() {
                 if d <= 0 || d > max_dist {
                     continue;
                 }
