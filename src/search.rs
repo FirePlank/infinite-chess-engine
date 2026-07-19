@@ -3623,6 +3623,12 @@ fn negamax_root(
 
     searcher.pv_length[0] = 0;
 
+    // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
+    // negamax_root omits them, so slot 2 otherwise never clears across the search.
+    searcher.cutoff_cnt[2] = 0;
+    searcher.stat_score_stack[2] = 0;
+    searcher.stat_score_stack[4] = 0;
+
     let hash = game.hash;
     let mut tt_move: Option<Move> = None;
 
