@@ -82,9 +82,21 @@ impl TTEntry {
             return None;
         }
 
-        let pt = PieceType::from_u8((m & 0x1F) as u8);
-        let cl = PlayerColor::from_u8(((m >> 5) & 0x03) as u8);
+        let pt_raw = (m & 0x1F) as u8;
+        let cl_raw = ((m >> 5) & 0x03) as u8;
         let pr = ((m >> 7) & 0x1F) as u8;
+
+        // Guarded decode: a key16 collision can XOR-decode foreign bits into an
+        // invalid discriminant; reject rather than transmute out of range (UB).
+        if pt_raw > PieceType::Pawn as u8
+            || cl_raw > PlayerColor::Black as u8
+            || pr > PieceType::Pawn as u8
+        {
+            return None;
+        }
+
+        let pt = PieceType::from_u8(pt_raw);
+        let cl = PlayerColor::from_u8(cl_raw);
 
         let from_x = unpack_coord(m >> 12);
         let from_y = unpack_coord(m >> 25);
