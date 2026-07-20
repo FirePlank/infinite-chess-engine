@@ -40,9 +40,15 @@ enum Commands {
         #[arg(long, default_value_t = 0.0)]
         elo0: f64,
 
-        /// SPRT bound H1 (Elo difference where new IS better)
-        #[arg(long, default_value_t = 5.0)]
+        /// SPRT bound H1 (Elo difference where new IS better).
+        /// Interpreted in the units of --model (normalized nElo by default).
+        #[arg(long, default_value_t = 2.0)]
         elo1: f64,
+
+        /// SPRT statistical model: "normalized" (nElo bounds, draw-rate/TC
+        /// independent) or "logistic" (classic Elo-point bounds)
+        #[arg(long, default_value = "normalized")]
+        model: String,
 
         /// SPRT alpha (type I error probability)
         #[arg(long, default_value_t = 0.05)]
@@ -284,6 +290,7 @@ fn print_settings_context(config: &Config) {
 struct Config {
     elo0: f64,
     elo1: f64,
+    model: SprtModel,
     alpha: f64,
     beta: f64,
     tc: String,
@@ -341,19 +348,6 @@ fn elo_to_score(elo_diff: f64) -> f64 {
     1.0 / (1.0 + 10.0f64.powf(-elo_diff / 400.0))
 }
 
-fn calculate_llr(wins: usize, losses: usize, draws: usize, elo0: f64, elo1: f64) -> f64 {
-    let total = wins + losses + draws;
-    if total == 0 {
-        return 0.0;
-    }
-    let score = (wins as f64 + draws as f64 * 0.5) / total as f64;
-    let s0 = elo_to_score(elo0);
-    let s1 = elo_to_score(elo1);
-    let clamped_score = score.clamp(0.001, 0.999);
-    total as f64
-        * (clamped_score * (s1 / s0).ln() + (1.0 - clamped_score) * ((1.0 - s1) / (1.0 - s0)).ln())
-}
-
 fn estimate_elo(wins: usize, losses: usize, draws: usize) -> (f64, f64) {
     let total = wins + losses + draws;
     if total == 0 {
@@ -374,6 +368,340 @@ fn estimate_elo(wins: usize, losses: usize, draws: usize) -> (f64, f64) {
     let std_dev = (variance / total as f64).sqrt();
     let elo_error = std_dev * 400.0 / (10.0f64.ln() * score * (1.0 - score));
     (elo, elo_error.min(200.0))
+}
+
+// Pentanomial GSPRT
+#[derive(Clone, Copy, Default, Debug)]
+struct PentaCounts {
+    ww: usize,
+    wd: usize,
+    wl: usize,
+    dd: usize,
+    ld: usize,
+    ll: usize,
+}
+
+impl PentaCounts {
+    fn total_pairs(&self) -> usize {
+        self.ww + self.wd + self.wl + self.dd + self.ld + self.ll
+    }
+
+    /// Bucket a completed pair from the two NEW-perspective game results.
+    fn add_pair(&mut self, a: GameResult, b: GameResult) {
+        let (mut w, mut d, mut l) = (0u32, 0u32, 0u32);
+        for r in [a, b] {
+            match r {
+                GameResult::Win => w += 1,
+                GameResult::Draw => d += 1,
+                GameResult::Loss => l += 1,
+            }
+        }
+        if w == 2 {
+            self.ww += 1;
+        } else if w == 1 && d == 1 {
+            self.wd += 1;
+        } else if w == 1 && l == 1 {
+            self.wl += 1;
+        } else if d == 2 {
+            self.dd += 1;
+        } else if l == 1 && d == 1 {
+            self.ld += 1;
+        } else {
+            self.ll += 1;
+        }
+    }
+}
+
+/// fastchess `regularize`: a zero bucket becomes 1e-3 so log-likelihoods stay finite.
+fn regularize(v: usize) -> f64 {
+    if v == 0 { 1e-3 } else { v as f64 }
+}
+
+/// ITP root-finder (Oliveira & Takahashi 2020), ported from fastchess `itp()`.
+/// Solves f(x)=0 on the bracket [a,b] with f_a<0<f_b (after the initial swap).
+fn itp<F: Fn(f64) -> f64>(
+    f: F,
+    mut a: f64,
+    mut b: f64,
+    mut f_a: f64,
+    mut f_b: f64,
+    k_1: f64,
+    k_2: f64,
+    n_0: f64,
+    epsilon: f64,
+) -> f64 {
+    if f_a > 0.0 {
+        std::mem::swap(&mut a, &mut b);
+        std::mem::swap(&mut f_a, &mut f_b);
+    }
+
+    let n_half = ((b - a).abs() / (2.0 * epsilon)).log2().ceil();
+    let n_max = n_half + n_0;
+    let mut i = 0.0;
+    while (b - a).abs() > 2.0 * epsilon {
+        let x_half = (a + b) / 2.0;
+        let r = epsilon * 2.0f64.powf(n_max - i) - (b - a) / 2.0;
+        let delta = k_1 * (b - a).powf(k_2);
+
+        let x_f = (f_b * a - f_a * b) / (f_b - f_a);
+
+        let sigma = (x_half - x_f) / (x_half - x_f).abs();
+        let x_t = if delta <= (x_half - x_f).abs() {
+            x_f + sigma * delta
+        } else {
+            x_half
+        };
+
+        let x_itp = if (x_t - x_half).abs() <= r {
+            x_t
+        } else {
+            x_half - sigma * r
+        };
+
+        let f_itp = f(x_itp);
+        if f_itp == 0.0 {
+            a = x_itp;
+            b = x_itp;
+        } else if f_itp < 0.0 {
+            a = x_itp;
+            f_a = f_itp;
+        } else {
+            b = x_itp;
+            f_b = f_itp;
+        }
+        i += 1.0;
+    }
+
+    (a + b) / 2.0
+}
+
+/// Maximum-likelihood outcome distribution constrained to expected score `s`
+/// (fastchess `getLLR_logistic`'s inner `mle`, logistic model).
+fn mle_logistic(scores: &[f64], probs: &[f64], s: f64) -> Vec<f64> {
+    let n = scores.len();
+    let theta_epsilon = 1e-3;
+    let min_theta = -1.0 / (scores[n - 1] - s);
+    let max_theta = -1.0 / (scores[0] - s);
+    let theta = itp(
+        |x| {
+            let mut result = 0.0;
+            for i in 0..n {
+                let a_i = scores[i];
+                result += probs[i] * (a_i - s) / (1.0 + x * (a_i - s));
+            }
+            result
+        },
+        min_theta,
+        max_theta,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.1,
+        2.0,
+        0.99,
+        theta_epsilon,
+    );
+    (0..n)
+        .map(|i| probs[i] / (1.0 + theta * (scores[i] - s)))
+        .collect()
+}
+
+/// Log-likelihood ratio for the logistic GSPRT (fastchess `getLLR_logistic`).
+fn llr_logistic(total: f64, scores: &[f64], probs: &[f64], s0: f64, s1: f64) -> f64 {
+    let p0 = mle_logistic(scores, probs, s0);
+    let p1 = mle_logistic(scores, probs, s1);
+    let mut acc = 0.0;
+    for i in 0..scores.len() {
+        acc += probs[i] * (p1[i].ln() - p0[i].ln());
+    }
+    total * acc
+}
+
+fn mean(x: &[f64], p: &[f64]) -> f64 {
+    let mut result = 0.0;
+    for i in 0..x.len() {
+        result += x[i] * p[i];
+    }
+    result
+}
+
+fn mean_and_variance(x: &[f64], p: &[f64]) -> (f64, f64) {
+    let mu = mean(x, p);
+    let mut var = 0.0;
+    for i in 0..x.len() {
+        var += p[i] * (x[i] - mu) * (x[i] - mu);
+    }
+    (mu, var)
+}
+
+/// MLE distribution for the normalized model (fastchess `getLLR_normalized`'s inner
+/// `mle`): iteratively re-fits `phi` from the running mean/variance, targeting the
+/// standardized effect `t_star` at reference score `mu_ref`.
+fn mle_normalized(scores: &[f64], probs: &[f64], mu_ref: f64, t_star: f64) -> Vec<f64> {
+    let n = scores.len();
+    let theta_epsilon = 1e-7;
+    let mle_epsilon = 1e-4;
+    let mut p = vec![1.0 / n as f64; n];
+
+    for _ in 0..10 {
+        let (mu, var) = mean_and_variance(scores, &p);
+        let sigma = var.sqrt();
+        let phi: Vec<f64> = (0..n)
+            .map(|i| {
+                let a_i = scores[i];
+                a_i - mu_ref
+                    - 0.5 * t_star * sigma * (1.0 + ((a_i - mu) / sigma) * ((a_i - mu) / sigma))
+            })
+            .collect();
+
+        let u = phi.iter().cloned().fold(f64::INFINITY, f64::min);
+        let v = phi.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_theta = -1.0 / v;
+        let max_theta = -1.0 / u;
+
+        let theta = itp(
+            |x| {
+                let mut result = 0.0;
+                for i in 0..n {
+                    result += probs[i] * phi[i] / (1.0 + x * phi[i]);
+                }
+                result
+            },
+            min_theta,
+            max_theta,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.1,
+            2.0,
+            0.99,
+            theta_epsilon,
+        );
+
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            let newp = probs[i] / (1.0 + theta * phi[i]);
+            max_diff = max_diff.max((newp - p[i]).abs());
+            p[i] = newp;
+        }
+        if max_diff < mle_epsilon {
+            break;
+        }
+    }
+    p
+}
+
+/// Log-likelihood ratio for the normalized (nElo) GSPRT (fastchess `getLLR_normalized`).
+fn llr_normalized(total: f64, scores: &[f64], probs: &[f64], t0: f64, t1: f64) -> f64 {
+    let p0 = mle_normalized(scores, probs, 0.5, t0);
+    let p1 = mle_normalized(scores, probs, 0.5, t1);
+    let mut acc = 0.0;
+    for i in 0..scores.len() {
+        acc += probs[i] * (p1[i].ln() - p0[i].ln());
+    }
+    total * acc
+}
+
+/// SPRT statistical model for interpreting the elo0/elo1 bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SprtModel {
+    /// Normalized Elo (nElo): bounds are signal-to-noise, draw-rate/TC independent.
+    Normalized,
+    /// Logistic (classic) Elo: bounds are raw Elo points.
+    Logistic,
+}
+
+impl SprtModel {
+    fn parse(s: &str) -> SprtModel {
+        match s.trim().to_lowercase().as_str() {
+            "logistic" => SprtModel::Logistic,
+            _ => SprtModel::Normalized,
+        }
+    }
+}
+
+/// Pentanomial LLR — the SPRT decision statistic (matches fastchess/Fishtest).
+fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtModel) -> f64 {
+    if p.total_pairs() == 0 {
+        return 0.0;
+    }
+    let ll = regularize(p.ll);
+    let ld = regularize(p.ld);
+    let wl_dd = regularize(p.dd + p.wl);
+    let wd = regularize(p.wd);
+    let ww = regularize(p.ww);
+    let total = ww + wd + wl_dd + ld + ll;
+    let probs = [ll / total, ld / total, wl_dd / total, wd / total, ww / total];
+    let scores = [0.0, 0.25, 0.5, 0.75, 1.0];
+    match model {
+        SprtModel::Normalized => {
+            // Pentanomial scale factor sqrt(2) (fastchess), 800/ln10 = logistic constant.
+            let t0 = 2.0f64.sqrt() * elo0 / (800.0 / 10.0f64.ln());
+            let t1 = 2.0f64.sqrt() * elo1 / (800.0 / 10.0f64.ln());
+            llr_normalized(total, &scores, &probs, t0, t1)
+        }
+        SprtModel::Logistic => {
+            let s0 = elo_to_score(elo0);
+            let s1 = elo_to_score(elo1);
+            llr_logistic(total, &scores, &probs, s0, s1)
+        }
+    }
+}
+
+/// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the
+/// logistic Elo (`elo`) and normalized Elo (`nelo`) point-estimates are computed
+/// from the same pair-score distribution — they do not depend on the SPRT model.
+#[derive(Clone, Copy, Debug, Default)]
+struct PentaElo {
+    elo: f64,
+    elo_err: f64,
+    nelo: f64,
+    nelo_err: f64,
+}
+
+fn estimate_pentanomial_elo(p: &PentaCounts) -> PentaElo {
+    let pairs = p.total_pairs() as f64;
+    if pairs == 0.0 {
+        return PentaElo::default();
+    }
+    let ww = p.ww as f64 / pairs;
+    let wd = p.wd as f64 / pairs;
+    let wl = p.wl as f64 / pairs;
+    let dd = p.dd as f64 / pairs;
+    let ld = p.ld as f64 / pairs;
+    let ll = p.ll as f64 / pairs;
+
+    let score = ww + 0.75 * wd + 0.5 * (wl + dd) + 0.25 * ld;
+    let variance = ww * (1.0 - score).powi(2)
+        + wd * (0.75 - score).powi(2)
+        + (wl + dd) * (0.5 - score).powi(2)
+        + ld * (0.25 - score).powi(2)
+        + ll * (0.0 - score).powi(2);
+    let variance_per_pair = variance / pairs;
+
+    const CI95: f64 = 1.959963984540054;
+    let s2e = |s: f64| -400.0 * (1.0 / s.clamp(1e-9, 1.0 - 1e-9) - 1.0).log10();
+    // Normalized Elo (fastchess scoreToNeloDiff): uses the per-pair variance.
+    let s2n = |s: f64| (s - 0.5) / (2.0 * variance).sqrt() * (800.0 / 10.0f64.ln());
+    let upper = score + CI95 * variance_per_pair.sqrt();
+    let lower = score - CI95 * variance_per_pair.sqrt();
+    let elo = if score <= 0.0 {
+        -999.0
+    } else if score >= 1.0 {
+        999.0
+    } else {
+        s2e(score)
+    };
+    let elo_err = (s2e(upper) - s2e(lower)) / 2.0;
+    let (nelo, nelo_err) = if variance <= 0.0 {
+        (0.0, 0.0)
+    } else {
+        (s2n(score), (s2n(upper) - s2n(lower)) / 2.0)
+    };
+    PentaElo {
+        elo,
+        elo_err: elo_err.min(200.0),
+        nelo,
+        nelo_err,
+    }
 }
 
 fn format_clock(ms: u64) -> String {
@@ -409,6 +737,7 @@ struct ResumeState {
     wins: usize,
     losses: usize,
     draws: usize,
+    penta: PentaCounts,
     per_variant_stats: HashMap<String, (usize, usize, usize)>,
     resume_pair_offset: usize,
     detected_tc: Option<String>,
@@ -429,12 +758,16 @@ fn load_resume_state(path: &str) -> ResumeState {
     let mut detected_tc: Option<String> = None;
     let mut seen_variants: HashSet<String> = HashSet::new();
     let mut detected_variants: Vec<String> = Vec::new();
+    // Per-game NEW-perspective result keyed by game index, for pentanomial pairing.
+    let mut results_by_idx: HashMap<usize, GameResult> = HashMap::new();
 
     for icn in &games {
+        let mut this_idx: Option<usize> = None;
         if let Some(event) = parse_icn_tag(icn, "Event") {
             if let Some(idx_str) = event.strip_prefix("SPRT Test Game ") {
                 if let Ok(idx) = idx_str.parse::<usize>() {
                     max_game_idx = Some(max_game_idx.map_or(idx, |m| m.max(idx)));
+                    this_idx = Some(idx);
                 }
             }
         }
@@ -459,6 +792,10 @@ fn load_resume_state(path: &str) -> ResumeState {
             GameResult::Draw => draws += 1,
         }
 
+        if let Some(idx) = this_idx {
+            results_by_idx.insert(idx, result);
+        }
+
         if let Some(variant) = parse_icn_tag(icn, "Variant") {
             if seen_variants.insert(variant.clone()) {
                 detected_variants.push(variant.clone());
@@ -478,11 +815,24 @@ fn load_resume_state(path: &str) -> ResumeState {
 
     let resume_pair_offset = max_game_idx.map_or(0, |idx| idx / 2 + 1);
 
+    // Rebuild pentanomial buckets from complete pairs (2k, 2k+1); drop orphans.
+    let mut penta = PentaCounts::default();
+    if let Some(max_idx) = max_game_idx {
+        for k in 0..=(max_idx / 2) {
+            if let (Some(&a), Some(&b)) =
+                (results_by_idx.get(&(2 * k)), results_by_idx.get(&(2 * k + 1)))
+            {
+                penta.add_pair(a, b);
+            }
+        }
+    }
+
     ResumeState {
         games,
         wins,
         losses,
         draws,
+        penta,
         per_variant_stats,
         resume_pair_offset,
         detected_tc,
@@ -1510,6 +1860,7 @@ fn main() {
             old_bin,
             elo0,
             elo1,
+            model,
             alpha,
             beta,
             tc,
@@ -1751,6 +2102,7 @@ fn main() {
             let mut config = Config {
                 elo0,
                 elo1,
+                model: SprtModel::parse(&model),
                 alpha,
                 beta,
                 tc: tc.clone(),
@@ -1833,16 +2185,18 @@ fn main() {
             let mut wins = 0;
             let mut losses = 0;
             let mut draws = 0;
+            let mut penta = PentaCounts::default();
             let mut timeout_losses = 0;
             let mut game_logs: Vec<String> = Vec::new();
             let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
             let mut last_status_len = 0;
 
-            // Apply resume state: seed W/L/D, per-variant stats, and prior game logs
+            // Apply resume state: seed W/L/D, pentanomial pairs, per-variant stats, prior logs
             if let Some(rs) = resume_state_opt {
                 wins = rs.wins;
                 losses = rs.losses;
                 draws = rs.draws;
+                penta = rs.penta;
                 per_variant_stats = rs.per_variant_stats;
                 game_logs = rs.games;
             }
@@ -1962,6 +2316,9 @@ fn main() {
             let mut last_save_len = game_logs.len();
 
             for pair_outcomes in rx {
+                // NEW-perspective results of this pair's completed games, for
+                // pentanomial bucketing (only full 2-game pairs count).
+                let mut pair_results: Vec<GameResult> = Vec::with_capacity(2);
                 for outcome in pair_outcomes {
                     if outcome.termination_reason == "interrupted" {
                         continue;
@@ -1982,6 +2339,7 @@ fn main() {
                         GameResult::Loss => losses += 1,
                         GameResult::Draw => draws += 1,
                     }
+                    pair_results.push(outcome.result);
                     game_logs.push(outcome.icn);
                     let stats = per_variant_stats
                         .entry(outcome.variant_name)
@@ -1993,6 +2351,10 @@ fn main() {
                     }
                 }
 
+                if pair_results.len() == 2 {
+                    penta.add_pair(pair_results[0], pair_results[1]);
+                }
+
                 // Batch save: write the games file periodically so progress is not lost on crash
                 if let Some(ref path) = games_path {
                     if game_logs.len().saturating_sub(last_save_len) >= config.save_interval {
@@ -2001,16 +2363,19 @@ fn main() {
                     }
                 }
 
-                let llr = calculate_llr(wins, losses, draws, config.elo0, config.elo1);
-                let (elo, err) = estimate_elo(wins, losses, draws);
+                // Pentanomial LLR drives the SPRT decision (Fishtest model).
+                let llr = calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
+                let pe = estimate_pentanomial_elo(&penta);
                 let status_line = format!(
-                    "Games: {} | W: {} L: {} D: {} | Elo: {:.1} +/- {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
+                    "Games: {} ({} pairs) | W: {} L: {} D: {} | nElo: {:.2} +/- {:.2} | Elo: {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
                     wins + losses + draws,
+                    penta.total_pairs(),
                     wins,
                     losses,
                     draws,
-                    elo,
-                    err,
+                    pe.nelo,
+                    pe.nelo_err,
+                    pe.elo,
                     llr,
                     lower,
                     upper
@@ -2035,14 +2400,34 @@ fn main() {
             println!("\n\nFinal Summary:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
             print_settings_context(&config);
-            let (elo, err) = estimate_elo(wins, losses, draws);
-            println!("  Elo: {:.1} +/- {:.1}", elo, err);
+            let pe = estimate_pentanomial_elo(&penta);
+            let final_penta_llr =
+                calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
+            let model_name = match config.model {
+                SprtModel::Normalized => "normalized",
+                SprtModel::Logistic => "logistic",
+            };
+            println!("  nElo: {:.2} +/- {:.2}", pe.nelo, pe.nelo_err);
+            println!("  Elo: {:.1} +/- {:.1}", pe.elo, pe.elo_err);
             println!(
                 "  Record: {}W - {}L - {}D ({} total)",
                 wins,
                 losses,
                 draws,
                 wins + losses + draws
+            );
+            println!(
+                "  Pentanomial [{} pairs]: LL:{} LD:{} WL/DD:{} WD:{} WW:{}",
+                penta.total_pairs(),
+                penta.ll,
+                penta.ld,
+                penta.wl + penta.dd,
+                penta.wd,
+                penta.ww
+            );
+            println!(
+                "  LLR: {:.3}  bounds [{:.2}, {:.2}] ({} model, [{}, {}])",
+                final_penta_llr, lower, upper, model_name, config.elo0, config.elo1
             );
             if timeout_losses > 0 {
                 println!(
@@ -2095,14 +2480,31 @@ fn main() {
                     losses: usize,
                     draws: usize,
                     timeout_losses: usize,
+                    // elo/elo_error/llr are the pentanomial (Fishtest-model) values;
+                    // field names kept stable for existing consumers.
                     elo: f64,
                     elo_error: f64,
+                    nelo: f64,
+                    nelo_error: f64,
                     llr: f64,
+                    model: String,
+                    total_pairs: usize,
+                    penta_ll: usize,
+                    penta_ld: usize,
+                    penta_wl_dd: usize,
+                    penta_wd: usize,
+                    penta_ww: usize,
                     total_games: usize,
                     per_variant: HashMap<String, (usize, usize, usize)>,
                 }
-                let final_llr = calculate_llr(wins, losses, draws, config.elo0, config.elo1);
-                let (final_elo, final_err) = estimate_elo(wins, losses, draws);
+                let final_llr =
+                    calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
+                let final_pe = estimate_pentanomial_elo(&penta);
+                let model_str = match config.model {
+                    SprtModel::Normalized => "normalized",
+                    SprtModel::Logistic => "logistic",
+                }
+                .to_string();
                 let res = FinalResults {
                     new_commit: config
                         .new_commit_info
@@ -2138,9 +2540,18 @@ fn main() {
                     losses,
                     draws,
                     timeout_losses,
-                    elo: final_elo,
-                    elo_error: final_err,
+                    elo: final_pe.elo,
+                    elo_error: final_pe.elo_err,
+                    nelo: final_pe.nelo,
+                    nelo_error: final_pe.nelo_err,
                     llr: final_llr,
+                    model: model_str,
+                    total_pairs: penta.total_pairs(),
+                    penta_ll: penta.ll,
+                    penta_ld: penta.ld,
+                    penta_wl_dd: penta.wl + penta.dd,
+                    penta_wd: penta.wd,
+                    penta_ww: penta.ww,
                     total_games: wins + losses + draws,
                     per_variant: per_variant_stats,
                 };
@@ -2241,5 +2652,55 @@ fn main() {
         None => {
             println!("Use --help for usage. SPRT CLI requires a subcommand.");
         }
+    }
+}
+#[cfg(test)]
+mod pentanomial_tests {
+    use super::*;
+
+    // Reference values from fastchess app/tests/sprt_test.cpp (logistic model).
+    // Stats(ll, ld, wl, dd, wd, ww) → PentaCounts fields.
+    #[test]
+    fn logistic_pentanomial_matches_fastchess() {
+        // "logistic pentanomial 1": Stats(223, 9863, 20279, 1000, 10037, 246), elo [0.5, 2.5] → -3.07
+        let p1 = PentaCounts { ww: 246, wd: 10037, wl: 20279, dd: 1000, ld: 9863, ll: 223 };
+        let llr1 = calculate_pentanomial_llr(&p1, 0.5, 2.5, SprtModel::Logistic);
+        assert!((llr1 - (-3.07)).abs() < 0.02, "case 1 got {}", llr1);
+
+        // "logistic pentanomial 2": Stats(871, 26175, 55003, 980, 26678, 821), elo [0, 2] → -4.98
+        let p2 = PentaCounts { ww: 821, wd: 26678, wl: 55003, dd: 980, ld: 26175, ll: 871 };
+        let llr2 = calculate_pentanomial_llr(&p2, 0.0, 2.0, SprtModel::Logistic);
+        assert!((llr2 - (-4.98)).abs() < 0.02, "case 2 got {}", llr2);
+    }
+
+    #[test]
+    fn normalized_pentanomial_matches_fastchess() {
+        // "normalized pentanomial 1": Stats(365, 16618, 36029, 200, 16974, 390), elo [0, 2] → 2.25
+        let p1 = PentaCounts { ww: 390, wd: 16974, wl: 36029, dd: 200, ld: 16618, ll: 365 };
+        let llr1 = calculate_pentanomial_llr(&p1, 0.0, 2.0, SprtModel::Normalized);
+        assert!((llr1 - 2.25).abs() < 0.02, "case 1 got {}", llr1);
+
+        // "normalized pentanomial 2": Stats(127, 4883, 10311, 401, 5150, 104), elo [-1.75, 0.25] → 3.01
+        let p2 = PentaCounts { ww: 104, wd: 5150, wl: 10311, dd: 401, ld: 4883, ll: 127 };
+        let llr2 = calculate_pentanomial_llr(&p2, -1.75, 0.25, SprtModel::Normalized);
+        assert!((llr2 - 3.01).abs() < 0.02, "case 2 got {}", llr2);
+
+        // "normalized pentanomial 3": Stats(0, 0, 0, 0, 0, 5550), elo [0, 5] → 111.82
+        let p3 = PentaCounts { ww: 5550, wd: 0, wl: 0, dd: 0, ld: 0, ll: 0 };
+        let llr3 = calculate_pentanomial_llr(&p3, 0.0, 5.0, SprtModel::Normalized);
+        assert!((llr3 - 111.82).abs() < 0.1, "case 3 got {}", llr3);
+    }
+
+    #[test]
+    fn add_pair_buckets_correctly() {
+        let mut p = PentaCounts::default();
+        p.add_pair(GameResult::Win, GameResult::Win);
+        p.add_pair(GameResult::Win, GameResult::Draw);
+        p.add_pair(GameResult::Win, GameResult::Loss);
+        p.add_pair(GameResult::Draw, GameResult::Draw);
+        p.add_pair(GameResult::Loss, GameResult::Draw);
+        p.add_pair(GameResult::Loss, GameResult::Loss);
+        assert_eq!((p.ww, p.wd, p.wl, p.dd, p.ld, p.ll), (1, 1, 1, 1, 1, 1));
+        assert_eq!(p.total_pairs(), 6);
     }
 }

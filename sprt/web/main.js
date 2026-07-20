@@ -117,8 +117,14 @@ let lastLosses = 0;
 let lastDraws = 0;
 let lastElo = 0;
 let lastEloError = 0;
+let lastNelo = 0;
+let lastNeloError = 0;
 let lastLLR = 0;
 let lastBounds = null;
+// Pentanomial pair accounting (drives the SPRT decision, matching src/bin/sprt.rs).
+let pentaCounts = newPentaCounts();
+// NEW-perspective result per gameIndex, held until its pair partner completes.
+let pendingPairResults = {};
 // Per-variant stats: variantName -> { wins, losses, draws }
 let perVariantStats = {};
 // Variant management
@@ -133,10 +139,12 @@ let activeWorkerResolvers = [];
 // SPRT configuration
 const CONFIG = {
     elo0: 0,
-    elo1: 5,
+    elo1: 2,
+    // SPRT model: 'normalized' (nElo bounds, draw-rate/TC independent) or 'logistic'.
+    model: 'normalized',
     alpha: 0.05,
     beta: 0.05,
-    boundsPreset: 'all',
+    boundsPreset: 'stockfish_stc',
     boundsMode: 'gainer',
     timeControl: '10+0.1',
     tcMode: 'smart_mix',
@@ -774,22 +782,6 @@ function getTcParams(mode, valStr, pairIndex) {
     };
 }
 
-function calculateLLR(wins, losses, draws, elo0, elo1) {
-    const total = wins + losses + draws;
-    if (total === 0) return 0;
-
-    const score = (wins + draws * 0.5) / total;
-    const s0 = eloToScore(elo0);
-    const s1 = eloToScore(elo1);
-    const clampedScore = Math.max(0.001, Math.min(0.999, score));
-
-    const llr = total * (
-        clampedScore * Math.log(s1 / s0) +
-        (1 - clampedScore) * Math.log((1 - s1) / (1 - s0))
-    );
-    return llr;
-}
-
 function estimateElo(wins, losses, draws) {
     const total = wins + losses + draws;
     if (total === 0) return { elo: 0, error: 0 };
@@ -809,6 +801,202 @@ function estimateElo(wins, losses, draws) {
     const eloError = stdDev * 400 / (Math.log(10) * score * (1 - score));
 
     return { elo, error: Math.min(eloError, 200) };
+}
+
+// ── Pentanomial GSPRT (ported 1:1 from src/bin/sprt.rs, matching fastchess/Fishtest) ──
+// Games are played in color-balanced pairs from the same opening line; a pair's two
+// NEW-perspective results collapse to five buckets (LL/LD/WL·DD/WD/WW). This cancels
+// within-pair variance so the SPRT concludes in fewer games than the trinomial model.
+function newPentaCounts() {
+    return { ww: 0, wd: 0, wl: 0, dd: 0, ld: 0, ll: 0 };
+}
+
+function pentaTotalPairs(p) {
+    return p.ww + p.wd + p.wl + p.dd + p.ld + p.ll;
+}
+
+// Bucket a completed pair from two NEW-perspective results ('win'|'loss'|'draw').
+function pentaAddPair(p, a, b) {
+    let w = 0, d = 0, l = 0;
+    for (const r of [a, b]) {
+        if (r === 'win') w++;
+        else if (r === 'draw') d++;
+        else l++;
+    }
+    if (w === 2) p.ww++;
+    else if (w === 1 && d === 1) p.wd++;
+    else if (w === 1 && l === 1) p.wl++;
+    else if (d === 2) p.dd++;
+    else if (l === 1 && d === 1) p.ld++;
+    else p.ll++;
+}
+
+// fastchess regularize: a zero bucket becomes 1e-3 so log-likelihoods stay finite.
+function regularize(v) {
+    return v === 0 ? 1e-3 : v;
+}
+
+// ITP root-finder (Oliveira & Takahashi 2020), ported from fastchess itp().
+function itp(f, a, b, fA, fB, k1, k2, n0, epsilon) {
+    if (fA > 0) {
+        [a, b] = [b, a];
+        [fA, fB] = [fB, fA];
+    }
+    const nHalf = Math.ceil(Math.log2(Math.abs(b - a) / (2 * epsilon)));
+    const nMax = nHalf + n0;
+    let i = 0;
+    while (Math.abs(b - a) > 2 * epsilon) {
+        const xHalf = (a + b) / 2;
+        const r = epsilon * Math.pow(2, nMax - i) - (b - a) / 2;
+        const delta = k1 * Math.pow(b - a, k2);
+        const xF = (fB * a - fA * b) / (fB - fA);
+        const sigma = (xHalf - xF) / Math.abs(xHalf - xF);
+        const xT = delta <= Math.abs(xHalf - xF) ? xF + sigma * delta : xHalf;
+        const xItp = Math.abs(xT - xHalf) <= r ? xT : xHalf - sigma * r;
+        const fItp = f(xItp);
+        if (fItp === 0) { a = xItp; b = xItp; }
+        else if (fItp < 0) { a = xItp; fA = fItp; }
+        else { b = xItp; fB = fItp; }
+        i++;
+    }
+    return (a + b) / 2;
+}
+
+// MLE outcome distribution constrained to expected score s (fastchess getLLR_logistic inner mle).
+function mleLogistic(scores, probs, s) {
+    const n = scores.length;
+    const thetaEpsilon = 1e-3;
+    const minTheta = -1 / (scores[n - 1] - s);
+    const maxTheta = -1 / (scores[0] - s);
+    const theta = itp(
+        (x) => {
+            let result = 0;
+            for (let i = 0; i < n; i++) {
+                const ai = scores[i];
+                result += probs[i] * (ai - s) / (1 + x * (ai - s));
+            }
+            return result;
+        },
+        minTheta, maxTheta, Infinity, -Infinity, 0.1, 2.0, 0.99, thetaEpsilon,
+    );
+    return scores.map((ai, i) => probs[i] / (1 + theta * (ai - s)));
+}
+
+function llrLogistic(total, scores, probs, s0, s1) {
+    const p0 = mleLogistic(scores, probs, s0);
+    const p1 = mleLogistic(scores, probs, s1);
+    let acc = 0;
+    for (let i = 0; i < scores.length; i++) {
+        acc += probs[i] * (Math.log(p1[i]) - Math.log(p0[i]));
+    }
+    return total * acc;
+}
+
+function meanArr(x, p) {
+    let result = 0;
+    for (let i = 0; i < x.length; i++) result += x[i] * p[i];
+    return result;
+}
+
+function meanAndVariance(x, p) {
+    const mu = meanArr(x, p);
+    let variance = 0;
+    for (let i = 0; i < x.length; i++) variance += p[i] * (x[i] - mu) * (x[i] - mu);
+    return [mu, variance];
+}
+
+// MLE distribution for the normalized model (fastchess getLLR_normalized inner mle).
+function mleNormalized(scores, probs, muRef, tStar) {
+    const n = scores.length;
+    const thetaEpsilon = 1e-7;
+    const mleEpsilon = 1e-4;
+    let p = new Array(n).fill(1 / n);
+
+    for (let iter = 0; iter < 10; iter++) {
+        const [mu, variance] = meanAndVariance(scores, p);
+        const sigma = Math.sqrt(variance);
+        const phi = scores.map((ai) =>
+            ai - muRef - 0.5 * tStar * sigma * (1 + ((ai - mu) / sigma) * ((ai - mu) / sigma)));
+        const u = Math.min(...phi);
+        const v = Math.max(...phi);
+        const minTheta = -1 / v;
+        const maxTheta = -1 / u;
+        const theta = itp(
+            (x) => {
+                let result = 0;
+                for (let i = 0; i < n; i++) result += probs[i] * phi[i] / (1 + x * phi[i]);
+                return result;
+            },
+            minTheta, maxTheta, Infinity, -Infinity, 0.1, 2.0, 0.99, thetaEpsilon);
+        let maxDiff = 0;
+        for (let i = 0; i < n; i++) {
+            const newp = probs[i] / (1 + theta * phi[i]);
+            maxDiff = Math.max(maxDiff, Math.abs(newp - p[i]));
+            p[i] = newp;
+        }
+        if (maxDiff < mleEpsilon) break;
+    }
+    return p;
+}
+
+function llrNormalized(total, scores, probs, t0, t1) {
+    const p0 = mleNormalized(scores, probs, 0.5, t0);
+    const p1 = mleNormalized(scores, probs, 0.5, t1);
+    let acc = 0;
+    for (let i = 0; i < scores.length; i++) {
+        acc += probs[i] * (Math.log(p1[i]) - Math.log(p0[i]));
+    }
+    return total * acc;
+}
+
+// Pentanomial LLR — the SPRT decision statistic (Fishtest model). model: 'normalized' | 'logistic'.
+function calculatePentanomialLLR(p, elo0, elo1, model) {
+    if (pentaTotalPairs(p) === 0) return 0;
+    const ll = regularize(p.ll);
+    const ld = regularize(p.ld);
+    const wlDd = regularize(p.dd + p.wl);
+    const wd = regularize(p.wd);
+    const ww = regularize(p.ww);
+    const total = ww + wd + wlDd + ld + ll;
+    const probs = [ll / total, ld / total, wlDd / total, wd / total, ww / total];
+    const scores = [0.0, 0.25, 0.5, 0.75, 1.0];
+    if (model === 'logistic') {
+        return llrLogistic(total, scores, probs, eloToScore(elo0), eloToScore(elo1));
+    }
+    // Normalized (nElo): sqrt(2) pentanomial scale, 800/ln10 logistic constant.
+    const t0 = Math.sqrt(2) * elo0 / (800 / Math.log(10));
+    const t1 = Math.sqrt(2) * elo1 / (800 / Math.log(10));
+    return llrNormalized(total, scores, probs, t0, t1);
+}
+
+// Pentanomial Elo estimate, matching fastchess EloPentanomial. Returns both the
+// logistic Elo and normalized Elo (nElo); neither depends on the SPRT model.
+function estimatePentanomialElo(p) {
+    const pairs = pentaTotalPairs(p);
+    if (pairs === 0) return { elo: 0, error: 0, nelo: 0, neloError: 0 };
+    const ww = p.ww / pairs, wd = p.wd / pairs, wl = p.wl / pairs;
+    const dd = p.dd / pairs, ld = p.ld / pairs, ll = p.ll / pairs;
+
+    const score = ww + 0.75 * wd + 0.5 * (wl + dd) + 0.25 * ld;
+    const variance =
+        ww * Math.pow(1 - score, 2) +
+        wd * Math.pow(0.75 - score, 2) +
+        (wl + dd) * Math.pow(0.5 - score, 2) +
+        ld * Math.pow(0.25 - score, 2) +
+        ll * Math.pow(0 - score, 2);
+    const variancePerPair = variance / pairs;
+
+    const CI95 = 1.959963984540054;
+    const clamp = (s) => Math.max(1e-9, Math.min(1 - 1e-9, s));
+    const s2e = (s) => -400 * Math.log10(1 / clamp(s) - 1);
+    const s2n = (s) => (s - 0.5) / Math.sqrt(2 * variance) * (800 / Math.log(10));
+    const upper = score + CI95 * Math.sqrt(variancePerPair);
+    const lower = score - CI95 * Math.sqrt(variancePerPair);
+    const elo = score <= 0 ? -999 : (score >= 1 ? 999 : s2e(score));
+    const error = (s2e(upper) - s2e(lower)) / 2;
+    const nelo = variance <= 0 ? 0 : s2n(score);
+    const neloError = variance <= 0 ? 0 : (s2n(upper) - s2n(lower)) / 2;
+    return { elo, error: Math.min(error, 200), nelo, neloError };
 }
 
 function applyBoundsPreset() {
@@ -977,8 +1165,12 @@ async function runSprt() {
     lastDraws = 0;
     lastElo = 0;
     lastEloError = 0;
+    lastNelo = 0;
+    lastNeloError = 0;
     lastLLR = 0;
     lastBounds = null;
+    pentaCounts = newPentaCounts();
+    pendingPairResults = {};
 
     stopRequested = false;
     runSprtBtn.disabled = true;
@@ -986,7 +1178,7 @@ async function runSprt() {
     sprtRunning = true;
 
     // Read configuration from UI into global CONFIG first (to persist defaults)
-    CONFIG.boundsPreset = sprtBoundsPreset.value || 'all';
+    CONFIG.boundsPreset = sprtBoundsPreset.value || 'stockfish_stc';
     CONFIG.boundsMode = sprtBoundsMode.value || 'gainer';
     CONFIG.alpha = parseFloat(sprtAlphaEl.value) || 0.05;
     CONFIG.beta = parseFloat(sprtBetaEl.value) || 0.05;
@@ -1213,9 +1405,19 @@ async function runSprt() {
                             else perVariantStats[vName].draws++;
 
                             const total = wins + losses + draws;
-                            // Use runConfig for ELO
-                            llr = calculateLLR(wins, losses, draws, runConfig.elo0, runConfig.elo1);
-                            const { elo, error } = estimateElo(wins, losses, draws);
+
+                            // Bucket the pentanomial pair once both games of (2k, 2k+1) are in.
+                            pendingPairResults[msg.gameIndex] = result;
+                            const partnerIndex = msg.gameIndex ^ 1;
+                            if (Object.prototype.hasOwnProperty.call(pendingPairResults, partnerIndex)) {
+                                pentaAddPair(pentaCounts, pendingPairResults[msg.gameIndex], pendingPairResults[partnerIndex]);
+                                delete pendingPairResults[msg.gameIndex];
+                                delete pendingPairResults[partnerIndex];
+                            }
+
+                            // Pentanomial LLR/Elo drive the decision (matches src/bin/sprt.rs & Fishtest).
+                            llr = calculatePentanomialLLR(pentaCounts, runConfig.elo0, runConfig.elo1, runConfig.model);
+                            const { elo, error, nelo, neloError } = estimatePentanomialElo(pentaCounts);
 
                             // update last stats snapshot so Stop can show partial results
                             lastWins = wins;
@@ -1223,6 +1425,8 @@ async function runSprt() {
                             lastDraws = draws;
                             lastElo = elo;
                             lastEloError = error;
+                            lastNelo = nelo;
+                            lastNeloError = neloError;
                             lastLLR = llr;
 
                             sprtWinsEl.textContent = String(wins);
@@ -1232,13 +1436,15 @@ async function runSprt() {
 
                             sprtLog('Game ' + total + ': ' + result +
                                 ' (W:' + wins + ' L:' + losses + ' D:' + draws + ')' +
-                                ' Elo≈' + elo.toFixed(1) + '±' + error.toFixed(1) +
+                                ' nElo≈' + nelo.toFixed(2) + '±' + neloError.toFixed(2) +
+                                ' Elo≈' + elo.toFixed(1) +
                                 ' LLR=' + llr.toFixed(2));
 
                             log(
                                 'Games: ' + total + '/' + maxGames +
                                 '  W:' + wins + ' L:' + losses + ' D:' + draws +
-                                '  Elo≈' + elo.toFixed(1) + '±' + error.toFixed(1) +
+                                '  nElo≈' + nelo.toFixed(2) + '±' + neloError.toFixed(2) +
+                                '  Elo≈' + elo.toFixed(1) +
                                 '  LLR ' + llr.toFixed(2) +
                                 ' in [' + bounds.lower.toFixed(2) + ', ' + bounds.upper.toFixed(2) + ']',
                                 'info'
@@ -1330,12 +1536,12 @@ async function runSprt() {
             })
         );
 
-        const { elo: finalElo, error: finalErr } = estimateElo(wins, losses, draws);
+        const { elo: finalElo, error: finalErr, nelo: finalNelo, neloError: finalNeloErr } = estimatePentanomialElo(pentaCounts);
         const verdict = llr >= bounds.upper ? 'PASSED (new > old)'
             : (llr <= bounds.lower ? 'FAILED (no gain)' : 'INCONCLUSIVE');
 
-        log('SPRT Complete: ' + wins + 'W ' + losses + 'L ' + draws + 'D, Elo≈ ' +
-            finalElo.toFixed(1) + '±' + finalErr.toFixed(1) + ' (' + verdict + ')', 'success');
+        log('SPRT Complete: ' + wins + 'W ' + losses + 'L ' + draws + 'D, nElo≈ ' +
+            finalNelo.toFixed(2) + '±' + finalNeloErr.toFixed(2) + ' (' + verdict + ')', 'success');
         // Detailed final summary block similar to sprt.js printResult
         const totalGames = wins + losses + draws;
         const winRate = totalGames > 0 ? (((wins + draws * 0.5) / totalGames) * 100).toFixed(1) : '0.0';
@@ -1344,7 +1550,11 @@ async function runSprt() {
         sprtLog('Final Results:');
         sprtLog('  Total Games: ' + totalGames);
         sprtLog('  Score: +' + wins + ' -' + losses + ' =' + draws + ' (' + winRate + '%)');
+        sprtLog('  nElo: ' + (finalNelo >= 0 ? '+' : '') + finalNelo.toFixed(2) + ' ±' + finalNeloErr.toFixed(2) + ' (' + runConfig.model + ')');
         sprtLog('  Elo Difference: ' + (finalElo >= 0 ? '+' : '') + finalElo.toFixed(1) + ' ±' + finalErr.toFixed(1));
+        sprtLog('  Pentanomial [' + pentaTotalPairs(pentaCounts) + ' pairs]: LL:' + pentaCounts.ll +
+            ' LD:' + pentaCounts.ld + ' WL/DD:' + (pentaCounts.wl + pentaCounts.dd) +
+            ' WD:' + pentaCounts.wd + ' WW:' + pentaCounts.ww);
         sprtLog('');
         sprtLog('Per-Variant Breakdown:');
         const variantNames = Object.keys(perVariantStats).sort();
@@ -1414,9 +1624,11 @@ function stopSprt() {
         });
         sprtLog('═══════════════════════════════════════════════════════════════════');
         if (lastBounds) {
+            sprtLog('  nElo: ' + (lastNelo >= 0 ? '+' : '') + lastNelo.toFixed(2) + ' ±' + lastNeloError.toFixed(2));
             sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
             sprtLog('  LLR=' + lastLLR.toFixed(2) + ' bounds [' + lastBounds.lower.toFixed(2) + ', ' + lastBounds.upper.toFixed(2) + ']');
         } else {
+            sprtLog('  nElo: ' + (lastNelo >= 0 ? '+' : '') + lastNelo.toFixed(2) + ' ±' + lastNeloError.toFixed(2));
             sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
         }
     }

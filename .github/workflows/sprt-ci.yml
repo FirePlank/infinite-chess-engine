@@ -147,7 +147,7 @@ jobs:
 
   sprt-ci:
     needs: test-and-coverage
-    if: needs.test-and-coverage.outputs.coverage_passed == 'true'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

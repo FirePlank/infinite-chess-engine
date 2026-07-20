@@ -44,8 +44,11 @@ VARIANT_RE = re.compile(
     r"\[([A-Za-z_]+)\]:.*?Elo:\s*([-+]?\d+(?:\.\d+)?)", re.IGNORECASE
 )
 # A standalone overall figure, used only when no breakdown is present.
+# The lookbehind rejects "nElo:" so the fallback reads the logistic Elo (the
+# threshold scale), never the normalized-Elo line.
 OVERALL_RE = re.compile(
-    r"Elo(?:\s+Difference)?:\s*([-+]?\d+(?:\.\d+)?)\s*(?:\+/-|±)", re.IGNORECASE
+    r"(?<![A-Za-z])Elo(?:\s+Difference)?:\s*([-+]?\d+(?:\.\d+)?)\s*(?:\+/-|±)",
+    re.IGNORECASE,
 )
 OVERRIDE_RE = re.compile(r"^\s*Elo-Override:\s*([-+]?\d+(?:\.\d+)?)\s*$", re.MULTILINE)
 
