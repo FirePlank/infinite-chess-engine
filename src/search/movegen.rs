@@ -654,6 +654,28 @@ impl StagedMoveGen {
                 }
                 score += q.min(12000);
             }
+
+            // Defensive escape: moving a valuable piece OFF a square the enemy
+            // attacks TO a safe square saves material; order it early so LMR/LMP
+            // don't bury the defensive resource (collapse analysis: defense is
+            // under-weighted, esp. in Palace-like structures).
+            let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+            if mover_val >= 250
+                && crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.from,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+                && !crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.to,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+            {
+                score += (mover_val * 5).min(10000);
+            }
         }
 
         score
