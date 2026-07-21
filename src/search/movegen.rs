@@ -604,6 +604,58 @@ impl StagedMoveGen {
             }
         }
 
+        // Threat-aware ordering, gated to large subtrees (depth >= 4): a quiet that
+        // attacks an enemy piece is ~2x more likely to be the played move (all-corpus
+        // audit; undefended victim 1.93x), and this forward signal doesn't alias like
+        // dest-hashed history does at deep nodes. Shallow nodes (the bulk) skip it.
+        if self.depth >= 4 {
+            let empty_pins = rustc_hash::FxHashMap::default();
+            let ctx = crate::moves::MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+                pinned: &empty_pins,
+            };
+            let mover = m
+                .promotion
+                .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
+                .unwrap_or(m.piece);
+            let mut caps = MoveList::new();
+            crate::moves::generate_captures_for_piece(&game.board, &mover, &m.to, &ctx, &mut caps);
+            let mut best_vv = 0;
+            let mut best_sq = None;
+            for c in caps.iter() {
+                if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
+                    && vic.color() != m.piece.color()
+                    && vic.color() != PlayerColor::Neutral
+                    && !vic.piece_type().is_uncapturable()
+                {
+                    let vv = game.get_piece_value(vic.piece_type(), vic.color());
+                    if vv > best_vv {
+                        best_vv = vv;
+                        best_sq = Some(c.to);
+                    }
+                }
+            }
+            if best_vv > 0 {
+                let mut q = best_vv * 6;
+                // Undefended victim: no piece of the victim's color covers its square.
+                if let Some(sq) = best_sq
+                    && !crate::moves::is_square_attacked(
+                        &game.board,
+                        &sq,
+                        m.piece.color().opponent(),
+                        &game.spatial_indices,
+                    )
+                {
+                    q *= 2;
+                }
+                score += q.min(12000);
+            }
+        }
+
         score
     }
 

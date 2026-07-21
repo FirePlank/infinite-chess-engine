@@ -835,7 +835,7 @@ pub fn get_quiescence_captures(
 }
 
 // Helper to avoid duplicating the switch logic
-fn generate_captures_for_piece(
+pub(crate) fn generate_captures_for_piece(
     board: &Board,
     piece: &Piece,
     from: &Coordinate,
