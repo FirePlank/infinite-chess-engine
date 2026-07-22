@@ -15,32 +15,32 @@ use crate::search::params::{
 // 2-Bucket LRU pawn structure cache
 const PAWN_CACHE_SIZE: usize = 16384; // 16384 buckets * 2 entries = 32768 entries
 
-#[derive(Clone, Copy)]
+// Caches pawn-hash-pure terms as untapered (mg, eg) plus the passed-pawn coordinate
+// lists; passed-pawn scoring (king distance, blockers, path) is recomputed live.
+#[derive(Clone)]
 struct PawnCacheEntry {
     hash: u64,
-    score: i32,
+    mg: i32,
+    eg: i32,
+    w_passed: SmallVec<[(i64, i64); 4]>,
+    b_passed: SmallVec<[(i64, i64); 4]>,
 }
 
-#[derive(Clone, Copy)]
-struct PawnCacheBucket {
-    entries: [PawnCacheEntry; 2],
-}
-
-impl Default for PawnCacheBucket {
+impl Default for PawnCacheEntry {
     fn default() -> Self {
-        PawnCacheBucket {
-            entries: [
-                PawnCacheEntry {
-                    hash: u64::MAX,
-                    score: 0,
-                },
-                PawnCacheEntry {
-                    hash: u64::MAX,
-                    score: 0,
-                },
-            ],
+        PawnCacheEntry {
+            hash: u64::MAX,
+            mg: 0,
+            eg: 0,
+            w_passed: SmallVec::new(),
+            b_passed: SmallVec::new(),
         }
     }
+}
+
+#[derive(Clone, Default)]
+struct PawnCacheBucket {
+    entries: [PawnCacheEntry; 2],
 }
 
 thread_local! {
@@ -2722,95 +2722,121 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     white_rq: &[(i64, i64)],
     black_rq: &[(i64, i64)],
 ) -> i32 {
-    // Check cache first using game's pawn_hash
+    let _ = (white_rq, black_rq);
     let pawn_hash = game.pawn_hash;
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
 
     // Bypassing cache if tracer is active to ensure we get a full breakdown.
     if tracer.is_active() {
-        return compute_pawn_structure_traced(
-            game,
-            phase,
-            white_royals,
-            black_royals,
-            tracer,
-            white_pawns,
-            black_pawns,
-            white_rq,
-            black_rq,
-        );
+        let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
+        return taper(core.mg, core.eg)
+            + score_passed_pawns(
+                game,
+                phase,
+                white_royals,
+                black_royals,
+                white_pawns,
+                black_pawns,
+                &core.w_passed,
+                &core.b_passed,
+                tracer,
+            );
     }
 
-    // Fast 2-Bucket cache probe using bitwise mask
+    // Fast 2-Bucket cache probe using bitwise mask. Only pawn-hash-pure data is
+    // cached; taper and passed-pawn scoring happen live so phase, king positions
+    // and blockers are always current.
     let idx = (pawn_hash as usize) & (PAWN_CACHE_SIZE - 1);
     let cached = PAWN_CACHE.with(|cache| {
-        let bucket = unsafe { (&*cache.get())[idx] };
+        let bucket = unsafe { &(&*cache.get())[idx] };
         if bucket.entries[0].hash == pawn_hash {
-            Some(bucket.entries[0].score)
+            Some(bucket.entries[0].clone())
         } else if bucket.entries[1].hash == pawn_hash {
-            Some(bucket.entries[1].score)
+            Some(bucket.entries[1].clone())
         } else {
             None
         }
     });
 
-    if let Some(score) = cached {
-        return score;
+    if let Some(entry) = cached {
+        return taper(entry.mg, entry.eg)
+            + score_passed_pawns(
+                game,
+                phase,
+                white_royals,
+                black_royals,
+                white_pawns,
+                black_pawns,
+                &entry.w_passed,
+                &entry.b_passed,
+                tracer,
+            );
     }
 
     // Cache miss - compute pawn structure
-    let score = compute_pawn_structure_traced(
-        game,
-        phase,
-        white_royals,
-        black_royals,
-        tracer,
-        white_pawns,
-        black_pawns,
-        white_rq,
-        black_rq,
-    );
+    let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
+    let score = taper(core.mg, core.eg)
+        + score_passed_pawns(
+            game,
+            phase,
+            white_royals,
+            black_royals,
+            white_pawns,
+            black_pawns,
+            &core.w_passed,
+            &core.b_passed,
+            tracer,
+        );
 
     // 2-Bucket cache store (LRU: new item goes to front, old item moves to back)
     PAWN_CACHE.with(|cache| {
         let cache_mut = unsafe { &mut *cache.get() };
         let bucket = &mut cache_mut[idx];
-        bucket.entries[1] = bucket.entries[0];
+        bucket.entries[1] = bucket.entries[0].clone();
         bucket.entries[0] = PawnCacheEntry {
             hash: pawn_hash,
-            score,
+            mg: core.mg,
+            eg: core.eg,
+            w_passed: core.w_passed,
+            b_passed: core.b_passed,
         };
     });
 
     score
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Core pawn structure computation. Called on cache miss.
-fn compute_pawn_structure_traced<T: EvaluationTracer>(
+/// Pawn-hash-pure structure terms (untapered) plus passed-pawn locations.
+struct PawnCoreOut {
+    mg: i32,
+    eg: i32,
+    w_passed: SmallVec<[(i64, i64); 4]>,
+    b_passed: SmallVec<[(i64, i64); 4]>,
+}
+
+/// Computes the cacheable pawn terms: doubled, isolated, backward, candidate,
+/// connected, and passed-pawn detection. Passed-pawn scoring is done live.
+fn compute_pawn_core<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
-    white_royals: &[Coordinate],
-    black_royals: &[Coordinate],
     tracer: &mut T,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
-    _white_rq: &[(i64, i64)],
-    _black_rq: &[(i64, i64)],
-) -> i32 {
+) -> PawnCoreOut {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
-    let mut w_doubled = 0;
-    let mut b_doubled = 0;
-    let mut w_passed_score = 0;
-    let mut b_passed_score = 0;
-    let mut w_connected = 0;
-    let mut b_connected = 0;
-    let mut w_candidate = 0;
-    let mut b_candidate = 0;
-    let mut w_isolated = 0;
-    let mut b_isolated = 0;
-    let mut w_backward = 0;
-    let mut b_backward = 0;
+    let mut w_doubled = (0, 0);
+    let mut b_doubled = (0, 0);
+    let mut w_connected = (0, 0);
+    let mut b_connected = (0, 0);
+    let mut w_candidate = (0, 0);
+    let mut b_candidate = (0, 0);
+    let mut w_isolated = (0, 0);
+    let mut b_isolated = (0, 0);
+    let mut w_backward = (0, 0);
+    let mut b_backward = (0, 0);
+    let mut w_passed: SmallVec<[(i64, i64); 4]> = SmallVec::new();
+    let mut b_passed: SmallVec<[(i64, i64); 4]> = SmallVec::new();
 
     // White Doubled Pawns
     let mut i = 0;
@@ -2823,7 +2849,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             j += 1;
         }
         if count > 1 {
-            w_doubled -= (count - 1) * taper(mg_doubled_pawn_penalty(), eg_doubled_pawn_penalty());
+            w_doubled.0 -= (count - 1) * mg_doubled_pawn_penalty();
+            w_doubled.1 -= (count - 1) * eg_doubled_pawn_penalty();
         }
         i = j;
     }
@@ -2839,7 +2866,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             j += 1;
         }
         if count > 1 {
-            b_doubled -= (count - 1) * taper(mg_doubled_pawn_penalty(), eg_doubled_pawn_penalty());
+            b_doubled.0 -= (count - 1) * mg_doubled_pawn_penalty();
+            b_doubled.1 -= (count - 1) * eg_doubled_pawn_penalty();
         }
         i = j;
     }
@@ -2859,7 +2887,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             right_idx < white_pawns.len() && white_pawns[right_idx].0 == wx + 1;
 
         if !has_left_neighbor && !has_right_neighbor {
-            w_isolated -= taper(10, 20);
+            w_isolated.0 -= 10;
+            w_isolated.1 -= 20;
         } else {
             let is_behind_left = !has_left_neighbor || white_pawns[left_idx].1 > wy;
             let is_behind_right = !has_right_neighbor || white_pawns[right_idx].1 > wy;
@@ -2870,7 +2899,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                     || black_pawns.binary_search(&(wx + 1, wy + 2)).is_ok();
 
                 if stop_sq_blocked || stop_sq_attacked {
-                    w_backward -= taper(8, 12);
+                    w_backward.0 -= 8;
+                    w_backward.1 -= 12;
                 }
             }
         }
@@ -2898,60 +2928,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         }
 
         if is_passed {
-            // 1. Can Advance
-            let next_y = wy + 1;
-            let can_advance = game.board.get_piece(wx, next_y).is_none();
-
-            // 2. Safe Advance
-            let safe_advance = black_pawns.binary_search(&(wx - 1, next_y + 1)).is_err()
-                && black_pawns.binary_search(&(wx + 1, next_y + 1)).is_err();
-
-            // 3. King Distances (find max bonus across all royals)
-            let mut friendly_king_bonus = 0;
-            let mut enemy_king_penalty = 0;
-            for wk in white_royals {
-                let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as usize;
-                let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
-                friendly_king_bonus = friendly_king_bonus.max(b);
-            }
-            for bk in black_royals {
-                let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as usize;
-                let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
-                enemy_king_penalty = enemy_king_penalty.max(p);
-            }
-
-            // 4. Safe Promotion Path
-            let mut safe_path = is_clear_line_between_fast(
-                &game.spatial_indices,
-                &Coordinate::new(wx, wy),
-                &Coordinate::new(wx, w_promo),
-            );
-            if safe_path {
-                // Check for attacking black pawns on adjacent files in rank range [wy+2, w_promo]
-                for dx in &[-1, 1] {
-                    let target_file = wx + dx;
-                    let start = black_pawns.partition_point(|&(bx, by)| {
-                        bx < target_file || (bx == target_file && by < wy + 2)
-                    });
-                    if start < black_pawns.len()
-                        && black_pawns[start].0 == target_file
-                        && black_pawns[start].1 <= w_promo.saturating_add(1)
-                    {
-                        safe_path = false;
-                        break;
-                    }
-                }
-            }
-            let safe_path_bonus = if safe_path {
-                taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
-            } else {
-                0
-            };
-
-            let base_bonus =
-                PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
-            w_passed_score +=
-                base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+            w_passed.push((wx, wy));
         } else {
             // Candidate passer (Ethereal push model): not passed, but if the pawn
             // advances it has at least as many friendly defenders of the push
@@ -2967,21 +2944,22 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             }
 
             if is_candidate {
-                w_candidate += CANDIDATE_PASSER_BONUS[rel_rank];
+                w_candidate.0 += CANDIDATE_PASSER_BONUS[rel_rank];
+                w_candidate.1 += CANDIDATE_PASSER_BONUS[rel_rank];
             }
         }
 
-        // Connectivity
+        // Connectivity (passed pawns get a 3/2 boost)
         if white_pawns.binary_search(&(wx - 1, wy - 1)).is_ok()
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
-            // Boost connectivity if also a candidate/passed
-            let bonus = if is_passed {
-                (taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS) * 3) / 2
+            if is_passed {
+                w_connected.0 += (MG_CONNECTED_PAWN_BONUS * 3) / 2;
+                w_connected.1 += (EG_CONNECTED_PAWN_BONUS * 3) / 2;
             } else {
-                taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS)
-            };
-            w_connected += bonus;
+                w_connected.0 += MG_CONNECTED_PAWN_BONUS;
+                w_connected.1 += EG_CONNECTED_PAWN_BONUS;
+            }
         }
     }
 
@@ -3000,7 +2978,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
             right_idx < black_pawns.len() && black_pawns[right_idx].0 == bx + 1;
 
         if !has_left_neighbor && !has_right_neighbor {
-            b_isolated -= taper(10, 20);
+            b_isolated.0 -= 10;
+            b_isolated.1 -= 20;
         } else {
             let mut is_behind_left = true;
             if has_left_neighbor {
@@ -3030,7 +3009,8 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                     || white_pawns.binary_search(&(bx + 1, by - 2)).is_ok();
 
                 if stop_sq_blocked || stop_sq_attacked {
-                    b_backward -= taper(8, 12);
+                    b_backward.0 -= 8;
+                    b_backward.1 -= 12;
                 }
             }
         }
@@ -3054,56 +3034,7 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
         }
 
         if is_passed {
-            let next_y = by - 1;
-            let can_advance = game.board.get_piece(bx, next_y).is_none();
-            let safe_advance = white_pawns.binary_search(&(bx - 1, next_y - 1)).is_err()
-                && white_pawns.binary_search(&(bx + 1, next_y - 1)).is_err();
-
-            let mut friendly_king_bonus = 0;
-            let mut enemy_king_penalty = 0;
-            for bk in black_royals {
-                let d = (bx - bk.x).abs().max((by - bk.y).abs()) as usize;
-                let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
-                friendly_king_bonus = friendly_king_bonus.max(b);
-            }
-            for wk in white_royals {
-                let d = (bx - wk.x).abs().max((by - wk.y).abs()) as usize;
-                let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
-                enemy_king_penalty = enemy_king_penalty.max(p);
-            }
-
-            // 4. Safe Promotion Path
-            let mut safe_path = is_clear_line_between_fast(
-                &game.spatial_indices,
-                &Coordinate::new(bx, by),
-                &Coordinate::new(bx, b_promo),
-            );
-            if safe_path {
-                // Check for attacking white pawns on adjacent files in rank range [b_promo-1, by-2]
-                for dx in &[-1, 1] {
-                    let target_file = bx + dx;
-                    let start = white_pawns.partition_point(|&(wx, wy_)| {
-                        wx < target_file || (wx == target_file && wy_ < b_promo - 1)
-                    });
-                    if start < white_pawns.len()
-                        && white_pawns[start].0 == target_file
-                        && white_pawns[start].1 <= by - 2
-                    {
-                        safe_path = false;
-                        break;
-                    }
-                }
-            }
-            let safe_path_bonus = if safe_path {
-                taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
-            } else {
-                0
-            };
-
-            let base_bonus =
-                PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
-            b_passed_score +=
-                base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+            b_passed.push((bx, by));
         } else {
             // Candidate passer at the push square (see white candidate branch).
             let can_advance = game.board.get_piece(bx, by - 1).is_none();
@@ -3115,32 +3046,183 @@ fn compute_pawn_structure_traced<T: EvaluationTracer>(
                 is_candidate = true;
             }
             if is_candidate {
-                b_candidate += CANDIDATE_PASSER_BONUS[rel_rank];
+                b_candidate.0 += CANDIDATE_PASSER_BONUS[rel_rank];
+                b_candidate.1 += CANDIDATE_PASSER_BONUS[rel_rank];
             }
         }
 
+        // Connectivity (passed pawns get a 3/2 boost)
         if black_pawns.binary_search(&(bx - 1, by + 1)).is_ok()
             || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
         {
-            // Boost connectivity if also a candidate/passed
-            let bonus = if is_passed {
-                (taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS) * 3) / 2
+            if is_passed {
+                b_connected.0 += (MG_CONNECTED_PAWN_BONUS * 3) / 2;
+                b_connected.1 += (EG_CONNECTED_PAWN_BONUS * 3) / 2;
             } else {
-                taper(MG_CONNECTED_PAWN_BONUS, EG_CONNECTED_PAWN_BONUS)
-            };
-            b_connected += bonus;
+                b_connected.0 += MG_CONNECTED_PAWN_BONUS;
+                b_connected.1 += EG_CONNECTED_PAWN_BONUS;
+            }
         }
     }
 
-    tracer.record("Pawn: Doubled", w_doubled.abs(), b_doubled.abs());
-    tracer.record("Pawn: Passed", w_passed_score, b_passed_score);
-    tracer.record("Pawn: Candidate", w_candidate, b_candidate);
-    tracer.record("Pawn: Connected", w_connected, b_connected);
-    tracer.record("Pawn: Isolated", w_isolated.abs(), b_isolated.abs());
-    tracer.record("Pawn: Backward", w_backward.abs(), b_backward.abs());
+    if tracer.is_active() {
+        tracer.record("Pawn: Doubled", taper(w_doubled.0, w_doubled.1).abs(), taper(b_doubled.0, b_doubled.1).abs());
+        tracer.record("Pawn: Candidate", taper(w_candidate.0, w_candidate.1), taper(b_candidate.0, b_candidate.1));
+        tracer.record("Pawn: Connected", taper(w_connected.0, w_connected.1), taper(b_connected.0, b_connected.1));
+        tracer.record("Pawn: Isolated", taper(w_isolated.0, w_isolated.1).abs(), taper(b_isolated.0, b_isolated.1).abs());
+        tracer.record("Pawn: Backward", taper(w_backward.0, w_backward.1).abs(), taper(b_backward.0, b_backward.1).abs());
+    }
 
-    (w_doubled + w_passed_score + w_candidate + w_connected + w_isolated + w_backward)
-        - (b_doubled + b_passed_score + b_candidate + b_connected + b_isolated + b_backward)
+    PawnCoreOut {
+        mg: (w_doubled.0 + w_candidate.0 + w_connected.0 + w_isolated.0 + w_backward.0)
+            - (b_doubled.0 + b_candidate.0 + b_connected.0 + b_isolated.0 + b_backward.0),
+        eg: (w_doubled.1 + w_candidate.1 + w_connected.1 + w_isolated.1 + w_backward.1)
+            - (b_doubled.1 + b_candidate.1 + b_connected.1 + b_isolated.1 + b_backward.1),
+        w_passed,
+        b_passed,
+    }
+}
+
+/// Scores passed pawns live (never cached): king distances, blockers and the
+/// promotion path change every move and must stay current for conversion play.
+#[allow(clippy::too_many_arguments)]
+fn score_passed_pawns<T: EvaluationTracer>(
+    game: &GameState,
+    phase: i32,
+    white_royals: &[Coordinate],
+    black_royals: &[Coordinate],
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
+    w_passed: &[(i64, i64)],
+    b_passed: &[(i64, i64)],
+    tracer: &mut T,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut w_passed_score = 0;
+    let mut b_passed_score = 0;
+
+    for &(wx, wy) in w_passed {
+        let w_promo = game.white_promo_rank;
+        let dist_to_promo = (w_promo - wy).max(1);
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+
+        // 1. Can Advance
+        let next_y = wy + 1;
+        let can_advance = game.board.get_piece(wx, next_y).is_none();
+
+        // 2. Safe Advance
+        let safe_advance = black_pawns.binary_search(&(wx - 1, next_y + 1)).is_err()
+            && black_pawns.binary_search(&(wx + 1, next_y + 1)).is_err();
+
+        // 3. King Distances (find max bonus across all royals)
+        let mut friendly_king_bonus = 0;
+        let mut enemy_king_penalty = 0;
+        for wk in white_royals {
+            let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as usize;
+            let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            friendly_king_bonus = friendly_king_bonus.max(b);
+        }
+        for bk in black_royals {
+            let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as usize;
+            let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            enemy_king_penalty = enemy_king_penalty.max(p);
+        }
+
+        // 4. Safe Promotion Path
+        let mut safe_path = is_clear_line_between_fast(
+            &game.spatial_indices,
+            &Coordinate::new(wx, wy),
+            &Coordinate::new(wx, w_promo),
+        );
+        if safe_path {
+            // Check for attacking black pawns on adjacent files in rank range [wy+2, w_promo]
+            for dx in &[-1, 1] {
+                let target_file = wx + dx;
+                let start = black_pawns.partition_point(|&(bx, by)| {
+                    bx < target_file || (bx == target_file && by < wy + 2)
+                });
+                if start < black_pawns.len()
+                    && black_pawns[start].0 == target_file
+                    && black_pawns[start].1 <= w_promo.saturating_add(1)
+                {
+                    safe_path = false;
+                    break;
+                }
+            }
+        }
+        let safe_path_bonus = if safe_path {
+            taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+        } else {
+            0
+        };
+
+        let base_bonus =
+            PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
+        w_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+    }
+
+    for &(bx, by) in b_passed {
+        let b_promo = game.black_promo_rank;
+        let dist_to_promo = (by - b_promo).max(1);
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+
+        let next_y = by - 1;
+        let can_advance = game.board.get_piece(bx, next_y).is_none();
+        let safe_advance = white_pawns.binary_search(&(bx - 1, next_y - 1)).is_err()
+            && white_pawns.binary_search(&(bx + 1, next_y - 1)).is_err();
+
+        let mut friendly_king_bonus = 0;
+        let mut enemy_king_penalty = 0;
+        for bk in black_royals {
+            let d = (bx - bk.x).abs().max((by - bk.y).abs()) as usize;
+            let b = PASSED_FRIENDLY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            friendly_king_bonus = friendly_king_bonus.max(b);
+        }
+        for wk in white_royals {
+            let d = (bx - wk.x).abs().max((by - wk.y).abs()) as usize;
+            let p = PASSED_ENEMY_KING_DIST[rel_rank] * (7 - d.min(7)) as i32;
+            enemy_king_penalty = enemy_king_penalty.max(p);
+        }
+
+        // Safe Promotion Path
+        let mut safe_path = is_clear_line_between_fast(
+            &game.spatial_indices,
+            &Coordinate::new(bx, by),
+            &Coordinate::new(bx, b_promo),
+        );
+        if safe_path {
+            // Check for attacking white pawns on adjacent files in rank range [b_promo-1, by-2]
+            for dx in &[-1, 1] {
+                let target_file = bx + dx;
+                let start = white_pawns.partition_point(|&(wx, wy_)| {
+                    wx < target_file || (wx == target_file && wy_ < b_promo - 1)
+                });
+                if start < white_pawns.len()
+                    && white_pawns[start].0 == target_file
+                    && white_pawns[start].1 <= by - 2
+                {
+                    safe_path = false;
+                    break;
+                }
+            }
+        }
+        let safe_path_bonus = if safe_path {
+            taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+        } else {
+            0
+        };
+
+        let base_bonus =
+            PASSED_PAWN_ADV_BONUS[can_advance as usize][safe_advance as usize][rel_rank];
+        b_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+    }
+
+    if tracer.is_active() {
+        tracer.record("Pawn: Passed", w_passed_score, b_passed_score);
+    }
+
+    w_passed_score - b_passed_score
 }
 
 pub fn count_pawns_on_file(
