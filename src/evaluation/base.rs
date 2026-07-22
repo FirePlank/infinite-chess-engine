@@ -1275,11 +1275,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             &b_king_rays,
                             black_king.is_some(),
                             w_sliders_in_zone,
+                            PlayerColor::White,
                         );
                         let b_attack_ready = compute_attack_readiness_optimized(
                             &w_king_rays,
                             white_king.is_some(),
                             b_sliders_in_zone,
+                            PlayerColor::Black,
                         );
 
                         score += evaluate_pieces_processed(
@@ -1792,26 +1794,39 @@ fn tropism_contribution(numerator: i32, d: i64, addend: i32) -> i32 {
     numerator / denom
 }
 
+/// A ray toward a king is attack-relevant when it's open past `open_dist`, or
+/// its nearest piece is already an attacker slider that moves along it.
+#[inline]
+fn ray_pressured(
+    ray: &(i32, i32, PlayerColor, PieceType),
+    attacker: PlayerColor,
+    slider_mask: u32,
+    open_dist: i32,
+) -> bool {
+    ray.0 > open_dist || (ray.2 == attacker && (1u32 << (ray.3 as u8)) & slider_mask != 0)
+}
+
 fn compute_attack_readiness_optimized(
     enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     has_enemy_king: bool,
     sliders_in_zone: i32,
+    attacker: PlayerColor,
 ) -> i32 {
     if !has_enemy_king {
         return 50;
     }
 
-    // 1. Count open rays around enemy king (O(1))
+    // 1. Count pressured rays around enemy king (O(1))
     let mut open_diag_rays = 0;
     let mut open_ortho_rays = 0;
 
-    for i in 0..4 {
-        if enemy_king_rays[i].0 > 6 {
+    for ray in &enemy_king_rays[0..4] {
+        if ray_pressured(ray, attacker, crate::attacks::DIAG_MASK, 6) {
             open_diag_rays += 1;
         }
     }
-    for i in 4..8 {
-        if enemy_king_rays[i].0 > 6 {
+    for ray in &enemy_king_rays[4..8] {
+        if ray_pressured(ray, attacker, crate::attacks::ORTHO_MASK, 6) {
             open_ortho_rays += 1;
         }
     }
@@ -1891,11 +1906,19 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     // Attack bonuses (using counts)
     if !black_royals.is_empty() {
         // White attacks Black
-        w_attack += compute_attack_bonus_optimized(b_king_rays, metrics.white_slider_counts);
+        w_attack += compute_attack_bonus_optimized(
+            b_king_rays,
+            metrics.white_slider_counts,
+            PlayerColor::White,
+        );
     }
     if !white_royals.is_empty() {
         // Black attacks White
-        b_attack += compute_attack_bonus_optimized(w_king_rays, metrics.black_slider_counts);
+        b_attack += compute_attack_bonus_optimized(
+            w_king_rays,
+            metrics.black_slider_counts,
+            PlayerColor::Black,
+        );
     }
 
     // AllRoyalsCaptured: losing one royal isn't immediately fatal — moderate reduction.
@@ -1923,6 +1946,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
 fn compute_attack_bonus_optimized(
     enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     slider_counts: (i32, i32), // (diag, ortho)
+    attacker: PlayerColor,
 ) -> i32 {
     let (our_diag_count, our_ortho_count) = slider_counts;
     if our_diag_count == 0 && our_ortho_count == 0 {
@@ -1933,15 +1957,15 @@ fn compute_attack_bonus_optimized(
     let mut open_ortho_rays = 0;
 
     if our_diag_count > 0 {
-        for i in 0..4 {
-            if enemy_king_rays[i].0 > 5 {
+        for ray in &enemy_king_rays[0..4] {
+            if ray_pressured(ray, attacker, crate::attacks::DIAG_MASK, 5) {
                 open_diag_rays += 1;
             }
         }
     }
     if our_ortho_count > 0 {
-        for i in 4..8 {
-            if enemy_king_rays[i].0 > 5 {
+        for ray in &enemy_king_rays[4..8] {
+            if ray_pressured(ray, attacker, crate::attacks::ORTHO_MASK, 5) {
                 open_ortho_rays += 1;
             }
         }
@@ -2535,6 +2559,7 @@ fn evaluate_king_shelter(
         let border_dist = get_border_dist(dx, dy);
         let is_border_closest = border_dist < dist;
         let actual_dist = if is_border_closest { border_dist } else { dist };
+        let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
             if is_border_closest {
@@ -2555,13 +2580,15 @@ fn evaluate_king_shelter(
                 }
             } else {
                 enemy_blocked = true;
+                // A diagonal slider on this ray is an actual attacker, not a shield.
+                enemy_slider_aligned = (1u32 << (pt as u8)) & crate::attacks::DIAG_MASK != 0;
             }
         }
 
         let mut penalty = BASE_DIAG_RAY_PENALTY;
         if let Some((v, d)) = blocker {
             penalty = penalty * (100 - blocker_reduction_pct(v, d)) / 100;
-        } else if enemy_blocked {
+        } else if enemy_blocked && !enemy_slider_aligned {
             penalty = penalty * 60 / 100;
         }
         total_ray_penalty += penalty;
@@ -2577,6 +2604,7 @@ fn evaluate_king_shelter(
         let border_dist = get_border_dist(dx, dy);
         let is_border_closest = border_dist < dist;
         let actual_dist = if is_border_closest { border_dist } else { dist };
+        let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
             if is_border_closest {
@@ -2594,13 +2622,15 @@ fn evaluate_king_shelter(
                 }
             } else {
                 enemy_blocked = true;
+                // An orthogonal slider on this ray is an actual attacker, not a shield.
+                enemy_slider_aligned = (1u32 << (pt as u8)) & crate::attacks::ORTHO_MASK != 0;
             }
         }
 
         let mut penalty = BASE_ORTHO_RAY_PENALTY;
         if let Some((v, d)) = blocker {
             penalty = penalty * (100 - blocker_reduction_pct(v, d)) / 100;
-        } else if enemy_blocked {
+        } else if enemy_blocked && !enemy_slider_aligned {
             penalty = penalty * 60 / 100;
         }
         total_ray_penalty += penalty;
