@@ -1846,6 +1846,14 @@ impl GameState {
 
         get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
+        // Riders pin outside the queen rays (knightrider knight-rays, huygen
+        // prime-distance files), so the pin map can't clear a move — verify
+        // every non-royal move strictly when the enemy has one. (Rose spiral
+        // pins are rare enough that the blanket verify isn't worth its cost.)
+        let them_idx = if self.turn == PlayerColor::White { 1 } else { 0 };
+        let rider_pins_possible = self.spatial_indices.has_knightrider[them_idx]
+            || self.spatial_indices.has_huygen[them_idx];
+
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
         // When not in check, only (King, Pinned, EP) moves can be illegal.
         let mut i = 0;
@@ -1865,6 +1873,12 @@ impl GameState {
                 ) {
                     illegal = true;
                 }
+            } else if rider_pins_possible {
+                let mut s_mut = self.clone();
+                let _undo = s_mut.make_move(&m);
+                if s_mut.is_move_illegal() {
+                    illegal = true;
+                }
             } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
                 // Pinned piece: must move along the pin ray
                 let dx = m.to.x - m.from.x;
@@ -1872,6 +1886,17 @@ impl GameState {
                 // Cross product check for collinearity
                 if dx * pdy != dy * pdx {
                     illegal = true;
+                } else if !(crate::attacks::is_ortho_slider(pt)
+                    || crate::attacks::is_diag_slider(pt)
+                    || pt == PieceType::Pawn)
+                {
+                    // Collinear JUMPING piece can still leap past the king or
+                    // the pinner along the ray — verify strictly.
+                    let mut s_mut = self.clone();
+                    let _undo = s_mut.make_move(&m);
+                    if s_mut.is_move_illegal() {
+                        illegal = true;
+                    }
                 }
             } else if let Some(ep) = &self.en_passant
                 && pt == PieceType::Pawn
@@ -3015,6 +3040,14 @@ impl GameState {
             // No royal - nothing can be left in check.
             return Ok(true);
         };
+
+        // Knightriders pin along knight-rays, which the queen-ray fast test
+        // below cannot see. (Rose spiral pins are rare enough that the full
+        // verify on every move costs more than the legality risk.)
+        let them = if self.turn == PlayerColor::White { 1 } else { 0 };
+        if self.spatial_indices.has_knightrider[them] {
+            return Err(());
+        }
 
         // 5. FAST CHECK: Is piece on a slider ray from king?
         // Only arithmetic - no hash lookups!
