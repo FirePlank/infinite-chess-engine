@@ -84,7 +84,7 @@ const STATION_TOL_LEAPER: i64 = 2;
 /// Escalating payoff per manned station: completing the formation is worth
 /// far more than the sum of its parts.
 const MANNED_LADDER: [i32; 7] = [0, 40, 100, 190, 300, 420, 540];
-/// Replaces the box score once the force is on top of the defender, so
+/// Added on top of the box score once the force is on top of the defender, so
 /// entering the kill zone is strictly better than holding stations.
 const KILL_ZONE_BONUS: i32 = 500;
 
@@ -493,6 +493,9 @@ pub fn evaluate_lone_king_endgame(
 /// concrete search lines carry the verdict. Bare kings (scale 100) keep the
 /// full uncompressed net; forced-mate hunts need its whole gradient range.
 const MOP_UP_DEFENDED_CAP: i32 = 400;
+/// Downside saturation: shaping penalties keep their slope near zero but the
+/// total can never punish the winner more than this for entering mop-up.
+const MOP_UP_NEGATIVE_CAP: i32 = 250;
 
 /// The single source of truth for mop-up activation. Returns the winning
 /// color and the activation scale (0-100) when one side is reduced to a
@@ -542,7 +545,13 @@ pub fn evaluate_mop_up_scaled(game: &GameState, winner: PlayerColor, scale: u32)
         return 0;
     };
     let scaled = evaluate_mop_up_core(game, our_king, enemy_king, winner) * scale as i32 / 100;
-    if scale >= 100 || scaled <= 0 {
+    if scaled <= 0 {
+        // Saturate the downside: the simplifying capture that ACTIVATES mop-up
+        // must never read as a large eval drop, or the winner avoids converting.
+        let (x, cap) = ((-scaled) as i64, MOP_UP_NEGATIVE_CAP as i64);
+        return -((x * cap / (x + cap)) as i32);
+    }
+    if scale >= 100 {
         return scaled;
     }
     let (x, cap) = (scaled as i64, MOP_UP_DEFENDED_CAP as i64);
@@ -1338,11 +1347,12 @@ fn evaluate_mating_net(
             .iter()
             .filter(|s| (s.x - ex).abs().max((s.y - ey).abs()) <= 4)
             .count();
+        // Kill zone adds ON TOP of the box score: replacing it created a score
+        // cliff where the final approach lost eval vs holding the formation.
         let kill_zone = engaged_pieces >= 3 && (kr.king_dist <= 6 || kr.king_dist == i64::MAX);
+        bonus += evaluate_target_box(pieces, our_king, enemy_king);
         if kill_zone {
             bonus += KILL_ZONE_BONUS;
-        } else {
-            bonus += evaluate_target_box(pieces, our_king, enemy_king);
         }
     }
 
