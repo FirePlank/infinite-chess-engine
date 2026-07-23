@@ -1684,7 +1684,7 @@ impl GameState {
     /// These are used by correction history for indexing.
     /// All three are computed for comprehensive variant coverage.
     pub fn recompute_correction_hashes(&mut self) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key_at, pawn_key, piece_key};
 
         let mut ph: u64 = 0; // Pawn structure hash
         let mut wnph: u64 = 0; // White non-pawn piece hash
@@ -1698,7 +1698,7 @@ impl GameState {
             }
 
             // Material hash: Additive to distinguish counts (avoid XOR cancellation)
-            mh = mh.wrapping_add(material_key(piece.piece_type(), piece.color()));
+            mh = mh.wrapping_add(material_key_at(piece.piece_type(), piece.color(), x, y));
 
             if piece.piece_type() == PieceType::Pawn {
                 // Pawn hash: only pawns (helps CoaIP variants)
@@ -3266,7 +3266,7 @@ impl GameState {
 
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
-            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, pawn_key,
+            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, material_key_at, pawn_key,
             pawn_special_right_key, piece_key, rep_en_passant_key, rep_pawn_special_right_key,
             rep_piece_key,
         };
@@ -3390,9 +3390,12 @@ impl GameState {
             if captured.color() != PlayerColor::Neutral {
                 self.total_phase -= get_piece_phase(captured.piece_type());
                 // Update material hash (subtractive)
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_sub(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
 
                 let value = self.get_piece_value(captured.piece_type(), captured.color());
                 if captured.color() == PlayerColor::White {
@@ -3473,9 +3476,12 @@ impl GameState {
             self.material_hash = self
                 .material_hash
                 .wrapping_sub(material_key(PieceType::Pawn, piece.color()));
-            self.material_hash = self
-                .material_hash
-                .wrapping_add(material_key(promo_type, piece.color()));
+            self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                promo_type,
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
 
             let pawn_val = self.get_piece_value(PieceType::Pawn, piece.color());
             let promo_val = self.get_piece_value(promo_type, piece.color());
@@ -3704,7 +3710,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self, m: &Move, undo: UndoMove) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key, material_key_at, pawn_key, piece_key};
 
         // Restore hashes
         self.hash_stack.pop();
@@ -3743,9 +3749,12 @@ impl GameState {
         // Handle Promotion Revert
         if m.promotion.is_some() {
             // Convert back to pawn: Remove promo type, Add pawn type
-            self.material_hash = self
-                .material_hash
-                .wrapping_sub(material_key(piece.piece_type(), piece.color()));
+            self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                piece.piece_type(),
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
             self.material_hash = self
                 .material_hash
                 .wrapping_add(material_key(PieceType::Pawn, piece.color()));
@@ -3791,9 +3800,12 @@ impl GameState {
         if let Some(captured) = undo.captured_piece {
             // Restore material hash
             if captured.color() != PlayerColor::Neutral {
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_add(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
             }
 
             // Only update piece counts and material for non-neutral pieces

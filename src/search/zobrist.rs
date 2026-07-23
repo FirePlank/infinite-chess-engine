@@ -174,6 +174,19 @@ pub fn material_key(piece_type: PieceType, color: PlayerColor) -> u64 {
     MATERIAL_KEY_MIXER ^ hp ^ hc.rotate_left(32)
 }
 
+/// Material key with square-color parity for bishops: the light/dark split
+/// changes material verdicts (insufficient material), and a bishop's square
+/// parity is invariant, so the incremental hash stays exact.
+#[inline(always)]
+pub fn material_key_at(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
+    let k = material_key(piece_type, color);
+    if piece_type == PieceType::Bishop && (x + y).rem_euclid(2) == 1 {
+        k.rotate_left(17)
+    } else {
+        k
+    }
+}
+
 // Secondary Zobrist keys for repetition detection (independent seed).
 // When both hash_stack and rep_hash_stack match, false positive probability ~2^-128.
 static REP_PIECE_KEYS: [[u64; NUM_COLORS]; NUM_PIECE_TYPES] = {
