@@ -11,6 +11,20 @@ pub enum MoveGenType {
     Captures,
 }
 
+thread_local! {
+    /// Depth-staged tight generation: when >0, quiet slider generation keeps
+    /// only this many nearest candidates per ray (short-range and enemy-king-
+    /// aligned destinations always survive). 0 = full width.
+    static QUIET_RAY_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Set the per-ray quiet slider candidate cap (0 disables). Only affects
+/// `MoveGenType::Quiets` generation; legal-move lists, evasions, captures and
+/// perft are never capped.
+pub fn set_quiet_ray_cap(cap: usize) {
+    QUIET_RAY_CAP.with(|c| c.set(cap));
+}
+
 pub type MoveList = smallvec::SmallVec<[Move; 128]>;
 
 #[derive(Debug, Clone)]
@@ -2919,7 +2933,14 @@ fn generate_sliding_moves_impl(
                 arc
             };
 
-            // Generate moves from target_dists
+            // Generate moves from target_dists (sorted ascending, so a per-ray
+            // cap naturally keeps the nearest candidates).
+            let ray_cap = if gen_type == MoveGenType::Quiets {
+                QUIET_RAY_CAP.with(|c| c.get())
+            } else {
+                0
+            };
+            let mut capped_emitted = 0usize;
             for &d in target_dists.iter() {
                 if d <= 0 || d > max_dist {
                     continue;
@@ -2938,6 +2959,23 @@ fn generate_sliding_moves_impl(
 
                 let sq_x = from.x + dir_x * d;
                 let sq_y = from.y + dir_y * d;
+
+                // Tight generation: past short range, non-king-aligned quiet
+                // destinations count against the per-ray cap.
+                if ray_cap > 0 && d > ENEMY_WIGGLE {
+                    let king_aligned = ek_ref.is_some_and(|ek| {
+                        let ax = ek.x - sq_x;
+                        let ay = ek.y - sq_y;
+                        ax == 0 || ay == 0 || ax.abs() == ay.abs()
+                    });
+                    if !king_aligned {
+                        if capped_emitted >= ray_cap {
+                            continue;
+                        }
+                        capped_emitted += 1;
+                    }
+                }
+
                 if in_bounds(sq_x, sq_y) {
                     out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
                 }

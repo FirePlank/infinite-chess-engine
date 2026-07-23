@@ -23,6 +23,11 @@ use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_
 /// Good quiet threshold
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
+/// Depth-staged tight generation: at remaining depth <= this, quiet slider
+/// candidates are capped per ray (short-range + king-aligned always survive).
+const TIGHT_GEN_DEPTH: i32 = 3;
+const TIGHT_GEN_RAY_CAP: usize = 3;
+
 /// Stages of move generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveStage {
@@ -808,7 +813,17 @@ impl StagedMoveGen {
                 indices: &game.spatial_indices,
                 enemy_king_pos: game.enemy_king_pos(),
             };
+            // Depth-staged tight generation: shallow subtrees can't use the
+            // deep quiet-slider tail (played-move audit: rank<=3 covers 67%),
+            // so cap candidates per ray there; full width at deep nodes.
+            let tight = self.depth <= TIGHT_GEN_DEPTH;
+            if tight {
+                crate::moves::set_quiet_ray_cap(TIGHT_GEN_RAY_CAP);
+            }
             get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+            if tight {
+                crate::moves::set_quiet_ray_cap(0);
+            }
         }
 
         for m in quiets {
