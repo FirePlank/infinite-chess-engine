@@ -984,9 +984,21 @@ fn evaluate_target_box(
     our_king: Option<&Coordinate>,
     enemy_king: &Coordinate,
 ) -> i32 {
-    let cx = enemy_king.x.div_euclid(BOX_GRID) * BOX_GRID + BOX_GRID / 2;
-    let cy = enemy_king.y.div_euclid(BOX_GRID) * BOX_GRID + BOX_GRID / 2;
-    target_box_score(pieces, our_king, cx, cy, BOX_R)
+    // Max over the 3x3 anchor-cell neighborhood: a single defender king step can
+    // never drop the previous best anchor out of the set, so crossing a grid
+    // boundary no longer teleports the stations (score cliff); piece-marching
+    // progress stays monotone (max of monotone components).
+    let bx = enemy_king.x.div_euclid(BOX_GRID);
+    let by = enemy_king.y.div_euclid(BOX_GRID);
+    let mut best = 0;
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            let cx = (bx + dx) * BOX_GRID + BOX_GRID / 2;
+            let cy = (by + dy) * BOX_GRID + BOX_GRID / 2;
+            best = best.max(target_box_score(pieces, our_king, cx, cy, BOX_R));
+        }
+    }
+    best
 }
 
 /// Integer square root (Newton's method); cage areas are at most 1024.
@@ -1107,7 +1119,11 @@ fn evaluate_two_rook_drive(
     // Rook safety. Connected rooks (shared rank/file, clear vs a bare king)
     // defend each other; a rook the enemy king attacks and no friendly unit
     // guards is hanging.
-    let connected = r1.0 == r2.0 || r1.1 == r2.1;
+    // The enemy king standing ON the shared line between the rooks blocks
+    // their mutual defense — they are not connected then.
+    let between = |v: i64, a: i64, b: i64| v > a.min(b) && v < a.max(b);
+    let connected = (r1.0 == r2.0 && !(ex == r1.0 && between(ey, r1.1, r2.1)))
+        || (r1.1 == r2.1 && !(ey == r1.1 && between(ex, r1.0, r2.0)));
     if connected {
         bonus += TR_CONNECTED;
     }
