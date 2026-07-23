@@ -347,6 +347,9 @@ enum TerminalState {
 fn elo_to_score(elo_diff: f64) -> f64 {
     1.0 / (1.0 + 10.0f64.powf(-elo_diff / 400.0))
 }
+fn score_to_elo(s: f64) -> f64 {
+    -400.0 * (1.0 / s.clamp(1e-9, 1.0 - 1e-9) - 1.0).log10()
+}
 
 fn estimate_elo(wins: usize, losses: usize, draws: usize) -> (f64, f64) {
     let total = wins + losses + draws;
@@ -384,6 +387,24 @@ struct PentaCounts {
 impl PentaCounts {
     fn total_pairs(&self) -> usize {
         self.ww + self.wd + self.wl + self.dd + self.ld + self.ll
+    }
+
+    fn score(&self) -> f64 {
+        (self.ww as f64
+            + 0.75 * self.wd as f64
+            + 0.5 * (self.wl as f64 + self.dd as f64)
+            + 0.25 * self.ld as f64
+        ) / self.total_pairs() as f64
+    }
+
+    fn variance(&self) -> f64 {
+        let score = self.score();
+        (self.ww as f64 * (1.0 - score).powi(2)
+            + self.wd as f64 * (0.75 - score).powi(2)
+            + (self.wl as f64 + self.dd as f64) * (0.5 - score).powi(2)
+            + self.ld as f64 * (0.25 - score).powi(2)
+            + self.ll as f64 * (0.0 - score).powi(2)
+        ) / self.total_pairs() as f64
     }
 
     /// Bucket a completed pair from the two NEW-perspective game results.
@@ -646,6 +667,12 @@ fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtM
     }
 }
 
+/// Likelihood of superiority: probability that the new engine is better than the
+/// old. Matches fastchess implementation.
+fn calculate_los(score: f64, variance_per_pair: f64) -> f64 {
+    (1.0 - libm::erf(-(score - 0.5) / (2.0 * variance_per_pair).sqrt())) / 2.0
+}
+
 /// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the
 /// logistic Elo (`elo`) and normalized Elo (`nelo`) point-estimates are computed
 /// from the same pair-score distribution — they do not depend on the SPRT model.
@@ -662,23 +689,12 @@ fn estimate_pentanomial_elo(p: &PentaCounts) -> PentaElo {
     if pairs == 0.0 {
         return PentaElo::default();
     }
-    let ww = p.ww as f64 / pairs;
-    let wd = p.wd as f64 / pairs;
-    let wl = p.wl as f64 / pairs;
-    let dd = p.dd as f64 / pairs;
-    let ld = p.ld as f64 / pairs;
-    let ll = p.ll as f64 / pairs;
 
-    let score = ww + 0.75 * wd + 0.5 * (wl + dd) + 0.25 * ld;
-    let variance = ww * (1.0 - score).powi(2)
-        + wd * (0.75 - score).powi(2)
-        + (wl + dd) * (0.5 - score).powi(2)
-        + ld * (0.25 - score).powi(2)
-        + ll * (0.0 - score).powi(2);
+    let score = p.score();
+    let variance = p.variance();
     let variance_per_pair = variance / pairs;
 
     const CI95: f64 = 1.959963984540054;
-    let s2e = |s: f64| -400.0 * (1.0 / s.clamp(1e-9, 1.0 - 1e-9) - 1.0).log10();
     // Normalized Elo (fastchess scoreToNeloDiff): uses the per-pair variance.
     let s2n = |s: f64| (s - 0.5) / (2.0 * variance).sqrt() * (800.0 / 10.0f64.ln());
     let upper = score + CI95 * variance_per_pair.sqrt();
@@ -688,9 +704,9 @@ fn estimate_pentanomial_elo(p: &PentaCounts) -> PentaElo {
     } else if score >= 1.0 {
         999.0
     } else {
-        s2e(score)
+        score_to_elo(score)
     };
-    let elo_err = (s2e(upper) - s2e(lower)) / 2.0;
+    let elo_err = (score_to_elo(upper) - score_to_elo(lower)) / 2.0;
     let (nelo, nelo_err) = if variance <= 0.0 {
         (0.0, 0.0)
     } else {
@@ -1931,13 +1947,13 @@ fn main() {
             };
 
             // ── Variant presets ──────────────────────────────────────────────────────
-            // all      — every variant in the engine
-            // site     — variants live on the public site (image order), no Abundance/Showcase
-            // base_only — base-eval standard variants; no multi-king, no AllPieces, no Abundance
-            //             Default for testing base.rs changes against typical positions.
-            // base_full — all base-eval variants including multi-king and AllPiecesClassical
+            // all        — every variant in the engine
+            // site       — variants live on the public site (image order), no Abundance/Showcase
+            // base_only  — base-eval standard variants; no multi-king, no AllPieces, no Abundance
+            //              Default for testing base.rs changes against typical positions.
+            // base_full  — all base-eval variants including multi-king and AllPiecesClassical
             // multi_king — only the double/triple-king variants
-            // coaip    — only the Chess-on-an-Infinite-Plane family
+            // coaip_set  — only the Chess-on-an-Infinite-Plane family
 
             // Every variant in the engine
             const ALL_VARIANTS: &[Variant] = &[
@@ -2053,7 +2069,7 @@ fn main() {
                 "base_only"  => BASE_ONLY_VARIANTS.to_vec(),
                 "base_full"  => BASE_FULL_VARIANTS.to_vec(),
                 "multi_king" => MULTI_KING_VARIANTS.to_vec(),
-                "coaip"      => COAIP_VARIANTS.to_vec(),
+                "coaip_set"  => COAIP_VARIANTS.to_vec(),
                 _ => {
                     let mut parsed = Vec::new();
                     for name in variants.split(',') {
@@ -2088,7 +2104,7 @@ fn main() {
                         if !known {
                             eprintln!(
                                 "Error: Unknown variant or preset '{}'. \
-                                 Valid presets: all, site, base_only, base_full, multi_king, coaip",
+                                 Valid presets: all, site, base_only, base_full, multi_king, coaip_set",
                                 name_trimmed
                             );
                             std::process::exit(1);
@@ -2200,6 +2216,11 @@ fn main() {
                 per_variant_stats = rs.per_variant_stats;
                 game_logs = rs.games;
             }
+
+            const GREEN_COLOR: &str = "\x1b[32m";
+            const RED_COLOR: &str = "\x1b[31m";
+            const YELLOW_COLOR: &str = "\x1b[33m";
+            const GRAY_COLOR: &str = "\x1b[90m";
 
             println!("\nStarting SPRT with Configuration:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
@@ -2363,37 +2384,60 @@ fn main() {
                     }
                 }
 
+                // Calculate SPRT metrics.
+                let total_games = wins + losses + draws;
+                let pairs = penta.total_pairs() as f64;
+                let score = penta.score();
+                let variance_per_pair = penta.variance() / pairs;
+                let mut los = calculate_los(score, variance_per_pair);
+                if los.is_nan() {
+                    los = 0.5; // 50%
+                }
+
                 // Pentanomial LLR drives the SPRT decision (Fishtest model).
                 let llr = calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
                 let pe = estimate_pentanomial_elo(&penta);
+
+                // Color formatting
+                let text_color = if pe.elo > 1.0 {
+                    GREEN_COLOR
+                } else if pe.elo < -1.0 {
+                    RED_COLOR
+                } else {
+                    GRAY_COLOR
+                };
+
+                // Print text status line with current stats, overwriting the previous line.
                 let status_line = format!(
-                    "Games: {} ({} pairs) | W: {} L: {} D: {} | nElo: {:.2} +/- {:.2} | Elo: {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
-                    wins + losses + draws,
-                    penta.total_pairs(),
+                    "Games: {} ({} pairs) | W: {} L: {} D: {} | {}Elo: {:.2} +/- {:.2}\x1b[0m | LOS: {:.1}% | LLR: {:.2} [{:.2}, {:.2}]",
+                    total_games,
+                    pairs,
                     wins,
                     losses,
                     draws,
-                    pe.nelo,
-                    pe.nelo_err,
+                    text_color,
                     pe.elo,
+                    pe.elo_err,
+                    los * 100.0,
                     llr,
                     lower,
                     upper
                 );
                 print_status_line(&mut last_status_len, &status_line);
-                if wins + losses + draws >= config.min_games {
+                if total_games >= config.min_games {
                     if llr >= upper {
-                        println!("\nSPRT: PASS");
+                        println!("\n\x1b[32mSPRT: PASS \x1b[0m"); // Green color
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     } else if llr <= lower {
-                        println!("\nSPRT: FAIL");
+                        println!("\n\x1b[31mSPRT: FAIL \x1b[0m"); // Red color
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
             }
             if USER_STOP.load(Ordering::SeqCst) {
+                println!("\n\x1b[33mSPRT: INCONCLUSIVE \x1b[0m"); // Yellow color
                 println!("\nRun stopped by user.");
             }
 
@@ -2407,17 +2451,26 @@ fn main() {
                 SprtModel::Normalized => "normalized",
                 SprtModel::Logistic => "logistic",
             };
-            println!("  nElo: {:.2} +/- {:.2}", pe.nelo, pe.nelo_err);
-            println!("  Elo: {:.1} +/- {:.1}", pe.elo, pe.elo_err);
+
+            let text_color = if pe.elo > 1.0 {
+                GREEN_COLOR
+            } else if pe.elo < -1.0 {
+                RED_COLOR
+            } else {
+                GRAY_COLOR
+            };
+            println!("{}  Elo: {:.2} +/- {:.2} \x1b[0m", text_color, pe.elo, pe.elo_err);
+            println!("{}  nElo: {:.2} +/- {:.2} \x1b[0m", text_color, pe.nelo, pe.nelo_err);
+
             println!(
-                "  Record: {}W - {}L - {}D ({} total)",
+                "  Games: {} | W: {} L: {} D: {}",
+                wins + losses + draws,
                 wins,
                 losses,
-                draws,
-                wins + losses + draws
+                draws
             );
             println!(
-                "  Pentanomial [{} pairs]: LL:{} LD:{} WL/DD:{} WD:{} WW:{}",
+                "  Pentanomial [{} pairs] (0-2): {}, {}, {}, {}, {}",
                 penta.total_pairs(),
                 penta.ll,
                 penta.ld,
@@ -2425,13 +2478,22 @@ fn main() {
                 penta.wd,
                 penta.ww
             );
+
+            let text_color = if final_penta_llr >= upper {
+                GREEN_COLOR
+            } else if final_penta_llr <= lower {
+                RED_COLOR
+            } else {
+                YELLOW_COLOR
+            };
             println!(
-                "  LLR: {:.3}  bounds [{:.2}, {:.2}] ({} model, [{}, {}])",
-                final_penta_llr, lower, upper, model_name, config.elo0, config.elo1
+                "{}  LLR: {:.3}  bounds [{:.2}, {:.2}] ({} model, [{}, {}]) \x1b[0m",
+                text_color, final_penta_llr, lower, upper, model_name, config.elo0, config.elo1
             );
+
             if timeout_losses > 0 {
                 println!(
-                    "  ALERT: {} games ended by timeout (NEW ENGINE ONLY)",
+                    "\x1b[31m  ALERT: {} games ended by timeout (NEW ENGINE ONLY) \x1b[0m",
                     timeout_losses
                 );
             }

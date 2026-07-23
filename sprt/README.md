@@ -14,6 +14,7 @@ There are two ways to run SPRT: the **native CLI** (lightweight) and the **web U
 
 ## Native CLI
 
+**Recommended for testing changes in movegen, search, or evaluation functions.**
 The CLI is built directly into the `sprt` binary. It manages game pairs, subprocess engines, clocks, adjudication, and reports results.
 
 ### Step 1: Build the baseline
@@ -69,7 +70,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--results <PATH>` | — | Write results summary to a JSON |
 | `--resume <PATH>` | — | Resume from a `--games` JSON; reconstructs W/L/D and auto-detects TC and variants |
 | `--save-interval <N>` | `50` | How often to flush `--games` (games completed) |
-| `--variants <LIST\|PRESET>` | `base_only` | Comma-separated variants, or a preset: `base_only` (15), `base_full` (19), `site` (17), `multi_king` (3), `coaip` (4), `all` (23) |
+| `--variants <LIST\|PRESET>` | `base_only` | Comma-separated variants, or a preset: `base_only` (15), `base_full` (19), `site` (17), `multi_king` (3), `coaip_set` (4), `all` (23) |
 | `--verbose` | off | Print detailed game info |
 
 ### Example: Small regression test
@@ -85,6 +86,7 @@ Afterwards you can drop the games JSON into [the ICN validator](https://infinite
 
 ## Web UI
 
+**Recommended for testing multithreading changes.**
 For visual feedback and interactive configuration, use the browser-based SPRT. You'll need Node for this.
 
 ### Step 1: Build the baseline
