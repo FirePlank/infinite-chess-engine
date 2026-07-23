@@ -3310,6 +3310,11 @@ impl GameState {
 
         let from_coord = Coordinate::new(m.from.x, m.from.y);
 
+        // Snapshot the old castling hash BEFORE the mover leaves the board:
+        // the precise-mode pair skips rights-squares with no piece on them, so
+        // computing it after removal never XORes out the mover's own key.
+        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
+
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
         // Update spatial indices: remove moving piece from source square
         self.spatial_indices.remove(m.from.x, m.from.y);
@@ -3539,7 +3544,7 @@ impl GameState {
             self.rep_hash ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
 
-        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
+        // (old_castle_hash pair snapshotted before the mover was removed)
         self.hash ^= old_castle_hash;
         self.rep_hash ^= old_castle_rep_hash;
         let mut castling_state_dirty = false;
