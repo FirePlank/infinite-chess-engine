@@ -577,14 +577,21 @@ fn bounded_lone_king_mop_up(
     let ey = enemy_king.y;
 
     // push_to_edge: the closer the bare king is to an edge/corner, the better.
-    let ed_x = (ex - min_x).min(max_x - ex).clamp(0, EDGE_DIST_CAP);
-    let ed_y = (ey - min_y).min(max_y - ey).clamp(0, EDGE_DIST_CAP);
+    let ed_x_raw = (ex - min_x).min(max_x - ex).max(0);
+    let ed_y_raw = (ey - min_y).min(max_y - ey).max(0);
+    let ed_x = ed_x_raw.min(EDGE_DIST_CAP);
+    let ed_y = ed_y_raw.min(EDGE_DIST_CAP);
     let mut bonus = EDGE_CORNER_BONUS - ((ed_x * ed_x + ed_y * ed_y) as i32) * EDGE_FALLOFF;
+    // Gentle tail beyond the cap so mid-board on larger bounded boards is never
+    // gradient-flat (the caps otherwise blank all signal outside a 3-square rim).
+    bonus -= (((ed_x_raw + ed_y_raw) - 2 * EDGE_DIST_CAP).clamp(0, 160) as i32) * 2;
 
     // push_close: bring our king toward the bare king.
     if let Some(ok) = our_king {
         let d = (ok.x - ex).abs().max((ok.y - ey).abs()) as i32;
         bonus += (KING_CLOSE_BONUS - d * KING_CLOSE_STEP).max(0);
+        // Tail past the zero point keeps the approach gradient alive at range.
+        bonus -= (d - KING_CLOSE_BONUS / KING_CLOSE_STEP).clamp(0, 160) * 2;
     }
 
     // K+B+N vs K: the bare king can only be mated in a corner the bishop attacks.
@@ -617,6 +624,8 @@ fn bounded_lone_king_mop_up(
         }
         if best != i64::MAX {
             bonus += (KBN_CORNER_BONUS - (best as i32) * KBN_CORNER_STEP).max(0);
+            // Tail so the corner-drive gradient survives past the cap radius.
+            bonus -= ((best as i32) - KBN_CORNER_BONUS / KBN_CORNER_STEP).clamp(0, 160) * 2;
             // The mate needs the kings nearly touching; the generic push_close
             // is too soft for the longest bounded mate.
             if let Some(ok) = our_king {
