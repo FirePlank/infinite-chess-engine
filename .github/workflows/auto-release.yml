@@ -1,9 +1,8 @@
 name: Auto Release
 
-# Accumulates the SPRT Elo reported in commit messages and cuts a strength-based
-# version bump when the gain since the last release crosses a threshold:
-#   >= 150 Elo since the last vX.0.0  -> major (X+1).0.0   (checked first)
-#   >= 30  Elo since the last release -> minor X.(Y+1).0
+# Accumulates the SPRT Elo reported in commit messages and cuts a minor version
+# bump when the net gain since the last release reaches 30 Elo. Major releases
+# are deliberately manual: use the "Run workflow" button on this workflow.
 # On a bump it builds the wasm engine and attaches pkg/ as a zip to the release.
 # See scripts/elo_release.py for the parsing and decision logic.
 
@@ -13,6 +12,8 @@ on:
     paths:
       - "src/**"
       - "Cargo.toml"
+  # A manual run is always a major release. This keeps major version changes
+  # deliberate while exposing them directly in the GitHub Actions UI.
   workflow_dispatch: {}
 
 concurrency:
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Never react to the bot's own version-bump commit.
-    if: ${{ !contains(github.event.head_commit.message, '[skip-release]') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip-release]') }}
 
     steps:
       - name: Checkout full history and tags
@@ -42,7 +43,12 @@ jobs:
 
       - name: Decide version bump
         id: decide
-        run: python scripts/elo_release.py --notes-file RELEASE_NOTES.md
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python scripts/elo_release.py --force-major --notes-file RELEASE_NOTES.md --repository "${{ github.repository }}"
+          else
+            python scripts/elo_release.py --notes-file RELEASE_NOTES.md --repository "${{ github.repository }}"
+          fi
 
       # --- Everything below runs only when a release is warranted. Cargo.toml
       # already carries the bumped version, so the wasm build embeds it. ---
