@@ -2643,7 +2643,15 @@ fn evaluate_king_shelter(
 
     let final_penalty =
         (total_danger + (total_danger * total_danger / 800)) * defense_urgency / 100;
-    safety -= final_penalty.min(400);
+    // Quarter-slope past 400 instead of a hard cap: a flat cap zeroes the
+    // danger gradient exactly where attacks escalate, so safety could never
+    // veto a piece grab once the cap was hit. Identical below 400.
+    let capped = if final_penalty > 400 {
+        (400 + (final_penalty - 400) / 4).min(800)
+    } else {
+        final_penalty
+    };
+    safety -= capped;
 
     safety
 }
