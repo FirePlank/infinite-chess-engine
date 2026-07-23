@@ -172,6 +172,8 @@ pub struct UndoMove {
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
     pub old_total_phase: i32,
+    /// (white, black) non-pawn-material flags; promotion sets them in make_move.
+    pub old_non_pawn_material: (bool, bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3314,6 +3316,7 @@ impl GameState {
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
             old_total_phase: self.total_phase,
+            old_non_pawn_material: (self.white_non_pawn_material, self.black_non_pawn_material),
         };
 
         // Track royal position updates
@@ -3931,6 +3934,7 @@ impl GameState {
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
         self.total_phase = undo.old_total_phase;
+        (self.white_non_pawn_material, self.black_non_pawn_material) = undo.old_non_pawn_material;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;
