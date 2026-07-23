@@ -742,7 +742,12 @@ impl Engine {
         let (optimum, maximum) = if inc_ms > 0
             && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT)
         {
-            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64).max(min_think_ms);
+            // Reserve the move overhead here too: spawn/reply latency is charged
+            // against the clock, so an unreserved 0.9*inc budget drains it.
+            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64)
+                .saturating_sub(move_overhead)
+                .max(inc_ms / 4)
+                .max(min_think_ms);
             (optimum.min(survive), maximum.min(survive))
         } else {
             (optimum, maximum)
