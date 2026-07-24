@@ -1638,7 +1638,7 @@ async function runSprt() {
         const verdict = llr >= bounds.upper ? 'PASSED (new > old)'
             : (llr <= bounds.lower ? 'FAILED (no gain)' : 'INCONCLUSIVE');
 
-        log('SPRT Completed: ' + wins + 'W - ' + losses + 'L - ' + draws + 'D, Elo: ' +
+        log('SPRT Complete: ' + wins + 'W - ' + losses + 'L - ' + draws + 'D, Elo: ' +
             finalElo.toFixed(2) + ' ± ' + finalErr.toFixed(2) + ' (' + verdict + ')', 'success');
 
         // Detailed final summary block similar to sprt.js printResult
