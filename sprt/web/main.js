@@ -55,6 +55,7 @@ function updateMTUI() {
             badge.className = 'mt-badge';
             badge.textContent = 'MT';
             h1.appendChild(badge);
+            mtStatusEl.textContent = 'MT Enabled';
         }
         log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
@@ -68,6 +69,7 @@ function updateMTUI() {
 // UI Elements
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
+const mtStatusEl = document.getElementById('mtStatus');
 const sprtBoundsPreset = document.getElementById('sprtBoundsPreset');
 const sprtBoundsMode = document.getElementById('sprtBoundsMode');
 const sprtAlphaEl = document.getElementById('sprtAlpha');
@@ -91,10 +93,18 @@ const sprtVariantPresetsEl = document.getElementById('sprtVariantPresets');
 const sprtVariantsEl = document.getElementById('sprtVariants');
 const runSprtBtn = document.getElementById('runSprt');
 const stopSprtBtn = document.getElementById('stopSprt');
+const sprtGamesEl = document.getElementById('sprtGames');
+const sprtPairsEl = document.getElementById('sprtPairs');
 const sprtWinsEl = document.getElementById('sprtWins');
 const sprtLossesEl = document.getElementById('sprtLosses');
 const sprtDrawsEl = document.getElementById('sprtDraws');
 const sprtEloEl = document.getElementById('sprtElo');
+const sprtEloErrorEl = document.getElementById('sprtEloError');
+const sprtLLRContainer = document.getElementById('sprtLLRContainer');
+const sprtLLREl = document.getElementById('sprtLLR');
+const sprtLLRBoundsEl = document.getElementById('sprtLLRBounds');
+const sprtLOSContainer = document.getElementById('sprtLOSContainer');
+const sprtLOSEl = document.getElementById('sprtLOS');
 const sprtOutput = document.getElementById('sprtOutput');
 const gameLogEl = document.getElementById('gameLog');
 const copyLogBtn = document.getElementById('copyLog');
@@ -121,8 +131,9 @@ let lastNelo = 0;
 let lastNeloError = 0;
 let lastLLR = 0;
 let lastBounds = null;
+let lastTimeoutLosses = 0;
 // Pentanomial pair accounting (drives the SPRT decision, matching src/bin/sprt.rs).
-let pentaCounts = newPentaCounts();
+let pentaCounts = {};
 // NEW-perspective result per gameIndex, held until its pair partner completes.
 let pendingPairResults = {};
 // Per-variant stats: variantName -> { wins, losses, draws }
@@ -683,14 +694,15 @@ function log(message, type) {
     const time = new Date().toLocaleTimeString();
     const entry = document.createElement('div');
     entry.className = 'log-entry';
-    entry.innerHTML = '<span class="log-time">[' + time + ']</span><span class="log-' + type + '">' + message + '</span>';
+    entry.innerHTML = '<span class="log-time">[' + time + ']</span> <span class="log-' + type + '">' + message + '</span>';
     gameLogEl.appendChild(entry);
     gameLogEl.scrollTop = gameLogEl.scrollHeight;
 }
 
-function sprtLog(message) {
+function sprtLog(message, type) {
     const entry = document.createElement('div');
     entry.textContent = message;
+    if (type) entry.className = 'log-' + type;
     sprtOutput.appendChild(entry);
     sprtOutput.scrollTop = sprtOutput.scrollHeight;
 }
@@ -706,6 +718,11 @@ function setStatus(status, text) {
 
 function eloToScore(eloDiff) {
     return 1 / (1 + Math.pow(10, -eloDiff / 400));
+}
+
+function scoreToElo(s) {
+    s = Math.max(1e-9, Math.min(1 - 1e-9, s)); // clamp between 0 and 1
+    return -400 * Math.log10(1 / s - 1);
 }
 
 function calculateBounds(alpha, beta) {
@@ -807,28 +824,50 @@ function estimateElo(wins, losses, draws) {
 // Games are played in color-balanced pairs from the same opening line; a pair's two
 // NEW-perspective results collapse to five buckets (LL/LD/WL·DD/WD/WW). This cancels
 // within-pair variance so the SPRT concludes in fewer games than the trinomial model.
-function newPentaCounts() {
-    return { ww: 0, wd: 0, wl: 0, dd: 0, ld: 0, ll: 0 };
-}
 
-function pentaTotalPairs(p) {
-    return p.ww + p.wd + p.wl + p.dd + p.ld + p.ll;
-}
-
-// Bucket a completed pair from two NEW-perspective results ('win'|'loss'|'draw').
-function pentaAddPair(p, a, b) {
-    let w = 0, d = 0, l = 0;
-    for (const r of [a, b]) {
-        if (r === 'win') w++;
-        else if (r === 'draw') d++;
-        else l++;
+class PentaCounts {
+    constructor(ll = 0, ld = 0, wl = 0, dd = 0, wd = 0, ww = 0) {
+        Object.assign(this, {ll, ld, wl, dd, wd, ww});
     }
-    if (w === 2) p.ww++;
-    else if (w === 1 && d === 1) p.wd++;
-    else if (w === 1 && l === 1) p.wl++;
-    else if (d === 2) p.dd++;
-    else if (l === 1 && d === 1) p.ld++;
-    else p.ll++;
+
+    // Bucket a completed pair from two NEW-perspective results ('win'|'loss'|'draw').
+    addPair(a, b) {
+        let w = 0, d = 0, l = 0;
+        for (const r of [a, b]) {
+            if (r === 'win') w++;
+            else if (r === 'draw') d++;
+            else l++;
+        }
+        if (w === 2) this.ww++;
+        else if (w === 1 && d === 1) this.wd++;
+        else if (w === 1 && l === 1) this.wl++;
+        else if (d === 2) this.dd++;
+        else if (l === 1 && d === 1) this.ld++;
+        else this.ll++;
+    }
+
+    get totalPairs() {
+        return this.ww + this.wd + this.wl + this.dd + this.ld + this.ll;
+    }
+
+    get score() {
+        return (this.ww + 0.75 * this.wd + 0.5 * (this.wl + this.dd) + 0.25 * this.ld) / this.totalPairs;
+    }
+
+    get variance() {
+        let score = this.score;
+        return (
+            this.ww * (1 - score) ** 2 +
+            this.wd * (0.75 - score) ** 2 +
+            (this.wl + this.dd) * (0.5 - score) ** 2 +
+            this.ld * (0.25 - score) ** 2 +
+            this.ll * (0 - score) ** 2
+        ) / this.totalPairs;
+    }
+
+    get displayText() {
+        return `${this.ll}, ${this.ld}, ${this.wl + this.dd}, ${this.wd}, ${this.ww}`;
+    }
 }
 
 // fastchess regularize: a zero bucket becomes 1e-3 so log-likelihoods stay finite.
@@ -951,7 +990,7 @@ function llrNormalized(total, scores, probs, t0, t1) {
 
 // Pentanomial LLR — the SPRT decision statistic (Fishtest model). model: 'normalized' | 'logistic'.
 function calculatePentanomialLLR(p, elo0, elo1, model) {
-    if (pentaTotalPairs(p) === 0) return 0;
+    if (p.totalPairs === 0) return 0;
     const ll = regularize(p.ll);
     const ld = regularize(p.ld);
     const wlDd = regularize(p.dd + p.wl);
@@ -969,31 +1008,51 @@ function calculatePentanomialLLR(p, elo0, elo1, model) {
     return llrNormalized(total, scores, probs, t0, t1);
 }
 
+// Highly accurate approximation of the error function (Abramowitz and Stegun formula 7.1.26).
+// It has a maximum error of about 1.5e-7.
+// Code from https://hewgill.com/picomath/javascript/erf.js.html
+function erf(x) {
+    // Constants for approximation
+    const a1 =  0.254829592;
+    const a2 = -0.284496736;
+    const a3 =  1.421413741;
+    const a4 = -1.453152027;
+    const a5 =  1.061405429;
+    const p  =  0.3275911;
+
+    // Save the sign of x
+    let sign = Math.sign(x);
+    x = Math.abs(x);
+
+    // A&S formula 7.1.26
+    let t = 1.0 / (1.0 + p * x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+    return sign * y;
+}
+
+// Likelihood of superiority: probability that the new engine is better than the
+// old. Matches fastchess implementation.
+function calculateLOS(score, variancePerPair) {
+    return (1.0 - erf(-(score - 0.5) / Math.sqrt(2.0 * variancePerPair))) / 2.0;
+}
+
 // Pentanomial Elo estimate, matching fastchess EloPentanomial. Returns both the
 // logistic Elo and normalized Elo (nElo); neither depends on the SPRT model.
 function estimatePentanomialElo(p) {
-    const pairs = pentaTotalPairs(p);
+    const pairs = p.totalPairs;
     if (pairs === 0) return { elo: 0, error: 0, nelo: 0, neloError: 0 };
-    const ww = p.ww / pairs, wd = p.wd / pairs, wl = p.wl / pairs;
-    const dd = p.dd / pairs, ld = p.ld / pairs, ll = p.ll / pairs;
 
-    const score = ww + 0.75 * wd + 0.5 * (wl + dd) + 0.25 * ld;
-    const variance =
-        ww * Math.pow(1 - score, 2) +
-        wd * Math.pow(0.75 - score, 2) +
-        (wl + dd) * Math.pow(0.5 - score, 2) +
-        ld * Math.pow(0.25 - score, 2) +
-        ll * Math.pow(0 - score, 2);
+    const score = p.score;
+    const variance = p.variance;
     const variancePerPair = variance / pairs;
 
     const CI95 = 1.959963984540054;
-    const clamp = (s) => Math.max(1e-9, Math.min(1 - 1e-9, s));
-    const s2e = (s) => -400 * Math.log10(1 / clamp(s) - 1);
     const s2n = (s) => (s - 0.5) / Math.sqrt(2 * variance) * (800 / Math.log(10));
     const upper = score + CI95 * Math.sqrt(variancePerPair);
     const lower = score - CI95 * Math.sqrt(variancePerPair);
-    const elo = score <= 0 ? -999 : (score >= 1 ? 999 : s2e(score));
-    const error = (s2e(upper) - s2e(lower)) / 2;
+    const elo = score <= 0 ? -999 : (score >= 1 ? 999 : scoreToElo(score));
+    const error = (scoreToElo(upper) - scoreToElo(lower)) / 2;
     const nelo = variance <= 0 ? 0 : s2n(score);
     const neloError = variance <= 0 ? 0 : (s2n(upper) - s2n(lower)) / 2;
     return { elo, error: Math.min(error, 200), nelo, neloError };
@@ -1100,7 +1159,7 @@ async function detectMaxConcurrency(maxCap = 64) {
     const stored = loadStoredMaxConcurrency();
     if (stored && stored > 0) {
         log('Using stored max safe concurrency from previous run: ' + stored, 'info');
-        sprtLog('Using stored max safe concurrency: ' + stored);
+        sprtLog('Using stored max safe concurrency: ' + stored, 'info');
         return stored;
     }
 
@@ -1147,7 +1206,7 @@ async function detectMaxConcurrency(maxCap = 64) {
 
     saveStoredMaxConcurrency(lastOk);
     log('Detected max safe concurrency: ' + lastOk, 'info');
-    sprtLog('Max safe concurrency detected: ' + lastOk);
+    sprtLog('Max safe concurrency detected: ' + lastOk, 'info');
     return lastOk;
 }
 
@@ -1155,10 +1214,18 @@ async function runSprt() {
     if (!wasmReady || sprtRunning) return;
 
     // Immediate UI Reset
+    sprtGamesEl.textContent = '0';
+    sprtPairsEl.textContent = '0';
     sprtWinsEl.textContent = '0';
     sprtLossesEl.textContent = '0';
     sprtDrawsEl.textContent = '0';
+    sprtLLREl.textContent = '0.00';
+    sprtLLRContainer.style.setProperty('--progress', '0%');
+    sprtLOSEl.textContent = '-';
+    sprtLOSContainer.style.setProperty('--progress', '0%');
     sprtEloEl.textContent = '-';
+    sprtEloEl.style.color = 'var(--text-dim)';
+    sprtEloErrorEl.textContent = '0';
     // Reset last stats snapshot
     lastWins = 0;
     lastLosses = 0;
@@ -1169,7 +1236,8 @@ async function runSprt() {
     lastNeloError = 0;
     lastLLR = 0;
     lastBounds = null;
-    pentaCounts = newPentaCounts();
+    lastTimeoutLosses = 0;
+    pentaCounts = new PentaCounts();
     pendingPairResults = {};
 
     stopRequested = false;
@@ -1188,7 +1256,7 @@ async function runSprt() {
     const rawConcurrency = (sprtConcurrencyEl.value || '').toString().trim();
     if (rawConcurrency.toLowerCase() === 'max') {
         log('Concurrency set to "max" – probing for safe limit...', 'info');
-        sprtLog('Concurrency set to "max" – probing for maximum safe workers...');
+        sprtLog('Concurrency set to "max" – probing for maximum safe workers...', 'info');
         CONFIG.concurrency = await detectMaxConcurrency(64);
     } else {
         CONFIG.concurrency = parseInt(rawConcurrency, 10) || 1;
@@ -1234,6 +1302,7 @@ async function runSprt() {
 
     // Calculate bounds based on the SNAPSHOTTED config
     const bounds = calculateBounds(runConfig.alpha, runConfig.beta);
+    sprtLLRBoundsEl.textContent = `${bounds.lower.toFixed(2)}, ${bounds.upper.toFixed(2)}`;
     // Update global lastBounds so stopSprt can display them correctly if aborted
     lastBounds = bounds;
 
@@ -1245,8 +1314,8 @@ async function runSprt() {
     if (runVariantQueue.length === 0) {
         runVariantQueue.push({ variant: 'Classical', newPlaysWhite: true });
     }
-    const uniqueVariants = new Set(runVariantQueue.map(v => v.variant));
-    const isMultiVariantRun = uniqueVariants.size > 1;
+    const numberOfVariants = new Set(runVariantQueue.map(v => v.variant)).size;
+    const isMultiVariantRun = numberOfVariants > 1;
     let nextVariantIndex = 0;
 
     function getNextVariantForRun() {
@@ -1289,6 +1358,7 @@ async function runSprt() {
     let losses = 0;
     let draws = 0;
     let llr = 0;
+    let timeoutLosses = 0;
     gameLogs = [];
 
     // Disable download buttons as logs are cleared
@@ -1298,12 +1368,12 @@ async function runSprt() {
     sprtOutput.innerHTML = '';
     perVariantStats = {};
     clearLog();
-    sprtStatusEl.textContent = 'Status: running...';
-    sprtStatusEl.className = 'sprt-status';
+    sprtStatusEl.textContent = 'SPRT status: running...';
+    sprtStatusEl.className = 'status-text';
     const sprtBaseSeed = Date.now() ^ ((Math.random() * 0xFFFFFFFF) | 0);
-    const gamesDisplay = maxGames === null ? 'unlimited' : maxGames + ' games (' + (maxGames / 2) + ' pairs)';
+    const gamesDisplay = maxGames === Infinity ? 'unlimited' : maxGames + ' games (' + (maxGames / 2) + ' pairs)';
     log('Starting SPRT: ' + gamesDisplay + ', Mode=' + runConfig.tcMode + ', TC=' + displayTcString + ', Seed=' + sprtBaseSeed, 'info');
-    sprtLog('SPRT Test Started (noisy opening moves for first 8 ply, paired games)');
+    sprtLog('SPRT Test Started (noisy opening moves for first 8 ply, paired games)', 'info');
 
     const maxConcurrent = Math.max(1, runConfig.concurrency | 0);
     const workers = [];
@@ -1384,8 +1454,9 @@ async function runSprt() {
                             gameLogs.push(icnLog);
                             if (msg.reason === 'time_forfeit' || msg.reason === 'timeout') {
                                 const timeoutMsg = 'ALERT: Game ' + (msg.gameIndex + 1) + ' lost on time [' + (msg.variantName || 'Classical') + ']';
-                                sprtLog(timeoutMsg);
+                                sprtLog(timeoutMsg, 'error');
                                 log(timeoutMsg, 'error');
+                                if (result === 'loss') timeoutLosses++;
                             }
                             // Enable download buttons immediately upon first result
                             downloadGamesTxtBtn.disabled = false;
@@ -1410,7 +1481,7 @@ async function runSprt() {
                             pendingPairResults[msg.gameIndex] = result;
                             const partnerIndex = msg.gameIndex ^ 1;
                             if (Object.prototype.hasOwnProperty.call(pendingPairResults, partnerIndex)) {
-                                pentaAddPair(pentaCounts, pendingPairResults[msg.gameIndex], pendingPairResults[partnerIndex]);
+                                pentaCounts.addPair(pendingPairResults[msg.gameIndex], pendingPairResults[partnerIndex]);
                                 delete pendingPairResults[msg.gameIndex];
                                 delete pendingPairResults[partnerIndex];
                             }
@@ -1428,25 +1499,52 @@ async function runSprt() {
                             lastNelo = nelo;
                             lastNeloError = neloError;
                             lastLLR = llr;
+                            lastTimeoutLosses = timeoutLosses;
 
+                            let totalPairs = pentaCounts.totalPairs;
+                            sprtGamesEl.textContent = String(total);
+                            sprtPairsEl.textContent = String(totalPairs);
                             sprtWinsEl.textContent = String(wins);
                             sprtLossesEl.textContent = String(losses);
                             sprtDrawsEl.textContent = String(draws);
-                            sprtEloEl.textContent = String(Math.round(elo));
+
+                            sprtLLREl.textContent = String(llr.toFixed(2));
+                            if (llr > 0) {
+                                sprtLLRContainer.style.setProperty('--progress', Math.min(llr / bounds.upper, 1) * 100 + '%');
+                            } else {
+                                sprtLLRContainer.style.setProperty('--progress', Math.min(llr / bounds.lower, 1) * 100 + '%');
+                            }
+
+                            let los_percent = calculateLOS(pentaCounts.score, pentaCounts.variance / totalPairs) * 100;
+                            if (isNaN(los_percent)) {
+                                los_percent = 50;
+                            }
+                            sprtLOSEl.textContent = los_percent.toFixed(1) + '%';
+                            sprtLOSContainer.style.setProperty('--progress', los_percent + '%');
+
+                            sprtEloEl.textContent = String(elo.toFixed(1));
+                            if (elo >= 1) {
+                                sprtEloEl.style.color = 'var(--success)';
+                            } else if (elo <= -1) {
+                                sprtEloEl.style.color = 'var(--error)';
+                            } else {
+                                sprtEloEl.style.color = 'var(--text-dim)';
+                            }
+                            sprtEloErrorEl.textContent = String(error.toFixed(1));
 
                             sprtLog('Game ' + total + ': ' + result +
-                                ' (W:' + wins + ' L:' + losses + ' D:' + draws + ')' +
-                                ' nElo≈' + nelo.toFixed(2) + '±' + neloError.toFixed(2) +
-                                ' Elo≈' + elo.toFixed(1) +
-                                ' LLR=' + llr.toFixed(2));
+                                ' | W: ' + wins + ' L: ' + losses + ' D: ' + draws +
+                                ' | Elo: ' + elo.toFixed(2) + ' ± ' + error.toFixed(2) +
+                                ' | LLR: ' + llr.toFixed(2)
+                            );
 
                             log(
-                                'Games: ' + total + '/' + maxGames +
+                                'Games: ' + total + (maxGames === Infinity ? '' : '/' + maxGames) +
                                 '  W:' + wins + ' L:' + losses + ' D:' + draws +
-                                '  nElo≈' + nelo.toFixed(2) + '±' + neloError.toFixed(2) +
-                                '  Elo≈' + elo.toFixed(1) +
-                                '  LLR ' + llr.toFixed(2) +
-                                ' in [' + bounds.lower.toFixed(2) + ', ' + bounds.upper.toFixed(2) + ']',
+                                '  Elo: ' + elo.toFixed(2) + ' ± ' + error.toFixed(2) +
+                                '  nElo: ' + nelo.toFixed(1) +
+                                '  LLR: ' + llr.toFixed(2) +
+                                ' [' + bounds.lower.toFixed(2) + ', ' + bounds.upper.toFixed(2) + ']',
                                 'info'
                             );
 
@@ -1474,10 +1572,10 @@ async function runSprt() {
                             const errStr = (msg.error || '').toString();
                             if (errStr.includes("unreachable") || errStr.includes("panic") || errStr.includes("RuntimeError")) {
                                 stopRequested = true;
-                                log("CRITICAL ERROR: WASM Panic detected in game " + msg.gameIndex, "error");
-                                sprtLog("CRITICAL ERROR: WASM Panic detected in game " + msg.gameIndex);
-                                sprtLog("Variant: " + (msg.variantName || 'Classical'));
-                                sprtLog("Error: " + msg.error);
+                                log("CRITICAL ERROR: WASM Panic detected in game " + msg.gameIndex, 'error');
+                                sprtLog("CRITICAL ERROR: WASM Panic detected in game " + msg.gameIndex, 'error');
+                                sprtLog("Variant: " + (msg.variantName || 'Classical'), 'error');
+                                sprtLog("Error: " + msg.error, 'error');
 
                                 if (msg.log) {
                                     // Generate a full ICN log for the crashed game to make it reproducible
@@ -1515,7 +1613,7 @@ async function runSprt() {
                                 if (proposed < (stored || Infinity)) {
                                     saveStoredMaxConcurrency(proposed);
                                     log('Detected WASM OOM at concurrency ' + current + ', lowering stored max to ' + proposed, 'warn');
-                                    sprtLog('WASM out-of-memory detected at concurrency ' + current + ' – new stored max: ' + proposed);
+                                    sprtLog('WASM out-of-memory detected at concurrency ' + current + ' – new stored max: ' + proposed, 'warn');
                                 }
                             }
 
@@ -1540,22 +1638,33 @@ async function runSprt() {
         const verdict = llr >= bounds.upper ? 'PASSED (new > old)'
             : (llr <= bounds.lower ? 'FAILED (no gain)' : 'INCONCLUSIVE');
 
-        log('SPRT Complete: ' + wins + 'W ' + losses + 'L ' + draws + 'D, nElo≈ ' +
-            finalNelo.toFixed(2) + '±' + finalNeloErr.toFixed(2) + ' (' + verdict + ')', 'success');
+        log('SPRT Complete: ' + wins + 'W - ' + losses + 'L - ' + draws + 'D, Elo: ' +
+            finalElo.toFixed(2) + ' ± ' + finalErr.toFixed(2) + ' (' + verdict + ')', 'success');
+
         // Detailed final summary block similar to sprt.js printResult
         const totalGames = wins + losses + draws;
         const winRate = totalGames > 0 ? (((wins + draws * 0.5) / totalGames) * 100).toFixed(1) : '0.0';
+        const eloTextType = (finalElo >= 1 ? 'success' : (finalElo <= -1 ? 'error' : 'neutral'));
         sprtLog('');
         sprtLog('═══════════════════════════════════════════════════════════════════');
         sprtLog('Final Results:');
-        sprtLog('  Total Games: ' + totalGames);
-        sprtLog('  Score: +' + wins + ' -' + losses + ' =' + draws + ' (' + winRate + '%)');
-        sprtLog('  nElo: ' + (finalNelo >= 0 ? '+' : '') + finalNelo.toFixed(2) + ' ±' + finalNeloErr.toFixed(2) + ' (' + runConfig.model + ')');
-        sprtLog('  Elo Difference: ' + (finalElo >= 0 ? '+' : '') + finalElo.toFixed(1) + ' ±' + finalErr.toFixed(1));
-        sprtLog('  Pentanomial [' + pentaTotalPairs(pentaCounts) + ' pairs]: LL:' + pentaCounts.ll +
-            ' LD:' + pentaCounts.ld + ' WL/DD:' + (pentaCounts.wl + pentaCounts.dd) +
-            ' WD:' + pentaCounts.wd + ' WW:' + pentaCounts.ww);
+        sprtLog(`  [Tested in web] Mode: ${runConfig.tcMode} | TC: ${displayTcString} | Concurrency: ${runConfig.concurrency} | Variants: ${numberOfVariants}`);
+        sprtLog(`  Elo Difference: ${(finalElo > 0 ? '+' : '') + finalElo.toFixed(2)} ± ${finalErr.toFixed(2)}`, eloTextType);
+        sprtLog(`  nElo: ${(finalNelo > 0 ? '+' : '') + finalNelo.toFixed(2)} ± ${finalNeloErr.toFixed(2)}`, eloTextType);
+        sprtLog(`  Games: ${totalGames} | W: ${wins} L: ${losses} D: ${draws} (${winRate}%)`);
+        sprtLog(`  Pentanomial [${pentaCounts.totalPairs} pairs] (0-2): ${pentaCounts.displayText}`);
+        if (lastBounds) {
+            sprtLog(
+                `  LLR: ${lastLLR.toFixed(2)}  bounds [${lastBounds.lower.toFixed(2)}, ${lastBounds.upper.toFixed(2)}]` +
+                ` (${runConfig.model} model, [${runConfig.elo0}, ${runConfig.elo1}])`,
+                (llr >= lastBounds.upper ? 'success' : (llr <= lastBounds.lower ? 'error' : 'warn'))
+            );
+        }
+        if (timeoutLosses > 0) {
+            sprtLog(`  ALERT: ${timeoutLosses} games ended by timeout (NEW ENGINE ONLY)`, 'error');
+        }
         sprtLog('');
+
         sprtLog('Per-Variant Breakdown:');
         const variantNames = Object.keys(perVariantStats).sort();
         variantNames.forEach((name) => {
@@ -1563,12 +1672,14 @@ async function runSprt() {
             const { elo, error } = estimateElo(s.wins, s.losses, s.draws);
             const vtTotal = s.wins + s.losses + s.draws;
             const vtScore = vtTotal > 0 ? (((s.wins + s.draws * 0.5) / vtTotal) * 100).toFixed(1) : '0.0';
-            sprtLog('  [' + name + ']: +' + s.wins + ' -' + s.losses + ' =' + s.draws + ' (' + vtScore + '%), Elo≈ ' + (elo >= 0 ? '+' : '') + elo.toFixed(1) + ' ±' + error.toFixed(1));
+            sprtLog(
+                `  [${name}]: ${s.wins}W - ${s.losses}L - ${s.draws}D (${vtScore}%), Elo: ${(elo >= 0 ? '+' : '') + elo.toFixed(1)} ± ${error.toFixed(1)}`
+            );
         });
         sprtLog('═══════════════════════════════════════════════════════════════════');
         // Update status line with colored verdict
-        sprtStatusEl.textContent = 'Status: ' + verdict;
-        let cls = 'sprt-status ';
+        sprtStatusEl.textContent = 'SPRT status: ' + verdict;
+        let cls = 'status-text ';
         if (verdict.startsWith('PASSED')) cls += 'pass';
         else if (verdict.startsWith('FAILED')) cls += 'fail';
         else cls += 'inconclusive';
@@ -1601,8 +1712,8 @@ function stopSprt() {
     stopSprtBtn.disabled = true;
     log('SPRT aborted: workers terminated by user', 'warn');
     // Update status line
-    sprtStatusEl.textContent = 'Status: ABORTED';
-    sprtStatusEl.className = 'sprt-status inconclusive';
+    sprtStatusEl.textContent = 'SPRT status: ABORTED';
+    sprtStatusEl.className = 'status-text inconclusive';
     // If we have any completed games, show a partial results block
     const partialTotal = lastWins + lastLosses + lastDraws;
     if (partialTotal > 0) {
@@ -1610,9 +1721,16 @@ function stopSprt() {
         sprtLog('');
         sprtLog('═══════════════════════════════════════════════════════════════════');
         sprtLog('Current Results (aborted):');
-        sprtLog('  Total Games: ' + partialTotal);
-        sprtLog('  Score: +' + lastWins + ' -' + lastLosses + ' =' + lastDraws + ' (' + partialWinRate + '%)');
+        sprtLog(`  Games: ${partialTotal} | W: ${lastWins} L: ${lastLosses} D: ${lastDraws} (${partialWinRate}%)`);
+        sprtLog(`  Elo Difference: ${(lastElo >= 0 ? '+' : '') + lastElo.toFixed(2)} ± ${lastEloError.toFixed(2)}`);
+        sprtLog(`  nElo: ${(lastNelo >= 0 ? '+' : '') + lastNelo.toFixed(1)} ± ${lastNeloError.toFixed(1)}`);
+        if (lastBounds) {
+            sprtLog(
+                `  LLR: ${lastLLR.toFixed(2)}  bounds [${lastBounds.lower.toFixed(2)}, ${lastBounds.upper.toFixed(2)}]`
+            );
+        }
         sprtLog('');
+
         sprtLog('Per-Variant Breakdown (partial):');
         const variantNames = Object.keys(perVariantStats).sort();
         variantNames.forEach((name) => {
@@ -1620,17 +1738,10 @@ function stopSprt() {
             const { elo, error } = estimateElo(s.wins, s.losses, s.draws);
             const vtTotal = s.wins + s.losses + s.draws;
             const vtScore = vtTotal > 0 ? (((s.wins + s.draws * 0.5) / vtTotal) * 100).toFixed(1) : '0.0';
-            sprtLog('  [' + name + ']: +' + s.wins + ' -' + s.losses + ' =' + s.draws + ' (' + vtScore + '%), Elo≈ ' + (elo >= 0 ? '+' : '') + elo.toFixed(1) + ' ±' + error.toFixed(1));
+            sprtLog(
+                `  [${name}]: ${s.wins}W - ${s.losses}L - ${s.draws}D (${vtScore}%), Elo: ${(elo >= 0 ? '+' : '') + elo.toFixed(1)} ± ${error.toFixed(1)}`
+            );
         });
-        sprtLog('═══════════════════════════════════════════════════════════════════');
-        if (lastBounds) {
-            sprtLog('  nElo: ' + (lastNelo >= 0 ? '+' : '') + lastNelo.toFixed(2) + ' ±' + lastNeloError.toFixed(2));
-            sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
-            sprtLog('  LLR=' + lastLLR.toFixed(2) + ' bounds [' + lastBounds.lower.toFixed(2) + ', ' + lastBounds.upper.toFixed(2) + ']');
-        } else {
-            sprtLog('  nElo: ' + (lastNelo >= 0 ? '+' : '') + lastNelo.toFixed(2) + ' ±' + lastNeloError.toFixed(2));
-            sprtLog('  Elo Difference: ' + (lastElo >= 0 ? '+' : '') + lastElo.toFixed(1) + ' ±' + lastEloError.toFixed(1));
-        }
     }
     // Allow download of any completed games
     const hasGamesAbort = gameLogs.length > 0;
@@ -1715,7 +1826,14 @@ downloadLogsBtn.addEventListener('click', downloadLogs);
 downloadGamesTxtBtn.addEventListener('click', downloadGames);
 downloadGamesJsonBtn.addEventListener('click', downloadGamesJson);
 sprtVariantsEl.addEventListener('change', updateSelectedVariants);
+sprtBoundsPreset.addEventListener('change', updateBoundsUi);
 sprtTcMode.addEventListener('change', updateTcUi);
+
+function updateBoundsUi() {
+    const preset = sprtBoundsPreset.value;
+    sprtBoundsMode.querySelector('[value="gainer"]').textContent = `Gainer [${BOUNDS_PRESETS[preset].gainer.join(', ')}]`;
+    sprtBoundsMode.querySelector('[value="nonreg"]').textContent = `Non-regression [${BOUNDS_PRESETS[preset].nonreg.join(', ')}]`;
+}
 
 function updateTcUi() {
     const mode = sprtTcMode.value;
@@ -1751,6 +1869,7 @@ function updateTcUi() {
 }
 
 // Initialize UI state
+updateBoundsUi();
 updateTcUi();
 
 window.addEventListener('beforeunload', (e) => {
