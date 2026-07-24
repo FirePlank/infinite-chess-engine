@@ -63,6 +63,7 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--alpha <F>` | `0.05` | Type I error rate (false positive) |
 | `--beta <F>` | `0.05` | Type II error rate (false negative) |
 | `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate (0 = disabled) |
+| `--maxply-adjudication <N>` | `1000` | The threshold (cp) which awards a point instead of a draw when the move cap is reached (0 = disabled) |
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
 | `--old-strength <N>` | `3` | Strength level for old engine (1-3) |

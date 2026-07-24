@@ -85,6 +85,10 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         adjudication: i32,
 
+        /// Max-ply adjudication threshold in White-ahead centipawns
+        #[arg(long, default_value_t = 1000.0)]
+        maxply_adjudication: f64,
+
         /// Path to output game ICNs
         #[arg(long)]
         games: Option<String>,
@@ -273,16 +277,22 @@ fn print_commit_context(new_info: &Option<CommitInfo>, old_info: &Option<CommitI
 /// Print the compact settings lines (shared by startup banner and final summary).
 fn print_settings_context(config: &Config) {
     let adjudication_str = if config.adjudication_threshold <= 0 {
-        "Disabled".to_string()
+        "Off".to_string()
     } else {
         format!("{} cp", config.adjudication_threshold)
     };
+    let maxply_adjudication_str = if config.maxply_adjudication <= 0.0 {
+        "Off".to_string()
+    } else {
+        format!("{} cp", config.maxply_adjudication)
+    };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {}",
+        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {} | Max-ply adjudication: {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
         adjudication_str,
+        maxply_adjudication_str,
     );
 }
 
@@ -303,6 +313,7 @@ struct Config {
     min_games: usize,
     variants: Vec<Variant>,
     adjudication_threshold: i32,
+    maxply_adjudication: f64,
     new_bin: String,
     old_bin: String,
     max_moves: usize,
@@ -1122,10 +1133,6 @@ fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Max-ply adjudication threshold in White-ahead centipawns: both engines must
-/// agree the position is at least this decisive to break a move-cap draw.
-const MAXPLY_ADJUDICATION_CP: f64 = 1000.0;
-
 fn play_game(
     config: &Config,
     variant: Variant,
@@ -1683,13 +1690,15 @@ fn play_game(
         return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
     }
 
-    // Max-ply adjudication: if both engines' last score agrees one side is ahead
-    // by >= +10 pawns, award that side the point instead of scoring a draw.
-    if let (Some(wn), Some(wo)) = (last_wscore_new, last_wscore_old) {
+    // Max-ply adjudication: if both engines' last score agrees one side is ahead,
+    // award that side the point instead of scoring a draw.
+    if config.maxply_adjudication > 0.0
+        && let (Some(wn), Some(wo)) = (last_wscore_new, last_wscore_old)
+    {
         let side = |w: f64| {
-            if w >= MAXPLY_ADJUDICATION_CP {
+            if w >= config.maxply_adjudication {
                 Some(true)
-            } else if w <= -MAXPLY_ADJUDICATION_CP {
+            } else if w <= -config.maxply_adjudication {
                 Some(false)
             } else {
                 None
@@ -1885,6 +1894,7 @@ fn main() {
             min_games,
             variants,
             adjudication,
+            maxply_adjudication,
             games,
             results,
             max_moves,
@@ -2131,6 +2141,7 @@ fn main() {
                 min_games,
                 variants: parsed_variants,
                 adjudication_threshold: adjudication,
+                maxply_adjudication,
                 new_bin: actual_new_bin,
                 old_bin,
                 max_moves,
@@ -2524,6 +2535,7 @@ fn main() {
                     concurrency: usize,
                     variant_count: usize,
                     adjudication: i32,
+                    maxply_adjudication: f64,
                     min_games: usize,
                     max_games: Option<usize>,
                 }
@@ -2595,6 +2607,7 @@ fn main() {
                         concurrency: config.concurrency,
                         variant_count: config.variants.len(),
                         adjudication: config.adjudication_threshold,
+                        maxply_adjudication: config.maxply_adjudication,
                         min_games: config.min_games,
                         max_games: config.max_games,
                     },
