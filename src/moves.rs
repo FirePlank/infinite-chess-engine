@@ -173,14 +173,20 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         // 2. Generate moves along this ray.
         // Cap at 10 for performance - captures at distance handled separately
         const KR_STEP_LIMIT: i64 = 10;
+        const KR_OPEN_RAY_STEPS: i64 = 5;
         let max_steps: i64 = if closest_k < i64::MAX {
             if closest_is_enemy {
                 closest_k.min(KR_STEP_LIMIT)
             } else {
                 closest_k.saturating_sub(1).min(KR_STEP_LIMIT)
             }
-        } else {
+        } else if QUIET_RAY_CAP.with(|c| c.get()) > 0 {
+            // Shallow node under tight generation: keep the ray minimal.
             2
+        } else {
+            // Open ray (no blocker, so quiets only): the old flat cap of 2 hid
+            // every longer knightrider maneuver from the search.
+            KR_OPEN_RAY_STEPS
         };
 
         // CRITICAL: If enemy is beyond step limit, still add the direct capture
