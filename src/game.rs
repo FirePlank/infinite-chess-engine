@@ -1773,6 +1773,17 @@ impl GameState {
     /// When in check and must escape (checkmate win condition), uses the optimized
     /// evasion generator that handles long-range blocking moves correctly.
     pub fn get_legal_moves_into(&self, out: &mut MoveList) {
+        // Exact list: skip the position-stale slider candidate cache, which can
+        // omit legal moves (standard-startpos perft D3 was 8842 vs 8902). The
+        // cache stays enabled for the interior search, where its speed is
+        // load-bearing and removing it measured much worse.
+        crate::moves::set_slider_cache_bypass(true);
+        let r = self.get_legal_moves_into_inner(out);
+        crate::moves::set_slider_cache_bypass(false);
+        r
+    }
+
+    fn get_legal_moves_into_inner(&self, out: &mut MoveList) {
         if self.is_in_check() {
             self.get_evasion_moves_into(out);
             // Strict legality filtering (pins/leaving king in check)

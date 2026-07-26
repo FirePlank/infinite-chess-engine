@@ -16,6 +16,17 @@ thread_local! {
     /// only this many nearest candidates per ray (short-range and enemy-king-
     /// aligned destinations always survive). 0 = full width.
     static QUIET_RAY_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+
+    /// The slider candidate cache is keyed only by (square, direction) and is
+    /// never invalidated, so its target set can be stale for the current
+    /// occupancy and omit legal moves. Exact move lists set this to skip it.
+    static SLIDER_CACHE_BYPASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Generate slider candidates without consulting or filling the position-stale
+/// slider cache. Used for exact legal-move lists (root, perft, legality).
+pub fn set_slider_cache_bypass(bypass: bool) {
+    SLIDER_CACHE_BYPASS.with(|c| c.set(bypass));
 }
 
 /// Set the per-ray quiet slider candidate cap (0 disables). Only affects
@@ -2600,7 +2611,12 @@ fn generate_sliding_moves_impl(
 
             // Check cache first. Value is Arc<[i64]>: a hit is a refcount bump,
             // not a Vec copy, and per-thread game clones share the arc too.
-            let cached = indices.slider_cache.borrow().get(&cache_key).cloned();
+            let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
+            let cached = if bypass_cache {
+                None
+            } else {
+                indices.slider_cache.borrow().get(&cache_key).cloned()
+            };
 
             let target_dists: Arc<[i64]> = if let Some(cached_dists) = cached {
                 cached_dists
@@ -2932,10 +2948,12 @@ fn generate_sliding_moves_impl(
                 shared_targets.dedup();
 
                 let arc: Arc<[i64]> = Arc::from(shared_targets);
-                indices
-                    .slider_cache
-                    .borrow_mut()
-                    .insert(cache_key, arc.clone());
+                if !bypass_cache {
+                    indices
+                        .slider_cache
+                        .borrow_mut()
+                        .insert(cache_key, arc.clone());
+                }
                 arc
             };
 
