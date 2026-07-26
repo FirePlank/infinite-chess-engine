@@ -204,6 +204,9 @@ pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1060;
 pub const DEFAULT_EVAL_ROSE: i32 = 997;
 pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
 pub const DEFAULT_EVAL_CHANCELLOR_BONUS: i32 = 245;
+/// Amazon was the only compound priced at the bare sum of its parts, while the
+/// chancellor carries +245 over rook+knight and the archbishop +371.
+pub const AMAZON_COMPOUND_BONUS: i32 = 200;
 pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 8;
 pub const DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY: i32 = 12;
 pub const DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS: i32 = 70;
@@ -238,7 +241,7 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
 
         // riders / compounds
         PieceType::Knightrider => knightrider(),
-        PieceType::Amazon => queen_value() + knight(),
+        PieceType::Amazon => queen_value() + knight() + AMAZON_COMPOUND_BONUS,
         PieceType::Hawk => hawk(),
         PieceType::Chancellor => rook() + knight() + chancellor_bonus(),
         PieceType::Archbishop => archbishop(),
