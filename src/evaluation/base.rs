@@ -1562,18 +1562,16 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 white_pawns,
                 black_pawns,
             ),
-            PieceType::Knight => evaluate_knight(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                cloud_avg_spread,
-                phase,
-                white_pawns,
-                black_pawns,
-            ),
-            PieceType::Hawk
+            // NOTE FOR KNIGHTRIDERS:
+            //   A knightrider rides along knight rays; on an unbounded board its
+            //   reach is unbounded so mobility-counting is meaningless. Use the
+            //   board-aware cloud-proximity/density shaping like the other riders.
+            PieceType::Knight
+            | PieceType::Guard
+            | PieceType::Hawk
             | PieceType::Rose
+            | PieceType::Huygen
+            | PieceType::Knightrider
             | PieceType::Camel
             | PieceType::Giraffe
             | PieceType::Zebra => evaluate_leaper_positioning(
@@ -1584,6 +1582,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 pt,
                 cloud_avg_spread,
                 phase,
+                white_pawns,
+                black_pawns,
             ),
             PieceType::Centaur | PieceType::RoyalCentaur => {
                 let leaper_eval = evaluate_leaper_positioning(
@@ -1594,39 +1594,11 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     pt,
                     cloud_avg_spread,
                     phase,
+                    white_pawns,
+                    black_pawns,
                 );
                 leaper_eval * CENTAUR_GUARD_SCALE / 100
             }
-            PieceType::Huygen => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Huygen,
-                cloud_avg_spread,
-                phase,
-            ),
-            PieceType::Guard => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Guard,
-                cloud_avg_spread,
-                phase,
-            ),
-            // A knightrider rides along knight rays; on an unbounded board its
-            // reach is unbounded so mobility-counting is meaningless. Use the
-            // board-aware cloud-proximity/density shaping like the other riders.
-            PieceType::Knightrider => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Knightrider,
-                cloud_avg_spread,
-                phase,
-            ),
             _ => 0,
         };
         let piece_val = get_piece_value_base(pt);
@@ -2318,10 +2290,7 @@ pub fn evaluate_bishop(
         y + 1
     };
 
-    // Check left support
     let has_left_support = my_pawns.binary_search(&(x - 1, support_y)).is_ok();
-
-    // Check right support
     let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
@@ -2331,69 +2300,25 @@ pub fn evaluate_bishop(
     bonus
 }
 
-fn evaluate_knight(
-    x: i64,
-    y: i64,
-    color: PlayerColor,
-    cloud_center: Option<&Coordinate>,
-    cloud_avg_spread: i32,
-    phase: i32,
-    white_pawns: &[(i64, i64)],
-    black_pawns: &[(i64, i64)],
-) -> i32 {
-    let taper =
-        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
-    let mut bonus = evaluate_leaper_positioning(
-        x,
-        y,
-        color,
-        cloud_center,
-        PieceType::Knight,
-        cloud_avg_spread,
-        phase,
-    );
-
-    // Outpost Bonus: precise pawn support
-    let (my_pawns, _enemy_pawns) = if color == PlayerColor::White {
-        (white_pawns, black_pawns)
-    } else {
-        (black_pawns, white_pawns)
-    };
-
-    let support_y = if color == PlayerColor::White {
-        y - 1
-    } else {
-        y + 1
-    };
-
-    // Check left support
-    let has_left_support = my_pawns.binary_search(&(x - 1, support_y)).is_ok();
-
-    // Check right support
-    let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
-
-    if has_left_support || has_right_support {
-        bonus += taper(mg_outpost_bonus(), eg_outpost_bonus());
-    }
-
-    bonus
-}
-
-/// Evaluate leaper pieces
+/// General piece evaluation for leapers
 ///
-/// Three components:
+/// Components:
 /// 1. **Cloud proximity** – reward being near the piece cloud center
 /// 2. **Density bonus** – leapers gain value when pieces cluster together
 /// 3. **Phase taper** – short-range leapers become relatively more valuable in the
 ///    endgame as the board empties
+/// 4. **Outpost bonus** – for minor leapers that have pawn support
+#[allow(clippy::too_many_arguments)]
 fn evaluate_leaper_positioning(
     x: i64,
     y: i64,
-    _color: PlayerColor,
+    color: PlayerColor,
     cloud_center: Option<&Coordinate>,
     piece_type: PieceType,
     cloud_avg_spread: i32,
     phase: i32,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -2442,6 +2367,39 @@ fn evaluate_leaper_positioning(
         _ => (0, 10),
     };
     bonus += taper(mg_bonus, eg_bonus);
+
+    // 4. OUTPOST BONUS
+    if piece_type.is_minor() {
+        let my_pawns = if color == PlayerColor::White {
+            white_pawns
+        } else {
+            black_pawns
+        };
+
+        // Check for pawn support: (x-1, y-dir) or (x+1, y-dir)
+        // White pawns at y-1 support piece at y. Black pawns at y+1 support piece at y.
+        let support_y = if color == PlayerColor::White {
+            y - 1
+        } else {
+            y + 1
+        };
+
+        let has_left_support = my_pawns.binary_search(&(x - 1, support_y)).is_ok();
+        let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
+
+        if has_left_support || has_right_support {
+            // Bonus = base * multiplier / 4
+            let bonus_multiplier = match piece_type {
+                PieceType::Knight | PieceType::Guard => 4,
+                PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => 3,
+                PieceType::Huygen => 3,
+                PieceType::Centaur => 1,
+                PieceType::Hawk => 0,
+                _ => 0,
+            };
+            bonus += taper(mg_outpost_bonus(), eg_outpost_bonus()) * bonus_multiplier / 4;
+        }
+    }
 
     bonus
 }
@@ -3917,7 +3875,17 @@ mod tests {
         let icn_no_support = "w (8;q|1;q) K0,0|k0,10|N4,4";
         game.setup_position_from_icn(icn_no_support);
 
-        let score_no_support = evaluate_knight(4, 4, PlayerColor::White, None, 8, 0, &[], &[]);
+        let score_no_support = evaluate_leaper_positioning(
+            4,
+            4,
+            PlayerColor::White,
+            None,
+            PieceType::Knight,
+            8,
+            0,
+            &[],
+            &[],
+        );
 
         // Case 2: Support from pawn at (3,3) (White pawn at y-1 supports y)
         let icn_supported = "w (8;q|1;q) K0,0|k0,10|N4,4|P3,3";
@@ -3925,7 +3893,17 @@ mod tests {
         // Mock pawn list
         let white_pawns = vec![(3, 3)];
 
-        let score_supported = evaluate_knight(4, 4, PlayerColor::White, None, 8, 0, &white_pawns, &[]);
+        let score_supported = evaluate_leaper_positioning(
+            4,
+            4,
+            PlayerColor::White,
+            None,
+            PieceType::Knight,
+            8,
+            0,
+            &white_pawns,
+            &[],
+        );
 
         println!(
             "No Support: {}, Supported: {}",
