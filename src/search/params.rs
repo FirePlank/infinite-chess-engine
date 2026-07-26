@@ -187,8 +187,10 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("rook_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS as i64, 0, 220, 2.0, 0.002, "Rook semi-open file bonus"),
     EvalParamSpec::new("queen_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS as i64, 0, 225, 2.0, 0.002, "Queen open file bonus"),
     EvalParamSpec::new("queen_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS as i64, 0, 210, 2.0, 0.002, "Queen semi-open file bonus"),
-    EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
-    EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
+    EvalParamSpec::new("mg_knight_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KNIGHT_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
+    EvalParamSpec::new("eg_knight_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KNIGHT_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
+    EvalParamSpec::new("mg_bishop_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
+    EvalParamSpec::new("eg_bishop_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
 ];
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -219,8 +221,10 @@ pub struct EvalParams {
     pub rook_semi_open_file_bonus: i32,
     pub queen_open_file_bonus: i32,
     pub queen_semi_open_file_bonus: i32,
-    pub mg_outpost_bonus: i32,
-    pub eg_outpost_bonus: i32,
+    pub mg_knight_outpost_bonus: i32,
+    pub eg_knight_outpost_bonus: i32,
+    pub mg_bishop_outpost_bonus: i32,
+    pub eg_bishop_outpost_bonus: i32,
 }
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -251,8 +255,10 @@ impl Default for EvalParams {
             rook_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS,
             queen_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS,
             queen_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
-            mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
-            eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
+            mg_knight_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KNIGHT_OUTPOST_BONUS,
+            eg_knight_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KNIGHT_OUTPOST_BONUS,
+            mg_bishop_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_OUTPOST_BONUS,
+            eg_bishop_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_OUTPOST_BONUS,
         }
     }
 }
@@ -327,8 +333,10 @@ define_eval_accessor!(rook_open_file_bonus, crate::evaluation::base::DEFAULT_EVA
 define_eval_accessor!(rook_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS);
 define_eval_accessor!(queen_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS);
 define_eval_accessor!(queen_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS);
-define_eval_accessor!(mg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS);
-define_eval_accessor!(eg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS);
+define_eval_accessor!(mg_knight_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_KNIGHT_OUTPOST_BONUS);
+define_eval_accessor!(eg_knight_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_KNIGHT_OUTPOST_BONUS);
+define_eval_accessor!(mg_bishop_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_OUTPOST_BONUS);
+define_eval_accessor!(eg_bishop_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_OUTPOST_BONUS);
 
 #[inline]
 pub fn queen_value() -> i32 {

@@ -5,9 +5,10 @@ use smallvec::SmallVec;
 use std::cell::UnsafeCell;
 
 use crate::search::params::{
-    archbishop, bishop, camel, centaur, chancellor_bonus, eg_bishop_pair_bonus,
-    eg_doubled_pawn_penalty, eg_outpost_bonus, giraffe, guard, hawk, huygen, knight, knightrider,
-    mg_bishop_pair_bonus, mg_doubled_pawn_penalty, mg_outpost_bonus, pawn, queen_open_file_bonus,
+    archbishop, bishop, camel, centaur, chancellor_bonus, eg_bishop_outpost_bonus,
+    eg_bishop_pair_bonus, eg_doubled_pawn_penalty, eg_knight_outpost_bonus, giraffe, guard, hawk,
+    huygen, knight, knightrider, mg_bishop_outpost_bonus, mg_bishop_pair_bonus,
+    mg_doubled_pawn_penalty, mg_knight_outpost_bonus, pawn, queen_open_file_bonus,
     queen_semi_open_file_bonus, queen_value, rook, rook_open_file_bonus, rook_semi_open_file_bonus,
     rose, zebra,
 };
@@ -212,8 +213,10 @@ pub const DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS: i32 = 45;
 pub const DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS: i32 = 20;
 pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 25;
 pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 10;
-pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 20;
-pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 50;
+pub const DEFAULT_EVAL_MG_KNIGHT_OUTPOST_BONUS: i32 = 24;
+pub const DEFAULT_EVAL_EG_KNIGHT_OUTPOST_BONUS: i32 = 60;
+pub const DEFAULT_EVAL_MG_BISHOP_OUTPOST_BONUS: i32 = 18;
+pub const DEFAULT_EVAL_EG_BISHOP_OUTPOST_BONUS: i32 = 45;
 
 // Piece Values
 
@@ -2294,7 +2297,7 @@ pub fn evaluate_bishop(
     let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
     if has_left_support || has_right_support {
-        bonus += taper(mg_outpost_bonus(), eg_outpost_bonus());
+        bonus += taper(mg_bishop_outpost_bonus(), eg_bishop_outpost_bonus());
     }
 
     bonus
@@ -2388,16 +2391,16 @@ fn evaluate_leaper_positioning(
         let has_right_support = my_pawns.binary_search(&(x + 1, support_y)).is_ok();
 
         if has_left_support || has_right_support {
-            // Bonus = base * multiplier / 4
-            let bonus_multiplier = match piece_type {
-                PieceType::Knight | PieceType::Guard => 4,
-                PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => 3,
-                PieceType::Huygen => 3,
-                PieceType::Centaur => 1,
-                PieceType::Hawk => 0,
-                _ => 0,
+            let (mg_bonus, eg_bonus): (i32, i32) = match piece_type {
+                PieceType::Knight => (mg_knight_outpost_bonus(), eg_knight_outpost_bonus()),
+                PieceType::Guard => (22, 56),
+                PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => (16, 40),
+                PieceType::Huygen => (16, 40),
+                PieceType::Centaur => (7, 17),
+                PieceType::Hawk => (0, 0),
+                _ => (6, 15),
             };
-            bonus += taper(mg_outpost_bonus(), eg_outpost_bonus()) * bonus_multiplier / 4;
+            bonus += taper(mg_bonus, eg_bonus);
         }
     }
 
@@ -3915,8 +3918,8 @@ mod tests {
         );
         assert_eq!(
             score_supported - score_no_support,
-            eg_outpost_bonus(),
-            "Bonus should match eg_outpost_bonus() in endgame"
+            eg_knight_outpost_bonus(),
+            "Bonus should match eg_knight_outpost_bonus() in endgame"
         );
     }
 
