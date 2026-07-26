@@ -101,8 +101,8 @@ enum Commands {
         #[arg(long, default_value_t = 50)]
         search_noise: i32,
 
-        /// Old engine strength level (1-3)
-        #[arg(long, default_value_t = 3)]
+        /// Old engine strength level (1-8; 8 = full strength, the default)
+        #[arg(long, default_value_t = 8)]
         old_strength: u32,
 
         /// Print verbose engine info
@@ -1340,7 +1340,7 @@ fn play_game(
         let seed_val = seeds[ply];
         cmd.arg("--seed").arg(seed_val.to_string());
 
-        if !is_new_turn && config.old_strength < 3 {
+        if !is_new_turn && config.old_strength < apeiron::search::MAX_SITE_SKILL {
             cmd.arg("--strength-level")
                 .arg(config.old_strength.to_string());
         }

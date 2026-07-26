@@ -3110,8 +3110,15 @@ pub(crate) fn get_best_move_limited(
 
         let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
 
-        let effective_depth = if skill_level < 20 {
-            max_depth.min((skill_level + 1) as usize)
+        // Depth cap per site level, spanning 2 up to 12. Measured full-strength
+        // depth at 4s/move is 9-18 (avg 13) natively and roughly a ply less on
+        // wasm, so the ladder stays under that. Steps are fine at the weak end,
+        // where one ply changes perceived strength the most, and coarser near
+        // the top where a ply matters less.
+        const SKILL_DEPTH_CAP: [usize; 7] = [2, 3, 4, 6, 8, 10, 12];
+        let effective_depth = if input_skill < MAX_SITE_SKILL {
+            let cap = SKILL_DEPTH_CAP[(input_skill - 1) as usize];
+            max_depth.min(cap)
         } else {
             max_depth
         };
