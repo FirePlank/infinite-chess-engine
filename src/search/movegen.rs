@@ -741,14 +741,28 @@ impl StagedMoveGen {
         let tx = m.to.x;
         let ty = m.to.y;
 
-        // Knights and Pawns use precomputed hash lookup
+        // Knights and pawns: test the current royal positions directly. The old
+        // precomputed set was built once at setup, so it was wrong for every node
+        // where a royal had moved -- and this arithmetic beats a hash probe.
         if pt == PieceType::Knight || pt == PieceType::Pawn {
-            let check_squares = if color == PlayerColor::White {
-                &game.check_squares_black
+            let royals = if color == PlayerColor::White {
+                &game.black_royals
             } else {
-                &game.check_squares_white
+                &game.white_royals
             };
-            return check_squares.contains(&(tx, ty, pt as u8));
+            let fwd = if color == PlayerColor::White { 1 } else { -1 };
+            for r in royals {
+                let adx = (r.x - tx).abs();
+                let dy = r.y - ty;
+                if pt == PieceType::Knight {
+                    if (adx == 1 && dy.abs() == 2) || (adx == 2 && dy.abs() == 1) {
+                        return true;
+                    }
+                } else if adx == 1 && dy == fwd {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Get enemy royal positions
