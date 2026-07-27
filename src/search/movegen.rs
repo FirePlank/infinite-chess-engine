@@ -558,8 +558,8 @@ impl StagedMoveGen {
             };
             if entry.0 != 0
                 && entry.0 == m.piece.piece_type() as u8
-                && entry.1 == m.to.x as i16
-                && entry.2 == m.to.y as i16
+                && entry.1 == m.to.x as i32
+                && entry.2 == m.to.y as i32
             {
                 score += sort_countermove();
             }
@@ -1358,8 +1358,8 @@ mod tests {
         searcher.prev_move_stack[0] = (3, 9);
         searcher.countermoves[3][9] = (
             quiet.piece.piece_type() as u8,
-            quiet.to.x as i16,
-            quiet.to.y as i16,
+            quiet.to.x as i32,
+            quiet.to.y as i32,
         );
         let picker = StagedMoveGen::new(None, 1, 2, &searcher, &game);
         assert!(picker.score_quiet(&game, &searcher, &quiet) >= sort_countermove());

@@ -78,8 +78,8 @@ pub fn score_move(
                         searcher.countermoves[prev_from_hash][prev_to_hash];
                     if cm_piece != 0
                         && cm_piece == m.piece.piece_type() as u8
-                        && cm_to_x == m.to.x as i16
-                        && cm_to_y == m.to.y as i16
+                        && cm_to_x == m.to.x as i32
+                        && cm_to_y == m.to.y as i32
                     {
                         score += sort_countermove();
                     }

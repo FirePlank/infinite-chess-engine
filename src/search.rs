@@ -901,8 +901,7 @@ pub struct Searcher {
 
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
     // Stores the move that refuted the previous move (for quiet beta cutoffs).
-    // Using (u8, i16, i16) to store piece type and destination coords.
-    pub countermoves: Box<[[(u8, i16, i16); 256]; 256]>,
+    pub countermoves: Box<[[(u8, i32, i32); 256]; 256]>,
 
     // Previous move info for countermove heuristic (from_hash, to_hash)
     pub prev_move_stack: Vec<(usize, usize)>,
@@ -1079,8 +1078,8 @@ impl Searcher {
             },
             countermoves: unsafe {
                 Box::from_raw(
-                    Box::into_raw(vec![(0u8, 0i16, 0i16); 256 * 256].into_boxed_slice())
-                        as *mut [[(u8, i16, i16); 256]; 256],
+                    Box::into_raw(vec![(0u8, 0i32, 0i32); 256 * 256].into_boxed_slice())
+                        as *mut [[(u8, i32, i32); 256]; 256],
                 )
             },
             in_check_history: vec![false; MAX_PLY],
@@ -5060,7 +5059,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
                         searcher.countermoves[prev_from_hash][prev_to_hash] =
-                            (m.piece.piece_type() as u8, m.to.x as i16, m.to.y as i16);
+                            (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
                     }
                 }
 
@@ -6436,6 +6435,17 @@ mod tests {
         assert_eq!(piece_type, 1);
         assert_eq!(to_x, 5);
         assert_eq!(to_y, 5);
+    }
+
+    #[test]
+    fn test_countermove_beyond_i16_range() {
+        // Coordinates outside i16 (-32768..32767) must not alias to a wrong destination.
+        let mut searcher = Box::new(Searcher::new(1000));
+        searcher.countermoves[10][20] = (1, 40_000, -40_000);
+        let (piece_type, to_x, to_y) = searcher.countermoves[10][20];
+        assert_eq!(piece_type, 1);
+        assert_eq!(to_x, 40_000);
+        assert_eq!(to_y, -40_000);
     }
 
     // ======================== Search Functionality Tests ========================
