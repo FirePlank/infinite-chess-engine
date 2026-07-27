@@ -80,7 +80,7 @@ pub const DEFAULT_HLP_MIN_MOVES: usize = 4;
 pub const DEFAULT_HLP_HISTORY_REDUCE: i32 = 300;
 pub const DEFAULT_HLP_HISTORY_LEAF: i32 = 0;
 
-pub const DEFAULT_LMP_BASE: usize = 3;
+pub const DEFAULT_LMP_BASE: usize = 2;
 pub const DEFAULT_LMP_DEPTH_MULT: usize = 1;
 
 pub const DEFAULT_ASPIRATION_WINDOW: i32 = 60;

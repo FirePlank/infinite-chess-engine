@@ -11,6 +11,20 @@ pub enum MoveGenType {
     Captures,
 }
 
+thread_local! {
+    /// Depth-staged tight generation: when >0, quiet slider generation keeps
+    /// only this many nearest candidates per ray (short-range and enemy-king-
+    /// aligned destinations always survive). 0 = full width.
+    static QUIET_RAY_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Set the per-ray quiet slider candidate cap (0 disables). Only affects
+/// `MoveGenType::Quiets` generation; legal-move lists, evasions, captures and
+/// perft are never capped.
+pub fn set_quiet_ray_cap(cap: usize) {
+    QUIET_RAY_CAP.with(|c| c.set(cap));
+}
+
 pub type MoveList = smallvec::SmallVec<[Move; 128]>;
 
 #[derive(Debug, Clone)]
@@ -24,6 +38,7 @@ pub struct MoveGenContext<'a> {
 }
 
 // World border for infinite chess.
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 static COORD_MIN_X: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
 static COORD_MAX_X: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
@@ -158,14 +173,20 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         // 2. Generate moves along this ray.
         // Cap at 10 for performance - captures at distance handled separately
         const KR_STEP_LIMIT: i64 = 10;
+        const KR_OPEN_RAY_STEPS: i64 = 5;
         let max_steps: i64 = if closest_k < i64::MAX {
             if closest_is_enemy {
                 closest_k.min(KR_STEP_LIMIT)
             } else {
                 closest_k.saturating_sub(1).min(KR_STEP_LIMIT)
             }
-        } else {
+        } else if QUIET_RAY_CAP.with(|c| c.get()) > 0 {
+            // Shallow node under tight generation: keep the ray minimal.
             2
+        } else {
+            // Open ray (no blocker, so quiets only): the old flat cap of 2 hid
+            // every longer knightrider maneuver from the search.
+            KR_OPEN_RAY_STEPS
         };
 
         // CRITICAL: If enemy is beyond step limit, still add the direct capture
@@ -511,7 +532,7 @@ pub struct SpatialIndices {
     /// Key: (x, y, dir_index) where dir_index encodes the 8 cardinal/diagonal directions.
     /// Value: Sorted list of valid interception distances for that slider position/direction.
     #[serde(skip)]
-    pub slider_cache: std::cell::RefCell<FxHashMap<(i64, i64, u8), Vec<i64>>>,
+    pub slider_cache: std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>,
 
     // Fairy piece existence flags per color for O(1) early-exit in attack detection
     // [0] = white, [1] = black
@@ -834,7 +855,7 @@ pub fn get_quiescence_captures(
 }
 
 // Helper to avoid duplicating the switch logic
-fn generate_captures_for_piece(
+pub(crate) fn generate_captures_for_piece(
     board: &Board,
     piece: &Piece,
     from: &Coordinate,
@@ -2577,12 +2598,12 @@ fn generate_sliding_moves_impl(
             };
             let cache_key = (from.x, from.y, dir_index);
 
-            // Check cache first
+            // Check cache first. Value is Arc<[i64]>: a hit is a refcount bump,
+            // not a Vec copy, and per-thread game clones share the arc too.
             let cached = indices.slider_cache.borrow().get(&cache_key).cloned();
-            let mut target_dists: Vec<i64> = Vec::with_capacity(64);
 
-            if let Some(cached_dists) = cached {
-                target_dists.extend(cached_dists);
+            let target_dists: Arc<[i64]> = if let Some(cached_dists) = cached {
+                cached_dists
             } else {
                 dist_counts.clear();
                 royal_dists.clear();
@@ -2910,15 +2931,23 @@ fn generate_sliding_moves_impl(
                 shared_targets.sort_unstable();
                 shared_targets.dedup();
 
-                target_dists.extend(shared_targets.clone());
+                let arc: Arc<[i64]> = Arc::from(shared_targets);
                 indices
                     .slider_cache
                     .borrow_mut()
-                    .insert(cache_key, shared_targets);
-            }
+                    .insert(cache_key, arc.clone());
+                arc
+            };
 
-            // Generate moves from target_dists
-            for d in target_dists {
+            // Generate moves from target_dists (sorted ascending, so a per-ray
+            // cap naturally keeps the nearest candidates).
+            let ray_cap = if gen_type == MoveGenType::Quiets {
+                QUIET_RAY_CAP.with(|c| c.get())
+            } else {
+                0
+            };
+            let mut capped_emitted = 0usize;
+            for &d in target_dists.iter() {
                 if d <= 0 || d > max_dist {
                     continue;
                 }
@@ -2936,6 +2965,23 @@ fn generate_sliding_moves_impl(
 
                 let sq_x = from.x + dir_x * d;
                 let sq_y = from.y + dir_y * d;
+
+                // Tight generation: past short range, non-king-aligned quiet
+                // destinations count against the per-ray cap.
+                if ray_cap > 0 && d > ENEMY_WIGGLE {
+                    let king_aligned = ek_ref.is_some_and(|ek| {
+                        let ax = ek.x - sq_x;
+                        let ay = ek.y - sq_y;
+                        ax == 0 || ay == 0 || ax.abs() == ay.abs()
+                    });
+                    if !king_aligned {
+                        if capped_emitted >= ray_cap {
+                            continue;
+                        }
+                        capped_emitted += 1;
+                    }
+                }
+
                 if in_bounds(sq_x, sq_y) {
                     out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
                 }

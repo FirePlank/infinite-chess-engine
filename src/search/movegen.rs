@@ -23,6 +23,11 @@ use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_
 /// Good quiet threshold
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
+/// Depth-staged tight generation: at remaining depth <= this, quiet slider
+/// candidates are capped per ray (short-range + king-aligned always survive).
+const TIGHT_GEN_DEPTH: i32 = 3;
+const TIGHT_GEN_RAY_CAP: usize = 3;
+
 /// Stages of move generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveStage {
@@ -604,6 +609,80 @@ impl StagedMoveGen {
             }
         }
 
+        // Threat-aware ordering, gated to large subtrees (depth >= 4): a quiet that
+        // attacks an enemy piece is ~2x more likely to be the played move (all-corpus
+        // audit; undefended victim 1.93x), and this forward signal doesn't alias like
+        // dest-hashed history does at deep nodes. Shallow nodes (the bulk) skip it.
+        if self.depth >= 4 {
+            let empty_pins = rustc_hash::FxHashMap::default();
+            let ctx = crate::moves::MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+                pinned: &empty_pins,
+            };
+            let mover = m
+                .promotion
+                .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
+                .unwrap_or(m.piece);
+            let mut caps = MoveList::new();
+            crate::moves::generate_captures_for_piece(&game.board, &mover, &m.to, &ctx, &mut caps);
+            let mut best_vv = 0;
+            let mut best_sq = None;
+            for c in caps.iter() {
+                if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
+                    && vic.color() != m.piece.color()
+                    && vic.color() != PlayerColor::Neutral
+                    && !vic.piece_type().is_uncapturable()
+                {
+                    let vv = game.get_piece_value(vic.piece_type(), vic.color());
+                    if vv > best_vv {
+                        best_vv = vv;
+                        best_sq = Some(c.to);
+                    }
+                }
+            }
+            if best_vv > 0 {
+                let mut q = best_vv * 6;
+                // Undefended victim: no piece of the victim's color covers its square.
+                if let Some(sq) = best_sq
+                    && !crate::moves::is_square_attacked(
+                        &game.board,
+                        &sq,
+                        m.piece.color().opponent(),
+                        &game.spatial_indices,
+                    )
+                {
+                    q *= 2;
+                }
+                score += q.min(12000);
+            }
+
+            // Defensive escape: moving a valuable piece OFF a square the enemy
+            // attacks TO a safe square saves material; order it early so LMR/LMP
+            // don't bury the defensive resource (collapse analysis: defense is
+            // under-weighted, esp. in Palace-like structures).
+            let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+            if mover_val >= 250
+                && crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.from,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+                && !crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.to,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+            {
+                score += (mover_val * 5).min(10000);
+            }
+        }
+
         score
     }
 
@@ -734,7 +813,17 @@ impl StagedMoveGen {
                 indices: &game.spatial_indices,
                 enemy_king_pos: game.enemy_king_pos(),
             };
+            // Depth-staged tight generation: shallow subtrees can't use the
+            // deep quiet-slider tail (played-move audit: rank<=3 covers 67%),
+            // so cap candidates per ray there; full width at deep nodes.
+            let tight = self.depth <= TIGHT_GEN_DEPTH;
+            if tight {
+                crate::moves::set_quiet_ray_cap(TIGHT_GEN_RAY_CAP);
+            }
             get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+            if tight {
+                crate::moves::set_quiet_ray_cap(0);
+            }
         }
 
         for m in quiets {

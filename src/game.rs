@@ -172,6 +172,8 @@ pub struct UndoMove {
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
     pub old_total_phase: i32,
+    /// (white, black) non-pawn-material flags; promotion sets them in make_move.
+    pub old_non_pawn_material: (bool, bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1682,7 +1684,7 @@ impl GameState {
     /// These are used by correction history for indexing.
     /// All three are computed for comprehensive variant coverage.
     pub fn recompute_correction_hashes(&mut self) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key_at, pawn_key, piece_key};
 
         let mut ph: u64 = 0; // Pawn structure hash
         let mut wnph: u64 = 0; // White non-pawn piece hash
@@ -1696,7 +1698,7 @@ impl GameState {
             }
 
             // Material hash: Additive to distinguish counts (avoid XOR cancellation)
-            mh = mh.wrapping_add(material_key(piece.piece_type(), piece.color()));
+            mh = mh.wrapping_add(material_key_at(piece.piece_type(), piece.color(), x, y));
 
             if piece.piece_type() == PieceType::Pawn {
                 // Pawn hash: only pawns (helps CoaIP variants)
@@ -1844,6 +1846,14 @@ impl GameState {
 
         get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
+        // Riders pin outside the queen rays (knightrider knight-rays, huygen
+        // prime-distance files), so the pin map can't clear a move — verify
+        // every non-royal move strictly when the enemy has one. (Rose spiral
+        // pins are rare enough that the blanket verify isn't worth its cost.)
+        let them_idx = if self.turn == PlayerColor::White { 1 } else { 0 };
+        let rider_pins_possible = self.spatial_indices.has_knightrider[them_idx]
+            || self.spatial_indices.has_huygen[them_idx];
+
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
         // When not in check, only (King, Pinned, EP) moves can be illegal.
         let mut i = 0;
@@ -1863,6 +1873,12 @@ impl GameState {
                 ) {
                     illegal = true;
                 }
+            } else if rider_pins_possible {
+                let mut s_mut = self.clone();
+                let _undo = s_mut.make_move(&m);
+                if s_mut.is_move_illegal() {
+                    illegal = true;
+                }
             } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
                 // Pinned piece: must move along the pin ray
                 let dx = m.to.x - m.from.x;
@@ -1870,6 +1886,17 @@ impl GameState {
                 // Cross product check for collinearity
                 if dx * pdy != dy * pdx {
                     illegal = true;
+                } else if !(crate::attacks::is_ortho_slider(pt)
+                    || crate::attacks::is_diag_slider(pt)
+                    || pt == PieceType::Pawn)
+                {
+                    // Collinear JUMPING piece can still leap past the king or
+                    // the pinner along the ray — verify strictly.
+                    let mut s_mut = self.clone();
+                    let _undo = s_mut.make_move(&m);
+                    if s_mut.is_move_illegal() {
+                        illegal = true;
+                    }
                 }
             } else if let Some(ep) = &self.en_passant
                 && pt == PieceType::Pawn
@@ -3014,6 +3041,14 @@ impl GameState {
             return Ok(true);
         };
 
+        // Knightriders pin along knight-rays, which the queen-ray fast test
+        // below cannot see. (Rose spiral pins are rare enough that the full
+        // verify on every move costs more than the legality risk.)
+        let them = if self.turn == PlayerColor::White { 1 } else { 0 };
+        if self.spatial_indices.has_knightrider[them] {
+            return Err(());
+        }
+
         // 5. FAST CHECK: Is piece on a slider ray from king?
         // Only arithmetic - no hash lookups!
         let dx = m.from.x - king.x;
@@ -3264,7 +3299,7 @@ impl GameState {
 
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
-            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, pawn_key,
+            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, material_key_at, pawn_key,
             pawn_special_right_key, piece_key, rep_en_passant_key, rep_pawn_special_right_key,
             rep_piece_key,
         };
@@ -3274,6 +3309,11 @@ impl GameState {
         self.rep_hash_stack.push(self.rep_hash);
 
         let from_coord = Coordinate::new(m.from.x, m.from.y);
+
+        // Snapshot the old castling hash BEFORE the mover leaves the board:
+        // the precise-mode pair skips rights-squares with no piece on them, so
+        // computing it after removal never XORes out the mover's own key.
+        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
 
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
         // Update spatial indices: remove moving piece from source square
@@ -3314,6 +3354,7 @@ impl GameState {
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
             old_total_phase: self.total_phase,
+            old_non_pawn_material: (self.white_non_pawn_material, self.black_non_pawn_material),
         };
 
         // Track royal position updates
@@ -3387,9 +3428,12 @@ impl GameState {
             if captured.color() != PlayerColor::Neutral {
                 self.total_phase -= get_piece_phase(captured.piece_type());
                 // Update material hash (subtractive)
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_sub(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
 
                 let value = self.get_piece_value(captured.piece_type(), captured.color());
                 if captured.color() == PlayerColor::White {
@@ -3470,9 +3514,12 @@ impl GameState {
             self.material_hash = self
                 .material_hash
                 .wrapping_sub(material_key(PieceType::Pawn, piece.color()));
-            self.material_hash = self
-                .material_hash
-                .wrapping_add(material_key(promo_type, piece.color()));
+            self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                promo_type,
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
 
             let pawn_val = self.get_piece_value(PieceType::Pawn, piece.color());
             let promo_val = self.get_piece_value(promo_type, piece.color());
@@ -3497,7 +3544,7 @@ impl GameState {
             self.rep_hash ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
 
-        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
+        // (old_castle_hash pair snapshotted before the mover was removed)
         self.hash ^= old_castle_hash;
         self.rep_hash ^= old_castle_rep_hash;
         let mut castling_state_dirty = false;
@@ -3701,7 +3748,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self, m: &Move, undo: UndoMove) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key, material_key_at, pawn_key, piece_key};
 
         // Restore hashes
         self.hash_stack.pop();
@@ -3740,9 +3787,12 @@ impl GameState {
         // Handle Promotion Revert
         if m.promotion.is_some() {
             // Convert back to pawn: Remove promo type, Add pawn type
-            self.material_hash = self
-                .material_hash
-                .wrapping_sub(material_key(piece.piece_type(), piece.color()));
+            self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                piece.piece_type(),
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
             self.material_hash = self
                 .material_hash
                 .wrapping_add(material_key(PieceType::Pawn, piece.color()));
@@ -3788,9 +3838,12 @@ impl GameState {
         if let Some(captured) = undo.captured_piece {
             // Restore material hash
             if captured.color() != PlayerColor::Neutral {
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_add(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
             }
 
             // Only update piece counts and material for non-neutral pieces
@@ -3931,6 +3984,7 @@ impl GameState {
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
         self.total_phase = undo.old_total_phase;
+        (self.white_non_pawn_material, self.black_non_pawn_material) = undo.old_non_pawn_material;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;

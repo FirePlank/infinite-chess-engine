@@ -676,7 +676,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             );
 
             const engineConfig = {
-                strength_level: (engineName === 'old' && oldStrength && oldStrength < 3) ? oldStrength : 3,
+                strength_level: (engineName === 'old' && oldStrength && oldStrength < 3) ? oldStrength : 8,
                 wtime: Math.floor(whiteClock),
                 btime: Math.floor(blackClock),
                 winc: Math.floor(increment),

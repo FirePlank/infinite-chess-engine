@@ -1616,7 +1616,7 @@ impl Searcher {
         // written directly into shared wasm memory by the main thread). Polled even
         // with no time limit — unlimited searches must still be stoppable. Detached
         // helpers additionally retire when their epoch is superseded (new position).
-        if self.hot.nodes & 8191 == 0 {
+        if self.hot.nodes & 4095 == 0 {
             // Publish this thread's node count for thread-aggregated NPS.
             #[cfg(feature = "multithreading")]
             publish_thread_nodes(self.thread_id, self.hot.nodes);
@@ -1644,7 +1644,7 @@ impl Searcher {
             return false;
         }
 
-        if self.hot.nodes & 8191 == 0 {
+        if self.hot.nodes & 4095 == 0 {
             let elapsed = self.hot.timer.elapsed_ms() as f64;
             let hard_limit = if self.hot.maximum_time_ms > 0 {
                 self.hot.maximum_time_ms as f64
@@ -1661,8 +1661,8 @@ impl Searcher {
             // Proactive Safety Stop:
             // Only trigger if we're very close to the limit and NPS is slow.
             // This is a last-resort safety, not a regular termination condition.
-            if self.hot.nodes > 8192 {
-                let time_to_next_check = (8192.0 * elapsed) / self.hot.nodes as f64;
+            if self.hot.nodes > 4096 {
+                let time_to_next_check = (4096.0 * elapsed) / self.hot.nodes as f64;
                 // Only stop if we literally cannot reach the next check in time.
                 if (elapsed + time_to_next_check) > hard_limit {
                     self.hot.stopped = true;
@@ -3110,8 +3110,15 @@ pub(crate) fn get_best_move_limited(
 
         let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
 
-        let effective_depth = if skill_level < 20 {
-            max_depth.min((skill_level + 1) as usize)
+        // Depth cap per site level, spanning 2 up to 12. Measured full-strength
+        // depth at 4s/move is 9-18 (avg 13) natively and roughly a ply less on
+        // wasm, so the ladder stays under that. Steps are fine at the weak end,
+        // where one ply changes perceived strength the most, and coarser near
+        // the top where a ply matters less.
+        const SKILL_DEPTH_CAP: [usize; 7] = [2, 3, 4, 6, 8, 10, 12];
+        let effective_depth = if input_skill < MAX_SITE_SKILL {
+            let cap = SKILL_DEPTH_CAP[(input_skill - 1) as usize];
+            max_depth.min(cap)
         } else {
             max_depth
         };
@@ -3622,6 +3629,12 @@ fn negamax_root(
     let alpha_orig = alpha;
 
     searcher.pv_length[0] = 0;
+
+    // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
+    // negamax_root omits them, so slot 2 otherwise never clears across the search.
+    searcher.cutoff_cnt[2] = 0;
+    searcher.stat_score_stack[2] = 0;
+    searcher.stat_score_stack[4] = 0;
 
     let hash = game.hash;
     let mut tt_move: Option<Move> = None;

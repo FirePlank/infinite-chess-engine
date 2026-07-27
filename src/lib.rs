@@ -517,7 +517,7 @@ impl Engine {
         let effective_seed = seed.unwrap_or_else(get_random_seed);
         crate::search::set_global_params(effective_seed, noise_amp);
 
-        if strength.is_some_and(|s| s < 3) {
+        if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
             crate::search::get_best_move_limited(
                 &mut self.game,
                 depth,
@@ -610,6 +610,11 @@ impl Engine {
 
     /// Derive an effective time limit for this move from the current clock and game state.
     fn effective_time_limit_ms(&self, requested_limit_ms: u32) -> (u128, u128, bool) {
+        // Below this many increments of base clock, spend this fraction of the
+        // increment per move so the clock stops shrinking and long games survive.
+        const LOW_CLOCK_SURVIVE_INC_MULT: u64 = 6;
+        const LOW_CLOCK_SURVIVE_FRAC: f64 = 0.9;
+
         let Some(clock) = self.clock else {
             // No clock info: use the fixed per-move limit as a soft limit.
             // The search can use up to this time freely without flagging risk.
@@ -732,6 +737,22 @@ impl Engine {
         let optimum = optimum.min(absolute_cap.max(min_think_ms));
         let maximum = maximum.min(absolute_cap.max(min_think_ms));
 
+        // Long infinite-chess games outrun the allocator's ~50-move horizon, so
+        // near flag time spend under the increment instead of the 82.5% cap.
+        let (optimum, maximum) = if inc_ms > 0
+            && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT)
+        {
+            // Reserve the move overhead here too: spawn/reply latency is charged
+            // against the clock, so an unreserved 0.9*inc budget drains it.
+            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64)
+                .saturating_sub(move_overhead)
+                .max(inc_ms / 4)
+                .max(min_think_ms);
+            (optimum.min(survive), maximum.min(survive))
+        } else {
+            (optimum, maximum)
+        };
+
         // Timed games are hard limits (risk of flagging).
         (optimum as u128, maximum as u128, false)
     }
@@ -809,7 +830,7 @@ impl Engine {
         search::set_global_params(effective_seed, noise_amp);
 
         // Choose search path based on strength level.
-        let (best_move, eval) = if strength.is_some_and(|s| s < 3) {
+        let (best_move, eval) = if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
             // Use strength limited search (uses global seed we just set)
             if let Some((bm, ev, _stats)) = search::get_best_move_limited(
                 &mut self.game,
