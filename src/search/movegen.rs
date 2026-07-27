@@ -558,8 +558,8 @@ impl StagedMoveGen {
             };
             if entry.0 != 0
                 && entry.0 == m.piece.piece_type() as u8
-                && entry.1 == m.to.x as i16
-                && entry.2 == m.to.y as i16
+                && entry.1 == m.to.x as i32
+                && entry.2 == m.to.y as i32
             {
                 score += sort_countermove();
             }
@@ -702,6 +702,37 @@ impl StagedMoveGen {
         }
     }
 
+    /// Is the ray between two aligned squares clear once `vacated` is emptied?
+    /// Uses the index-based clear test, splitting the segment when the mover's
+    /// origin lies on it, so no ray is ever walked square by square.
+    #[inline]
+    fn ray_clear_after_move(
+        game: &GameState,
+        from: &crate::board::Coordinate,
+        to: &crate::board::Coordinate,
+        vacated: &crate::board::Coordinate,
+    ) -> bool {
+        use crate::evaluation::base::is_clear_line_between_fast;
+        let idx = &game.spatial_indices;
+        let on_segment = {
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            let (vx, vy) = (vacated.x - from.x, vacated.y - from.y);
+            dx * vy == dy * vx
+                && vx.signum() == dx.signum()
+                && vy.signum() == dy.signum()
+                && vx.abs() <= dx.abs()
+                && vy.abs() <= dy.abs()
+                && (vx != 0 || vy != 0)
+                && (vx != dx || vy != dy)
+        };
+        if on_segment {
+            is_clear_line_between_fast(idx, from, vacated)
+                && is_clear_line_between_fast(idx, vacated, to)
+        } else {
+            is_clear_line_between_fast(idx, from, to)
+        }
+    }
+
     /// Fast check detection
     #[inline(always)]
     pub fn move_gives_check_fast(game: &GameState, m: &Move) -> bool {
@@ -710,14 +741,28 @@ impl StagedMoveGen {
         let tx = m.to.x;
         let ty = m.to.y;
 
-        // Knights and Pawns use precomputed hash lookup
+        // Knights and pawns: test the current royal positions directly. The old
+        // precomputed set was built once at setup, so it was wrong for every node
+        // where a royal had moved -- and this arithmetic beats a hash probe.
         if pt == PieceType::Knight || pt == PieceType::Pawn {
-            let check_squares = if color == PlayerColor::White {
-                &game.check_squares_black
+            let royals = if color == PlayerColor::White {
+                &game.black_royals
             } else {
-                &game.check_squares_white
+                &game.white_royals
             };
-            return check_squares.contains(&(tx, ty, pt as u8));
+            let fwd = if color == PlayerColor::White { 1 } else { -1 };
+            for r in royals {
+                let adx = (r.x - tx).abs();
+                let dy = r.y - ty;
+                if pt == PieceType::Knight {
+                    if (adx == 1 && dy.abs() == 2) || (adx == 2 && dy.abs() == 1) {
+                        return true;
+                    }
+                } else if adx == 1 && dy == fwd {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Get enemy royal positions
@@ -745,14 +790,17 @@ impl StagedMoveGen {
                 return true;
             }
 
-            // Orthogonal check (Rook, Queen, etc.)
-            if (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0 {
-                return true;
-            }
-
-            // Diagonal check (Bishop, Queen, etc.)
-            if (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0 {
-                return true;
+            // Sliding checks need the ray from the destination to the royal to be
+            // clear; alignment alone reported blocked rays as checks, which
+            // exempted them from pruning and paid for a full SEE in the ordering.
+            // The mover's origin cannot block, since it is vacated by this move.
+            let ortho = (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0;
+            let diag = (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0;
+            if ortho || diag {
+                let to_sq = crate::board::Coordinate::new(tx, ty);
+                if Self::ray_clear_after_move(game, &to_sq, king_pos, &m.from) {
+                    return true;
+                }
             }
         }
 
@@ -1310,8 +1358,8 @@ mod tests {
         searcher.prev_move_stack[0] = (3, 9);
         searcher.countermoves[3][9] = (
             quiet.piece.piece_type() as u8,
-            quiet.to.x as i16,
-            quiet.to.y as i16,
+            quiet.to.x as i32,
+            quiet.to.y as i32,
         );
         let picker = StagedMoveGen::new(None, 1, 2, &searcher, &game);
         assert!(picker.score_quiet(&game, &searcher, &quiet) >= sort_countermove());

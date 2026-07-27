@@ -57,7 +57,7 @@ await init();
 // Initialize engine from ICN string
 const icnString = "w 0/100 1 (8|1) P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|...|K5,1+|k5,8+";
 const engineConfig = {
-    strength_level: 3, // 1=Easy, 2=Medium, 3=Hard (default)
+    strength_level: 3, // Site level 1..8; level 8 is full strength
     wtime: 60000,      // White clock in ms
     btime: 60000,      // Black clock in ms
     winc: 1000,        // White increment in ms

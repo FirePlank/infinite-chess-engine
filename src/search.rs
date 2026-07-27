@@ -130,7 +130,89 @@ pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
 
 pub const MAX_SITE_SKILL: u32 = 8; // Current max skill level on the site
-pub const MAX_PV_COUNT: usize = 4; // MultiPV lines to use when limiting strength
+pub const MAX_PV_COUNT: usize = 96; // Widest candidate set used by the weakest skill
+
+/// Infinite-chess strength limiting needs a much wider candidate set than Stockfish's
+/// fixed MultiPV=4. On a large board, the first several moves are often effectively
+/// equivalent, so picking one of four does not create a meaningful error.
+#[derive(Clone, Copy, Debug)]
+struct SkillConfig {
+    depth_cap: Option<usize>,
+    candidates: usize,
+    best_move_chance: f64,
+    mean_loss_permille: f64,
+    max_loss_permille: i32,
+}
+
+/// Site levels 1..7. Level 8 bypasses the limiter and uses the full parallel search.
+///
+/// `mean_loss_permille` is a target loss in winning probability, not centipawns.
+/// This is important when converting an advantage: the same centipawn loss matters
+/// much less at +10 than in an equal position, so weak levels naturally allow larger
+/// givebacks instead of becoming nearly perfect as soon as the opponent blunders.
+const SKILL_CONFIGS: [SkillConfig; 7] = [
+    SkillConfig {
+        depth_cap: Some(2),
+        candidates: 96,
+        best_move_chance: 0.08,
+        mean_loss_permille: 180.0,
+        max_loss_permille: 600,
+    },
+    SkillConfig {
+        depth_cap: Some(3),
+        candidates: 80,
+        best_move_chance: 0.15,
+        mean_loss_permille: 135.0,
+        max_loss_permille: 500,
+    },
+    SkillConfig {
+        depth_cap: Some(4),
+        candidates: 64,
+        best_move_chance: 0.25,
+        mean_loss_permille: 120.0,
+        max_loss_permille: 400,
+    },
+    SkillConfig {
+        depth_cap: Some(6),
+        candidates: 40,
+        best_move_chance: 0.36,
+        mean_loss_permille: 70.0,
+        max_loss_permille: 280,
+    },
+    SkillConfig {
+        depth_cap: Some(8),
+        candidates: 24,
+        best_move_chance: 0.48,
+        mean_loss_permille: 45.0,
+        max_loss_permille: 180,
+    },
+    SkillConfig {
+        depth_cap: Some(10),
+        candidates: 12,
+        best_move_chance: 0.60,
+        mean_loss_permille: 35.0,
+        max_loss_permille: 90,
+    },
+    // With only two candidates, a larger error target is needed to avoid both
+    // moves being best-equivalent. Errors remain rarer and smaller in practice
+    // than level 6 because the candidate set is so narrow.
+    SkillConfig {
+        depth_cap: Some(12),
+        candidates: 2,
+        best_move_chance: 0.64,
+        mean_loss_permille: 50.0,
+        max_loss_permille: 90,
+    },
+];
+
+// Non-neural difficulty modifiers fitted from a depth-4 sample of 11,582
+// human moves (held-out game split: 9,194 train / 2,388 validation).
+// Humans found a clear, depth-stable best move far more often, while positions
+// whose best move changed between shallow and final depth produced fewer best moves.
+const CLEAR_BEST_GAP_PERMILLE: i32 = 50;
+const CLEAR_BEST_ODDS_MULTIPLIER: f64 = 3.0;
+const UNSTABLE_ODDS_MULTIPLIER: f64 = 0.40;
+const MISSED_CLEAR_LOSS_MULTIPLIER: f64 = 2.25;
 
 #[inline(always)]
 pub const fn mate_in(ply: usize) -> i32 {
@@ -263,7 +345,7 @@ pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
 
 // Pawn History constants:
 // Tracks successful moves under specific pawn structures.
-pub const PAWN_HISTORY_SIZE: usize = 8192;
+pub const PAWN_HISTORY_SIZE: usize = 2048;
 pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
 
 /// [pawn_hash % SIZE][piece_type][to_hash] -> history score.
@@ -706,6 +788,8 @@ pub struct PVLine {
 pub struct MultiPVResult {
     pub lines: Vec<PVLine>,
     pub stats: SearchStats,
+    /// Whether depth 2's best move differs from the final completed depth's best move.
+    pub shallow_best_changed: bool,
 }
 
 /// Snapshot of the search state after a completed iterative-deepening depth,
@@ -901,8 +985,7 @@ pub struct Searcher {
 
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
     // Stores the move that refuted the previous move (for quiet beta cutoffs).
-    // Using (u8, i16, i16) to store piece type and destination coords.
-    pub countermoves: Box<[[(u8, i16, i16); 256]; 256]>,
+    pub countermoves: Box<[[(u8, i32, i32); 256]; 256]>,
 
     // Previous move info for countermove heuristic (from_hash, to_hash)
     pub prev_move_stack: Vec<(usize, usize)>,
@@ -1079,8 +1162,8 @@ impl Searcher {
             },
             countermoves: unsafe {
                 Box::from_raw(
-                    Box::into_raw(vec![(0u8, 0i16, 0i16); 256 * 256].into_boxed_slice())
-                        as *mut [[(u8, i16, i16); 256]; 256],
+                    Box::into_raw(vec![(0u8, 0i32, 0i32); 256 * 256].into_boxed_slice())
+                        as *mut [[(u8, i32, i32); 256]; 256],
                 )
             },
             in_check_history: vec![false; MAX_PLY],
@@ -1271,12 +1354,16 @@ impl Searcher {
     }
 
     /// Detects shuffling sequences to prevent search explosions in closed positions.
-    pub fn is_shuffling(&self, game: &GameState, m: &Move, ply: usize) -> bool {
-        // 1. Pawn moves, captures, and early game/reversible moves are not shuffling
-        if m.piece.piece_type() == PieceType::Pawn
-            || game.board.is_occupied(m.to.x, m.to.y)
-            || game.halfmove_clock < 10
-        {
+    pub fn is_shuffling(
+        &self,
+        game: &GameState,
+        m: &Move,
+        ply: usize,
+        is_capture: bool,
+    ) -> bool {
+        // Capture flag comes from the caller: both call sites run after make_move,
+        // where probing the destination would always see the mover sitting there.
+        if m.piece.piece_type() == PieceType::Pawn || is_capture || game.halfmove_clock < 10 {
             return false;
         }
 
@@ -2912,7 +2999,11 @@ pub fn get_best_moves_multipv(
                 });
             }
             let stats = build_search_stats(searcher);
-            return MultiPVResult { lines, stats };
+            return MultiPVResult {
+                lines,
+                stats,
+                shallow_best_changed: false,
+            };
         }
 
         // MultiPV > 1: Search with special root handling to collect multiple best moves
@@ -3020,31 +3111,109 @@ pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
     });
 }
 
-/// Selects a move from MultiPV results using strength-limiting logic.
-fn pick_best(result: &MultiPVResult, skill_level: u32, rng: &mut Prng) -> Option<(Move, i32)> {
+/// Maps an engine score to winning probability in permille.
+///
+/// The deliberately shallow curve matches the site's infinite-chess review model.
+/// Mate scores sit at the endpoints without feeding their sentinel values to exp().
+#[inline]
+pub fn score_to_win_chance_permille(score: i32) -> i32 {
+    if score > MATE_SCORE {
+        return 1000;
+    }
+    if score < -MATE_SCORE {
+        return 0;
+    }
+
+    let cp = score.clamp(-1800, 1800) as f64;
+    (1000.0 / (1.0 + (-0.003 * cp).exp())).round() as i32
+}
+
+fn scale_probability_odds(probability: f64, multiplier: f64) -> f64 {
+    if probability <= 0.0 || probability >= 1.0 {
+        return probability;
+    }
+    let odds = probability / (1.0 - probability) * multiplier;
+    odds / (1.0 + odds)
+}
+
+fn adjusted_skill_behavior(result: &MultiPVResult, config: SkillConfig) -> (f64, f64) {
+    let top_chance = score_to_win_chance_permille(result.lines[0].score);
+    let second_loss = result
+        .lines
+        .get(1)
+        .map_or(0, |line| {
+            (top_chance - score_to_win_chance_permille(line.score)).max(0)
+        });
+
+    if result.shallow_best_changed {
+        (
+            scale_probability_odds(config.best_move_chance, UNSTABLE_ODDS_MULTIPLIER),
+            config.mean_loss_permille,
+        )
+    } else if second_loss >= CLEAR_BEST_GAP_PERMILLE {
+        (
+            scale_probability_odds(config.best_move_chance, CLEAR_BEST_ODDS_MULTIPLIER),
+            config.mean_loss_permille * MISSED_CLEAR_LOSS_MULTIPLIER,
+        )
+    } else {
+        (config.best_move_chance, config.mean_loss_permille)
+    }
+}
+
+/// Selects the candidate closest to a sampled loss in winning probability.
+///
+/// The point mass at zero produces clean best moves. Otherwise an exponential
+/// distribution creates frequent small errors and occasional large ones, like a
+/// human error distribution. Sampling a loss before selecting a move prevents a
+/// large cluster of near-equal moves from drowning out every genuinely worse move.
+fn pick_best(
+    result: &MultiPVResult,
+    config: SkillConfig,
+    rng: &mut Prng,
+) -> Option<(Move, i32)> {
     if result.lines.is_empty() {
         return None;
     }
-    if result.lines.len() == 1 || skill_level >= 20 {
+    if result.lines.len() == 1 {
         let best = &result.lines[0];
         return Some((best.mv, best.score));
     }
 
-    let top_score = result.lines[0].score;
-    let last_score = result.lines.last().unwrap().score;
-    let delta = (top_score - last_score).min(100); // 100 cp = PawnValue
-    let weakness = 120 - 2 * skill_level as i32;
+    let (best_move_chance, mean_loss_permille) = adjusted_skill_behavior(result, config);
+    let target_loss = if rng.next_f64() < best_move_chance {
+        0
+    } else {
+        // Inverse-CDF sampling of an exponential distribution. Keep the input
+        // below one because next_f64() can very rarely return exactly 1.0.
+        let u = rng.next_f64().min(1.0 - f64::EPSILON);
+        (-mean_loss_permille * (1.0 - u).ln())
+            .round()
+            .clamp(1.0, config.max_loss_permille as f64) as i32
+    };
 
-    let mut max_score = -INFINITY;
+    let top_chance = score_to_win_chance_permille(result.lines[0].score);
+    let mut best_distance = i32::MAX;
     let mut chosen_idx = 0;
+    let mut tie_count = 0u64;
 
     for (idx, line) in result.lines.iter().enumerate() {
-        let rng_val = (rng.next_f64() * (weakness as f64)) as i32;
-        let push = (weakness * (top_score - line.score) + delta * rng_val) / 128;
+        let loss = (top_chance - score_to_win_chance_permille(line.score)).max(0);
+        if loss > config.max_loss_permille {
+            continue;
+        }
+        let distance = (loss - target_loss).abs();
 
-        if line.score + push >= max_score {
-            max_score = line.score + push;
+        // Reservoir-style random tie breaking avoids a persistent preference for
+        // the earlier line when several moves have the same rounded win chance.
+        if distance < best_distance {
+            best_distance = distance;
             chosen_idx = idx;
+            tie_count = 1;
+        } else if distance == best_distance {
+            tie_count += 1;
+            if rng.next_u64() % tie_count == 0 {
+                chosen_idx = idx;
+            }
         }
     }
 
@@ -3097,31 +3266,10 @@ pub(crate) fn get_best_move_limited(
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
 
-        // Local TT is already initialized in Searcher::new
-
-        // Use MultiPV at the root and pick_best selection logic.
-        // Automatically normalize site skill (1..MAX_SITE_SKILL) to internal (1..20)
-        let skill_level = if MAX_SITE_SKILL > 1 {
-            let progress = (input_skill - 1) as f32 / (MAX_SITE_SKILL - 1) as f32;
-            (1.0 + progress * 19.0).round() as u32
-        } else {
-            20
-        };
-
-        let multi_pv = if skill_level >= 20 { 1 } else { MAX_PV_COUNT };
-
-        // Depth cap per site level, spanning 2 up to 12. Measured full-strength
-        // depth at 4s/move is 9-18 (avg 13) natively and roughly a ply less on
-        // wasm, so the ladder stays under that. Steps are fine at the weak end,
-        // where one ply changes perceived strength the most, and coarser near
-        // the top where a ply matters less.
-        const SKILL_DEPTH_CAP: [usize; 7] = [2, 3, 4, 6, 8, 10, 12];
-        let effective_depth = if input_skill < MAX_SITE_SKILL {
-            let cap = SKILL_DEPTH_CAP[(input_skill - 1) as usize];
-            max_depth.min(cap)
-        } else {
-            max_depth
-        };
+        // Local TT is already initialized in Searcher::new.
+        let config = SKILL_CONFIGS[(input_skill - 1) as usize];
+        let multi_pv = config.candidates.min(MAX_PV_COUNT);
+        let effective_depth = config.depth_cap.map_or(max_depth, |cap| max_depth.min(cap));
 
         // For MultiPV, we use the same optimum/maximum but disable dynamic extensions
         searcher
@@ -3145,7 +3293,7 @@ pub(crate) fn get_best_move_limited(
                 None,
             );
             let stats = result.stats.clone();
-            pick_best(&result, skill_level, &mut searcher.rng).map(|(m, eval)| (m, eval, stats))
+            pick_best(&result, config, &mut searcher.rng).map(|(m, eval)| (m, eval, stats))
         } else {
             let res = search_with_searcher(searcher, game, max_depth);
             let stats = build_search_stats(searcher);
@@ -3186,6 +3334,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         return MultiPVResult {
             lines: Vec::new(),
             stats,
+                shallow_best_changed: false,
         };
     }
 
@@ -3209,6 +3358,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         return MultiPVResult {
             lines: Vec::new(),
             stats,
+            shallow_best_changed: false,
         };
     }
 
@@ -3231,6 +3381,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                 pv: vec![single],
             }],
             stats,
+            shallow_best_changed: false,
         };
     }
 
@@ -3240,6 +3391,7 @@ pub(crate) fn get_best_moves_multipv_impl(
     // Store (move, score, pv) for each root move at current depth
     let mut root_scores: Vec<(Move, i32, Vec<Move>)> = Vec::with_capacity(legal_root_moves.len());
     let mut best_lines: Vec<PVLine> = Vec::with_capacity(multi_pv);
+    let mut shallow_best: Option<Move> = None;
 
     // Resume point (analysis) takes precedence; otherwise Lazy SMP helper threads
     // start at staggered depths for search diversity.
@@ -3461,6 +3613,9 @@ pub(crate) fn get_best_moves_multipv_impl(
         if depth_completed || best_lines.is_empty() {
             // Sort by score descending
             root_scores.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            if depth == 2 {
+                shallow_best = root_scores.first().map(|entry| entry.0);
+            }
 
             // Reorder legal_root_moves by this iteration's scores for better PVS efficiency
             // at the next depth - the previous best move will be searched first
@@ -3575,9 +3730,13 @@ pub(crate) fn get_best_moves_multipv_impl(
     }
 
     let stats = build_search_stats(searcher);
+    let shallow_best_changed = shallow_best
+        .zip(best_lines.first().map(|line| line.mv))
+        .is_some_and(|(shallow, final_best)| shallow != final_best);
     MultiPVResult {
         lines: best_lines,
         stats,
+        shallow_best_changed,
     }
 }
 
@@ -4526,17 +4685,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             continue; // Definitely illegal (pinned piece moving off ray)
         }
 
-        // Prefetch TT entry for child position BEFORE making the move.
-        // This warms the cache so the TT probe in the recursive call is faster.
-        // Compute approximate child hash: toggle side + move piece from->to.
+        // Prefetch the child's TT entry before making the move, so the probe in
+        // the recursive call is already warm.
         #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
         {
-            let p_type = m.piece.piece_type();
             let p_color = m.piece.color();
-            let child_hash = game.hash
+            let from_type = m.piece.piece_type();
+            let to_type = m.promotion.unwrap_or(from_type);
+            let mut child_hash = game.hash
                 ^ SIDE_KEY
-                ^ piece_key(p_type, p_color, m.from.x, m.from.y)
-                ^ piece_key(p_type, p_color, m.to.x, m.to.y);
+                ^ piece_key(from_type, p_color, m.from.x, m.from.y)
+                ^ piece_key(to_type, p_color, m.to.x, m.to.y);
+            if let Some(cap) = captured_piece {
+                child_hash ^= piece_key(cap.piece_type(), cap.color(), m.to.x, m.to.y);
+            }
             #[cfg(feature = "multithreading")]
             if let Some(tt) = SHARED_TT.get() {
                 tt.prefetch_entry(child_hash);
@@ -4601,7 +4763,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_pv
                 && excluded_move.is_none()
                 && depth >= 6 + (tt_pv as usize)
-                && !searcher.is_shuffling(game, &m, ply)
+                && !searcher.is_shuffling(game, &m, ply, is_capture)
         }) {
             // Singular extension margin with TT Move History adjustment.
             let tt_history_adj = searcher.tt_move_history / 150;
@@ -4774,7 +4936,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 reduction -= (correction.abs() / 30370).clamp(0, 2);
 
                 // Shuffle penalty
-                if searcher.is_shuffling(game, &m, ply) {
+                if searcher.is_shuffling(game, &m, ply, is_capture) {
                     reduction += 1;
                 }
 
@@ -5053,7 +5215,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
                         searcher.countermoves[prev_from_hash][prev_to_hash] =
-                            (m.piece.piece_type() as u8, m.to.x as i16, m.to.y as i16);
+                            (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
                     }
                 }
 
@@ -5779,6 +5941,132 @@ mod tests {
         assert!(LOW_PLY_HISTORY_ENTRIES.is_power_of_two());
     }
 
+    fn skill_test_result(scores: &[i32]) -> MultiPVResult {
+        let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+        MultiPVResult {
+            lines: scores
+                .iter()
+                .enumerate()
+                .map(|(i, score)| {
+                    let mv = Move::new(
+                        Coordinate::new(i as i64, 0),
+                        Coordinate::new(i as i64, 1),
+                        piece,
+                    );
+                    PVLine {
+                        mv,
+                        score: *score,
+                        depth: 1,
+                        pv: vec![mv],
+                    }
+                })
+                .collect(),
+            stats: SearchStats {
+                nodes: 0,
+                tt_capacity: 0,
+                tt_used: 0,
+                tt_fill_permille: 0,
+            },
+            shallow_best_changed: false,
+        }
+    }
+
+    #[test]
+    fn test_skill_config_ladder_is_monotonic() {
+        for pair in SKILL_CONFIGS.windows(2) {
+            let weaker = pair[0];
+            let stronger = pair[1];
+            assert!(weaker.candidates >= stronger.candidates);
+            assert!(weaker.best_move_chance <= stronger.best_move_chance);
+            assert!(weaker.max_loss_permille >= stronger.max_loss_permille);
+            if let (Some(weak_depth), Some(strong_depth)) =
+                (weaker.depth_cap, stronger.depth_cap)
+            {
+                assert!(weak_depth <= strong_depth);
+            }
+        }
+    }
+
+    #[test]
+    fn test_skill_behavior_responds_to_position_difficulty() {
+        let config = SKILL_CONFIGS[2];
+        let stable = skill_test_result(&[0, -10]);
+        let clear = skill_test_result(&[0, -100]);
+        let mut unstable = stable.clone();
+        unstable.shallow_best_changed = true;
+
+        let (stable_best, stable_loss) = adjusted_skill_behavior(&stable, config);
+        let (clear_best, clear_loss) = adjusted_skill_behavior(&clear, config);
+        let (unstable_best, unstable_loss) = adjusted_skill_behavior(&unstable, config);
+
+        assert!(clear_best > stable_best);
+        assert!(stable_best > unstable_best);
+        assert!(clear_loss > stable_loss);
+        assert_eq!(unstable_loss, stable_loss);
+    }
+
+    #[test]
+    fn test_skill_picker_uses_wide_candidate_set() {
+        let scores: Vec<i32> = (0..64).map(|i| -(i * 10)).collect();
+        let result = skill_test_result(&scores);
+        let config = SKILL_CONFIGS[2]; // Site level 3
+
+        let reached_beyond_stockfish_multipv = (1..=1000).any(|seed| {
+            let mut rng = Prng::new(seed);
+            let (mv, _) = pick_best(&result, config, &mut rng).unwrap();
+            mv.from.x >= 4
+        });
+
+        assert!(reached_beyond_stockfish_multipv);
+    }
+
+    #[test]
+    fn test_skill_picker_expected_loss_decreases_by_level() {
+        let scores: Vec<i32> = (0..MAX_PV_COUNT).map(|i| -(i as i32 * 12)).collect();
+        let result = skill_test_result(&scores);
+        let sample_average = |config: SkillConfig| -> f64 {
+            let mut total = 0u64;
+            let candidates = MultiPVResult {
+                lines: result.lines[..config.candidates].to_vec(),
+                stats: result.stats.clone(),
+                shallow_best_changed: result.shallow_best_changed,
+            };
+            for seed in 1..=5000 {
+                let mut rng = Prng::new(seed);
+                let (_, score) = pick_best(&candidates, config, &mut rng).unwrap();
+                total +=
+                    (score_to_win_chance_permille(0) - score_to_win_chance_permille(score)) as u64;
+            }
+            total as f64 / 5000.0
+        };
+
+        let level_1 = sample_average(SKILL_CONFIGS[0]);
+        let level_3 = sample_average(SKILL_CONFIGS[2]);
+        let level_6 = sample_average(SKILL_CONFIGS[5]);
+        let level_7 = sample_average(SKILL_CONFIGS[6]);
+        assert!(level_1 > level_3);
+        assert!(level_3 > level_6);
+        assert!(level_6 > level_7);
+    }
+
+    #[test]
+    fn test_skill_picker_respects_maximum_loss() {
+        let result = skill_test_result(&[0, -67]);
+        let config = SkillConfig {
+            depth_cap: None,
+            candidates: 2,
+            best_move_chance: 0.0,
+            mean_loss_permille: 1000.0,
+            max_loss_permille: 30,
+        };
+
+        for seed in 1..=100 {
+            let mut rng = Prng::new(seed);
+            let (mv, _) = pick_best(&result, config, &mut rng).unwrap();
+            assert_eq!(mv.from.x, 0);
+        }
+    }
+
     /// Native replica of the wasm MT analyse path (lib.rs): Lazy SMP helpers filling the
     /// shared TT while the main thread runs the MultiPV analysis. Panics here reproduce
     /// (with real backtraces) the `unreachable` crashes seen on wasm rayon workers.
@@ -6431,6 +6719,17 @@ mod tests {
         assert_eq!(to_y, 5);
     }
 
+    #[test]
+    fn test_countermove_beyond_i16_range() {
+        // Coordinates outside i16 (-32768..32767) must not alias to a wrong destination.
+        let mut searcher = Box::new(Searcher::new(1000));
+        searcher.countermoves[10][20] = (1, 40_000, -40_000);
+        let (piece_type, to_x, to_y) = searcher.countermoves[10][20];
+        assert_eq!(piece_type, 1);
+        assert_eq!(to_x, 40_000);
+        assert_eq!(to_y, -40_000);
+    }
+
     // ======================== Search Functionality Tests ========================
 
     #[test]
@@ -6605,6 +6904,7 @@ mod tests {
                 tt_used: 100,
                 tt_fill_permille: 100,
             },
+            shallow_best_changed: false,
         };
         assert!(result.lines.is_empty());
         assert_eq!(result.stats.tt_capacity, 1000);
