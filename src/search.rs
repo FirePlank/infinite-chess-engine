@@ -1271,12 +1271,16 @@ impl Searcher {
     }
 
     /// Detects shuffling sequences to prevent search explosions in closed positions.
-    pub fn is_shuffling(&self, game: &GameState, m: &Move, ply: usize) -> bool {
-        // 1. Pawn moves, captures, and early game/reversible moves are not shuffling
-        if m.piece.piece_type() == PieceType::Pawn
-            || game.board.is_occupied(m.to.x, m.to.y)
-            || game.halfmove_clock < 10
-        {
+    pub fn is_shuffling(
+        &self,
+        game: &GameState,
+        m: &Move,
+        ply: usize,
+        is_capture: bool,
+    ) -> bool {
+        // Capture flag comes from the caller: both call sites run after make_move,
+        // where probing the destination would always see the mover sitting there.
+        if m.piece.piece_type() == PieceType::Pawn || is_capture || game.halfmove_clock < 10 {
             return false;
         }
 
@@ -4601,7 +4605,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_pv
                 && excluded_move.is_none()
                 && depth >= 6 + (tt_pv as usize)
-                && !searcher.is_shuffling(game, &m, ply)
+                && !searcher.is_shuffling(game, &m, ply, is_capture)
         }) {
             // Singular extension margin with TT Move History adjustment.
             let tt_history_adj = searcher.tt_move_history / 150;
@@ -4774,7 +4778,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 reduction -= (correction.abs() / 30370).clamp(0, 2);
 
                 // Shuffle penalty
-                if searcher.is_shuffling(game, &m, ply) {
+                if searcher.is_shuffling(game, &m, ply, is_capture) {
                     reduction += 1;
                 }
 
