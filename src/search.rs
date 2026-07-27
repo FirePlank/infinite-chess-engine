@@ -4530,17 +4530,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             continue; // Definitely illegal (pinned piece moving off ray)
         }
 
-        // Prefetch TT entry for child position BEFORE making the move.
-        // This warms the cache so the TT probe in the recursive call is faster.
-        // Compute approximate child hash: toggle side + move piece from->to.
+        // Prefetch the child's TT entry before making the move, so the probe in
+        // the recursive call is already warm.
         #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
         {
-            let p_type = m.piece.piece_type();
             let p_color = m.piece.color();
-            let child_hash = game.hash
+            let from_type = m.piece.piece_type();
+            let to_type = m.promotion.unwrap_or(from_type);
+            let mut child_hash = game.hash
                 ^ SIDE_KEY
-                ^ piece_key(p_type, p_color, m.from.x, m.from.y)
-                ^ piece_key(p_type, p_color, m.to.x, m.to.y);
+                ^ piece_key(from_type, p_color, m.from.x, m.from.y)
+                ^ piece_key(to_type, p_color, m.to.x, m.to.y);
+            if let Some(cap) = captured_piece {
+                child_hash ^= piece_key(cap.piece_type(), cap.color(), m.to.x, m.to.y);
+            }
             #[cfg(feature = "multithreading")]
             if let Some(tt) = SHARED_TT.get() {
                 tt.prefetch_entry(child_hash);
