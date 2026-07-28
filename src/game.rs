@@ -1279,7 +1279,7 @@ impl GameState {
             Some(p) if p.piece_type() == e.piece_type && p.color() == self.turn => {}
             _ => return false,
         }
-        if self.board.get_piece(e.from_x, e.from_y).is_some() {
+        if self.board.is_occupied(e.from_x, e.from_y) {
             return false;
         }
         if matches!(

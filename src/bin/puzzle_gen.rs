@@ -459,7 +459,7 @@ fn additional_theme_logic(
     if pv
         .iter()
         .step_by(2)
-        .any(|m| initial_state.board.get_piece(m.to.x, m.to.y).is_some())
+        .any(|m| initial_state.board.is_occupied(m.to.x, m.to.y))
     {
         themes.insert("capture".to_string());
     }

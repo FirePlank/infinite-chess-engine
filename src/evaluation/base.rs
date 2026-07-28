@@ -2945,7 +2945,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             // advances it has at least as many friendly defenders of the push
             // square as enemy attackers, so it can force a passer by trading.
             // Counts are taken AT the push square and require it to be empty.
-            let can_advance = game.board.get_piece(wx, wy + 1).is_none();
+            let can_advance = !game.board.is_occupied(wx, wy + 1);
             let push_support = white_pawns.binary_search(&(wx - 1, wy)).is_ok() as i32
                 + white_pawns.binary_search(&(wx + 1, wy)).is_ok() as i32;
             let push_threats = black_pawns.binary_search(&(wx - 1, wy + 2)).is_ok() as i32
@@ -3048,7 +3048,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             b_passed.push((bx, by));
         } else {
             // Candidate passer at the push square (see white candidate branch).
-            let can_advance = game.board.get_piece(bx, by - 1).is_none();
+            let can_advance = !game.board.is_occupied(bx, by - 1);
             let push_support = black_pawns.binary_search(&(bx - 1, by)).is_ok() as i32
                 + black_pawns.binary_search(&(bx + 1, by)).is_ok() as i32;
             let push_threats = white_pawns.binary_search(&(bx - 1, by - 2)).is_ok() as i32
@@ -3120,7 +3120,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
         // 1. Can Advance
         let next_y = wy + 1;
-        let can_advance = game.board.get_piece(wx, next_y).is_none();
+        let can_advance = !game.board.is_occupied(wx, next_y);
 
         // 2. Safe Advance
         let safe_advance = black_pawns.binary_search(&(wx - 1, next_y + 1)).is_err()
@@ -3179,7 +3179,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
 
         let next_y = by - 1;
-        let can_advance = game.board.get_piece(bx, next_y).is_none();
+        let can_advance = !game.board.is_occupied(bx, next_y);
         let safe_advance = white_pawns.binary_search(&(bx - 1, next_y - 1)).is_err()
             && white_pawns.binary_search(&(bx + 1, next_y - 1)).is_err();
 
