@@ -1658,49 +1658,48 @@ fn generate_castling_moves(
                 let dy = coord.y - from.y;
 
                 if dy == 0 {
-                    let dir = if dx > 0 { 1i64 } else { -1i64 };
-
-                    // Use spatial indices to check path - O(log n) instead of O(distance)
-                    let mut clear = true;
-                    if let Some(row_pieces) = indices.rows.get(&from.y) {
-                        // Find nearest piece in direction from king
-                        if let Some((nearest_x, _)) = row_pieces.find_nearest(from.x, dir) {
-                            // Path is clear only if no piece between king and rook
-                            // nearest_x should equal coord.x (the rook) for clear path
-                            if (dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x)
-                            {
-                                clear = false; // There's a piece between king and rook
-                            }
-                        }
+                    // A castling partner closer than 3 squares away is illegal
+                    // (the king's own landing square would overlap the partner
+                    // or the space it needs to move through).
+                    if dx.abs() < 3 {
+                        continue;
                     }
 
-                    if clear {
-                        let opponent = piece.color().opponent();
-                        let opponent_can_checkmate = match piece.color() {
-                            PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
-                            PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
-                            PlayerColor::Neutral => true,
-                        };
+                    let dir = if dx > 0 { 1i64 } else { -1i64 };
 
-                        let path_1 = from.x + dir;
-                        let path_2 = from.x + (dir * 2);
+                    // Use spatial indices to check path - O(log n) instead of O(distance).
+                    // Since the partner is always >=3 squares away here, this also proves
+                    // the king's own landing square (2 squares away) is empty.
+                    if let Some(row_pieces) = indices.rows.get(&from.y)
+                        && let Some((nearest_x, _)) = row_pieces.find_nearest(from.x, dir)
+                        && ((dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x))
+                    {
+                        continue; // There's a piece between king and rook
+                    }
 
-                        let pos_1 = Coordinate::new(path_1, from.y);
-                        let pos_2 = Coordinate::new(path_2, from.y);
+                    let path_1 = from.x + dir;
+                    let path_2 = from.x + (dir * 2);
 
-                        {
-                            if !opponent_can_checkmate
-                                || (!is_square_attacked(board, from, opponent, indices)
-                                    && !is_square_attacked(board, &pos_1, opponent, indices)
-                                    && !is_square_attacked(board, &pos_2, opponent, indices))
-                            {
-                                let to_x = from.x + (dir * 2);
-                                let mut castling_move =
-                                    Move::new(*from, Coordinate::new(to_x, from.y), *piece);
-                                castling_move.rook_coord = Some(*coord);
-                                moves.push(castling_move);
-                            }
-                        }
+                    let pos_1 = Coordinate::new(path_1, from.y);
+                    let pos_2 = Coordinate::new(path_2, from.y);
+
+                    let opponent = piece.color().opponent();
+                    let opponent_can_checkmate = match piece.color() {
+                        PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
+                        PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
+                        PlayerColor::Neutral => true,
+                    };
+
+                    if !opponent_can_checkmate
+                        || (!is_square_attacked(board, from, opponent, indices)
+                            && !is_square_attacked(board, &pos_1, opponent, indices)
+                            && !is_square_attacked(board, &pos_2, opponent, indices))
+                    {
+                        let to_x = from.x + (dir * 2);
+                        let mut castling_move =
+                            Move::new(*from, Coordinate::new(to_x, from.y), *piece);
+                        castling_move.rook_coord = Some(*coord);
+                        moves.push(castling_move);
                     }
                 }
             }
@@ -2088,7 +2087,7 @@ fn generate_pawn_quiet_moves(
     let to_y = from.y + direction;
     let to_x = from.x;
 
-    if board.get_piece(to_x, to_y).is_none() {
+    if !board.is_occupied(to_x, to_y) {
         // Square is empty, can push
         add_pawn_move(
             out,
@@ -2103,7 +2102,7 @@ fn generate_pawn_quiet_moves(
         // Double push if pawn has special rights
         if special_rights.contains(from) {
             let double_y = from.y + 2 * direction;
-            if board.get_piece(to_x, double_y).is_none() {
+            if !board.is_occupied(to_x, double_y) {
                 add_pawn_move(
                     out,
                     *from,
@@ -3432,7 +3431,7 @@ fn generate_pawn_moves_into(
         // Double push (can also result in promotion in some variants)
         if special_rights.contains(from) {
             let to_y_2 = from.y + (direction * 2);
-            if board.get_piece(to_x, to_y_2).is_none() {
+            if !board.is_occupied(to_x, to_y_2) {
                 add_pawn_move(
                     out,
                     *from,
@@ -3505,39 +3504,45 @@ fn generate_castling_moves_into(
             let dy = coord.y - from.y;
 
             if dy == 0 {
+                // A castling partner closer than 3 squares away is illegal (see
+                // generate_castling_moves).
+                if dx.abs() < 3 {
+                    continue;
+                }
+
                 let dir = if dx > 0 { 1i64 } else { -1i64 };
 
-                // Use spatial indices to check path - O(log n) instead of O(distance)
-                let mut clear = true;
+                // Use spatial indices to check path - O(log n) instead of O(distance).
+                // Since the partner is always >=3 squares away here, this also proves
+                // the king's own landing square (2 squares away) is empty.
                 if let Some((nearest_x, _)) = indices
                     .rows
                     .get(&from.y)
                     .and_then(|row| row.find_nearest(from.x, dir))
                     && ((dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x))
                 {
-                    clear = false;
+                    continue;
                 }
 
-                if clear {
-                    let opponent = piece.color().opponent();
-                    let opponent_can_checkmate = match piece.color() {
-                        PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
-                        PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
-                        PlayerColor::Neutral => true,
-                    };
-                    let pos_1 = Coordinate::new(from.x + dir, from.y);
-                    let pos_2 = Coordinate::new(from.x + dir * 2, from.y);
+                let pos_1 = Coordinate::new(from.x + dir, from.y);
+                let pos_2 = Coordinate::new(from.x + dir * 2, from.y);
 
-                    if !opponent_can_checkmate
-                        || (!is_square_attacked(board, from, opponent, indices)
-                            && !is_square_attacked(board, &pos_1, opponent, indices)
-                            && !is_square_attacked(board, &pos_2, opponent, indices))
-                    {
-                        let mut castling_move =
-                            Move::new(*from, Coordinate::new(from.x + dir * 2, from.y), *piece);
-                        castling_move.rook_coord = Some(*coord);
-                        out.push(castling_move);
-                    }
+                let opponent = piece.color().opponent();
+                let opponent_can_checkmate = match piece.color() {
+                    PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
+                    PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
+                    PlayerColor::Neutral => true,
+                };
+
+                if !opponent_can_checkmate
+                    || (!is_square_attacked(board, from, opponent, indices)
+                        && !is_square_attacked(board, &pos_1, opponent, indices)
+                        && !is_square_attacked(board, &pos_2, opponent, indices))
+                {
+                    let mut castling_move =
+                        Move::new(*from, Coordinate::new(from.x + dir * 2, from.y), *piece);
+                    castling_move.rook_coord = Some(*coord);
+                    out.push(castling_move);
                 }
             }
         }
@@ -4133,6 +4138,56 @@ mod tests {
             // Test that the function runs without panicking and returns a MoveList
             // Castling availability depends on variant rules and board state
             let _ = moves.len();
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn test_castling_requires_partner_at_least_3_squares_away() {
+        with_bounds_lock(|| {
+            reset_world_bounds();
+
+            // dx=1: partner directly next to the king.
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1+|R6,1+");
+            let from = Coordinate::new(5, 1);
+            let piece = Piece::new(PieceType::King, PlayerColor::White);
+            let moves = generate_castling_moves(
+                &game.board,
+                &from,
+                &piece,
+                &game.special_rights,
+                &game.game_rules,
+                &game.spatial_indices,
+            );
+            assert!(moves.is_empty(), "dx=1 castling partner must be illegal");
+
+            // dx=2: partner two squares from the king.
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1+|R7,1+");
+            let moves = generate_castling_moves(
+                &game.board,
+                &from,
+                &piece,
+                &game.special_rights,
+                &game.game_rules,
+                &game.spatial_indices,
+            );
+            assert!(moves.is_empty(), "dx=2 castling partner must be illegal");
+
+            // dx=3: the minimum legal distance.
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w K5,1+|R8,1+");
+            let moves = generate_castling_moves(
+                &game.board,
+                &from,
+                &piece,
+                &game.special_rights,
+                &game.game_rules,
+                &game.spatial_indices,
+            );
+            assert!(!moves.is_empty(), "dx=3 castling partner must be legal");
+
             reset_world_bounds();
         });
     }
