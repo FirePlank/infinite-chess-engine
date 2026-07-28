@@ -145,7 +145,7 @@ let availableVariants = [];
 let selectedVariants = [];
 let variantQueue = [];
 let currentVariantIndex = 0;
-let currentOldStrength = 3; // 1 = Easy, 2 = Medium, 3 = Hard
+let currentOldStrength = 3; // 1 = Easy, 2 = Medium, 3 = Hard (mapped to full strength)
 let skillPopupTimeout = null;
 let activeWorkerResolvers = [];
 
@@ -828,7 +828,7 @@ async function initWasm() {
         const classicalIcn = getVariantData('Classical').position;
         // Use the shared generator for the sanity test to ensure it works end-to-end
         const icn = generateSetupICN('Classical', 'w', 0, 1, []);
-        const engine = EngineNew.from_icn(icn, { strength_level: 3 });
+        const engine = EngineNew.from_icn(icn, { strength_level: 8 });
         const move = engine.get_best_move_with_time(100, true);
         engine.free();
         log('Quick test: Best move = ' + (move ? move.from + ' to ' + move.to : 'null'), 'info');

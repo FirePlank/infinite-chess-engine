@@ -23,6 +23,11 @@ use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_
 /// Good quiet threshold
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
+/// Depth-staged tight generation: at remaining depth <= this, quiet slider
+/// candidates are capped per ray (short-range + king-aligned always survive).
+const TIGHT_GEN_DEPTH: i32 = 3;
+const TIGHT_GEN_RAY_CAP: usize = 3;
+
 /// Stages of move generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveStage {
@@ -553,8 +558,8 @@ impl StagedMoveGen {
             };
             if entry.0 != 0
                 && entry.0 == m.piece.piece_type() as u8
-                && entry.1 == m.to.x as i16
-                && entry.2 == m.to.y as i16
+                && entry.1 == m.to.x as i32
+                && entry.2 == m.to.y as i32
             {
                 score += sort_countermove();
             }
@@ -604,6 +609,80 @@ impl StagedMoveGen {
             }
         }
 
+        // Threat-aware ordering, gated to large subtrees (depth >= 4): a quiet that
+        // attacks an enemy piece is ~2x more likely to be the played move (all-corpus
+        // audit; undefended victim 1.93x), and this forward signal doesn't alias like
+        // dest-hashed history does at deep nodes. Shallow nodes (the bulk) skip it.
+        if self.depth >= 4 {
+            let empty_pins = rustc_hash::FxHashMap::default();
+            let ctx = crate::moves::MoveGenContext {
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+                pinned: &empty_pins,
+            };
+            let mover = m
+                .promotion
+                .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
+                .unwrap_or(m.piece);
+            let mut caps = MoveList::new();
+            crate::moves::generate_captures_for_piece(&game.board, &mover, &m.to, &ctx, &mut caps);
+            let mut best_vv = 0;
+            let mut best_sq = None;
+            for c in caps.iter() {
+                if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
+                    && vic.color() != m.piece.color()
+                    && vic.color() != PlayerColor::Neutral
+                    && !vic.piece_type().is_uncapturable()
+                {
+                    let vv = game.get_piece_value(vic.piece_type(), vic.color());
+                    if vv > best_vv {
+                        best_vv = vv;
+                        best_sq = Some(c.to);
+                    }
+                }
+            }
+            if best_vv > 0 {
+                let mut q = best_vv * 6;
+                // Undefended victim: no piece of the victim's color covers its square.
+                if let Some(sq) = best_sq
+                    && !crate::moves::is_square_attacked(
+                        &game.board,
+                        &sq,
+                        m.piece.color().opponent(),
+                        &game.spatial_indices,
+                    )
+                {
+                    q *= 2;
+                }
+                score += q.min(12000);
+            }
+
+            // Defensive escape: moving a valuable piece OFF a square the enemy
+            // attacks TO a safe square saves material; order it early so LMR/LMP
+            // don't bury the defensive resource (collapse analysis: defense is
+            // under-weighted, esp. in Palace-like structures).
+            let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+            if mover_val >= 250
+                && crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.from,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+                && !crate::moves::is_square_attacked(
+                    &game.board,
+                    &m.to,
+                    m.piece.color().opponent(),
+                    &game.spatial_indices,
+                )
+            {
+                score += (mover_val * 5).min(10000);
+            }
+        }
+
         score
     }
 
@@ -623,6 +702,37 @@ impl StagedMoveGen {
         }
     }
 
+    /// Is the ray between two aligned squares clear once `vacated` is emptied?
+    /// Uses the index-based clear test, splitting the segment when the mover's
+    /// origin lies on it, so no ray is ever walked square by square.
+    #[inline]
+    fn ray_clear_after_move(
+        game: &GameState,
+        from: &crate::board::Coordinate,
+        to: &crate::board::Coordinate,
+        vacated: &crate::board::Coordinate,
+    ) -> bool {
+        use crate::evaluation::base::is_clear_line_between_fast;
+        let idx = &game.spatial_indices;
+        let on_segment = {
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            let (vx, vy) = (vacated.x - from.x, vacated.y - from.y);
+            dx * vy == dy * vx
+                && vx.signum() == dx.signum()
+                && vy.signum() == dy.signum()
+                && vx.abs() <= dx.abs()
+                && vy.abs() <= dy.abs()
+                && (vx != 0 || vy != 0)
+                && (vx != dx || vy != dy)
+        };
+        if on_segment {
+            is_clear_line_between_fast(idx, from, vacated)
+                && is_clear_line_between_fast(idx, vacated, to)
+        } else {
+            is_clear_line_between_fast(idx, from, to)
+        }
+    }
+
     /// Fast check detection
     #[inline(always)]
     pub fn move_gives_check_fast(game: &GameState, m: &Move) -> bool {
@@ -631,14 +741,28 @@ impl StagedMoveGen {
         let tx = m.to.x;
         let ty = m.to.y;
 
-        // Knights and Pawns use precomputed hash lookup
+        // Knights and pawns: test the current royal positions directly. The old
+        // precomputed set was built once at setup, so it was wrong for every node
+        // where a royal had moved -- and this arithmetic beats a hash probe.
         if pt == PieceType::Knight || pt == PieceType::Pawn {
-            let check_squares = if color == PlayerColor::White {
-                &game.check_squares_black
+            let royals = if color == PlayerColor::White {
+                &game.black_royals
             } else {
-                &game.check_squares_white
+                &game.white_royals
             };
-            return check_squares.contains(&(tx, ty, pt as u8));
+            let fwd = if color == PlayerColor::White { 1 } else { -1 };
+            for r in royals {
+                let adx = (r.x - tx).abs();
+                let dy = r.y - ty;
+                if pt == PieceType::Knight {
+                    if (adx == 1 && dy.abs() == 2) || (adx == 2 && dy.abs() == 1) {
+                        return true;
+                    }
+                } else if adx == 1 && dy == fwd {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Get enemy royal positions
@@ -666,14 +790,17 @@ impl StagedMoveGen {
                 return true;
             }
 
-            // Orthogonal check (Rook, Queen, etc.)
-            if (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0 {
-                return true;
-            }
-
-            // Diagonal check (Bishop, Queen, etc.)
-            if (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0 {
-                return true;
+            // Sliding checks need the ray from the destination to the royal to be
+            // clear; alignment alone reported blocked rays as checks, which
+            // exempted them from pruning and paid for a full SEE in the ordering.
+            // The mover's origin cannot block, since it is vacated by this move.
+            let ortho = (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0;
+            let diag = (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0;
+            if ortho || diag {
+                let to_sq = crate::board::Coordinate::new(tx, ty);
+                if Self::ray_clear_after_move(game, &to_sq, king_pos, &m.from) {
+                    return true;
+                }
             }
         }
 
@@ -734,7 +861,17 @@ impl StagedMoveGen {
                 indices: &game.spatial_indices,
                 enemy_king_pos: game.enemy_king_pos(),
             };
+            // Depth-staged tight generation: shallow subtrees can't use the
+            // deep quiet-slider tail (played-move audit: rank<=3 covers 67%),
+            // so cap candidates per ray there; full width at deep nodes.
+            let tight = self.depth <= TIGHT_GEN_DEPTH;
+            if tight {
+                crate::moves::set_quiet_ray_cap(TIGHT_GEN_RAY_CAP);
+            }
             get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+            if tight {
+                crate::moves::set_quiet_ray_cap(0);
+            }
         }
 
         for m in quiets {
@@ -1221,8 +1358,8 @@ mod tests {
         searcher.prev_move_stack[0] = (3, 9);
         searcher.countermoves[3][9] = (
             quiet.piece.piece_type() as u8,
-            quiet.to.x as i16,
-            quiet.to.y as i16,
+            quiet.to.x as i32,
+            quiet.to.y as i32,
         );
         let picker = StagedMoveGen::new(None, 1, 2, &searcher, &game);
         assert!(picker.score_quiet(&game, &searcher, &quiet) >= sort_countermove());

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Decide and apply automatic strength-based version bumps.
 
-Scans commit messages since the last release tags, extracts each commit's
+Scans commit messages since the last release tag, extracts each commit's
 SPRT-reported Elo, scales it to a whole-engine estimate over the 17 canonical
-site variants, and cuts a minor or major bump when the accumulated gain crosses
-a threshold.
+site variants, and cuts a minor bump when the net accumulated gain crosses a
+threshold. Major bumps require the explicit --force-major option.
 
-Bump rule (major is checked first):
-  * cum_elo since last vX.0.0 tag   >= MAJOR_THRESHOLD  -> (X+1).0.0
-  * cum_elo since last release tag   >= MINOR_THRESHOLD  -> X.(Y+1).0
-  * otherwise                                            -> no release
+Bump rule:
+  * --force-major                                      -> (X+1).0.0
+  * net Elo since last release tag >= MINOR_THRESHOLD  -> X.(Y+1).0
+  * otherwise                                          -> no release
 
 Elo per commit is nominal (per-commit SPRT deltas do not add up to a real A/B
 measurement), but variant coverage is detected per commit: only canonical
 variants present in the breakdown are summed, then divided by 17. Negative
-totals clamp to 0. A `Elo-Override: <n>` trailer forces a commit's value.
+values are retained so regressions offset gains. A `Elo-Override: <n>` trailer
+forces a commit's value.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ CANONICAL_VARIANTS = {
 NUM_SITE_VARIANTS = 17
 
 MINOR_THRESHOLD = 30.0
-MAJOR_THRESHOLD = 150.0
 
 # A per-variant line: "  [Obstocean]: 503W - 287L - 580D, Elo: 55.2 +/- 7.2"
 VARIANT_RE = re.compile(
@@ -78,10 +78,10 @@ def variant_blocks(message: str) -> list[list[tuple[str, float]]]:
 
 
 def scaled_elo(message: str) -> float:
-    """Whole-engine Elo estimate for one commit message, clamped to >= 0."""
+    """Whole-engine Elo estimate for one commit message."""
     override = OVERRIDE_RE.search(message)
     if override:
-        return max(0.0, float(override.group(1)))
+        return float(override.group(1))
 
     blocks = variant_blocks(message)
     if blocks:
@@ -89,12 +89,12 @@ def scaled_elo(message: str) -> float:
         # Sum only canonical variants, spread the gain across all 17.
         block = blocks[-1]
         total = sum(elo for name, elo in block if name in CANONICAL_VARIANTS)
-        return max(0.0, total / NUM_SITE_VARIANTS)
+        return total / NUM_SITE_VARIANTS
 
     # No breakdown: fall back to a lone overall figure (rare, small in practice).
     overall = OVERALL_RE.search(message)
     if overall:
-        return max(0.0, float(overall.group(1)))
+        return float(overall.group(1))
     return 0.0
 
 
@@ -165,6 +165,15 @@ def main() -> int:
         help="report the decision without touching Cargo.toml or notes",
     )
     ap.add_argument("--notes-file", type=Path, default=None)
+    ap.add_argument(
+        "--force-major",
+        action="store_true",
+        help="cut a major release without evaluating the minor Elo threshold",
+    )
+    ap.add_argument(
+        "--repository",
+        help="GitHub repository as owner/name, used for the release comparison link",
+    )
     args = ap.parse_args()
 
     root = args.repo_root
@@ -185,17 +194,14 @@ def main() -> int:
         emit_output("release", "false")
         return 0
     last_release_ref = tags[-1][3]
-    majors = [t for t in tags if t[1] == 0 and t[2] == 0]
-    last_major_ref = majors[-1][3] if majors else tags[0][3]
-
-    cum_major = cum_elo(f"{last_major_ref}..HEAD", root)
+    last_release_sha = run(["git", "rev-parse", last_release_ref], cwd=root)
+    head_sha = run(["git", "rev-parse", "HEAD"], cwd=root)
     cum_minor = cum_elo(f"{last_release_ref}..HEAD", root)
 
     print(f"current version : {major}.{minor}.{patch}")
-    print(f"since major {last_major_ref}: {cum_major:.1f} Elo (threshold {MAJOR_THRESHOLD:.0f})")
     print(f"since release {last_release_ref}: {cum_minor:.1f} Elo (threshold {MINOR_THRESHOLD:.0f})")
 
-    if cum_major >= MAJOR_THRESHOLD:
+    if args.force_major:
         level = "major"
         new_version = f"{major + 1}.0.0"
     elif cum_minor >= MINOR_THRESHOLD:
@@ -212,18 +218,21 @@ def main() -> int:
         ["git", "log", "--no-merges", "--format=- %s", f"{last_release_ref}..HEAD"],
         cwd=root,
     )
-    gain = cum_major if level == "major" else cum_minor
+    comparison = ""
+    if args.repository:
+        comparison = (
+            f"[Full Changelog ({last_release_sha[:7]}...{head_sha[:7]})]"
+            f"(https://github.com/{args.repository}/compare/"
+            f"{last_release_sha}...{head_sha})\n\n"
+        )
     notes = (
-        f"## v{new_version} ({level} release)\n\n"
-        f"Estimated nominal strength gain since v{major}.{minor}.{patch}: "
-        f"**+{gain:.0f} Elo** (aggregated across the 17 site variants).\n\n"
+        f"{comparison}"
         f"### Changes\n{subjects}\n"
     )
 
     emit_output("release", "true")
     emit_output("level", level)
     emit_output("version", new_version)
-    emit_output("gain", f"{gain:.0f}")
 
     if args.dry_run:
         print("\n--- dry run: notes ---\n" + notes)

@@ -84,7 +84,7 @@ const STATION_TOL_LEAPER: i64 = 2;
 /// Escalating payoff per manned station: completing the formation is worth
 /// far more than the sum of its parts.
 const MANNED_LADDER: [i32; 7] = [0, 40, 100, 190, 300, 420, 540];
-/// Replaces the box score once the force is on top of the defender, so
+/// Added on top of the box score once the force is on top of the defender, so
 /// entering the kill zone is strictly better than holding stations.
 const KILL_ZONE_BONUS: i32 = 500;
 
@@ -493,6 +493,9 @@ pub fn evaluate_lone_king_endgame(
 /// concrete search lines carry the verdict. Bare kings (scale 100) keep the
 /// full uncompressed net; forced-mate hunts need its whole gradient range.
 const MOP_UP_DEFENDED_CAP: i32 = 400;
+/// Downside saturation: shaping penalties keep their slope near zero but the
+/// total can never punish the winner more than this for entering mop-up.
+const MOP_UP_NEGATIVE_CAP: i32 = 250;
 
 /// The single source of truth for mop-up activation. Returns the winning
 /// color and the activation scale (0-100) when one side is reduced to a
@@ -542,7 +545,13 @@ pub fn evaluate_mop_up_scaled(game: &GameState, winner: PlayerColor, scale: u32)
         return 0;
     };
     let scaled = evaluate_mop_up_core(game, our_king, enemy_king, winner) * scale as i32 / 100;
-    if scale >= 100 || scaled <= 0 {
+    if scaled <= 0 {
+        // Saturate the downside: the simplifying capture that ACTIVATES mop-up
+        // must never read as a large eval drop, or the winner avoids converting.
+        let (x, cap) = ((-scaled) as i64, MOP_UP_NEGATIVE_CAP as i64);
+        return -((x * cap / (x + cap)) as i32);
+    }
+    if scale >= 100 {
         return scaled;
     }
     let (x, cap) = (scaled as i64, MOP_UP_DEFENDED_CAP as i64);
@@ -568,14 +577,21 @@ fn bounded_lone_king_mop_up(
     let ey = enemy_king.y;
 
     // push_to_edge: the closer the bare king is to an edge/corner, the better.
-    let ed_x = (ex - min_x).min(max_x - ex).clamp(0, EDGE_DIST_CAP);
-    let ed_y = (ey - min_y).min(max_y - ey).clamp(0, EDGE_DIST_CAP);
+    let ed_x_raw = (ex - min_x).min(max_x - ex).max(0);
+    let ed_y_raw = (ey - min_y).min(max_y - ey).max(0);
+    let ed_x = ed_x_raw.min(EDGE_DIST_CAP);
+    let ed_y = ed_y_raw.min(EDGE_DIST_CAP);
     let mut bonus = EDGE_CORNER_BONUS - ((ed_x * ed_x + ed_y * ed_y) as i32) * EDGE_FALLOFF;
+    // Gentle tail beyond the cap so mid-board on larger bounded boards is never
+    // gradient-flat (the caps otherwise blank all signal outside a 3-square rim).
+    bonus -= (((ed_x_raw + ed_y_raw) - 2 * EDGE_DIST_CAP).clamp(0, 160) as i32) * 2;
 
     // push_close: bring our king toward the bare king.
     if let Some(ok) = our_king {
         let d = (ok.x - ex).abs().max((ok.y - ey).abs()) as i32;
         bonus += (KING_CLOSE_BONUS - d * KING_CLOSE_STEP).max(0);
+        // Tail past the zero point keeps the approach gradient alive at range.
+        bonus -= (d - KING_CLOSE_BONUS / KING_CLOSE_STEP).clamp(0, 160) * 2;
     }
 
     // K+B+N vs K: the bare king can only be mated in a corner the bishop attacks.
@@ -608,6 +624,8 @@ fn bounded_lone_king_mop_up(
         }
         if best != i64::MAX {
             bonus += (KBN_CORNER_BONUS - (best as i32) * KBN_CORNER_STEP).max(0);
+            // Tail so the corner-drive gradient survives past the cap radius.
+            bonus -= ((best as i32) - KBN_CORNER_BONUS / KBN_CORNER_STEP).clamp(0, 160) * 2;
             // The mate needs the kings nearly touching; the generic push_close
             // is too soft for the longest bounded mate.
             if let Some(ok) = our_king {
@@ -975,9 +993,21 @@ fn evaluate_target_box(
     our_king: Option<&Coordinate>,
     enemy_king: &Coordinate,
 ) -> i32 {
-    let cx = enemy_king.x.div_euclid(BOX_GRID) * BOX_GRID + BOX_GRID / 2;
-    let cy = enemy_king.y.div_euclid(BOX_GRID) * BOX_GRID + BOX_GRID / 2;
-    target_box_score(pieces, our_king, cx, cy, BOX_R)
+    // Max over the 3x3 anchor-cell neighborhood: a single defender king step can
+    // never drop the previous best anchor out of the set, so crossing a grid
+    // boundary no longer teleports the stations (score cliff); piece-marching
+    // progress stays monotone (max of monotone components).
+    let bx = enemy_king.x.div_euclid(BOX_GRID);
+    let by = enemy_king.y.div_euclid(BOX_GRID);
+    let mut best = 0;
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            let cx = (bx + dx) * BOX_GRID + BOX_GRID / 2;
+            let cy = (by + dy) * BOX_GRID + BOX_GRID / 2;
+            best = best.max(target_box_score(pieces, our_king, cx, cy, BOX_R));
+        }
+    }
+    best
 }
 
 /// Integer square root (Newton's method); cage areas are at most 1024.
@@ -1098,7 +1128,11 @@ fn evaluate_two_rook_drive(
     // Rook safety. Connected rooks (shared rank/file, clear vs a bare king)
     // defend each other; a rook the enemy king attacks and no friendly unit
     // guards is hanging.
-    let connected = r1.0 == r2.0 || r1.1 == r2.1;
+    // The enemy king standing ON the shared line between the rooks blocks
+    // their mutual defense — they are not connected then.
+    let between = |v: i64, a: i64, b: i64| v > a.min(b) && v < a.max(b);
+    let connected = (r1.0 == r2.0 && !(ex == r1.0 && between(ey, r1.1, r2.1)))
+        || (r1.1 == r2.1 && !(ey == r1.1 && between(ex, r1.0, r2.0)));
     if connected {
         bonus += TR_CONNECTED;
     }
@@ -1338,11 +1372,12 @@ fn evaluate_mating_net(
             .iter()
             .filter(|s| (s.x - ex).abs().max((s.y - ey).abs()) <= 4)
             .count();
+        // Kill zone adds ON TOP of the box score: replacing it created a score
+        // cliff where the final approach lost eval vs holding the formation.
         let kill_zone = engaged_pieces >= 3 && (kr.king_dist <= 6 || kr.king_dist == i64::MAX);
+        bonus += evaluate_target_box(pieces, our_king, enemy_king);
         if kill_zone {
             bonus += KILL_ZONE_BONUS;
-        } else {
-            bonus += evaluate_target_box(pieces, our_king, enemy_king);
         }
     }
 

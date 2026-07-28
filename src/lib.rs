@@ -517,7 +517,7 @@ impl Engine {
         let effective_seed = seed.unwrap_or_else(get_random_seed);
         crate::search::set_global_params(effective_seed, noise_amp);
 
-        if strength.is_some_and(|s| s < 3) {
+        if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
             crate::search::get_best_move_limited(
                 &mut self.game,
                 depth,
@@ -742,7 +742,12 @@ impl Engine {
         let (optimum, maximum) = if inc_ms > 0
             && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT)
         {
-            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64).max(min_think_ms);
+            // Reserve the move overhead here too: spawn/reply latency is charged
+            // against the clock, so an unreserved 0.9*inc budget drains it.
+            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64)
+                .saturating_sub(move_overhead)
+                .max(inc_ms / 4)
+                .max(min_think_ms);
             (optimum.min(survive), maximum.min(survive))
         } else {
             (optimum, maximum)
@@ -825,7 +830,7 @@ impl Engine {
         search::set_global_params(effective_seed, noise_amp);
 
         // Choose search path based on strength level.
-        let (best_move, eval) = if strength.is_some_and(|s| s < 3) {
+        let (best_move, eval) = if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
             // Use strength limited search (uses global seed we just set)
             if let Some((bm, ev, _stats)) = search::get_best_move_limited(
                 &mut self.game,

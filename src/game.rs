@@ -172,6 +172,8 @@ pub struct UndoMove {
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
     pub old_total_phase: i32,
+    /// (white, black) non-pawn-material flags; promotion sets them in make_move.
+    pub old_non_pawn_material: (bool, bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,28 +260,7 @@ pub struct GameState {
     pub white_royals: SmallVec<[Coordinate; 1]>,
     #[serde(skip)]
     pub black_royals: SmallVec<[Coordinate; 1]>,
-    /// Precomputed check squares for white king (squares from which enemy pieces give check)
-    /// Uses hash for O(1) lookup. Stores (x, y, piece_type) as key.
-    #[serde(skip)]
-    pub check_squares_white: rustc_hash::FxHashSet<(i64, i64, u8)>,
-    /// Precomputed check squares for black king
-    #[serde(skip)]
-    pub check_squares_black: rustc_hash::FxHashSet<(i64, i64, u8)>,
-    /// Slider rays from white king: [direction_index] -> Option<(blocker_x, blocker_y)>
-    /// Direction indices: 0=N, 1=S, 2=E, 3=W, 4=NE, 5=NW, 6=SE, 7=SW
-    /// None = infinite ray (no blocker), Some = first blocker position
-    #[serde(skip)]
-    pub slider_rays_white: [Option<(i64, i64)>; 8],
-    /// Slider rays from black king
-    #[serde(skip)]
-    pub slider_rays_black: [Option<(i64, i64)>; 8],
 
-    /// Squares from which a piece move discovers a check on the enemy king.
-    /// Stores (x, y) coordinates of the potentially blocking piece.
-    #[serde(skip)]
-    pub discovered_check_squares_white: FxHashSet<(i64, i64)>,
-    #[serde(skip)]
-    pub discovered_check_squares_black: FxHashSet<(i64, i64)>,
     /// Pawn structure hash for correction history (helps CoaIP variants).
     #[serde(skip)]
     pub pawn_hash: u64,
@@ -326,12 +307,6 @@ pub struct GameState {
     /// Pinned pieces for black
     #[serde(skip)]
     pub pinned_black: rustc_hash::FxHashMap<(i64, i64), (i64, i64)>,
-    /// Number of pieces currently checking the white king.
-    #[serde(skip)]
-    pub checkers_count_white: u8,
-    /// Number of pieces currently checking the black king.
-    #[serde(skip)]
-    pub checkers_count_black: u8,
     /// Move history for repetition detection.
     /// Stores (from, to, piece_type) for each move.
     #[serde(skip)]
@@ -486,12 +461,6 @@ impl GameState {
             black_promo_rank: i64::MAX,
             white_royals: SmallVec::new(),
             black_royals: SmallVec::new(),
-            check_squares_white: FxHashSet::default(),
-            check_squares_black: FxHashSet::default(),
-            slider_rays_white: [None; 8],
-            slider_rays_black: [None; 8],
-            discovered_check_squares_white: FxHashSet::default(),
-            discovered_check_squares_black: FxHashSet::default(),
             pawn_hash: 0,
             white_nonpawn_hash: 0,
             black_nonpawn_hash: 0,
@@ -504,8 +473,6 @@ impl GameState {
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
             pinned_black: rustc_hash::FxHashMap::default(),
-            checkers_count_white: 0,
-            checkers_count_black: 0,
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
@@ -551,12 +518,6 @@ impl GameState {
             black_promo_rank: -2_000_000_000_000_000,
             white_royals: SmallVec::new(),
             black_royals: SmallVec::new(),
-            check_squares_white: FxHashSet::default(),
-            check_squares_black: FxHashSet::default(),
-            slider_rays_white: [None; 8],
-            slider_rays_black: [None; 8],
-            discovered_check_squares_white: FxHashSet::default(),
-            discovered_check_squares_black: FxHashSet::default(),
             pawn_hash: 0,
             white_nonpawn_hash: 0,
             black_nonpawn_hash: 0,
@@ -569,8 +530,6 @@ impl GameState {
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
             pinned_black: rustc_hash::FxHashMap::default(),
-            checkers_count_white: 0,
-            checkers_count_black: 0,
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
@@ -671,7 +630,7 @@ impl GameState {
         self.spatial_indices = SpatialIndices::new(&self.board);
         self.recompute_castling_state();
         // Recompute check squares for O(1) check detection
-        self.recompute_check_squares();
+        self.recompute_pins();
         // Recompute correction hashes for eval adjustment
         self.recompute_correction_hashes();
     }
@@ -724,20 +683,12 @@ impl GameState {
     /// For each king, stores the (x, y, piece_type) tuples for squares from which
     /// knights and pawns can give check. Also computes slider rays for O(1) slider check.
     #[inline]
-    pub fn recompute_check_squares(&mut self) {
-        // Knight offsets
-        const KNIGHT_OFFSETS: [(i64, i64); 8] = [
-            (-2, -1),
-            (-2, 1),
-            (-1, -2),
-            (-1, 2),
-            (1, -2),
-            (1, 2),
-            (2, -1),
-            (2, 1),
-        ];
+    /// Recompute the pin maps consulted by SEE. This used to also build
+    /// check-square, slider-ray, discovered-check and checker-count caches; none
+    /// of those had any readers left, so only the pin scan remains.
+    pub fn recompute_pins(&mut self) {
+        use crate::attacks::{is_diag_slider, is_ortho_slider};
 
-        // 8 directions for slider rays: N, S, E, W, NE, NW, SE, SW
         const DIRECTIONS: [(i64, i64); 8] = [
             (0, 1),   // N (index 0)
             (0, -1),  // S (index 1)
@@ -749,176 +700,49 @@ impl GameState {
             (-1, -1), // SW (index 7)
         ];
 
-        self.check_squares_white.clear();
-        self.check_squares_black.clear();
-        self.slider_rays_white = [None; 8];
-        self.slider_rays_black = [None; 8];
-        self.discovered_check_squares_white.clear();
-        self.discovered_check_squares_black.clear();
         self.pinned_white.clear();
         self.pinned_black.clear();
-        self.checkers_count_white = 0;
-        self.checkers_count_black = 0;
 
-        use crate::attacks::{is_diag_slider, is_ortho_slider};
-
-        // White King Status (Attacks by Black pieces)
-        // Optimized for the common case of a single royal piece
         if let Some(wk) = self.white_royals.first() {
-            // 1. Knight Checkers
-            for (dx, dy) in KNIGHT_OFFSETS {
-                let tx = wk.x + dx;
-                let ty = wk.y + dy;
-                if let Some(p) = self.board.get_piece(tx, ty)
-                    && p.color() == PlayerColor::Black
-                    && p.piece_type() == PieceType::Knight
-                {
-                    self.checkers_count_white += 1;
-                }
-                self.check_squares_white
-                    .insert((tx, ty, PieceType::Knight as u8));
-            }
-            // 2. Pawn Checkers (Black pawns attack downward: y+1)
-            for dx in [-1, 1] {
-                let tx = wk.x + dx;
-                let ty = wk.y + 1;
-                if let Some(p) = self.board.get_piece(tx, ty)
-                    && p.color() == PlayerColor::Black
-                    && p.piece_type() == PieceType::Pawn
-                {
-                    self.checkers_count_white += 1;
-                }
-                self.check_squares_white
-                    .insert((tx, ty, PieceType::Pawn as u8));
-            }
-
-            // 3. Slider Rays (Sliders & Pinned pieces)
+            let (kx, ky) = (wk.x, wk.y);
             for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
-                if let Some((bx, by)) = self.find_first_blocker_on_ray(wk.x, wk.y, *dx, *dy) {
-                    self.slider_rays_white[dir_idx] = Some((bx, by));
+                if let Some((bx, by)) = self.find_first_blocker_on_ray(kx, ky, *dx, *dy) {
                     let p1 = self.board.get_piece(bx, by).unwrap();
                     let is_ortho = dir_idx < 4;
-                    let p1_color = p1.color();
-
-                    // Neutral pieces (obstacles/voids) completely block slider rays.
-                    // Skip further processing on this ray.
-                    if p1_color == PlayerColor::Neutral {
-                        continue;
+                    if p1.color() != PlayerColor::White {
+                        continue; // enemy or neutral: nothing of ours to pin
                     }
-
-                    if p1_color == PlayerColor::Black {
-                        // Immediate Checker?
-                        let pt1 = p1.piece_type();
-                        if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
+                    if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
+                        && let Some(p2) = self.board.get_piece(bx2, by2)
+                        && p2.color() == PlayerColor::Black
+                    {
+                        let pt2 = p2.piece_type();
+                        if (is_ortho && is_ortho_slider(pt2)) || (!is_ortho && is_diag_slider(pt2))
                         {
-                            self.checkers_count_white += 1;
-                        }
-
-                        // Potential Discovered check for Black (if bx,by moves)
-                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
-                            && let Some(p2) = self.board.get_piece(bx2, by2)
-                            && p2.color() == PlayerColor::Black
-                        {
-                            let pt2 = p2.piece_type();
-                            if (is_ortho && is_ortho_slider(pt2))
-                                || (!is_ortho && is_diag_slider(pt2))
-                            {
-                                self.discovered_check_squares_black.insert((bx, by));
-                            }
-                        }
-                    } else {
-                        // Friendly piece (White) - could be pinned?
-                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
-                            && let Some(p2) = self.board.get_piece(bx2, by2)
-                            && p2.color() == PlayerColor::Black
-                        {
-                            let pt2 = p2.piece_type();
-                            if (is_ortho && is_ortho_slider(pt2))
-                                || (!is_ortho && is_diag_slider(pt2))
-                            {
-                                self.pinned_white.insert((bx, by), (*dx, *dy));
-                            }
+                            self.pinned_white.insert((bx, by), (*dx, *dy));
                         }
                     }
                 }
             }
         }
 
-        // Black King Status (Attacks by White pieces)
         if let Some(bk) = self.black_royals.first() {
-            // 1. Knight Checkers
-            for (dx, dy) in KNIGHT_OFFSETS {
-                let tx = bk.x + dx;
-                let ty = bk.y + dy;
-                if let Some(p) = self.board.get_piece(tx, ty)
-                    && p.color() == PlayerColor::White
-                    && p.piece_type() == PieceType::Knight
-                {
-                    self.checkers_count_black += 1;
-                }
-                self.check_squares_black
-                    .insert((tx, ty, PieceType::Knight as u8));
-            }
-            // 2. Pawn Checkers (White pawns attack upward: y-1)
-            for dx in [-1, 1] {
-                let tx = bk.x + dx;
-                let ty = bk.y - 1;
-                if let Some(p) = self.board.get_piece(tx, ty)
-                    && p.color() == PlayerColor::White
-                    && p.piece_type() == PieceType::Pawn
-                {
-                    self.checkers_count_black += 1;
-                }
-                self.check_squares_black
-                    .insert((tx, ty, PieceType::Pawn as u8));
-            }
-
-            // 3. Slider Rays (Sliders & Pinned pieces)
+            let (kx, ky) = (bk.x, bk.y);
             for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
-                if let Some((bx, by)) = self.find_first_blocker_on_ray(bk.x, bk.y, *dx, *dy) {
-                    self.slider_rays_black[dir_idx] = Some((bx, by));
+                if let Some((bx, by)) = self.find_first_blocker_on_ray(kx, ky, *dx, *dy) {
                     let p1 = self.board.get_piece(bx, by).unwrap();
                     let is_ortho = dir_idx < 4;
-                    let p1_color = p1.color();
-
-                    // Neutral pieces (obstacles/voids) completely block slider rays.
-                    // Skip further processing on this ray.
-                    if p1_color == PlayerColor::Neutral {
+                    if p1.color() != PlayerColor::Black {
                         continue;
                     }
-
-                    if p1_color == PlayerColor::White {
-                        // Immediate Checker?
-                        let pt1 = p1.piece_type();
-                        if (is_ortho && is_ortho_slider(pt1)) || (!is_ortho && is_diag_slider(pt1))
+                    if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
+                        && let Some(p2) = self.board.get_piece(bx2, by2)
+                        && p2.color() == PlayerColor::White
+                    {
+                        let pt2 = p2.piece_type();
+                        if (is_ortho && is_ortho_slider(pt2)) || (!is_ortho && is_diag_slider(pt2))
                         {
-                            self.checkers_count_black += 1;
-                        }
-
-                        // Potential Discovered check for White (if bx,by moves)
-                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
-                            && let Some(p2) = self.board.get_piece(bx2, by2)
-                            && p2.color() == PlayerColor::White
-                        {
-                            let pt2 = p2.piece_type();
-                            if (is_ortho && is_ortho_slider(pt2))
-                                || (!is_ortho && is_diag_slider(pt2))
-                            {
-                                self.discovered_check_squares_white.insert((bx, by));
-                            }
-                        }
-                    } else {
-                        // Friendly piece (Black) - could be pinned?
-                        if let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
-                            && let Some(p2) = self.board.get_piece(bx2, by2)
-                            && p2.color() == PlayerColor::White
-                        {
-                            let pt2 = p2.piece_type();
-                            if (is_ortho && is_ortho_slider(pt2))
-                                || (!is_ortho && is_diag_slider(pt2))
-                            {
-                                self.pinned_black.insert((bx, by), (*dx, *dy));
-                            }
+                            self.pinned_black.insert((bx, by), (*dx, *dy));
                         }
                     }
                 }
@@ -1455,7 +1279,7 @@ impl GameState {
             Some(p) if p.piece_type() == e.piece_type && p.color() == self.turn => {}
             _ => return false,
         }
-        if self.board.get_piece(e.from_x, e.from_y).is_some() {
+        if self.board.is_occupied(e.from_x, e.from_y) {
             return false;
         }
         if matches!(
@@ -1682,7 +1506,7 @@ impl GameState {
     /// These are used by correction history for indexing.
     /// All three are computed for comprehensive variant coverage.
     pub fn recompute_correction_hashes(&mut self) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key_at, pawn_key, piece_key};
 
         let mut ph: u64 = 0; // Pawn structure hash
         let mut wnph: u64 = 0; // White non-pawn piece hash
@@ -1696,7 +1520,7 @@ impl GameState {
             }
 
             // Material hash: Additive to distinguish counts (avoid XOR cancellation)
-            mh = mh.wrapping_add(material_key(piece.piece_type(), piece.color()));
+            mh = mh.wrapping_add(material_key_at(piece.piece_type(), piece.color(), x, y));
 
             if piece.piece_type() == PieceType::Pawn {
                 // Pawn hash: only pawns (helps CoaIP variants)
@@ -1771,6 +1595,17 @@ impl GameState {
     /// When in check and must escape (checkmate win condition), uses the optimized
     /// evasion generator that handles long-range blocking moves correctly.
     pub fn get_legal_moves_into(&self, out: &mut MoveList) {
+        // Exact list: skip the position-stale slider candidate cache, which can
+        // omit legal moves (standard-startpos perft D3 was 8842 vs 8902). The
+        // cache stays enabled for the interior search, where its speed is
+        // load-bearing and removing it measured much worse.
+        crate::moves::set_slider_cache_bypass(true);
+        let r = self.get_legal_moves_into_inner(out);
+        crate::moves::set_slider_cache_bypass(false);
+        r
+    }
+
+    fn get_legal_moves_into_inner(&self, out: &mut MoveList) {
         if self.is_in_check() {
             self.get_evasion_moves_into(out);
             // Strict legality filtering (pins/leaving king in check)
@@ -1844,6 +1679,14 @@ impl GameState {
 
         get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
+        // Riders pin outside the queen rays (knightrider knight-rays, huygen
+        // prime-distance files), so the pin map can't clear a move — verify
+        // every non-royal move strictly when the enemy has one. (Rose spiral
+        // pins are rare enough that the blanket verify isn't worth its cost.)
+        let them_idx = if self.turn == PlayerColor::White { 1 } else { 0 };
+        let rider_pins_possible = self.spatial_indices.has_knightrider[them_idx]
+            || self.spatial_indices.has_huygen[them_idx];
+
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
         // When not in check, only (King, Pinned, EP) moves can be illegal.
         let mut i = 0;
@@ -1863,6 +1706,12 @@ impl GameState {
                 ) {
                     illegal = true;
                 }
+            } else if rider_pins_possible {
+                let mut s_mut = self.clone();
+                let _undo = s_mut.make_move(&m);
+                if s_mut.is_move_illegal() {
+                    illegal = true;
+                }
             } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
                 // Pinned piece: must move along the pin ray
                 let dx = m.to.x - m.from.x;
@@ -1870,6 +1719,17 @@ impl GameState {
                 // Cross product check for collinearity
                 if dx * pdy != dy * pdx {
                     illegal = true;
+                } else if !(crate::attacks::is_ortho_slider(pt)
+                    || crate::attacks::is_diag_slider(pt)
+                    || pt == PieceType::Pawn)
+                {
+                    // Collinear JUMPING piece can still leap past the king or
+                    // the pinner along the ray — verify strictly.
+                    let mut s_mut = self.clone();
+                    let _undo = s_mut.make_move(&m);
+                    if s_mut.is_move_illegal() {
+                        illegal = true;
+                    }
                 }
             } else if let Some(ep) = &self.en_passant
                 && pt == PieceType::Pawn
@@ -3014,6 +2874,14 @@ impl GameState {
             return Ok(true);
         };
 
+        // Knightriders pin along knight-rays, which the queen-ray fast test
+        // below cannot see. (Rose spiral pins are rare enough that the full
+        // verify on every move costs more than the legality risk.)
+        let them = if self.turn == PlayerColor::White { 1 } else { 0 };
+        if self.spatial_indices.has_knightrider[them] {
+            return Err(());
+        }
+
         // 5. FAST CHECK: Is piece on a slider ray from king?
         // Only arithmetic - no hash lookups!
         let dx = m.from.x - king.x;
@@ -3264,7 +3132,7 @@ impl GameState {
 
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
-            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, pawn_key,
+            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, material_key_at, pawn_key,
             pawn_special_right_key, piece_key, rep_en_passant_key, rep_pawn_special_right_key,
             rep_piece_key,
         };
@@ -3274,6 +3142,11 @@ impl GameState {
         self.rep_hash_stack.push(self.rep_hash);
 
         let from_coord = Coordinate::new(m.from.x, m.from.y);
+
+        // Snapshot the old castling hash BEFORE the mover leaves the board:
+        // the precise-mode pair skips rights-squares with no piece on them, so
+        // computing it after removal never XORes out the mover's own key.
+        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
 
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
         // Update spatial indices: remove moving piece from source square
@@ -3314,6 +3187,7 @@ impl GameState {
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
             old_total_phase: self.total_phase,
+            old_non_pawn_material: (self.white_non_pawn_material, self.black_non_pawn_material),
         };
 
         // Track royal position updates
@@ -3387,9 +3261,12 @@ impl GameState {
             if captured.color() != PlayerColor::Neutral {
                 self.total_phase -= get_piece_phase(captured.piece_type());
                 // Update material hash (subtractive)
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_sub(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
 
                 let value = self.get_piece_value(captured.piece_type(), captured.color());
                 if captured.color() == PlayerColor::White {
@@ -3470,9 +3347,12 @@ impl GameState {
             self.material_hash = self
                 .material_hash
                 .wrapping_sub(material_key(PieceType::Pawn, piece.color()));
-            self.material_hash = self
-                .material_hash
-                .wrapping_add(material_key(promo_type, piece.color()));
+            self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                promo_type,
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
 
             let pawn_val = self.get_piece_value(PieceType::Pawn, piece.color());
             let promo_val = self.get_piece_value(promo_type, piece.color());
@@ -3497,7 +3377,7 @@ impl GameState {
             self.rep_hash ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
 
-        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
+        // (old_castle_hash pair snapshotted before the mover was removed)
         self.hash ^= old_castle_hash;
         self.rep_hash ^= old_castle_rep_hash;
         let mut castling_state_dirty = false;
@@ -3701,7 +3581,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self, m: &Move, undo: UndoMove) {
-        use crate::search::zobrist::{material_key, pawn_key, piece_key};
+        use crate::search::zobrist::{material_key, material_key_at, pawn_key, piece_key};
 
         // Restore hashes
         self.hash_stack.pop();
@@ -3740,9 +3620,12 @@ impl GameState {
         // Handle Promotion Revert
         if m.promotion.is_some() {
             // Convert back to pawn: Remove promo type, Add pawn type
-            self.material_hash = self
-                .material_hash
-                .wrapping_sub(material_key(piece.piece_type(), piece.color()));
+            self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                piece.piece_type(),
+                piece.color(),
+                m.to.x,
+                m.to.y,
+            ));
             self.material_hash = self
                 .material_hash
                 .wrapping_add(material_key(PieceType::Pawn, piece.color()));
@@ -3788,9 +3671,12 @@ impl GameState {
         if let Some(captured) = undo.captured_piece {
             // Restore material hash
             if captured.color() != PlayerColor::Neutral {
-                self.material_hash = self
-                    .material_hash
-                    .wrapping_add(material_key(captured.piece_type(), captured.color()));
+                self.material_hash = self.material_hash.wrapping_add(material_key_at(
+                    captured.piece_type(),
+                    captured.color(),
+                    m.to.x,
+                    m.to.y,
+                ));
             }
 
             // Only update piece counts and material for non-neutral pieces
@@ -3931,6 +3817,7 @@ impl GameState {
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
         self.total_phase = undo.old_total_phase;
+        (self.white_non_pawn_material, self.black_non_pawn_material) = undo.old_non_pawn_material;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;
@@ -5317,15 +5204,6 @@ mod tests {
         assert_eq!(single.is_legal_fast(&m, false), Ok(true));
     }
 
-    #[test]
-    fn test_recompute_check_squares_basic() {
-        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
-        game.recompute_check_squares();
-
-        // No checkers in this position
-        assert_eq!(game.checkers_count_white, 0);
-        assert_eq!(game.checkers_count_black, 0);
-    }
 
     #[test]
     fn test_get_piece_value_king() {
