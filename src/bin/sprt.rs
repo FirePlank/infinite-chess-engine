@@ -105,6 +105,10 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         old_strength: u32,
 
+        /// New engine strength level (1-8; 8 = full strength, the default)
+        #[arg(long, alias = "new-strenght", default_value_t = 8)]
+        new_strength: u32,
+
         /// Print verbose engine info
         #[arg(long, default_value_t = false)]
         verbose: bool,
@@ -278,10 +282,12 @@ fn print_settings_context(config: &Config) {
         format!("{} cp", config.adjudication_threshold)
     };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Adjudication: {}",
+        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {} | Adjudication: {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
+        config.new_strength,
+        config.old_strength,
         adjudication_str,
     );
 }
@@ -307,6 +313,7 @@ struct Config {
     old_bin: String,
     max_moves: usize,
     search_noise: i32,
+    new_strength: u32,
     old_strength: u32,
     verbose: bool,
     new_commit_info: Option<CommitInfo>,
@@ -1340,9 +1347,14 @@ fn play_game(
         let seed_val = seeds[ply];
         cmd.arg("--seed").arg(seed_val.to_string());
 
-        if !is_new_turn && config.old_strength < apeiron::search::MAX_SITE_SKILL {
+        let strength = if is_new_turn {
+            config.new_strength
+        } else {
+            config.old_strength
+        };
+        if strength < apeiron::search::MAX_SITE_SKILL {
             cmd.arg("--strength-level")
-                .arg(config.old_strength.to_string());
+                .arg(strength.to_string());
         }
 
         if config.verbose {
@@ -1396,15 +1408,12 @@ fn play_game(
         } else {
             black_clock
         };
-        let mut flagged_on_time = false;
-        let mut remaining_clock = 0;
-
-        if current_clock < elapsed {
-            flagged_on_time = true;
-        } else {
-            remaining_clock = current_clock - elapsed;
-        }
-        remaining_clock += config.tc_inc_ms;
+        let (flagged_on_time, remaining_clock) = account_move_time(
+            current_clock,
+            elapsed,
+            config.tc_inc_ms,
+            config.tc_fixed_ms.is_some(),
+        );
 
         if flagged_on_time {
             let result = if is_new_turn {
@@ -1810,6 +1819,18 @@ fn generate_icn(
     };
     icn.push_str(&format!("[White \"{}\"] ", white));
     icn.push_str(&format!("[Black \"{}\"] ", black));
+    let white_strength = if new_plays_white {
+        config.new_strength
+    } else {
+        config.old_strength
+    };
+    let black_strength = if new_plays_white {
+        config.old_strength
+    } else {
+        config.new_strength
+    };
+    icn.push_str(&format!("[WhiteStrength \"{}\"] ", white_strength));
+    icn.push_str(&format!("[BlackStrength \"{}\"] ", black_strength));
 
     if let Some(r) = reason {
         let term = match r {
@@ -1852,6 +1873,23 @@ fn print_status_line(previous_len: &mut usize, line: &str) {
     *previous_len = line.len();
 }
 
+fn account_move_time(
+    current_clock: u64,
+    elapsed: u64,
+    increment: u64,
+    fixed_time: bool,
+) -> (bool, u64) {
+    // A fixed time control is a fresh per-move budget, not a cumulative game
+    // clock. The engine enforces --fixed-time internally.
+    if fixed_time {
+        return (false, current_clock);
+    }
+    if current_clock < elapsed {
+        return (true, 0);
+    }
+    (false, current_clock - elapsed + increment)
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -1874,6 +1912,7 @@ fn main() {
             max_moves,
             search_noise,
             old_strength,
+            new_strength,
             verbose,
             new_commit,
             old_commit,
@@ -2119,7 +2158,8 @@ fn main() {
                 old_bin,
                 max_moves,
                 search_noise,
-                old_strength,
+                new_strength: new_strength.clamp(1, apeiron::search::MAX_SITE_SKILL),
+                old_strength: old_strength.clamp(1, apeiron::search::MAX_SITE_SKILL),
                 verbose,
                 new_commit_info: None,
                 old_commit_info: None,
@@ -2464,6 +2504,8 @@ fn main() {
                     adjudication: i32,
                     min_games: usize,
                     max_games: Option<usize>,
+                    new_strength: u32,
+                    old_strength: u32,
                 }
                 #[derive(Serialize)]
                 struct FinalResults {
@@ -2535,6 +2577,8 @@ fn main() {
                         adjudication: config.adjudication_threshold,
                         min_games: config.min_games,
                         max_games: config.max_games,
+                        new_strength: config.new_strength,
+                        old_strength: config.old_strength,
                     },
                     wins,
                     losses,
@@ -2702,5 +2746,17 @@ mod pentanomial_tests {
         p.add_pair(GameResult::Loss, GameResult::Loss);
         assert_eq!((p.ww, p.wd, p.wl, p.dd, p.ld, p.ll), (1, 1, 1, 1, 1, 1));
         assert_eq!(p.total_pairs(), 6);
+    }
+
+    #[test]
+    fn fixed_time_does_not_consume_the_game_clock() {
+        assert_eq!(account_move_time(10_000, 75, 0, true), (false, 10_000));
+        assert_eq!(account_move_time(10_000, 20_000, 0, true), (false, 10_000));
+    }
+
+    #[test]
+    fn cumulative_time_updates_and_flags_normally() {
+        assert_eq!(account_move_time(1_000, 250, 50, false), (false, 800));
+        assert_eq!(account_move_time(100, 101, 0, false), (true, 0));
     }
 }

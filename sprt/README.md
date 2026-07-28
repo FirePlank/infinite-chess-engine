@@ -64,7 +64,8 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate (0 = disabled) |
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
-| `--old-strength <N>` | `3` | Strength level for old engine (1-3) |
+| `--new-strength <N>` | `8` | Strength level for the new engine (1-8) |
+| `--old-strength <N>` | `8` | Strength level for the old engine (1-8) |
 | `--games <PATH>` | — | Write game ICNs to a JSON; flushed every `--save-interval` games |
 | `--results <PATH>` | — | Write results summary to a JSON |
 | `--resume <PATH>` | — | Resume from a `--games` JSON; reconstructs W/L/D and auto-detects TC and variants |
