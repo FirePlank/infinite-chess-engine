@@ -221,7 +221,9 @@ pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
 /// current thread's persistent searcher's local TT immediately if one exists.
 /// (An already-initialized shared TT can't be resized — respawn the worker for that.)
 pub fn set_tt_size_mb(mb: usize) {
-    TT_SIZE_MB.store(mb.clamp(1, 64), std::sync::atomic::Ordering::Relaxed);
+    // wasm is capped to 64 inside LocalTranspositionTable::new, so this ceiling
+    // only bounds native builds, where a GUI may legitimately ask for more.
+    TT_SIZE_MB.store(mb.clamp(1, 4096), std::sync::atomic::Ordering::Relaxed);
     GLOBAL_SEARCHER.with(|cell| {
         if let Some(searcher) = cell.borrow_mut().as_mut() {
             searcher.tt = LocalTranspositionTable::new(mb);

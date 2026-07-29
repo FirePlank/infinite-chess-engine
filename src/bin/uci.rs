@@ -387,6 +387,7 @@ struct GoParams {
     winc: Option<u64>,
     binc: Option<u64>,
     movetime: Option<u64>,
+    movestogo: Option<u64>,
     depth: Option<usize>,
     infinite: bool,
 }
@@ -398,6 +399,7 @@ impl GoParams {
             btime: None,
             winc: None,
             binc: None,
+            movestogo: None,
             movetime: None,
             depth: None,
             infinite: false,
@@ -425,6 +427,10 @@ impl GoParams {
                     i += 1;
                     p.movetime = tokens.get(i).and_then(|s| s.parse().ok());
                 }
+                "movestogo" => {
+                    i += 1;
+                    p.movestogo = tokens.get(i).and_then(|s| s.parse().ok());
+                }
                 "depth" => {
                     i += 1;
                     p.depth = tokens.get(i).and_then(|s| s.parse().ok());
@@ -440,6 +446,26 @@ impl GoParams {
     }
 }
 
+/// `setoption name <id> [value <v>]`. Names may contain spaces, so take
+/// everything between `name` and `value` as the id.
+fn handle_setoption(tokens: &[&str]) {
+    let name_at = tokens.iter().position(|t| t.eq_ignore_ascii_case("name"));
+    let value_at = tokens.iter().position(|t| t.eq_ignore_ascii_case("value"));
+    let Some(name_at) = name_at else { return };
+    let name_end = value_at.unwrap_or(tokens.len());
+    if name_at + 1 >= name_end {
+        return;
+    }
+    let name = tokens[name_at + 1..name_end].join(" ");
+    let value = value_at.and_then(|i| tokens.get(i + 1)).copied();
+
+    if name.eq_ignore_ascii_case("Hash")
+        && let Some(mb) = value.and_then(|v| v.parse::<usize>().ok())
+    {
+        search::set_tt_size_mb(mb);
+    }
+}
+
 fn run_go(state: &mut UciState, params: GoParams) {
     use apeiron::board::PlayerColor;
 
@@ -451,8 +477,11 @@ fn run_go(state: &mut UciState, params: GoParams) {
     let (opt_ms, max_ms, is_soft): (u128, u128, bool) = if params.infinite {
         (u128::MAX, u128::MAX, true)
     } else if let Some(mt) = params.movetime {
+        // A fixed per-move budget is exactly the soft-limit case: there is no
+        // clock to flag, so spend it all. Passing false here made the proactive
+        // 50% and mid-iteration stops fire and left ~55% of movetime unused.
         let ms = mt as u128;
-        (ms, ms, false)
+        (ms, ms, true)
     } else if params.depth.is_some() && params.wtime.is_none() && params.btime.is_none() {
         // Fixed depth, no clock: treat as infinite time
         (u128::MAX, u128::MAX, true)
@@ -480,7 +509,10 @@ fn run_go(state: &mut UciState, params: GoParams) {
                 inc_ms_raw.max(500)
             };
             let scaled_time = remaining_ms.saturating_sub(move_overhead);
-            let centi_mtg: i64 = if scaled_time >= 1000 { 5051 } else { (scaled_time as f64 * 5.051) as i64 }.max(100);
+            let centi_mtg: i64 = match params.movestogo {
+                Some(mtg) if mtg > 0 => (mtg.min(50) as i64 * 100).max(100),
+                _ => if scaled_time >= 1000 { 5051 } else { (scaled_time as f64 * 5.051) as i64 }.max(100),
+            };
             let time_left = (remaining_ms as i64
                 + (inc_ms_raw as i64 * (centi_mtg - 100) - move_overhead as i64 * (200 + centi_mtg)) / 100)
                 .max(1) as f64;
@@ -596,13 +628,16 @@ fn main() {
             "uci" => {
                 println!("id name {}", ENGINE_NAME);
                 println!("id author {}", ENGINE_AUTHOR);
-                println!("option name Hash type spin default 64 min 1 max 65536");
+                println!("option name Hash type spin default 16 min 1 max 4096");
                 println!("uciok");
                 let _ = io::stdout().flush();
             }
             "isready" => {
                 println!("readyok");
                 let _ = io::stdout().flush();
+            }
+            "setoption" => {
+                handle_setoption(&tokens[1..]);
             }
             "ucinewgame" => {
                 search::reset_search_state();
