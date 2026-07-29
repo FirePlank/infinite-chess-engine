@@ -385,16 +385,6 @@ fn find_bitboard_cage(
 
 // --- Utility Functions ---
 
-/// Check if a side only has a king (no other pieces)
-#[inline(always)]
-pub fn is_lone_king(game: &GameState, color: PlayerColor) -> bool {
-    if color == PlayerColor::White {
-        game.white_pawn_count == 0 && !game.white_non_pawn_material
-    } else {
-        game.black_pawn_count == 0 && !game.black_non_pawn_material
-    }
-}
-
 /// True when the losing side has no pawns and at most one non-royal piece:
 /// the full mating-net machinery (cage flood fill) applies.
 #[inline(always)]
@@ -425,9 +415,9 @@ fn defender_is_bareish(game: &GameState, color: PlayerColor) -> bool {
 pub fn calculate_mop_up_scale(game: &GameState, losing_color: PlayerColor) -> Option<u32> {
     // Check winning side has at least one non-pawn piece
     let winning_has_pieces = if losing_color == PlayerColor::White {
-        game.black_non_pawn_material
+        game.has_non_pawn_material(PlayerColor::Black)
     } else {
-        game.white_non_pawn_material
+        game.has_non_pawn_material(PlayerColor::White)
     };
 
     if !winning_has_pieces {
@@ -1740,20 +1730,6 @@ mod tests {
         game.board = Board::new();
         game.setup_position_from_icn(icn);
         game
-    }
-
-    #[test]
-    fn test_is_lone_king_true() {
-        let game = create_test_game_from_icn("w (8;q|1;q) K5,1");
-
-        assert!(is_lone_king(&game, PlayerColor::White));
-    }
-
-    #[test]
-    fn test_is_lone_king_false() {
-        let game = create_test_game_from_icn("w (8;q|1;q) K5,1|Q4,1");
-
-        assert!(!is_lone_king(&game, PlayerColor::White));
     }
 
     #[test]

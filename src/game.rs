@@ -172,8 +172,6 @@ pub struct UndoMove {
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
     pub old_total_phase: i32,
-    /// (white, black) non-pawn-material flags; promotion sets them in make_move.
-    pub old_non_pawn_material: (bool, bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,13 +289,6 @@ pub struct GameState {
     /// Indexed by: 0=WKS, 1=WQS, 2=BKS, 3=BQS
     #[serde(skip)]
     pub castling_partner_counts: [u16; 4],
-    /// Fast non-pawn material flags for NMP zugzwang detection.
-    /// True if the side has at least one non-pawn, non-king piece.
-    /// Updated incrementally in make_move/undo_move.
-    #[serde(skip)]
-    pub white_non_pawn_material: bool,
-    #[serde(skip)]
-    pub black_non_pawn_material: bool,
     /// Pinned pieces for white: maps (x, y) of a WHITE piece to (dx, dy) pin direction.
     /// A piece at (x,y) pinned with direction (dx,dy) can only move along that line.
     /// This is the direction FROM the king TO the pinner (through the pinned piece).
@@ -467,8 +458,6 @@ impl GameState {
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
-            white_non_pawn_material: false,
-            black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
@@ -524,8 +513,6 @@ impl GameState {
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
-            white_non_pawn_material: false,
-            black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
@@ -558,8 +545,6 @@ impl GameState {
         let mut white_pawns: u16 = 0;
         let mut black_pawns: u16 = 0;
         self.total_phase = 0;
-        let mut white_npm = false;
-        let mut black_npm = false;
         self.white_pieces.clear();
         self.black_pieces.clear();
         self.white_royals.clear();
@@ -601,8 +586,6 @@ impl GameState {
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             white_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            white_npm = true;
                         }
                     }
                     PlayerColor::Black => {
@@ -611,8 +594,6 @@ impl GameState {
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             black_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            black_npm = true;
                         }
                     }
                     PlayerColor::Neutral => {}
@@ -623,8 +604,6 @@ impl GameState {
         self.black_piece_count = black;
         self.white_pawn_count = white_pawns;
         self.black_pawn_count = black_pawns;
-        self.white_non_pawn_material = white_npm;
-        self.black_non_pawn_material = black_npm;
 
         // Rebuild spatial indices from current board
         self.spatial_indices = SpatialIndices::new(&self.board);
@@ -1087,14 +1066,23 @@ impl GameState {
     }
 
     /// O(1) check for non-pawn material (for NMP zugzwang detection).
-    /// Returns true if the specified color has at least one non-pawn, non-king piece.
+    /// Derived from the live counters so captures and promotions stay correct.
     #[inline]
     pub fn has_non_pawn_material(&self, color: PlayerColor) -> bool {
-        match color {
-            PlayerColor::White => self.white_non_pawn_material,
-            PlayerColor::Black => self.black_non_pawn_material,
-            PlayerColor::Neutral => false,
-        }
+        let (pieces, pawns, royals) = match color {
+            PlayerColor::White => (
+                self.white_piece_count as usize,
+                self.white_pawn_count as usize,
+                self.white_royals.len(),
+            ),
+            PlayerColor::Black => (
+                self.black_piece_count as usize,
+                self.black_pawn_count as usize,
+                self.black_royals.len(),
+            ),
+            PlayerColor::Neutral => return false,
+        };
+        pieces > pawns + royals
     }
 
     /// Returns true if the side-to-move must respond to check.
@@ -3187,7 +3175,6 @@ impl GameState {
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
             old_total_phase: self.total_phase,
-            old_non_pawn_material: (self.white_non_pawn_material, self.black_non_pawn_material),
         };
 
         // Track royal position updates
@@ -3360,12 +3347,10 @@ impl GameState {
                 self.material_score -= pawn_val;
                 self.material_score += promo_val;
                 self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
-                self.white_non_pawn_material = true;
             } else {
                 self.material_score += pawn_val;
                 self.material_score -= promo_val;
                 self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
-                self.black_non_pawn_material = true;
             }
 
             self.total_phase += get_piece_phase(promo_type);
@@ -3817,7 +3802,6 @@ impl GameState {
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
         self.total_phase = undo.old_total_phase;
-        (self.white_non_pawn_material, self.black_non_pawn_material) = undo.old_non_pawn_material;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;
@@ -5162,7 +5146,7 @@ mod tests {
         let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,1");
         game.recompute_piece_counts();
 
-        assert!(game.white_non_pawn_material);
+        assert!(game.has_non_pawn_material(PlayerColor::White));
     }
 
     #[test]
@@ -5170,7 +5154,7 @@ mod tests {
         let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
         game.recompute_piece_counts();
 
-        assert!(!game.white_non_pawn_material);
+        assert!(!game.has_non_pawn_material(PlayerColor::White));
     }
 
     #[test]
