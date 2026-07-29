@@ -4364,6 +4364,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
             && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
+        // Obstocean breakout: a pawn taking a neutral obstacle opens the line the
+        // variant is built around, but the neutral victim makes it score as quiet.
+        // Treated as tactical for pruning/reduction only; SEE still gates it.
+        let is_obstocean_breakout = game.variant == Some(crate::Variant::Obstocean)
+            && p_type == PieceType::Pawn
+            && captured_type == Some(PieceType::Obstacle);
+
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
 
@@ -4404,7 +4411,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let history = main_hist;
 
                 // History-based pruning: skip moves with very bad history
-                if history < -4083 * depth as i32 {
+                if history < -4083 * depth as i32 && !is_obstocean_breakout {
                     continue;
                 }
 
@@ -4412,7 +4419,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let adj_lmr_depth = (lmr_depth + history / 3208).max(0);
 
                 // Quiet futility: skip moves that can't raise alpha
-                if !in_check && adj_lmr_depth < 13 {
+                if !in_check && adj_lmr_depth < 13 && !is_obstocean_breakout {
                     let no_best = if best_move.is_none() { 161 } else { 0 };
                     let futility_value = static_eval + 42 + no_best + 127 * adj_lmr_depth;
                     if futility_value <= alpha {
@@ -4709,6 +4716,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
+                // Search the variant's defining line-opening tactic a ply deeper.
+                if is_obstocean_breakout {
+                    reduction -= 1;
+                }
+
                 // Ensure reduction stays in valid range [0, depth-2]
                 reduction = reduction.clamp(0, (depth as i32) - 2);
             }
@@ -4722,6 +4734,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !is_capture
                 && !is_promotion
                 && !gives_check
+                && !is_obstocean_breakout
                 && depth <= hlp_max_depth()
                 && legal_moves >= hlp_min_moves()
                 && !is_loss(best_score)
