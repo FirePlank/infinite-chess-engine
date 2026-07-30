@@ -501,8 +501,8 @@ const MOP_UP_NEGATIVE_CAP: i32 = 250;
 /// color and the activation scale (0-100) when one side is reduced to a
 /// bare-ish king (at most one non-pawn piece besides royals, plus pawns
 /// covered by the surplus rules) while the other keeps a small pawnless
-/// mating force. Both the evaluation term and the search check extension
-/// route through here so they can never disagree about what a mop-up is.
+/// mating force. Both the evaluation term and the search's conversion-aware
+/// skill policy route through here so they cannot disagree about activation.
 #[inline]
 pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     let white_np = game.white_piece_count.saturating_sub(game.white_pawn_count);
