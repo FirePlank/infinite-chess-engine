@@ -1,7 +1,5 @@
-//! NNUE Quantized Inference
-//!
-//! Performs fast quantized inference using i16/i8 dot products.
-//! The heavy computation is integer MACs; only final output conversion uses floats.
+//! Quantized NNUE inference over i16/i8 dot products. Only the final output
+//! conversion uses floats.
 
 use super::features::build_threat_active_lists;
 use super::state::{NnueState, RELKP_DIM};
@@ -185,10 +183,8 @@ fn forward_head(weights: &NnueWeights, input: &[i16; HEAD_IN]) -> i32 {
     weights.fc3_bias + dot_product_i8_i32_chunked(&weights.fc3_weight, &h2)
 }
 
-/// Main NNUE evaluation function.
-///
-/// Returns score in centipawns from side-to-move's perspective.
-/// If NNUE weights are not available, returns 0.
+/// Score in centipawns from the side-to-move's perspective, or 0 when no NNUE
+/// weights are available.
 pub fn evaluate(gs: &GameState) -> i32 {
     let weights = match NNUE_WEIGHTS.as_ref() {
         Some(w) => w,
@@ -220,7 +216,6 @@ pub fn evaluate(gs: &GameState) -> i32 {
         )
     };
 
-    // Build head input and forward
     let head_input = build_head_input(rel_friendly, thr_friendly, rel_enemy, thr_enemy);
     let raw_output = forward_head(weights, &head_input);
 

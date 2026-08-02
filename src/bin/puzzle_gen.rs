@@ -1,10 +1,10 @@
-use csv::Writer;
 use apeiron::Variant;
 use apeiron::board::{Coordinate, PieceType, PlayerColor};
 use apeiron::evaluation::get_piece_value_base;
 use apeiron::game::GameState;
 use apeiron::moves::{Move, MoveGenContext, MoveList};
 use apeiron::search;
+use csv::Writer;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};

@@ -1,9 +1,6 @@
-﻿//! Search Parameters Module
-//!
-//! This file is the single source of truth for search tuning:
-//! - production defaults live here as compile-time constants
-//! - runtime overrides (behind `search_tuning`) deserialize into `SearchParams`
-//! - SPSA tuning metadata lives here to prevent drift with external scripts
+//! Single source of truth for search tuning: production defaults as compile-time
+//! constants, runtime overrides deserialized into `SearchParams`, and the SPSA
+//! metadata, kept together so external scripts cannot drift from the engine.
 
 #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
 use once_cell::sync::Lazy;
@@ -163,6 +160,7 @@ impl EvalParamSpec {
     }
 }
 
+#[rustfmt::skip]
 pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("knight", crate::evaluation::base::DEFAULT_EVAL_KNIGHT as i64, 150, 450, 4.0, 0.002, "Knight value"),
     EvalParamSpec::new("bishop", crate::evaluation::base::DEFAULT_EVAL_BISHOP as i64, 250, 650, 4.0, 0.002, "Bishop value"),
@@ -248,9 +246,11 @@ impl Default for EvalParams {
             mg_bishop_pair_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS,
             eg_bishop_pair_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS,
             rook_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS,
-            rook_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS,
+            rook_semi_open_file_bonus:
+                crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS,
             queen_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS,
-            queen_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
+            queen_semi_open_file_bonus:
+                crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
         }
@@ -309,32 +309,72 @@ define_eval_accessor!(bishop, crate::evaluation::base::DEFAULT_EVAL_BISHOP);
 define_eval_accessor!(rook, crate::evaluation::base::DEFAULT_EVAL_ROOK);
 define_eval_accessor!(guard, crate::evaluation::base::DEFAULT_EVAL_GUARD);
 define_eval_accessor!(centaur, crate::evaluation::base::DEFAULT_EVAL_CENTAUR);
-define_eval_accessor!(compound_bonus, crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS);
+define_eval_accessor!(
+    compound_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS
+);
 define_eval_accessor!(camel, crate::evaluation::base::DEFAULT_EVAL_CAMEL);
 define_eval_accessor!(giraffe, crate::evaluation::base::DEFAULT_EVAL_GIRAFFE);
 define_eval_accessor!(zebra, crate::evaluation::base::DEFAULT_EVAL_ZEBRA);
-define_eval_accessor!(knightrider, crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER);
+define_eval_accessor!(
+    knightrider,
+    crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER
+);
 define_eval_accessor!(hawk, crate::evaluation::base::DEFAULT_EVAL_HAWK);
 define_eval_accessor!(archbishop, crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP);
 define_eval_accessor!(rose, crate::evaluation::base::DEFAULT_EVAL_ROSE);
 define_eval_accessor!(huygen, crate::evaluation::base::DEFAULT_EVAL_HUYGEN);
-define_eval_accessor!(chancellor_bonus, crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS);
-define_eval_accessor!(mg_doubled_pawn_penalty, crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY);
-define_eval_accessor!(eg_doubled_pawn_penalty, crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY);
-define_eval_accessor!(mg_bishop_pair_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS);
-define_eval_accessor!(eg_bishop_pair_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS);
-define_eval_accessor!(rook_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS);
-define_eval_accessor!(rook_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS);
-define_eval_accessor!(queen_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS);
-define_eval_accessor!(queen_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS);
-define_eval_accessor!(mg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS);
-define_eval_accessor!(eg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS);
+define_eval_accessor!(
+    chancellor_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS
+);
+define_eval_accessor!(
+    mg_doubled_pawn_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY
+);
+define_eval_accessor!(
+    eg_doubled_pawn_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY
+);
+define_eval_accessor!(
+    mg_bishop_pair_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS
+);
+define_eval_accessor!(
+    eg_bishop_pair_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS
+);
+define_eval_accessor!(
+    rook_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    rook_semi_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    queen_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    queen_semi_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    mg_outpost_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS
+);
+define_eval_accessor!(
+    eg_outpost_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS
+);
 
 #[inline]
 pub fn queen_value() -> i32 {
     rook() * 2 + compound_bonus()
 }
 
+#[rustfmt::skip]
 pub const TUNABLE_PARAM_SPECS: &[SearchParamSpec] = &[
     SearchParamSpec::new("razoring_linear", SearchParamKind::I32, DEFAULT_RAZORING_LINEAR as i64, 200, 700, 16.0, 0.002, "Razoring linear margin"),
     SearchParamSpec::new("razoring_quad", SearchParamKind::I32, DEFAULT_RAZORING_QUAD as i64, 100, 500, 12.0, 0.002, "Razoring quadratic margin"),
@@ -577,7 +617,11 @@ define_accessor!(probcut_improving, i32, DEFAULT_PROBCUT_IMPROVING);
 define_accessor!(probcut_min_depth, usize, DEFAULT_PROBCUT_MIN_DEPTH);
 define_accessor!(probcut_depth_sub, usize, DEFAULT_PROBCUT_DEPTH_SUB);
 define_accessor!(probcut_divisor, i32, DEFAULT_PROBCUT_DIVISOR);
-define_accessor!(low_depth_probcut_margin, i32, DEFAULT_LOW_DEPTH_PROBCUT_MARGIN);
+define_accessor!(
+    low_depth_probcut_margin,
+    i32,
+    DEFAULT_LOW_DEPTH_PROBCUT_MARGIN
+);
 define_accessor!(iir_min_depth, usize, DEFAULT_IIR_MIN_DEPTH);
 define_accessor!(see_capture_linear, i32, DEFAULT_SEE_CAPTURE_LINEAR);
 define_accessor!(see_capture_hist_div, i32, DEFAULT_SEE_CAPTURE_HIST_DIV);
@@ -592,8 +636,16 @@ define_accessor!(history_bonus_base, i32, DEFAULT_HISTORY_BONUS_BASE);
 define_accessor!(history_bonus_sub, i32, DEFAULT_HISTORY_BONUS_SUB);
 define_accessor!(history_bonus_cap, i32, DEFAULT_HISTORY_BONUS_CAP);
 define_accessor!(history_max_gravity, i32, DEFAULT_HISTORY_MAX_GRAVITY);
-define_accessor!(pawn_history_bonus_scale, i32, DEFAULT_PAWN_HISTORY_BONUS_SCALE);
-define_accessor!(pawn_history_malus_scale, i32, DEFAULT_PAWN_HISTORY_MALUS_SCALE);
+define_accessor!(
+    pawn_history_bonus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_BONUS_SCALE
+);
+define_accessor!(
+    pawn_history_malus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_MALUS_SCALE
+);
 define_accessor!(delta_margin, i32, DEFAULT_DELTA_MARGIN);
 
 #[cfg(test)]
@@ -603,8 +655,16 @@ mod tests {
     #[test]
     fn test_params_default() {
         assert_eq!(razoring_linear(), DEFAULT_RAZORING_LINEAR);
-        assert!(TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "delta_margin"));
-        assert!(!TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "nmp_reduction"));
+        assert!(
+            TUNABLE_PARAM_SPECS
+                .iter()
+                .any(|spec| spec.name == "delta_margin")
+        );
+        assert!(
+            !TUNABLE_PARAM_SPECS
+                .iter()
+                .any(|spec| spec.name == "nmp_reduction")
+        );
     }
 
     #[test]

@@ -1,8 +1,5 @@
-// Modular Evaluation System
-//
-// Design Principles:
-// 1. `base` contains ALL default heuristics
-// 2. Variant files in `variants/` ONLY exist if they have special logic
+//! Evaluation dispatch. `base` holds every default heuristic; a file under
+//! `variants/` exists only where a variant needs something base cannot express.
 
 pub mod base;
 pub mod eval_kind;
@@ -17,10 +14,9 @@ use eval_kind::EvalKind;
 
 pub use base::{calculate_initial_material, get_piece_phase, get_piece_value_base};
 
-/// Largest slice of the evaluation the halfmove-clock damping may take away.
-/// This is the conversion urgency: large enough that the winning side always
-/// strives forward against the move-rule clock, small enough per tick that
-/// stale TT scores can never outweigh real progress gradients.
+/// Largest slice of the evaluation halfmove-clock damping may remove. Big enough to
+/// keep the winner pressing against the move-rule clock, small enough per tick that
+/// stale TT scores never outweigh real progress.
 const RULE50_DAMP_CAP: i32 = 700;
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -31,18 +27,24 @@ pub use crate::search::params::{
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
 
-/// Returns the mop-up bonus from the side-to-move's perspective (positive = good for side to move).
-/// Activation, scaling, and magnitude saturation all live in the mop_up
-/// module (`active_mop_up` / `evaluate_mop_up_scaled`), shared with the
-/// search's conversion-aware skill policy.
+/// Mop-up bonus from the side-to-move's perspective. Activation, scaling and
+/// saturation live in `mop_up`, shared with the search's skill policy.
 #[inline]
 fn compute_mop_up_term(game: &GameState) -> i32 {
     let Some((winner, scale)) = crate::evaluation::mop_up::active_mop_up(game) else {
         return 0;
     };
     let term = crate::evaluation::mop_up::evaluate_mop_up_scaled(game, winner, scale);
-    let raw = if winner == PlayerColor::White { term } else { -term };
-    if game.turn == PlayerColor::Black { -raw } else { raw }
+    let raw = if winner == PlayerColor::White {
+        term
+    } else {
+        -term
+    };
+    if game.turn == PlayerColor::Black {
+        -raw
+    } else {
+        raw
+    }
 }
 
 /// Bounded-board rook/minor endings that are drawn with correct defense are
@@ -64,9 +66,8 @@ fn bounded_drawish_scale_inner(game: &GameState, eval: i32, world_size: i64) -> 
     }
 
     use crate::board::PieceType;
-    // Non-pawn material value and pawn presence per side; only rook/minor/pawn
-    // endings qualify — a queen (or other heavy) is a genuine win, handled by
-    // the normal eval.
+    // Only rook, minor and pawn endings qualify: with a queen or other heavy on the
+    // board the advantage is a genuine win the normal eval already handles.
     let (mut w_npm, mut b_npm) = (0i32, 0i32);
     let (mut w_pawns, mut b_pawns) = (false, false);
     for (_, _, piece) in game.board.iter() {
@@ -123,11 +124,9 @@ fn bounded_drawish_scale_inner(game: &GameState, eval: i32, world_size: i64) -> 
     }
 }
 
-/// Applies the halfmove-clock damping: gentle "get on with it" pressure as the
-/// clock rises. During mop-up conversion only a capped slice of the eval is
-/// damped: TT entries don't know the clock, so full damping of the huge mop-up
-/// evals makes stale shuffle scores beat fresh progress and the engine loops
-/// instead of converting; everywhere else the full eval damps as before.
+/// Halfmove-clock damping, applying rising pressure to make progress. Mop-up
+/// conversion damps only a capped slice: TT entries do not know the clock, so fully
+/// damping a huge mop-up eval lets stale shuffle scores beat fresh progress.
 #[inline]
 fn apply_rule50_damping(game: &GameState, raw_eval: i32, mop_up_active: bool) -> i32 {
     match game.game_rules.move_rule_limit {
@@ -226,10 +225,9 @@ mod tests {
 
     #[test]
     fn test_bounded_drawish_endings_scaled() {
-        // R+minor vs R and R vs lone minor are draws with correct defense on
-        // a bounded board: the stronger, pawnless side (white, to move here)
-        // must not keep its full material claim. The inner function takes the
-        // world size directly so the test never mutates the global bounds.
+        // R+minor vs R and R vs lone minor are drawn with correct defense on a
+        // bounded board, so the stronger pawnless side must not keep its full
+        // material claim.
         for icn in [
             "w (8;q|1;q) K2,2|R4,4|N5,5|k7,7|r7,1", // R+N vs R
             "w (8;q|1;q) K2,2|R4,4|B5,4|k7,7|r7,1", // R+B vs R
@@ -247,8 +245,7 @@ mod tests {
 
         // A defender pawn's counterplay is never masked: an eval favoring the
         // weaker (pawned) side keeps full volume.
-        let game =
-            create_test_game_from_icn("w (8;q|1;q) K2,2|R4,4|N5,5|k7,7|r7,1|p6,2");
+        let game = create_test_game_from_icn("w (8;q|1;q) K2,2|R4,4|N5,5|k7,7|r7,1|p6,2");
         assert_eq!(
             bounded_drawish_scale_inner(&game, -547, 8),
             -547,

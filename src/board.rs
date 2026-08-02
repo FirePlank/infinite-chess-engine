@@ -290,14 +290,14 @@ impl PieceType {
         matches!(
             self,
             PieceType::Knight
-            | PieceType::Bishop
-            | PieceType::Camel
-            | PieceType::Zebra
-            | PieceType::Giraffe
-            | PieceType::Hawk
-            | PieceType::Centaur
-            | PieceType::Guard
-            | PieceType::Huygen
+                | PieceType::Bishop
+                | PieceType::Camel
+                | PieceType::Zebra
+                | PieceType::Giraffe
+                | PieceType::Hawk
+                | PieceType::Centaur
+                | PieceType::Guard
+                | PieceType::Huygen
         )
     }
 
@@ -403,9 +403,7 @@ impl Piece {
     }
 }
 
-// ============================================================================
 // Board
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "BoardRaw", into = "BoardRaw")]
@@ -542,11 +540,9 @@ impl Board {
             self.piece_count += 1;
         }
 
-        // Active coords tracking
         if piece.piece_type().is_neutral_type() && self.active_coords.is_none() {
             let mut set = FxHashSet::default();
 
-            // Iterate ALL pieces from tiles to populate set
             for (px, py, p) in self.tiles.iter_all_pieces() {
                 if !p.piece_type().is_neutral_type() {
                     set.insert((px, py));
@@ -639,10 +635,6 @@ impl Board {
         self.tiles.get_neighborhood(cx, cy)
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

@@ -47,7 +47,7 @@ pub enum Variant {
     // Custom variants that uses more than 1 king
     DoubleKingClassical,
     DoubleKingChess,
-    TripleKingMaze, // variant created by Nikita
+    TripleKingMaze,     // variant created by Nikita
     AllPiecesClassical, // Classical setup, allpiecescaptured win condition (tests base eval)
 }
 
@@ -236,12 +236,9 @@ pub fn stop_analysis_helpers() {
     crate::search::stop_analysis_helpers();
 }
 
-/// Byte offset of the global stop flag inside wasm linear memory.
-///
-/// When the module is built with shared memory (multithreaded build), the main
-/// thread can abort an in-flight search instantly by writing a non-zero byte at
-/// this address (`new Uint8Array(memory.buffer)[ptr] = 1`). The search polls the
-/// flag every node batch. Each new search clears it.
+/// Byte offset of the global stop flag inside wasm linear memory. On shared-memory
+/// builds the main thread aborts an in-flight search by writing a non-zero byte here,
+/// which the search polls every node batch and each new search clears.
 #[wasm_bindgen]
 pub fn stop_flag_ptr() -> u32 {
     &crate::search::GLOBAL_STOP as *const _ as u32
@@ -255,8 +252,7 @@ pub fn set_hash_size(mb: u32) {
     crate::search::set_tt_size_mb(mb as usize);
 }
 
-/// Returns the engine's version — read from the `version` field
-/// in Cargo.toml at compile time via Cargo's `CARGO_PKG_VERSION`.
+/// The engine's version, baked in from Cargo.toml at compile time.
 #[wasm_bindgen]
 pub fn engine_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -320,9 +316,9 @@ pub struct JsAnalyseOptions {
     /// on successive slices of the same position so the search keeps deepening instead
     /// of re-walking from depth 1.
     pub start_depth: Option<usize>,
-    /// Time budget of this slice in milliseconds. 0/absent = unlimited: the call runs
-    /// until `max_depth` completes. Unlimited slices are fully deterministic — no
-    /// wall-clock-dependent aborts can vary the search tree between runs.
+    /// Time budget of this slice in milliseconds; 0 or absent runs until `max_depth`
+    /// completes. Unlimited slices are deterministic, since no wall-clock abort can
+    /// vary the search tree between runs.
     pub slice_ms: Option<u64>,
 }
 
@@ -676,11 +672,8 @@ impl Engine {
             + (inc_ms as i64 * (centi_mtg - 100) - move_overhead as i64 * (200 + centi_mtg)) / 100)
             .max(1) as f64;
 
-        // original_time_adjust: logarithmic scaling factor based on available time
-        // This factor prevents overspending at longer time controls by adjusting the
-        // base allocation according to the total time budget.
-        // For 10s games: log10(10000) = 4, adjust = 0.3128*4 - 0.4354 = 0.816
-        // For 40m games: log10(2400000) = 6.38, adjust = 1.56
+        // Logarithmic in the total budget, so longer time controls do not overspend
+        // their base allocation: 0.816 for a 10s game, 1.56 for a 40m one.
         let original_time_adjust = (0.3128 * time_left.max(1.0).log10() - 0.4354).max(0.1);
 
         // Log-based time constants for adaptive scaling
@@ -739,19 +732,18 @@ impl Engine {
 
         // Long infinite-chess games outrun the allocator's ~50-move horizon, so
         // near flag time spend under the increment instead of the 82.5% cap.
-        let (optimum, maximum) = if inc_ms > 0
-            && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT)
-        {
-            // Reserve the move overhead here too: spawn/reply latency is charged
-            // against the clock, so an unreserved 0.9*inc budget drains it.
-            let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64)
-                .saturating_sub(move_overhead)
-                .max(inc_ms / 4)
-                .max(min_think_ms);
-            (optimum.min(survive), maximum.min(survive))
-        } else {
-            (optimum, maximum)
-        };
+        let (optimum, maximum) =
+            if inc_ms > 0 && remaining_ms < inc_ms.saturating_mul(LOW_CLOCK_SURVIVE_INC_MULT) {
+                // Reserve the move overhead here too: spawn/reply latency is charged
+                // against the clock, so an unreserved 0.9*inc budget drains it.
+                let survive = ((inc_ms as f64 * LOW_CLOCK_SURVIVE_FRAC) as u64)
+                    .saturating_sub(move_overhead)
+                    .max(inc_ms / 4)
+                    .max(min_think_ms);
+                (optimum.min(survive), maximum.min(survive))
+            } else {
+                (optimum, maximum)
+            };
 
         // Timed games are hard limits (risk of flagging).
         (optimum as u128, maximum as u128, false)
@@ -768,9 +760,6 @@ impl Engine {
         noise_amp: Option<i32>,
         seed: Option<u64>,
     ) -> JsValue {
-        // let legal_moves = self.game.get_legal_moves();
-        // web_sys::console::log_1(&format!("Legal moves: {:?}", legal_moves).into());
-
         let (opt_time, max_time, is_soft_limit) =
             if time_limit_ms == 0 && max_depth.is_some() && self.clock.is_none() {
                 // If explicit depth is requested with 0 time, treat as infinite time (fixed depth search)
@@ -936,12 +925,9 @@ impl Engine {
         self.game = game;
     }
 
-    /// Runs one time-sliced MultiPV analysis of the current position.
-    ///
-    /// Invokes `on_info` with a `JsAnalysisInfo` after every completed depth, and
-    /// returns the final `JsAnalysisInfo` for the slice (lines empty if the position
-    /// is terminal). Issue repeated calls to deepen; abort mid-slice by writing to
-    /// [`stop_flag_ptr`] (shared-memory builds only).
+    /// Runs one time-sliced MultiPV analysis, invoking `on_info` after every completed
+    /// depth and returning the slice's final info. Call repeatedly to deepen; abort
+    /// mid-slice via [`stop_flag_ptr`] on shared-memory builds.
     pub fn analyse(&mut self, options: JsValue, on_info: js_sys::Function) -> JsValue {
         let options: JsAnalyseOptions = match serde_wasm_bindgen::from_value(options) {
             Ok(o) => o,
@@ -961,15 +947,14 @@ impl Engine {
         };
 
         let mut callback = |info: &search::DepthInfo| {
-            let js_info = serde_wasm_bindgen::to_value(&build_js_info(info)).unwrap_or(JsValue::NULL); // prettier-ignore
+            let js_info =
+                serde_wasm_bindgen::to_value(&build_js_info(info)).unwrap_or(JsValue::NULL); // prettier-ignore
             let _ = on_info.call1(&JsValue::NULL, &js_info);
         };
 
-        // Multithreaded build with an initialized thread pool: DETACHED helpers run a plain
-        // search on the same position, filling the shared TT (Lazy SMP), while this thread
-        // runs the sliced MultiPV analysis. Helpers spawn once per position and keep searching
-        // through the worker's JS yields; they retire when the epoch bumps (next position, or
-        // stop_analysis_helpers), never here.
+        // Detached Lazy SMP helpers fill the shared TT while this thread runs the
+        // sliced MultiPV analysis. They spawn once per position, search through the
+        // worker's JS yields, and retire only when the epoch bumps.
         #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
         {
             // Helpers = pool size - 1, capped at 3: the site exposes up to 4 analysis threads.
@@ -983,9 +968,8 @@ impl Engine {
                 if start_depth <= 1
                     || search::HELPERS_LIVE.load(std::sync::atomic::Ordering::Relaxed) == 0
                 {
-                    let epoch = search::HELPER_EPOCH
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
+                    let epoch =
+                        search::HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     search::GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
                     for i in 1..num_threads {
                         let game_clone = self.game.clone();
@@ -1138,17 +1122,17 @@ mod tests {
             Variant::parse("Chess on an Infinite Plane - Knightriders Option"),
             Variant::CoaIPNO
         );
-        assert_eq!(
-            Variant::parse("Chess on an Infinite Plane"),
-            Variant::CoaIP
-        );
+        assert_eq!(Variant::parse("Chess on an Infinite Plane"), Variant::CoaIP);
         assert_eq!(Variant::parse("Classical+"), Variant::ClassicalPlus);
         assert_eq!(Variant::parse("not a real variant"), Variant::Classical);
 
         assert_eq!(Variant::Chess.get_default_bounds(), (1, 8, 1, 8));
         assert_eq!(Variant::Obstocean.get_default_bounds(), (-6, 15, -3, 12));
         assert_eq!(Variant::DoubleKingChess.get_default_bounds(), (1, 8, 1, 8));
-        assert_eq!(Variant::TripleKingMaze.get_default_bounds(), (-8, 18, -8, 17));
+        assert_eq!(
+            Variant::TripleKingMaze.get_default_bounds(),
+            (-8, 18, -8, 17)
+        );
         assert_eq!(
             Variant::Space.get_default_bounds(),
             (

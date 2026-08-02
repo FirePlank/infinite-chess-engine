@@ -1,15 +1,6 @@
-//! Staged move generation for efficient alpha-beta search.
-//!
-//! Implements multi-stage move generation:
-//!
-//! Main Search: MAIN_TT → CAPTURE_INIT → GOOD_CAPTURE → QUIET_INIT →
-//!              GOOD_QUIET → BAD_CAPTURE → BAD_QUIET
-//!
-//! Evasions:    EVASION_TT → EVASION_INIT → EVASION
-//!
-//! ProbCut:     PROBCUT_TT → PROBCUT_INIT → PROBCUT
-//!
-//! QSearch:     QSEARCH_TT → QCAPTURE_INIT → QCAPTURE
+//! Staged move generation. Each context (main search, evasions, ProbCut, qsearch)
+//! walks its own stage sequence in [`MoveStage`] order, so the search can take a
+//! cutoff before later stages generate anything.
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
 use super::{
@@ -67,6 +58,9 @@ struct ScoredMove {
     score: i32,
 }
 
+/// (idx, prev_cap, prev_ic, prev_piece, prev_to_h)
+type ContHistoryIndex = (usize, usize, usize, usize, usize);
+
 /// Staged move generator
 pub struct StagedMoveGen {
     stage: MoveStage,
@@ -96,9 +90,8 @@ pub struct StagedMoveGen {
     skip_quiets: bool,
     excluded_move: Option<Move>,
 
-    // Pre-calculated continuation history pointers for the current ply:
-    // [(idx, prev_cap, prev_ic, prev_piece, prev_to_h)]
-    cont_history_indices: smallvec::SmallVec<[(usize, usize, usize, usize, usize); 3]>,
+    // Pre-calculated continuation history pointers for the current ply.
+    cont_history_indices: smallvec::SmallVec<[ContHistoryIndex; 3]>,
 
     // Side-to-move pin map, computed once per node and shared by the capture
     // and quiet stages.
@@ -276,13 +269,9 @@ impl StagedMoveGen {
         Self::moves_match(m, &self.excluded_move)
     }
 
-    /// TT/killer moves are decoded without their castling rook partner, so a
-    /// castling move (a royal stepping two squares) arrives with
-    /// `rook_coord: None` and fails pseudo-legality. Rebuild the partner from
-    /// the current position using the same nearest-eligible-partner rule move
-    /// generation uses, so the castling move validates and is tried rather than
-    /// being silently dropped (a generated castling move otherwise matches the
-    /// invalid TT move on from/to and gets skipped as "already tried").
+    /// TT and killer moves decode without their castling rook partner, so a castling
+    /// move fails pseudo-legality and is then skipped as already-tried when generation
+    /// produces it. Rebuild the partner by the same nearest-eligible rule.
     fn reconstruct_castling_partner(game: &GameState, mut m: Move) -> Move {
         if m.rook_coord.is_some() || !m.piece.piece_type().is_royal() {
             return m;
@@ -292,17 +281,17 @@ impl StagedMoveGen {
             return m;
         }
         let dir = if dx > 0 { 1i64 } else { -1i64 };
-        if let Some(row) = game.spatial_indices.rows.get(&m.from.y) {
-            if let Some((partner_x, packed)) = row.find_nearest(m.to.x, dir) {
-                let partner = crate::board::Piece::from_packed(packed);
-                let partner_coord = crate::board::Coordinate::new(partner_x, m.from.y);
-                if partner.color() == m.piece.color()
-                    && partner.piece_type() != PieceType::Pawn
-                    && !partner.piece_type().is_royal()
-                    && game.special_rights.contains(&partner_coord)
-                {
-                    m.rook_coord = Some(partner_coord);
-                }
+        if let Some(row) = game.spatial_indices.rows.get(&m.from.y)
+            && let Some((partner_x, packed)) = row.find_nearest(m.to.x, dir)
+        {
+            let partner = crate::board::Piece::from_packed(packed);
+            let partner_coord = crate::board::Coordinate::new(partner_x, m.from.y);
+            if partner.color() == m.piece.color()
+                && partner.piece_type() != PieceType::Pawn
+                && !partner.piece_type().is_royal()
+                && game.special_rights.contains(&partner_coord)
+            {
+                m.rook_coord = Some(partner_coord);
             }
         }
         m
@@ -344,11 +333,9 @@ impl StagedMoveGen {
             return false;
         }
 
-        // 3. Target Occupancy Check (Generic). Fetch the target tile once and
-        // read both the packed piece (for identity) and the occupancy bit. A
-        // neutral Void packs to 0 yet occupies, so pawn pushes below must test
-        // occupancy, not packed==0 — but taking occ_all from this same fetch
-        // avoids a second tile lookup.
+        // One tile fetch yields both the packed piece and the occupancy bit. A neutral
+        // Void packs to 0 yet occupies, so pawn pushes must test occupancy rather than
+        // packed == 0.
         let (tx, ty) = tile_coords(m.to.x, m.to.y);
         let to_idx = local_index(m.to.x, m.to.y);
         let (target_packed, target_occupied) = if tx == cx && ty == cy {
@@ -504,9 +491,9 @@ impl StagedMoveGen {
             let victim_val = game.get_piece_value(target.piece_type(), target.color());
             let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
             // Include promotion gain so capture-promotions sort by their true value.
-            let promo_gain = m
-                .promotion
-                .map_or(0, |pt| game.get_piece_value(pt, m.piece.color()) - attacker_val);
+            let promo_gain = m.promotion.map_or(0, |pt| {
+                game.get_piece_value(pt, m.piece.color()) - attacker_val
+            });
 
             let pt_idx = m.piece.piece_type() as usize;
             let target_idx = target.piece_type() as usize;
@@ -593,12 +580,10 @@ impl StagedMoveGen {
             score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 
-        // Check bonus (if move gives check and SEE >= -75)
         if Self::move_gives_check_fast(game, m) && super::see_ge(game, m, -75) {
             score += 16384;
         }
 
-        // Low ply history
         if self.ply < LOW_PLY_HISTORY_SIZE {
             let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
             unsafe {
@@ -609,10 +594,9 @@ impl StagedMoveGen {
             }
         }
 
-        // Threat-aware ordering, gated to large subtrees (depth >= 4): a quiet that
-        // attacks an enemy piece is ~2x more likely to be the played move (all-corpus
-        // audit; undefended victim 1.93x), and this forward signal doesn't alias like
-        // dest-hashed history does at deep nodes. Shallow nodes (the bulk) skip it.
+        // A quiet attacking an enemy piece is about twice as likely to be played, and
+        // unlike dest-hashed history this signal does not alias at deep nodes. Gated to
+        // depth >= 4, since the shallow nodes are the bulk of the tree.
         if self.depth >= 4 {
             let empty_pins = rustc_hash::FxHashMap::default();
             let ctx = crate::moves::MoveGenContext {
@@ -660,10 +644,8 @@ impl StagedMoveGen {
                 score += q.min(12000);
             }
 
-            // Defensive escape: moving a valuable piece OFF a square the enemy
-            // attacks TO a safe square saves material; order it early so LMR/LMP
-            // don't bury the defensive resource (collapse analysis: defense is
-            // under-weighted, esp. in Palace-like structures).
+            // Moving a valuable piece off an attacked square saves material, so order
+            // it early or LMR and LMP bury the defensive resource.
             let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
             if mover_val >= 250
                 && crate::moves::is_square_attacked(
@@ -790,10 +772,9 @@ impl StagedMoveGen {
                 return true;
             }
 
-            // Sliding checks need the ray from the destination to the royal to be
-            // clear; alignment alone reported blocked rays as checks, which
-            // exempted them from pruning and paid for a full SEE in the ordering.
-            // The mover's origin cannot block, since it is vacated by this move.
+            // A sliding check needs a clear ray from destination to royal; alignment
+            // alone counts blocked rays as checks, exempting them from pruning. The
+            // mover's origin cannot block, as this move vacates it.
             let ortho = (pt_bit & ORTHO_MASK) != 0 && (dx == 0 || dy == 0) && (adx + ady) > 0;
             let diag = (pt_bit & DIAG_MASK) != 0 && adx == ady && adx > 0;
             if ortho || diag {
@@ -1124,9 +1105,6 @@ impl StagedMoveGen {
                     self.stage = MoveStage::Done;
                 }
 
-                // =================================================================
-                // DONE
-                // =================================================================
                 MoveStage::Done => {
                     return None;
                 }
@@ -1247,7 +1225,10 @@ mod tests {
             .into_iter()
             .find(|m| m.piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() == 2)
             .expect("kingside castling should be legal");
-        assert!(castle.rook_coord.is_some(), "generated castling has a partner");
+        assert!(
+            castle.rook_coord.is_some(),
+            "generated castling has a partner"
+        );
 
         // Simulate the TT/killer round-trip, which drops the rook partner.
         let tt_decoded = Move {
@@ -1277,7 +1258,10 @@ mod tests {
         // emptiness test would let a (stale TT/killer) pawn push land on or pass
         // through it; occupancy-based checks must reject that.
         let game = game_from_icn("w 0/100 1 (8;q|1;q) K1,1|P4,4|k8,8|VO4,5");
-        assert!(game.board.is_occupied(4, 5), "void should occupy its square");
+        assert!(
+            game.board.is_occupied(4, 5),
+            "void should occupy its square"
+        );
 
         let pawn = Piece::new(PieceType::Pawn, PlayerColor::White);
         let push = Move::new(Coordinate::new(4, 4), Coordinate::new(4, 5), pawn);

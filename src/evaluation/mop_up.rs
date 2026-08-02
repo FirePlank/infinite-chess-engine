@@ -1,9 +1,6 @@
-// Mop-Up Evaluation
-//
-// Specialized endgame logic for positions where one side has a significant
-// material advantage. It builds a mating net around the enemy king: confine
-// it with slider cut lines (or board edges), bring our king in when the
-// material needs it, and control the escape ring.
+//! Mop-up evaluation for endgames with a decisive material edge: confine the
+//! enemy king with slider cut lines or board edges, bring our king in when the
+//! material needs it, and control the escape ring.
 
 use crate::board::{Board, Coordinate, PieceType, PlayerColor};
 use crate::game::GameState;
@@ -17,9 +14,9 @@ const MOP_UP_DEFENDER_PAWN_VALUE: i32 = 100;
 /// Minimum attacker material surplus (centipawns) for mop-up: below roughly
 /// a minor piece the ending is a fight, not a mate hunt.
 const MOP_UP_MIN_SURPLUS: i32 = 200;
-/// A defender pawn can promote and break the net outright — K+R vs K+3P is a
-/// race, not a mop-up — so shaping against a pawn-holding defender needs an
-/// overwhelming army (roughly a queen up), not a thin edge.
+/// A defender pawn can promote and break the net outright (K+R vs K+3P is a
+/// race, not a mop-up), so shaping against a pawn-holding defender needs an
+/// overwhelming army rather than a thin edge.
 const MOP_UP_PAWN_MIN_SURPLUS: i32 = 900;
 
 /// Boards whose larger dimension is at most this use the bounded lone-king
@@ -27,27 +24,23 @@ const MOP_UP_PAWN_MIN_SURPLUS: i32 = 900;
 /// piece-coordination model that works without an edge.
 const MOP_UP_BOUNDED_MAX: i64 = 200;
 
-// Bounded lone-king driving (small Stockfish-style tiebreaker on the pawn=100
-// scale). push_to_edge drives the bare king to an edge/corner; push_close keeps
-// the kings together; the KBN term forces the bishop-colored corner. Magnitudes
-// are deliberately small so they guide conversion without overriding material or
-// chasing stalemate.
+// Bounded lone-king driving, on the pawn=100 scale. Magnitudes are deliberately
+// small so they guide conversion without overriding material or chasing stalemate.
 const EDGE_DIST_CAP: i64 = 3;
 const EDGE_CORNER_BONUS: i32 = 48;
 const EDGE_FALLOFF: i32 = 2;
 const KING_CLOSE_BONUS: i32 = 60;
 const KING_CLOSE_STEP: i32 = 10;
-// KBN is the longest bounded mate (~30 accurate moves); like Stockfish's
-// dedicated KBNK evaluation these values are large, and safe to be — the block
-// only fires for exactly bishop+knight. The corner drive must out-gradient
-// every tiebreaker or the 50-move budget dies to wandering.
+// KBN is the longest bounded mate (~30 accurate moves), and the block only fires
+// for exactly bishop+knight, so these values are large. The corner drive must
+// out-gradient every tiebreaker or the 50-move budget dies to wandering.
 const KBN_CORNER_BONUS: i32 = 800;
 const KBN_CORNER_STEP: i32 = 100;
 const KBN_CLOSE_STEP: i32 = 40;
 
-// ===== Mating-net weights (unbounded model), ordered by tier =====
-// Tier 1 — confinement. The dominant, monotone progress signal: walls (slider
-// cut lines or near board edges) boxing the enemy king in, tighter is better.
+// Mating-net weights (unbounded model), ordered by tier.
+// Tier 1, confinement: the dominant monotone progress signal. Walls (slider cut
+// lines or near board edges) box the enemy king in; tighter is better.
 const WALL_RELEVANT_DIST: i64 = 100;
 const CUT_FLAT_ORTHO: i32 = 25;
 const CUT_STEP_ORTHO: i32 = 7;
@@ -57,9 +50,8 @@ const CUT_STEP_DIAG: i32 = 2;
 const CUT_CAP_DIAG: i64 = 12;
 const SANDWICH_ORTHO: i32 = 60;
 const SANDWICH_DIAG: i32 = 16;
-// An adjacent pair of diagonal lines (offsets differing by one, i.e.
-// opposite-colored bishops side by side) is a true wall: a king hops a single
-// diagonal (offset -1 to +1 in one step) but can never cross the pair.
+// An adjacent pair of diagonal lines (opposite-colored bishops side by side) is
+// a true wall: a king hops one diagonal per step but can never cross the pair.
 const DIAG_PAIR_FLAT: i32 = 70;
 const DIAG_PAIR_STEP: i32 = 7;
 const DIAG_PAIR_CAP: i64 = 20;
@@ -71,10 +63,9 @@ const FULL_BOX_BONUS: i32 = 120;
 const CAGE_FLAT: i32 = 120;
 const CAGE_MAX: i32 = 620;
 
-// Target-box formation: a fixed cage blueprint anchored to the enemy king's
-// cell on a coarse grid. Stations don't move while he shuffles inside the
-// cell, so marching a piece to its station is progress the defender cannot
-// undo — unlike chasing terms anchored to his exact square.
+// Target-box formation: a fixed cage blueprint anchored to the enemy king's cell
+// on a coarse grid. Stations don't move while he shuffles inside the cell, so
+// marching a piece to its station is progress the defender cannot undo.
 const BOX_GRID: i64 = 8;
 const BOX_R: i64 = 5;
 const STATION_BASE: i32 = 90;
@@ -88,9 +79,9 @@ const MANNED_LADDER: [i32; 7] = [0, 40, 100, 190, 300, 420, 540];
 /// entering the kill zone is strictly better than holding stations.
 const KILL_ZONE_BONUS: i32 = 500;
 
-// Tier 2 — king participation. On the unbounded board nearly every minimal
-// mate needs the king, so approach is steep; with an overwhelming battery it
-// stays a mild tiebreaker so the pieces do the work without wasted king marches.
+// Tier 2, king participation. On the unbounded board nearly every minimal mate
+// needs the king, so approach is steep; with an overwhelming battery it stays a
+// mild tiebreaker so the pieces do the work without wasted king marches.
 const KING_STEP_NEEDED: i32 = 28;
 const KING_CAP_NEEDED: i64 = 48;
 const KING_NEAR2_NEEDED: i32 = 160;
@@ -99,7 +90,7 @@ const KING_STEP_IDLE: i32 = 7;
 const KING_CAP_IDLE: i64 = 24;
 const KING_TAIL_STEP: i32 = 8;
 
-// Tier 3 — escape-ring control around the enemy king.
+// Tier 3, escape-ring control around the enemy king.
 const RING_COVER: i32 = 14;
 const RING_ESC_BOTH: i32 = 20;
 const RING_ESC_ONE: i32 = 10;
@@ -110,33 +101,25 @@ const RING_OUTER_COVER: i32 = 7;
 /// engaged; a far king must never gain by sidestepping to reclassify pieces.
 const NEAR_GATE_DIST: i64 = 12;
 
-// Tier 4 — per-piece shaping. Small tiebreakers, each kept below one
-// king-step of value so they can never outbid king approach.
+// Tier 4, per-piece shaping. Each term stays below one king-step of value so it
+// can never outbid king approach.
 const SLIDER_BAND_BONUS: i32 = 22;
 const SLIDER_HUG_PENALTY: i32 = 20;
 const SLIDER_FAR_STEP: i32 = 3;
 const SLIDER_FAR_CAP: i64 = 30;
 const WALL_HARASS_PENALTY: i32 = 30;
-// A held cut is safest FAR along its line: near the runner the wall piece
-// gets chased, and every re-cut hop burns the tempo the king march needs
-// (trace-proven treadmill: rook hops +2 ahead forever, king never arrives).
+// A held cut is safest FAR along its line: near the runner the wall piece gets
+// chased, and every re-cut hop burns the tempo the king march needs.
 const SLIDER_STANDOFF_STEP: i32 = 2;
 const SLIDER_STANDOFF_CAP: i64 = 40;
-// A wall on the enemy king's flight side (away from our king) stops the
-// runner gaining ground — the side facing our king is covered by the king
-// itself. Weighted above the sandwich so two walls prefer the front+side
-// box over the parallel corridor a runner can race along forever.
+// A wall on the enemy king's flight side stops the runner gaining ground; the
+// near side is covered by our king. Weighted above the sandwich so two walls
+// prefer the front+side box over a corridor the runner can race along forever.
 const ORTHO_FLIGHT_SIDE: i32 = 70;
 
-// ===== Dedicated K+2R vs K (two-rook lawnmower) =====
-// Two rooks + our king mate a lone king on the unbounded board by the rolling
-// (lawnmower) technique: the rooks cut the two escape lines AHEAD of the
-// fleeing king while our king walls the near two sides, so the king is boxed
-// and driven into our king. The generic net treats the rooks as independent
-// cut lines and settles for a safe two-file corridor the king runs up forever;
-// this case-specific term instead scores the FINITE box and its perimeter, so
-// the only way the enemy can stop the box shrinking is to flee toward our
-// king — which is the win.
+// Dedicated K+2R vs K (two-rook lawnmower). The generic net treats the rooks as
+// independent cut lines and settles for a corridor the king runs up forever;
+// this term scores the FINITE box, so the only escape is toward our king.
 /// A confining side (rook line or our king) counts only within this range.
 const TR_SIDE_RANGE: i64 = 200;
 /// Each of the four sides the king is bounded on.
@@ -154,8 +137,8 @@ const TR_APPROACH_MAX: i64 = 100;
 const TR_OPPOSITION: i32 = 200;
 /// Connected (mutually defended) rooks are safe from harassment.
 const TR_CONNECTED: i32 = 80;
-/// A rook the enemy king attacks that neither our king nor its partner
-/// defends is hanging — refuse the sacrifice unconditionally.
+/// A rook the enemy king attacks that neither our king nor its partner defends
+/// is hanging; refuse the sacrifice unconditionally.
 const TR_HANG: i32 = 800;
 
 const LEAPER_ENGAGE_STEP: i32 = 8;
@@ -175,8 +158,14 @@ struct SliderInfo {
 
 /// 8 compass directions around a square (4 ortho + 4 diagonal).
 const RING_DIRS: [(i64, i64); 8] = [
-    (1, 0), (-1, 0), (0, 1), (0, -1),
-    (1, 1), (-1, -1), (1, -1), (-1, 1),
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (-1, -1),
+    (1, -1),
+    (-1, 1),
 ];
 
 /// Geometric attack pattern check (ignores blockers).
@@ -196,15 +185,9 @@ fn piece_attacks_geom(pt: PieceType, color: PlayerColor, dx: i64, dy: i64) -> bo
         PieceType::Chancellor => {
             dx == 0 || dy == 0 || (adx == 1 && ady == 2) || (adx == 2 && ady == 1)
         }
-        PieceType::Archbishop => {
-            adx == ady || (adx == 1 && ady == 2) || (adx == 2 && ady == 1)
-        }
+        PieceType::Archbishop => adx == ady || (adx == 1 && ady == 2) || (adx == 2 && ady == 1),
         PieceType::Amazon => {
-            dx == 0
-                || dy == 0
-                || adx == ady
-                || (adx == 1 && ady == 2)
-                || (adx == 2 && ady == 1)
+            dx == 0 || dy == 0 || adx == ady || (adx == 1 && ady == 2) || (adx == 2 && ady == 1)
         }
         PieceType::Knight => (adx == 1 && ady == 2) || (adx == 2 && ady == 1),
         PieceType::Camel => (adx == 1 && ady == 3) || (adx == 3 && ady == 1),
@@ -300,13 +283,9 @@ fn cage_eval_walls(
     }
 }
 
-/// Detects if the enemy king is trapped within a localized "cage" of attacked squares.
-/// Returns whether a cage exists and the total reachable area for the king.
-///
-/// Floods an enemy-king-centered 32x32 window away from the king, treating
-/// out-of-bounds / our-attacked / our-occupied squares as walls. Wall squares
-/// are evaluated lazily — only for cells the flood actually reaches — so a small
-/// contained cage costs a handful of `is_square_attacked` calls rather than 1024.
+/// Detects whether the enemy king is trapped in a localized cage of attacked
+/// squares, returning that and its total reachable area. Walls are evaluated
+/// lazily, so a small cage costs a handful of `is_square_attacked` calls.
 #[inline]
 fn find_bitboard_cage(
     board: &Board,
@@ -348,8 +327,16 @@ fn find_bitboard_cage(
         let mut changed = false;
         for y in 0..32 {
             cage_eval_walls(
-                board, indices, our_color, origin_x, origin_y, bounds, y,
-                next_reachable[y], &mut forbidden, &mut computed,
+                board,
+                indices,
+                our_color,
+                origin_x,
+                origin_y,
+                bounds,
+                y,
+                next_reachable[y],
+                &mut forbidden,
+                &mut computed,
             );
             let prev = reachable[y];
             next_reachable[y] &= !forbidden[y];
@@ -363,7 +350,6 @@ fn find_bitboard_cage(
             break;
         }
 
-        // Check if we hit the perimeter
         if (reachable[0] | reachable[31]) != 0 {
             return (false, 1024);
         }
@@ -382,8 +368,6 @@ fn find_bitboard_cage(
 
     (area > 0 && area < 1000, area)
 }
-
-// --- Utility Functions ---
 
 /// True when the losing side has no pawns and at most one non-royal piece:
 /// the full mating-net machinery (cage flood fill) applies.
@@ -405,15 +389,11 @@ fn defender_is_bareish(game: &GameState, color: PlayerColor) -> bool {
     pawns == 0 && (pieces as usize).saturating_sub(royals) <= 1
 }
 
-/// Calculates the mop-up scaling factor (0-100).
-/// Full strength against a bare king. With defender material present, the
-/// scale follows the attacker's material surplus relative to the defense the
-/// leftover pieces can put up: a big enough army mops up even against a
-/// defender queen, while a thin edge over a defended king gets little to
-/// no shaping.
+/// Calculates the mop-up scaling factor (0-100). Full strength against a bare
+/// king; with defender material the scale follows the attacker's surplus
+/// relative to the defense the leftover pieces can put up.
 #[inline]
 pub fn calculate_mop_up_scale(game: &GameState, losing_color: PlayerColor) -> Option<u32> {
-    // Check winning side has at least one non-pawn piece
     let winning_has_pieces = if losing_color == PlayerColor::White {
         game.has_non_pawn_material(PlayerColor::Black)
     } else {
@@ -478,21 +458,17 @@ pub fn evaluate_lone_king_endgame(
     evaluate_mop_up_core(game, our_king, enemy_king, winning_color)
 }
 
-/// Ceiling for the shaping term when the defender still has material: against
-/// a defended king the net is a guide, never a win claim — real material and
-/// concrete search lines carry the verdict. Bare kings (scale 100) keep the
-/// full uncompressed net; forced-mate hunts need its whole gradient range.
+/// Ceiling for the shaping term when the defender still has material: the net is
+/// a guide, never a win claim. Bare kings (scale 100) keep the full uncompressed
+/// net, since forced-mate hunts need its whole gradient range.
 const MOP_UP_DEFENDED_CAP: i32 = 400;
 /// Downside saturation: shaping penalties keep their slope near zero but the
 /// total can never punish the winner more than this for entering mop-up.
 const MOP_UP_NEGATIVE_CAP: i32 = 250;
 
-/// The single source of truth for mop-up activation. Returns the winning
-/// color and the activation scale (0-100) when one side is reduced to a
-/// bare-ish king (at most one non-pawn piece besides royals, plus pawns
-/// covered by the surplus rules) while the other keeps a small pawnless
-/// mating force. Both the evaluation term and the search's conversion-aware
-/// skill policy route through here so they cannot disagree about activation.
+/// The single source of truth for mop-up activation: the winning color and the
+/// activation scale (0-100). Both the evaluation term and the search's
+/// conversion-aware skill policy route through here so they cannot disagree.
 #[inline]
 pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     let white_np = game.white_piece_count.saturating_sub(game.white_pawn_count);
@@ -522,9 +498,8 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
 }
 
 /// Activation-scaled net shaping from the winner's perspective. Against a
-/// bare king (scale 100) the net passes through untouched; against a defended
-/// king it additionally saturates toward MOP_UP_DEFENDED_CAP, so no sum of
-/// shaping bonuses can ever outweigh the material on the board.
+/// defended king it saturates toward MOP_UP_DEFENDED_CAP, so no sum of shaping
+/// bonuses can outweigh the material on the board.
 pub fn evaluate_mop_up_scaled(game: &GameState, winner: PlayerColor, scale: u32) -> i32 {
     let (our_king, enemy_king) = if winner == PlayerColor::White {
         (game.white_royals.first(), game.black_royals.first())
@@ -548,14 +523,9 @@ pub fn evaluate_mop_up_scaled(game: &GameState, winner: PlayerColor, scale: u32)
     (x * cap / (x + cap)) as i32
 }
 
-// --- Core Evaluation ---
-
-/// Bounded-board KX-vs-K mating guidance. On a bounded board the edge does the
-/// confining work that pieces must do on an unbounded board, so a small
-/// Stockfish-style tiebreaker is enough: drive the bare king toward the
-/// edge/corner (`push_to_edge`), keep our king close (`push_close`), and for
-/// KBN drive toward a bishop-colored corner. Magnitudes are small so they guide
-/// conversion without overriding material or chasing stalemate.
+/// Bounded-board KX-vs-K mating guidance. The edge does the confining work that
+/// pieces must do unbounded, so a small tiebreaker suffices: drive the bare king
+/// to the edge, keep our king close, and for KBN aim at a bishop-colored corner.
 fn bounded_lone_king_mop_up(
     game: &GameState,
     our_king: Option<&Coordinate>,
@@ -607,7 +577,12 @@ fn bounded_lone_king_mop_up(
     if bishops == 1 && knights == 1 && others == 0 {
         let bishop_dark = ((bishop_sq.0 + bishop_sq.1) & 1) != 0;
         let mut best = i64::MAX;
-        for (cx, cy) in [(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)] {
+        for (cx, cy) in [
+            (min_x, min_y),
+            (min_x, max_y),
+            (max_x, min_y),
+            (max_x, max_y),
+        ] {
             if (((cx + cy) & 1) != 0) == bishop_dark {
                 best = best.min((cx - ex).abs().max((cy - ey).abs()));
             }
@@ -744,14 +719,9 @@ fn is_diag_slider(pt: PieceType) -> bool {
     )
 }
 
-/// Target-box formation score for one box size. The box is centered on the
-/// enemy king's cell of a coarse grid (stable while he shuffles within it),
-/// always containing him at BOX_R. Each piece gets a station by movement
-/// type: ortho sliders man the four side lines, opposite-parity diag sliders
-/// are jointly assigned to ONE corner family/side (adjacent lines — a true
-/// pair wall), leapers and our king man side midpoints. Pieces score for
-/// approaching their station and the formation pays an escalating ladder as
-/// stations are manned.
+/// Target-box formation score for one box size, centered on the enemy king's
+/// coarse-grid cell. Each piece gets a station by movement type; pieces score for
+/// approaching it and the formation pays an escalating ladder as stations fill.
 fn target_box_score(
     pieces: &[SliderInfo],
     our_king: Option<&Coordinate>,
@@ -778,8 +748,8 @@ fn target_box_score(
         }
         let mut best = i64::MAX;
         let mut best_slot = 4;
-        for slot in 0..4 {
-            if !line_taken[slot] {
+        for (slot, taken) in line_taken.iter().enumerate() {
+            if !*taken {
                 let d = line_dist(s, slot);
                 if d < best {
                     best = d;
@@ -796,10 +766,9 @@ fn target_box_score(
         }
     }
 
-    // Diag stations: lines just outside the box in each family, adjusted to
-    // the piece's own line parity so opposite-colored bishops form the
-    // adjacent pair on whichever side they pick. Not exclusive: two pieces on
-    // one side IS the wall.
+    // Diag stations sit just outside the box, snapped to the piece's own line
+    // parity so opposite-colored bishops pair up on whichever side they pick.
+    // Not exclusive: two pieces on one side IS the wall.
     let box_dp = cx + cy;
     let box_dn = cx - cy;
     let span = 2 * r + 1;
@@ -849,7 +818,14 @@ fn target_box_score(
         if best_slot < 4 {
             taken[best_slot] = true;
             let score = (STATION_BASE - (best.min(60) as i32) * STATION_STEP).max(0);
-            return (score.max(if best <= STATION_TOL_LEAPER { STATION_BASE } else { 0 }), best <= STATION_TOL_LEAPER);
+            return (
+                score.max(if best <= STATION_TOL_LEAPER {
+                    STATION_BASE
+                } else {
+                    0
+                }),
+                best <= STATION_TOL_LEAPER,
+            );
         }
         (0, false)
     };
@@ -874,15 +850,12 @@ fn target_box_score(
     bonus + MANNED_LADDER[manned.min(MANNED_LADDER.len() - 1)]
 }
 
-// The moving pocket: the mating technique for leaper-led armies (one wall or
-// none), decoded from real mate positions — our king pushes from behind in
-// opposition, the LEAPERS lead ahead of the runner covering his escape
-// squares (they are the only pieces faster than him, so tracking him is
-// affordable for them and only them), and the slider trails with line access
-// to deliver the final check.
+// The moving pocket, for leaper-led armies with at most one wall: our king
+// pushes from behind in opposition, the leapers lead ahead of the runner covering
+// his escape squares, and the slider trails with line access for the final check.
 const POCKET_BASE: i32 = 110;
-// Above the king's per-step approach: the leapers must LEAD the pocket
-// (they are faster than the runner), not starve behind king marches.
+// Above the king's per-step approach: the leapers must lead the pocket, not
+// starve behind king marches.
 const POCKET_STEP: i32 = 20;
 const POCKET_MANNED: i32 = 60;
 const POCKET_ALL_MANNED: i32 = 140;
@@ -919,10 +892,7 @@ fn evaluate_pocket(
     } else if esc_y == 0 {
         [(ex + 3 * esc_x, ey - 1), (ex + 3 * esc_x, ey + 1)]
     } else {
-        [
-            (ex + esc_x, ey + 3 * esc_y),
-            (ex + 3 * esc_x, ey + esc_y),
-        ]
+        [(ex + esc_x, ey + 3 * esc_y), (ex + 3 * esc_x, ey + esc_y)]
     };
 
     let mut bonus = 0;
@@ -983,10 +953,9 @@ fn evaluate_target_box(
     our_king: Option<&Coordinate>,
     enemy_king: &Coordinate,
 ) -> i32 {
-    // Max over the 3x3 anchor-cell neighborhood: a single defender king step can
-    // never drop the previous best anchor out of the set, so crossing a grid
-    // boundary no longer teleports the stations (score cliff); piece-marching
-    // progress stays monotone (max of monotone components).
+    // Max over the 3x3 anchor-cell neighborhood, so crossing a grid boundary
+    // cannot teleport the stations: a single defender king step never drops the
+    // previous best anchor out of the set, keeping marching progress monotone.
     let bx = enemy_king.x.div_euclid(BOX_GRID);
     let by = enemy_king.y.div_euclid(BOX_GRID);
     let mut best = 0;
@@ -1007,7 +976,7 @@ fn isqrt_u32(v: u32) -> u32 {
         return v;
     }
     let mut x = v;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + v / x) / 2;
@@ -1024,7 +993,11 @@ impl PieceList {
     #[inline(always)]
     fn new() -> Self {
         Self {
-            pieces: [SliderInfo { x: 0, y: 0, pt: PieceType::Void }; 24],
+            pieces: [SliderInfo {
+                x: 0,
+                y: 0,
+                pt: PieceType::Void,
+            }; 24],
             len: 0,
         }
     }
@@ -1050,12 +1023,9 @@ struct KingRelation {
     king_dist: i64,
 }
 
-/// Dedicated K+2R-vs-K evaluation (unbounded board), winner's perspective.
-/// The enemy king is bounded on each of the four sides by whichever is nearer,
-/// a rook's cutting line or our king; a fully bounded king is a finite cage,
-/// and shrinking that cage's perimeter drives the king toward our king (the
-/// only side it can flee without the rooks capping it). Rook safety is scored
-/// explicitly so the search never drifts a rook into capture.
+/// Dedicated K+2R-vs-K evaluation (unbounded board), winner's perspective. Each
+/// side of the king is bounded by the nearer of a rook line or our king; shrinking
+/// the resulting cage drives him toward our king. Rook safety is scored explicitly.
 fn evaluate_two_rook_drive(
     kr: KingRelation,
     enemy_king: &Coordinate,
@@ -1109,17 +1079,15 @@ fn evaluate_two_rook_drive(
         bonus += TR_FULL_CAGE;
     }
 
-    // Our king marches in — the near walls of the cage.
+    // Our king marches in, forming the near walls of the cage.
     bonus += (TR_APPROACH_MAX - kr.king_dist.min(TR_APPROACH_MAX)) as i32 * TR_APPROACH_STEP;
     if kr.king_dist <= 2 {
         bonus += TR_OPPOSITION;
     }
 
-    // Rook safety. Connected rooks (shared rank/file, clear vs a bare king)
-    // defend each other; a rook the enemy king attacks and no friendly unit
-    // guards is hanging.
-    // The enemy king standing ON the shared line between the rooks blocks
-    // their mutual defense — they are not connected then.
+    // Rook safety: connected rooks defend each other, and a rook the enemy king
+    // attacks with no guard is hanging. An enemy king standing ON the shared line
+    // blocks the mutual defense, so the rooks do not count as connected.
     let between = |v: i64, a: i64, b: i64| v > a.min(b) && v < a.max(b);
     let connected = (r1.0 == r2.0 && !(ex == r1.0 && between(ey, r1.1, r2.1)))
         || (r1.1 == r2.1 && !(ey == r1.1 && between(ex, r1.0, r2.0)));
@@ -1140,18 +1108,8 @@ fn evaluate_two_rook_drive(
 }
 
 /// Unified mating-net evaluation for the piece-coordination (unbounded) model.
-///
-/// Scores are tiered so the search always has a monotone progress gradient:
-///   1. Confinement — walls boxing the enemy king in, plus a flood-fill cage
-///      bonus that grows as the reachable area shrinks.
-///   2. King participation — steep approach when the material needs the king
-///      for mate, a mild tiebreaker when a battery can mate alone.
-///   3. Escape-ring control — covering the 8 squares around the enemy king,
-///      weighted toward the side opposite our king once the king is engaged.
-///   4. Piece shaping — small per-piece terms: sliders aim from mid range,
-///      leapers walk in, pieces sit opposite our king, avoid useless checks.
-/// Directional terms are gated on king proximity and kept below one king-step
-/// of value, so the king can never profit from stepping away to reclassify them.
+/// Tiered so the search always has a monotone progress gradient: confinement,
+/// king participation, escape-ring control, then small per-piece shaping.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_mating_net(
     game: &GameState,
@@ -1195,15 +1153,14 @@ fn evaluate_mating_net(
 
     // Leaper-led armies (one wall or none, no queen) mate with the moving
     // pocket: king pushes from behind, leapers lead ahead of the runner.
-    let pocket = bareish
-        && material.queen_count + material.amazon_count == 0
-        && material.wall_count() <= 1;
+    let pocket =
+        bareish && material.queen_count + material.amazon_count == 0 && material.wall_count() <= 1;
 
     // Directional terms ramp in smoothly as our king engages: a hard gate
     // would pay the defender a cliff of eval for stepping just past it.
     let near_scale = (NEAR_GATE_DIST + 4 - kr.king_dist.max(NEAR_GATE_DIST)).clamp(0, 4) as i32;
 
-    // ---- Tier 1: confinement ----
+    // Tier 1: confinement.
     let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
 
     // Wall distance per direction: nearest fence line or the board edge
@@ -1272,9 +1229,8 @@ fn evaluate_mating_net(
         }
     }
 
-    // Diagonal lines (offsets in x+y / x-y units). A lone diagonal only
-    // impedes — a king step hops it from offset -1 to +1 — while an adjacent
-    // pair (opposite-colored bishops) is a true wall.
+    // Diagonal lines (offsets in x+y / x-y units). A lone diagonal only impedes,
+    // since a king step hops it; an adjacent pair is a true wall.
     let enemy_dp = ex + ey;
     let enemy_dn = ex - ey;
     // Which side of each diagonal family our king stands on (0 = none/aligned).
@@ -1354,16 +1310,14 @@ fn evaluate_mating_net(
         };
         bonus += evaluate_pocket(pieces, royals, kr, enemy_king);
     } else if bareish {
-        // The box is scaffolding for the approach. Once the kill zone is set
-        // (most of the force already on top of the defender), its station
-        // gradients only detour the search away from the fastest mate, so it
-        // hands over to a flat bonus and raw tactics.
+        // The box is scaffolding: once the kill zone is set, its station gradients
+        // only detour the search away from the fastest mate.
         let engaged_pieces = pieces
             .iter()
             .filter(|s| (s.x - ex).abs().max((s.y - ey).abs()) <= 4)
             .count();
-        // Kill zone adds ON TOP of the box score: replacing it created a score
-        // cliff where the final approach lost eval vs holding the formation.
+        // Kill zone adds ON TOP of the box score; replacing it would make the
+        // final approach score below merely holding the formation.
         let kill_zone = engaged_pieces >= 3 && (kr.king_dist <= 6 || kr.king_dist == i64::MAX);
         bonus += evaluate_target_box(pieces, our_king, enemy_king);
         if kill_zone {
@@ -1386,13 +1340,13 @@ fn evaluate_mating_net(
         }
     }
 
-    // ---- Tier 2: king participation ----
+    // Tier 2: king participation.
     if kr.king_dist != i64::MAX {
         if king_mostly_idle(material, bounded) {
             bonus += ((KING_CAP_IDLE - kr.king_dist.min(KING_CAP_IDLE)) as i32) * KING_STEP_IDLE;
         } else {
-            bonus += ((KING_CAP_NEEDED - kr.king_dist.min(KING_CAP_NEEDED)) as i32)
-                * KING_STEP_NEEDED;
+            bonus +=
+                ((KING_CAP_NEEDED - kr.king_dist.min(KING_CAP_NEEDED)) as i32) * KING_STEP_NEEDED;
             if kr.king_dist <= 2 {
                 bonus += KING_NEAR2_NEEDED;
             } else if kr.king_dist <= 4 {
@@ -1405,13 +1359,20 @@ fn evaluate_mating_net(
         }
     }
 
-    // ---- Tier 3: escape-ring control ----
+    // Tier 3: escape-ring control.
     let engaged = near_scale > 0;
     let esc_scale = near_scale;
     let escape_x = if engaged { -kr.our_dx.signum() } else { 0 };
     let escape_y = if engaged { -kr.our_dy.signum() } else { 0 };
     const KNIGHT_RING: [(i64, i64); 8] = [
-        (1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2),
+        (1, 2),
+        (2, 1),
+        (2, -1),
+        (1, -2),
+        (-1, -2),
+        (-2, -1),
+        (-2, 1),
+        (-1, 2),
     ];
     let mut ring_buf: [(i64, i64); 16] = [(0, 0); 16];
     ring_buf[..8].copy_from_slice(&RING_DIRS);
@@ -1477,7 +1438,7 @@ fn evaluate_mating_net(
         }
     }
 
-    // ---- Tier 4: per-piece shaping ----
+    // Tier 4: per-piece shaping.
     for s in pieces {
         let pdx = s.x - ex;
         let pdy = s.y - ey;
@@ -1486,10 +1447,9 @@ fn evaluate_mating_net(
         let is_diag = is_diag_slider(s.pt);
 
         if is_ortho || is_diag {
-            // A slider's power is its line, not its proximity: engagement is
-            // the offset of its nearest usable line from the enemy king, so a
-            // rook posted far away along a cutting line is not "far". Hugging
-            // the king still risks capture.
+            // A slider's power is its line, not its proximity: engagement is the
+            // offset of its nearest usable line from the enemy king, so a rook far
+            // away along a cutting line is not far. Hugging the king risks capture.
             let mut line_off = i64::MAX;
             if is_ortho {
                 line_off = line_off.min(pdx.abs().min(pdy.abs()));
@@ -1503,28 +1463,22 @@ fn evaluate_mating_net(
                 bonus += SLIDER_BAND_BONUS;
             } else if is_ortho {
                 // An ortho slider off every useful line goes dead; pure diagonal
-                // pieces stay neutral — their fence lines work at any range
-                // (e.g. a pair wall posted far ahead of a fleeing king).
+                // pieces stay neutral, since their fence lines work at any range.
                 bonus -= ((line_off - 10).min(SLIDER_FAR_CAP) as i32) * SLIDER_FAR_STEP;
             }
-            // A cut is held from FAR along its line: near the king the wall
-            // piece gets harassed off the line and the runner slips through
-            // the released cut (trace-proven failure cycle). Beyond the
-            // harass radius a standoff gradient keeps pulling the holder out
-            // of chasing range entirely (offset 0 is the check ray, not a
-            // cut, and earns nothing). Standoff needs wall redundancy: an
-            // army whose ONLY wall piece stands off cannot re-cut a turning
-            // runner (the single-queen pocket must stay close).
+            // A cut is held from FAR along its line: near the king the wall piece
+            // gets harassed off it and the runner slips through. Standoff needs
+            // wall redundancy, so a lone wall piece must stay close.
             if line_off <= 2 && dist < 8 {
                 bonus -= ((8 - dist) as i32) * WALL_HARASS_PENALTY;
             }
-            if line_off >= 1 && line_off <= 2 && material.wall_count() >= 2 {
+            if (1..=2).contains(&line_off) && material.wall_count() >= 2 {
                 bonus += (dist.min(SLIDER_STANDOFF_CAP) as i32) * SLIDER_STANDOFF_STEP;
             }
         } else {
             // Short-range pieces only matter in the net once they walk in.
-            bonus += ((LEAPER_ENGAGE_CAP - dist.min(2 * LEAPER_ENGAGE_CAP)) as i32)
-                * LEAPER_ENGAGE_STEP;
+            bonus +=
+                ((LEAPER_ENGAGE_CAP - dist.min(2 * LEAPER_ENGAGE_CAP)) as i32) * LEAPER_ENGAGE_STEP;
         }
 
         if engaged {
@@ -1547,10 +1501,9 @@ fn evaluate_mating_net(
             }
         }
 
-        // Standing on the enemy king's own line is a check, not a cut. A
-        // frontal check pushes him away from our king (wasted tempo); a check
-        // from squarely behind herds him toward our king — a slider re-checks
-        // by sliding, so the herd costs no net tempo.
+        // Standing on the enemy king's own line is a check, not a cut. A frontal
+        // check pushes him away from our king and wastes tempo; a check from
+        // squarely behind herds him toward it at no net tempo cost.
         let aligned = match s.pt {
             PieceType::Rook | PieceType::Chancellor => pdx == 0 || pdy == 0,
             PieceType::Bishop | PieceType::Archbishop => pdx.abs() == pdy.abs(),
@@ -1736,9 +1689,7 @@ mod tests {
     fn test_calculate_mop_up_scale_returns_none_for_no_advantage() {
         let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,1|q4,8");
 
-        // Both sides have material, so no mop-up
         let scale = calculate_mop_up_scale(&game, PlayerColor::Black);
-        // May or may not apply depending on thresholds
         assert!(scale.is_none() || scale.unwrap() <= 100);
     }
 
@@ -1817,9 +1768,8 @@ mod tests {
 
     #[test]
     fn test_mop_up_gradient_exists_vs_defender_minor() {
-        // The mop-up used to vanish whenever the defender kept a piece; the
-        // king-approach gradient must survive a lone defender knight (and
-        // must survive the defended-net saturation, which is monotone).
+        // The king-approach gradient must survive a lone defender knight, and the
+        // defended-net saturation on top of it.
         let scaled = |icn: &str| {
             let game = create_test_game_from_icn(icn);
             let (winner, scale) = active_mop_up(&game).expect("Q+R vs N is a mop-up");
@@ -1919,7 +1869,6 @@ mod tests {
 
         let score =
             evaluate_lone_king_endgame(&game, Some(&our_king), &enemy_king, PlayerColor::White);
-        // Should be positive (White has advantage)
         assert!(score >= 0);
     }
 
@@ -1943,7 +1892,6 @@ mod tests {
 
         let score =
             evaluate_lone_king_endgame(&game, Some(&our_king), &enemy_king, PlayerColor::White);
-        // Should be positive since rooks create cutting lines
         assert!(
             score > 0,
             "Rook fence should give positive score: {}",
@@ -1965,7 +1913,6 @@ mod tests {
             PlayerColor::White,
         );
 
-        // Move white king further away
         game.setup_position_from_icn("w (8;q|1;q) k5,5|Q4,4|K1,1");
 
         let our_king_far = Coordinate::new(1, 1);
@@ -1985,7 +1932,6 @@ mod tests {
         let game = create_test_game_from_icn("w (8;q|1;q) k5,5|K4,4|R1,1|R2,2|P3,7");
 
         let scale = calculate_mop_up_scale(&game, PlayerColor::Black);
-        // Should return a scale since white has mating material
         assert!(scale.is_some(), "Should have mop-up scale with rooks");
     }
 
@@ -1998,18 +1944,19 @@ mod tests {
         // Winner with pawns vs a pawnless bare king: the pieces mate and the
         // extra pawn is irrelevant to the plan, so the net still applies.
         let winner_pawns = create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|P3,3|k9,9");
-        assert_eq!(active_mop_up(&winner_pawns), Some((PlayerColor::White, 100)));
+        assert_eq!(
+            active_mop_up(&winner_pawns),
+            Some((PlayerColor::White, 100))
+        );
 
         // ...but with pawns on BOTH sides it stays out: the defender pawn is
         // promotion counterplay that can break the net (a race, not a mop-up).
-        let both_pawned =
-            create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|P3,3|k9,9|p8,8");
+        let both_pawned = create_test_game_from_icn("w (8;q|1;q) K1,1|R2,2|P3,3|k9,9|p8,8");
         assert_eq!(active_mop_up(&both_pawned), None);
 
-        // K+R vs K+3P: a race, not a mop-up (pawn defenders need a
-        // queen-up surplus). The SPRT-fatal +16 shape.
-        let race =
-            create_test_game_from_icn("b (8;q|1;q) K8,5|P7,2+|P8,3+|P7,3+|k2,1|r3,4");
+        // K+R vs K+3P is a race, not a mop-up: pawn defenders need a queen-up
+        // surplus.
+        let race = create_test_game_from_icn("b (8;q|1;q) K8,5|P7,2+|P8,3+|P7,3+|k2,1|r3,4");
         assert_eq!(active_mop_up(&race), None);
 
         // Defender queen vs a big army: active, scaled down.
@@ -2033,11 +1980,16 @@ mod tests {
         let bare = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,2|R3,1|k9,9");
         let (w, s) = active_mop_up(&bare).unwrap();
         let full = evaluate_mop_up_scaled(&bare, w, s);
-        assert!(full > MOP_UP_DEFENDED_CAP, "bare-king net keeps its full range: {}", full);
+        assert!(
+            full > MOP_UP_DEFENDED_CAP,
+            "bare-king net keeps its full range: {}",
+            full
+        );
 
         // ...but with a defender piece on the board the term saturates below
         // the cap, so shaping can never outweigh material.
-        let defended = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,2|Q3,1|R1,3|R4,4|k9,9|q10,10");
+        let defended =
+            create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,2|Q3,1|R1,3|R4,4|k9,9|q10,10");
         let (w, s) = active_mop_up(&defended).unwrap();
         let capped = evaluate_mop_up_scaled(&defended, w, s);
         assert!(
@@ -2094,17 +2046,11 @@ mod tests {
 
     #[test]
     fn test_smart_mop_up_prefers_pieces_opposite_our_king() {
-        // White king on the left of black king (5,5). A second piece (chancellor)
-        // far away to the right cuts off escape — should score higher than placing
-        // it on the same side as our king.
-        // Unbounded position with two chancellors, so the piece-coordination
-        // model runs and the test isolates the smart opposition logic.
-        let opposite = create_test_game_from_icn(
-            "w (50;q|1;q) k5,5|K3,5|CH20,5|CH18,3",
-        );
-        let same_side = create_test_game_from_icn(
-            "w (50;q|1;q) k5,5|K3,5|CH-20,5|CH-18,3",
-        );
+        // A chancellor far to the right of the black king cuts off escape, and
+        // should score higher than one on the same side as our king. Two
+        // chancellors keep the position on the piece-coordination model.
+        let opposite = create_test_game_from_icn("w (50;q|1;q) k5,5|K3,5|CH20,5|CH18,3");
+        let same_side = create_test_game_from_icn("w (50;q|1;q) k5,5|K3,5|CH-20,5|CH-18,3");
         let ek = Coordinate::new(5, 5);
         let s_opp = evaluate_lone_king_endgame(
             &opposite,
@@ -2131,12 +2077,9 @@ mod tests {
         // Knight + Camel + Giraffe surround a king with our king nearby.
         // Compared to all those pieces clustered far away, ring coverage
         // and sandwich logic should give a clearly higher score.
-        let near = create_test_game_from_icn(
-            "w (50;q|1;q) k10,10|K12,10|N8,9|CA7,10|GI10,14",
-        );
-        let far = create_test_game_from_icn(
-            "w (50;q|1;q) k10,10|K-30,-30|N-32,-31|CA-33,-30|GI-30,-26",
-        );
+        let near = create_test_game_from_icn("w (50;q|1;q) k10,10|K12,10|N8,9|CA7,10|GI10,14");
+        let far =
+            create_test_game_from_icn("w (50;q|1;q) k10,10|K-30,-30|N-32,-31|CA-33,-30|GI-30,-26");
         let ek = Coordinate::new(10, 10);
         let s_near = evaluate_lone_king_endgame(
             &near,
@@ -2160,12 +2103,10 @@ mod tests {
 
     #[test]
     fn test_smart_mop_up_axis_sandwich_bonus() {
-        // Three rooks (so the position uses the generic net, not the dedicated
-        // K+2R drive): rooks above and below the enemy king (vertical sandwich)
-        // should score higher than rooks both above (no sandwich). The third
-        // rook is placed identically in both to isolate the sandwich term.
-        let sandwich =
-            create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,2|R10,18|R60,10");
+        // Rooks above and below the enemy king should beat both above. A third
+        // rook, placed identically in both, keeps the position off the dedicated
+        // K+2R drive so the generic net's sandwich term is what is measured.
+        let sandwich = create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,2|R10,18|R60,10");
         let no_sandwich =
             create_test_game_from_icn("w (50;q|1;q) k10,10|K10,7|R10,18|R10,19|R60,10");
         let ek = Coordinate::new(10, 10);
@@ -2190,6 +2131,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn test_piece_attacks_geom_basic_pieces() {
         // Sanity-check the geometric attack table for representative pieces.
         assert!(piece_attacks_geom(PieceType::Rook, PlayerColor::White, 7, 0));
@@ -2219,7 +2161,6 @@ mod tests {
             &enemy_king,
             PlayerColor::White,
         );
-        // The king should be significantly restricted
         assert!(
             area < 100,
             "King should be in a small area, found: {}",
@@ -2313,8 +2254,10 @@ mod tests {
         for (icn, kx, ky) in cases {
             let game = create_test_game_from_icn(icn);
             let ek = Coordinate::new(kx, ky);
-            let got = find_bitboard_cage(&game.board, &game.spatial_indices, &ek, PlayerColor::White);
-            let want = cage_eager_reference(&game.board, &game.spatial_indices, &ek, PlayerColor::White);
+            let got =
+                find_bitboard_cage(&game.board, &game.spatial_indices, &ek, PlayerColor::White);
+            let want =
+                cage_eager_reference(&game.board, &game.spatial_indices, &ek, PlayerColor::White);
             assert_eq!(got, want, "cage mismatch for icn: {}", icn);
         }
     }

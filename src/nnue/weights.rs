@@ -1,7 +1,5 @@
-//! NNUE Weights Loading
-//!
-//! Loads quantized weights from the embedded binary file.
-//! For WASM compatibility, weights are embedded at compile time.
+//! Loads quantized NNUE weights from a binary embedded at compile time, so wasm
+//! builds need no runtime fetch.
 
 use once_cell::sync::Lazy;
 use std::io::{Cursor, Read};
@@ -174,9 +172,7 @@ fn read_i32_array(cursor: &mut Cursor<&[u8]>, count: usize) -> Result<Box<[i32]>
     Ok(result.into_boxed_slice())
 }
 
-// ============================================================================
 // EMBEDDED WEIGHT
-// ============================================================================
 
 /// Embedded NNUE weights binary.
 /// This file should be generated after training.

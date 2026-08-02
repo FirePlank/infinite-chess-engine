@@ -1,23 +1,12 @@
-//! High-performance Magic Number Generator (Edge-Inclusive 8x8 chunk)
-//!
-//! Run:
-//!   cargo run --release --bin generate_magics
-//! Optional args:
-//!   --threads N
-//!   --refresh-ms 100
-//!   --no-improve
-//!
-//! Notes for infinite board:
-//! These magics are for an 8x8 CHUNK bitboard. For rays that pass the chunk edge
-//! without a blocker, you continue into neighbor chunks with the same logic.
+//! Magic number generator for edge-inclusive 8x8 chunk bitboards. Rays that leave a
+//! chunk without hitting a blocker continue into the neighbor chunk under the same
+//! logic, which is why the masks keep their edge squares.
 
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-
-// ------------------------------ CLI ------------------------------
 
 #[derive(Clone, Copy)]
 struct Args {
@@ -60,8 +49,6 @@ impl Args {
     }
 }
 
-// ------------------------------ Shared state ------------------------------
-
 struct Shared {
     running: AtomicBool,
     phase: AtomicU8,
@@ -96,7 +83,7 @@ impl Shared {
     }
 }
 
-// ------------------------------ Square data ------------------------------
+// Square data
 
 #[derive(Clone)]
 struct SquareData {
@@ -177,7 +164,7 @@ fn ceil_log2_usize(x: usize) -> u8 {
     (usize::BITS - v.leading_zeros()) as u8
 }
 
-// ------------------------------ Scratch (epoch-stamped) ------------------------------
+// Scratch (epoch-stamped)
 
 struct Scratch {
     stamp: Vec<u32>,
@@ -214,8 +201,6 @@ impl Scratch {
         self.epoch
     }
 }
-
-// ------------------------------ RNG ------------------------------
 
 #[inline]
 fn mix64(mut x: u64) -> u64 {
@@ -254,7 +239,7 @@ impl SimpleRng {
     }
 }
 
-// ------------------------------ Magic search core ------------------------------
+// Magic search core
 
 fn find_magic_for_shift_rng(
     data: &SquareData,
@@ -351,7 +336,7 @@ fn find_best_magic_for_square(
     None
 }
 
-// ------------------------------ Phase 1 & Phase 2 ------------------------------
+// Phase 1 & Phase 2
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -514,8 +499,6 @@ fn improve_worker(
     }
 }
 
-// ------------------------------ UI / stats ------------------------------
-
 fn collect_stats(
     found: impl Fn(usize) -> bool,
     shift: impl Fn(usize) -> u8,
@@ -615,8 +598,6 @@ fn display_stats(shared: &Shared, rook: &[SquareData], bishop: &[SquareData], st
     let _ = std::io::stdout().flush();
 }
 
-// ------------------------------ Output ------------------------------
-
 fn total_entries(found: impl Fn(usize) -> bool, shift: impl Fn(usize) -> u8) -> u64 {
     let mut total = 0u64;
     for sq in 0..64 {
@@ -715,7 +696,7 @@ fn output_rust_code(shared: &Shared) {
     println!("\n═══════════════════════════════════════════════════════════════════════════════");
 }
 
-// ------------------------------ Bitboard masks & attacks (edge-inclusive) ------------------------------
+// Bitboard masks & attacks (edge-inclusive)
 
 #[inline]
 fn gen_rook_mask_edge_inclusive(sq: usize) -> u64 {
@@ -813,18 +794,10 @@ fn gen_bishop_attacks_edge_inclusive(sq: usize, occ: u64) -> u64 {
     a
 }
 
-// ------------------------------ main ------------------------------
-
 fn main() {
     let args = Args::parse();
 
     let shared = Arc::new(Shared::new());
-    // let shared_ctrlc = Arc::clone(&shared);
-
-    // ctrlc::set_handler(move || {
-    //     shared_ctrlc.running.store(false, Ordering::Relaxed);
-    // })
-    // .expect("Error setting Ctrl+C handler");
 
     print!("\x1b[2J\x1b[H");
     println!("═══════════════════════════════════════════════════════════════════════════════");

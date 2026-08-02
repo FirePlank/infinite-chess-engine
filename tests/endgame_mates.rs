@@ -1,12 +1,6 @@
-//! Endgame Mate Tests - Excluded from coverage
-//!
-//! These tests verify the engine can find checkmate in specific endgames
-//! within the 50-move rule. They are excluded from coverage reports due to their
-//! time-consuming nature.
-//!
-//! INFINITE CHESS NOTES:
-//! - Some classical chess mates don't work on infinite board (e.g., 2R vs K)
-//! - Tests include positions where one side has no king
+//! Checks that the engine finds mate in specific endgames within the 50-move rule.
+//! Excluded from coverage because they are slow. Some classical mates (2R vs K) do
+//! not work unbounded, and some positions deliberately leave one side kingless.
 
 #![cfg(not(coverage))]
 
@@ -98,7 +92,6 @@ fn verify_can_mate(mut game: GameState, max_ply: u32, description: &str) {
             None => panic!("{}: No move found at ply {}", description, ply),
         };
 
-        // Make the move
         let undo = game.make_move(&best_move);
         if game.is_move_illegal() {
             game.undo_move(&best_move, undo);
@@ -117,10 +110,8 @@ fn verify_can_mate(mut game: GameState, max_ply: u32, description: &str) {
     panic!("{}: Failed to mate within {} ply", description, max_ply);
 }
 
-// =============================================================================
 // INFINITE CHESS MATE TESTS
 // These positions work on infinite boards
-// =============================================================================
 
 /// 2Q + K vs K - Two queens can always mate (even on infinite board)
 #[test]
@@ -170,9 +161,7 @@ fn test_mate_amazon_vs_king() {
     verify_can_mate(game, 100, "Amazon + K vs K");
 }
 
-// =============================================================================
 // COMPOUND PIECE MATE TESTS
-// =============================================================================
 
 /// Q + R + B  vs K
 #[test]

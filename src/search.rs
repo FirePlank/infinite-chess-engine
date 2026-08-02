@@ -56,10 +56,8 @@ pub struct NegamaxContext<'a> {
     pub excluded_move: Option<Move>,
 }
 
-/// Snapshot of the per-ply node-context fields, returned by
-/// `Searcher::push_move_context`/`push_null_context` and restored by
-/// `pop_move_context`. `Copy` so the main loop can hold one backup across the
-/// singular-extension undo/re-make dance without moving it.
+/// Snapshot of the per-ply node-context fields, restored by `pop_move_context`.
+/// `Copy` so the main loop can hold one across the singular-extension re-make.
 #[derive(Clone, Copy)]
 struct MoveContextBackup {
     prev_move: (usize, usize),
@@ -219,7 +217,7 @@ pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
 
 /// Sets the TT size for future searcher/shared-TT creations, and resizes the
 /// current thread's persistent searcher's local TT immediately if one exists.
-/// (An already-initialized shared TT can't be resized — respawn the worker for that.)
+/// An already-initialized shared TT cannot be resized; respawn the worker for that.
 pub fn set_tt_size_mb(mb: usize) {
     // wasm is capped to 64 inside LocalTranspositionTable::new, so this ceiling
     // only bounds native builds, where a GUI may legitimately ask for more.
@@ -291,7 +289,7 @@ mod shared_hist {
         std::sync::OnceLock::new();
 
     pub fn pawn_table() -> *mut super::PawnHistTable {
-        PAWN.get_or_init(|| super::zeroed_box()).0.get()
+        PAWN.get_or_init(super::zeroed_box).0.get()
     }
 }
 
@@ -305,8 +303,7 @@ pub enum CorrHistMode {
     NonPawnBased,
 }
 
-/// Node type for alpha-beta search.
-/// Used to enable more aggressive pruning at expected cut-nodes.
+/// Node type for alpha-beta search, letting expected cut-nodes prune harder.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NodeType {
     /// Principal Variation node - full window search, no aggressive pruning
@@ -346,13 +343,11 @@ pub use zobrist::{
 };
 
 mod skill;
-pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, score_to_win_chance_permille};
-pub(crate) use skill::get_best_move_limited;
 use skill::deep_tactic_reference_depth;
+pub(crate) use skill::get_best_move_limited;
+pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, score_to_win_chance_permille};
 
-// ============================================================================
 // TT Probe/Store (Dispatch wrapper)
-// ============================================================================
 
 #[cfg(feature = "multithreading")]
 static SHARED_TT: OnceLock<SharedTranspositionTable> = OnceLock::new();
@@ -667,18 +662,9 @@ impl Timer {
 }
 
 impl SearcherHot {
-    /// Calculate optimum and maximum time.
-    ///
-    /// Time management works differently based on `is_soft_limit`:
-    /// - **Soft limit** (untimed game with suggested time): The engine can freely
-    ///   use up to `maximum_time_ms` if beneficial. Optimum is set higher
-    ///   because there's no risk of flagging, and max is close to the full budget.
-    /// - **Hard limit** (timed game): The engine must be conservative. Optimum is
-    ///   set lower and max is capped to leave headroom for dynamic extensions
-    ///   in critical positions.
-    ///
-    /// The dynamic factors (fallingEval up to 1.7x, instability up to ~2.5x, etc.)
-    /// multiply the optimum time, capped at maximum.
+    /// Calculate optimum and maximum time. A soft limit cannot flag, so optimum sits
+    /// near the full budget; a hard limit stays conservative and leaves headroom for
+    /// the dynamic factors, which multiply optimum and are capped at maximum.
     pub fn set_time_limits(&mut self, opt_ms: u128, max_ms: u128, is_soft: bool) {
         self.optimum_time_ms = opt_ms;
         self.maximum_time_ms = max_ms;
@@ -736,10 +722,8 @@ pub struct DepthInfo<'a> {
 /// Callback invoked after each completed iterative-deepening depth.
 pub type DepthCallback<'a> = &'a mut dyn FnMut(&DepthInfo);
 
-/// Result from a single thread's search, used for Lazy SMP thread voting.
-/// The thread voting algorithm weights votes by:
-///   (score - minScore + 14) * completedDepth
-/// This ensures deeper searches with better scores have more influence.
+/// One thread's search result, weighted for Lazy SMP voting by
+/// `(score - minScore + 14) * completedDepth` so deeper, better searches count more.
 #[cfg(feature = "multithreading")]
 #[derive(Clone, Debug)]
 pub struct ThreadResult {
@@ -757,18 +741,9 @@ pub struct ThreadResult {
     pub thread_id: usize,
 }
 
-/// Pick the winning thread's result index by weighted voting — a faithful port
-/// of Stockfish `get_best_thread` (stockfish-classic/src/thread.cpp).
-///
-/// Each move accrues `(score - minScore + 14) * completedDepth` votes. Then:
-/// - if the current best is decisive (proven win or loss), the higher score
-///   wins — shortest mate when winning, longest resistance / escape when losing;
-/// - otherwise switch to a proven win, or to a non-losing thread with more votes,
-///   but never to a proven loss.
-///
-/// The move key includes the promotion type so distinct promotions to the same
-/// square don't share votes (a two-square castling move is already distinct via
-/// its destination coordinate).
+/// Picks the winning thread's result index by weighted voting, a port of Stockfish
+/// `get_best_thread`. Each move accrues `(score - minScore + 14) * completedDepth`
+/// votes; decisive scores win outright and a proven loss is never switched to.
 #[cfg(feature = "multithreading")]
 fn select_best_thread(all_results: &[ThreadResult]) -> usize {
     let min_score = all_results.iter().map(|r| r.score).min().unwrap_or(0);
@@ -881,7 +856,6 @@ pub fn reset_search_state() {
     // Clear pawn structure cache for new game
     crate::evaluation::base::clear_pawn_cache();
 
-    // Clear material cache for new game
     crate::evaluation::insufficient_material::clear_material_cache();
 
     // Clear transposition table
@@ -907,8 +881,8 @@ pub struct Searcher {
     // History heuristic [piece_type][to_square_hash]
     pub history: Box<[[i32; 256]; 32]>,
 
-    // Capture history [moving_piece_type][captured_piece_type]
-    // Used to improve capture ordering beyond pure MVV-LVA
+    // Capture history [moving_piece_type][captured_piece_type], ordering captures
+    // beyond pure MVV-LVA.
     pub capture_history: Box<[[i32; 32]; 32]>,
 
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
@@ -928,7 +902,7 @@ pub struct Searcher {
     // Previous iteration score for aspiration windows
     pub prev_score: i32,
 
-    // Search noise parameters for SPRT pairing
+    // Search noise parameters, used to decorrelate paired SPRT games.
     pub noise_amp: i32,
     pub seed: u64,
     pub rng: Prng,
@@ -957,10 +931,9 @@ pub struct Searcher {
     pub moved_piece_history: Vec<u8>,
 
     #[allow(clippy::type_complexity)]
-    // Continuation history: [ply_offset_idx][is_capture][in_check][prev_piece_type][prev_to_hash][cur_from_hash][cur_to_hash]
-    // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
-    // i16: the gravity update self-bounds to ±16384 so i16 is lossless, keeping this
-    // (the search's hottest table) at 25MB per thread.
+    // Continuation history, keyed by ply offset (1, 2 and 4 plies ago) then capture,
+    // check, previous piece and the from/to hashes. The gravity update self-bounds to
+    // 16384, so i16 is lossless and the search's hottest table stays at 25MB.
     pub cont_history: Box<[[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
@@ -996,20 +969,17 @@ pub struct Searcher {
     /// Negative values = TT moves often fail.
     pub tt_move_history: i32,
 
-    /// Reduction stack for hindsight depth adjustment.
-    /// Used to adjust depth based on prior search decisions.
+    /// Per-ply reduction applied, so a child can adjust depth in hindsight.
     pub reduction_stack: Vec<i32>,
 
-    /// Cutoff count per ply.
-    /// Used to increase LMR when next ply has many fail highs.
+    /// Cutoffs per ply, raising LMR when the next ply fails high often.
     pub cutoff_cnt: Vec<u8>,
 
     /// Dynamic move rule limit (e.g. 100 for 50-move rule)
     pub move_rule_limit: i32,
 
-    /// Low Ply History: [ply][move_hash] -> score
-    /// Tracks which moves were successful at low plies (first 4 from root).
-    /// Used to boost ordering for moves that worked well near root.
+    /// `[ply][move_hash] -> score` for the first 4 plies from the root, boosting the
+    /// ordering of moves that worked near the root.
     pub low_ply_history: Box<[[i32; LOW_PLY_HISTORY_ENTRIES]; LOW_PLY_HISTORY_SIZE]>,
 
     /// Pawn History: [pawn_hash % SIZE][piece_type][to_hash]
@@ -1021,11 +991,9 @@ pub struct Searcher {
     pub plies_from_null: Box<[u8; MAX_PLY]>,
     pub tt: LocalTranspositionTable,
 
-    /// NNUE accumulator stack indexed by ply. `nnue_stack[ply]` holds the
-    /// accumulator for the position at that ply (AFTER the parent's move).
-    /// Sized `MAX_PLY + 2` to allow a child slot for the deepest ply.
-    /// Only maintained when `nnue_active` is true (i.e. NNUE is applicable
-    /// to the current root position).
+    /// Accumulator for the position at each ply, after the parent's move. Sized
+    /// `MAX_PLY + 2` so the deepest ply still has a child slot, and only maintained
+    /// while `nnue_active`.
     #[cfg(feature = "nnue")]
     pub nnue_stack: Box<[crate::nnue::NnueState; MAX_PLY + 2]>,
     /// Scratch buffer used by singular extension to save/restore
@@ -1192,11 +1160,9 @@ impl Searcher {
         }
     }
 
-    // --------------------------------------------------------------------
     // NNUE accumulator stack helpers. The accumulator for the position at
     // `ply` lives in `self.nnue_stack[ply]`. Helpers here update child slot
     // `ply+1` before recursion without heap allocation.
-    // --------------------------------------------------------------------
 
     /// Initialize `nnue_stack[0]` from the root position and mark NNUE as
     /// active for the remainder of this search. Call once per top-level
@@ -1212,10 +1178,8 @@ impl Searcher {
         }
     }
 
-    /// Copy `nnue_stack[ply]` into `nnue_stack[ply+1]` and apply the
-    /// incremental feature delta for `m`. MUST be called while `game` is
-    /// still in the pre-move state (the same contract as
-    /// `NnueState::update_for_move`).
+    /// Copies `nnue_stack[ply]` forward and applies the feature delta for `m`. Must be
+    /// called while `game` is still in the pre-move state.
     #[cfg(feature = "nnue")]
     #[inline]
     pub fn nnue_push_move(&mut self, game: &GameState, ply: usize, m: Move) {
@@ -1282,13 +1246,7 @@ impl Searcher {
     }
 
     /// Detects shuffling sequences to prevent search explosions in closed positions.
-    pub fn is_shuffling(
-        &self,
-        game: &GameState,
-        m: &Move,
-        ply: usize,
-        is_capture: bool,
-    ) -> bool {
+    pub fn is_shuffling(&self, game: &GameState, m: &Move, ply: usize, is_capture: bool) -> bool {
         // Capture flag comes from the caller: both call sites run after make_move,
         // where probing the destination would always see the mover sitting there.
         if m.piece.piece_type() == PieceType::Pawn || is_capture || game.halfmove_clock < 10 {
@@ -1301,10 +1259,8 @@ impl Searcher {
             return false;
         }
 
-        // 3. Check for geometric shuffling pattern:
-        // Current move: A -> B
-        // Ply-2 move:   B -> A
-        // Ply-4 move:   A -> B
+        // Geometric shuffle: this move A->B repeats the ply-4 move, with the ply-2
+        // move undoing it.
         if let Some(ref m2) = self.move_history[ply - 2]
             && let Some(ref m4) = self.move_history[ply - 4]
         {
@@ -1320,7 +1276,7 @@ impl Searcher {
     pub fn set_corrhist_mode(&mut self, game: &GameState) {
         use crate::Variant;
         self.corrhist_mode = match game.variant {
-            // PawnBased mode for variants where pawn correction showed positive Elo
+            // Variants whose pawn structure carries enough signal for pawn correction.
             Some(Variant::CoaIP)
             | Some(Variant::CoaIPHO)
             | Some(Variant::CoaIPRO)
@@ -1384,7 +1340,7 @@ impl Searcher {
             k[1] = None;
         }
 
-        // Reset TT move history - hits on the old TT are no longer relevant
+        // Hits against the cleared TT carry no information.
         self.tt_move_history = 0;
 
         // Reset StatScore stack
@@ -1413,7 +1369,6 @@ impl Searcher {
             }
         }
 
-        // Reset capture history
         for row in self.capture_history.iter_mut() {
             for val in row.iter_mut() {
                 *val = 0;
@@ -1459,7 +1414,6 @@ impl Searcher {
         }
         self.lastmove_corrhist.fill(0);
 
-        // Reset low ply history
         for row in self.low_ply_history.iter_mut() {
             row.fill(0);
         }
@@ -1489,16 +1443,12 @@ impl Searcher {
             }
         }
 
-        // Reset TT move history
         self.tt_move_history = 0;
     }
 
-    /// Install the per-ply node context that child searches and the
-    /// continuation-history offsets read at `ply`: the move played, the piece
-    /// that moved, whether this node was in check, and whether the move was a
-    /// capture. Returns a backup to restore with [`Self::pop_move_context`]
-    /// once the child returns. Centralizes what several recursion sites used to
-    /// install inconsistently (main loop, ProbCut, null move, qsearch).
+    /// Install the per-ply node context that child searches and continuation-history
+    /// offsets read at `ply`. Returns a backup to restore with
+    /// [`Self::pop_move_context`] once the child returns.
     #[inline]
     fn push_move_context(
         &mut self,
@@ -1627,10 +1577,8 @@ impl Searcher {
 
     #[inline]
     pub fn check_time(&mut self) -> bool {
-        // External/inter-thread stop request (helper threads, or an analysis abort
-        // written directly into shared wasm memory by the main thread). Polled even
-        // with no time limit — unlimited searches must still be stoppable. Detached
-        // helpers additionally retire when their epoch is superseded (new position).
+        // External stop request, polled even with no time limit so unlimited searches
+        // stay stoppable. Detached helpers also retire once their epoch is superseded.
         if self.hot.nodes & 4095 == 0 {
             // Publish this thread's node count for thread-aggregated NPS.
             #[cfg(feature = "multithreading")]
@@ -2060,10 +2008,8 @@ impl Searcher {
         pv
     }
 
-    /// Extends a root PV line in place by walking transposition-table moves from the
-    /// line's end position, up to `target_len` total moves. Works on a clone of `game`,
-    /// validating every move and guarding against TT cycles — same technique as
-    /// {@link extract_pv_only}, generalized to a line that starts with a root move.
+    /// Extends a root PV line in place to `target_len` moves by walking TT moves from
+    /// its end position, validating each and guarding against TT cycles.
     pub fn extend_pv_with_tt(&self, game: &GameState, pv: &mut Vec<Move>, target_len: usize) {
         if pv.len() >= target_len {
             return;
@@ -2323,12 +2269,8 @@ fn search_with_searcher(
     let mut best_score = -INFINITY;
     let mut prev_root_move_coords: Option<(i64, i64, i64, i64)> = None;
 
-    // Lazy SMP: Helper threads start at different depths to create search diversity.
-    // Thread 0 (main): starts at depth 1
-    // Thread 1: starts at depth 2 (skips trivial depth 1)
-    // Thread 2: starts at depth 1
-    // Thread 3: starts at depth 2
-    // etc. - odd threads get a head start on deeper search
+    // Lazy SMP: odd-indexed helpers start one depth deeper, so the threads diverge
+    // instead of all re-walking the same iteration.
     let start_depth = if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
         2.min(max_depth) // Odd helpers skip depth 1
     } else {
@@ -2337,11 +2279,8 @@ fn search_with_searcher(
 
     // Iterative deepening with aspiration windows
     for base_depth in start_depth..=max_depth {
-        // Lazy SMP depth offset: odd-indexed helper threads search at depth+1
-        // This creates statistical diversity - threads explore different depths
-        // and populate the TT with entries at various depths.
-        // Main thread (0) and even helpers: search at base_depth
-        // Odd helpers (1, 3, 5...): search at base_depth + 1
+        // Odd helpers run one depth ahead, so the TT fills with entries at a spread
+        // of depths rather than all at the same one.
         let depth = if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
             (base_depth + 1).min(max_depth)
         } else {
@@ -2384,7 +2323,6 @@ fn search_with_searcher(
             // First iteration: full window
             negamax_root(searcher, game, depth, -INFINITY, INFINITY, &mut legal_moves)
         } else {
-            // Aspiration window search
             let asp_win = aspiration_window();
             let mut alpha = searcher.prev_score - asp_win;
             let mut beta = searcher.prev_score + asp_win;
@@ -2429,11 +2367,9 @@ fn search_with_searcher(
             searcher.hot.min_depth_required = 0;
         }
 
-        // Update best move from this iteration.
-        // IMPORTANT: Only update best_score if the search wasn't stopped mid-iteration,
-        // because an interrupted search might return garbage values (like -INFINITY or
-        // aspiration window bounds). If stopped, we keep the valid score from the previous
-        // completed depth. The pv_table[0] check ensures a move was found.
+        // Only take the score when the iteration finished: an interrupted search can
+        // return -INFINITY or a raw aspiration bound, so a stop keeps the previous
+        // completed depth's score instead.
         if let Some(pv_move) = searcher.pv_table[0] {
             // Always update the best_move to the latest PV move (even if stopped,
             // the move itself is valid from a previous iteration)
@@ -2467,9 +2403,9 @@ fn search_with_searcher(
             searcher.hot.stopped = true;
         }
 
-        // A bare mate score isn't a stop condition — a deeper search may find a shorter
-        // mate. Only bail early when mate-in-3 or worse, and only the time-managed main
-        // thread does so (helpers and fixed-depth/infinite searches keep going).
+        // A bare mate score is no stop condition, since a deeper search may find a
+        // shorter mate. Only the time-managed main thread bails, and only at mate-in-3
+        // or worse.
         let mate_shortcut = searcher.thread_id == 0
             && searcher.hot.time_limit_ms != u128::MAX
             && (best_score >= mate_in(3) || best_score == mated_in(2));
@@ -2575,7 +2511,6 @@ pub fn get_best_move(
     )
 }
 
-
 #[cfg(feature = "multithreading")]
 pub fn get_best_move_parallel(
     game: &mut GameState,
@@ -2590,10 +2525,9 @@ pub fn get_best_move_parallel(
     // Clear global stop flag
     GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
 
-    // Lazy SMP runs only where a thread pool was explicitly provisioned
-    // (initThreadPool on wasm decides the count). Native builds always search
-    // single-threaded; parallelism there belongs to the caller (e.g. one
-    // engine per game), which must not share the global stop/TT coordination.
+    // Lazy SMP runs only where a thread pool was explicitly provisioned. Native
+    // builds stay single-threaded: parallelism there belongs to the caller, which
+    // must not share the global stop and TT coordination.
     #[cfg(target_arch = "wasm32")]
     let num_threads = rayon::current_num_threads().max(1);
     #[cfg(not(target_arch = "wasm32"))]
@@ -2625,7 +2559,6 @@ pub fn get_best_move_parallel(
     // pool thread, so the "main" search would run on a random rayon worker (scattering the
     // persistent thread-local searcher across threads move-to-move). in_place keeps it here.
     rayon::in_place_scope(|s| {
-        // Spawn helper threads (1..num_threads)
         for i in 1..num_threads {
             let results_clone = Arc::clone(&results);
             let mut game_clone = game.clone();
@@ -2751,19 +2684,16 @@ pub fn get_best_move_parallel(
     )
 }
 
-/// Time-limited search with thread_id for Lazy SMP.
-/// Helper threads (thread_id > 0) skip the first move to distribute work.
-/// Uses persistent GLOBAL_SEARCHER - TT and histories persist across searches.
-/// Call reset_search_state() to clear for a new game.
-/// Analysis-helper lifecycle epoch. Bumping it (new position / stop) makes every running
-/// detached helper exit at its next slice boundary.
+/// Analysis-helper lifecycle epoch. Bumping it (new position or stop) makes every
+/// running detached helper exit at its next slice boundary.
 #[cfg(feature = "multithreading")]
 pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Number of detached helpers currently searching (lets a resumed analysis — e.g. "go
-/// deeper" after the helpers retired at 'done' — know it must spawn a fresh batch).
+/// Number of detached helpers currently searching, so a resumed analysis knows
+/// whether it must spawn a fresh batch.
 #[cfg(feature = "multithreading")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Stops all detached analysis helpers (and any in-flight search) immediately.
 #[cfg(feature = "multithreading")]
@@ -2772,10 +2702,9 @@ pub fn stop_analysis_helpers() {
     GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Detached Lazy SMP analysis helper: ONE continuous unbounded iterative-deepening search
-/// on a rayon thread, feeding the shared TT while the main thread runs its sliced analysis.
-/// It searches straight through the worker's JS yields and retires within a node batch once
-/// its epoch is superseded (position change / stop) via check_time.
+/// Detached Lazy SMP helper: one continuous unbounded deepening search on a rayon
+/// thread, feeding the shared TT through the worker's JS yields. It retires within a
+/// node batch once `check_time` sees its epoch superseded.
 #[cfg(feature = "multithreading")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
@@ -2801,7 +2730,7 @@ pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
         searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
         searcher.silent = true;
         searcher.hot.timer.reset();
-        searcher.set_corrhist_mode(&mut game);
+        searcher.set_corrhist_mode(&game);
         searcher.move_rule_limit = game
             .game_rules
             .move_rule_limit
@@ -2827,7 +2756,6 @@ pub(crate) fn get_best_move_threaded(
     // Initialize correction history hashes
     game.recompute_correction_hashes();
 
-    // Use persistent global searcher
     GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();
 
@@ -2844,7 +2772,6 @@ pub(crate) fn get_best_move_threaded(
 
         searcher.thread_id = thread_id;
 
-        // Initialize searcher for this search
         searcher.new_search();
 
         // Update search parameters for this search
@@ -2867,10 +2794,9 @@ pub(crate) fn get_best_move_threaded(
     })
 }
 
-/// MultiPV-enabled search that returns up to `multi_pv` best moves with their evaluations.
-///
-/// When `multi_pv` is 1, this has zero overhead - it's equivalent to `get_best_move`.
-/// For `multi_pv` > 1, at each depth all root moves are searched and the top N are returned.
+/// Returns up to `multi_pv` best moves with their evaluations. At 1 this is
+/// equivalent to `get_best_move`; above it, every root move is searched at each depth
+/// and the top N kept.
 pub fn get_best_moves_multipv(
     game: &mut GameState,
     max_depth: usize,
@@ -2897,7 +2823,6 @@ pub fn get_best_moves_multipv(
         // Get or create the persistent searcher
         let searcher = opt.get_or_insert_with(|| Searcher::new(max_time_ms));
 
-        // Initialize searcher for this search
         searcher.new_search();
 
         // Update search parameters for this search
@@ -2943,18 +2868,9 @@ pub fn get_best_moves_multipv(
     })
 }
 
-/// Analysis driver: a time-sliced MultiPV search that streams a [`DepthInfo`] to
-/// `on_depth` after every completed iterative-deepening depth.
-///
-/// Designed to be called repeatedly with short `slice_ms` budgets from a worker that
-/// yields to its message queue between slices. Pass `start_depth = last_reached + 1`
-/// so each slice *resumes* the iterative deepening rather than re-walking from depth 1
-/// (the persistent TT makes the resumed depth cheap) — this is what lets "go deeper"
-/// actually progress instead of oscillating at the target depth. The first iteration
-/// always completes regardless of the slice budget (`min_depth_required`), so a slice
-/// always advances by at least one depth. Unlike the gameplay wrappers this always
-/// takes the MultiPV root path (even for `multi_pv == 1`) so every depth reports full
-/// PV lines.
+/// Time-sliced MultiPV search, streaming a [`DepthInfo`] after every completed depth.
+/// Call it repeatedly, passing `start_depth = last_reached + 1` so each slice resumes
+/// rather than re-walking. The first iteration always completes, so a slice gains one.
 pub fn analyse_position(
     game: &mut GameState,
     max_depth: usize,
@@ -2971,10 +2887,9 @@ pub fn analyse_position(
 
     let multi_pv = multi_pv.max(1);
 
-    // start_depth == 1 marks the first slice of a fresh position; anything higher is a
-    // resume of the same position's search, where we KEEP the accumulated heuristics
-    // (history, killers, PV, TT) so the resumed depth benefits from warm move ordering
-    // — a cold new_search() at a high depth would explode the node count.
+    // Anything past the first slice resumes the same position, so the accumulated
+    // heuristics are kept: a cold new_search() at a high depth would explode the
+    // node count.
     let fresh = start_depth <= 1;
 
     GLOBAL_SEARCHER.with(|cell| {
@@ -3041,7 +2956,6 @@ pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
     });
 }
 
-
 pub(crate) fn get_best_moves_multipv_impl(
     searcher: &mut Searcher,
     game: &mut GameState,
@@ -3106,11 +3020,9 @@ pub(crate) fn get_best_moves_multipv_impl(
         };
     }
 
-    // Standard (gameplay) path: with a single legal move, skip the search entirely and
-    // return a static eval — the move is forced, so looking deeper at this root is wasted
-    // effort. Analysis mode (identified by the streaming `on_depth` callback) deliberately
-    // does NOT shortcut: it searches the forced move to the target depth so the reported
-    // eval reflects the resulting position's look-ahead, and streams a line per depth.
+    // A forced move makes a gameplay search pointless, so return a static eval.
+    // Analysis mode (the streaming `on_depth` callback) still searches it to depth, so
+    // the reported eval reflects look-ahead past the forced move.
     if legal_root_moves.len() == 1 && on_depth.is_none() {
         let single = legal_root_moves[0];
         let stats = build_search_stats(searcher);
@@ -3131,7 +3043,6 @@ pub(crate) fn get_best_moves_multipv_impl(
         };
     }
 
-    // Cap multi_pv at number of legal moves
     let multi_pv = multi_pv.min(legal_root_moves.len());
 
     // Store (move, score, pv) for each root move at current depth
@@ -3234,7 +3145,6 @@ pub(crate) fn get_best_moves_multipv_impl(
 
             let undo = game.make_move(m);
 
-            // Set up prev move info for child search
             let prev_entry_backup = searcher.prev_move_stack[0];
             let prev_from_hash = hash_move_from(m);
             let prev_to_hash = hash_move_dest(m);
@@ -3324,9 +3234,9 @@ pub(crate) fn get_best_moves_multipv_impl(
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
                 pv.push(*m);
                 if exact {
-                    // Extract PV for this move from ply 1's triangular row. Only valid
-                    // when a PV search just ran — otherwise the row belongs to an
-                    // earlier root move and would attach a garbage continuation.
+                    // Only valid right after a PV search; otherwise ply 1's triangular
+                    // row still belongs to an earlier root move and would attach a
+                    // garbage continuation.
                     let child_base = MAX_PLY; // ply 1 base offset
                     for i in 0..searcher.pv_length[1] {
                         if let Some(pv_move) = searcher.pv_table[child_base + i] {
@@ -3352,15 +3262,12 @@ pub(crate) fn get_best_moves_multipv_impl(
             break;
         }
 
-        // Whether this depth was searched to completion (every root move). A depth
-        // interrupted mid-way only has scores for the moves searched before the stop —
-        // committing those would shrink the MultiPV set (and corrupt gameplay move
-        // selection), so we keep the previous complete depth's lines instead. The one
-        // exception is the very first results, where a partial set is all we have.
+        // A depth interrupted mid-way only scored some root moves, and committing
+        // those would shrink the MultiPV set, so the previous complete depth's lines
+        // are kept instead. The very first results are the one exception.
         let depth_completed = !searcher.hot.stopped;
 
         if depth_completed || best_lines.is_empty() {
-            // Sort by score descending
             root_scores.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             if depth == 2 {
                 shallow_best = root_scores.first().map(|entry| entry.0);
@@ -3445,17 +3352,15 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
         searcher.hot.min_depth_required = 0;
 
-        // A mate score isn't itself a stop condition — a deeper search may find a shorter
-        // mate. Only bail early once every shown line mates within 3 plies (or we're
-        // getting mated in 2), and only under time management, not analysis/fixed-depth.
+        // A mate score is no stop condition, since a deeper search may find a shorter
+        // mate. Only bail once every shown line mates within 3 plies, and only under
+        // time management.
         let time_managed = searcher.hot.time_limit_ms != u128::MAX;
-        let mate_resolved = time_managed
-            && !best_lines.is_empty()
-            && {
-                let worst = best_lines.last().unwrap().score;
-                let best = best_lines[0].score;
-                worst >= mate_in(3) || best == mated_in(2)
-            };
+        let mate_resolved = time_managed && !best_lines.is_empty() && {
+            let worst = best_lines.last().unwrap().score;
+            let best = best_lines[0].score;
+            worst >= mate_in(3) || best == mated_in(2)
+        };
         if mate_resolved {
             break;
         }
@@ -3575,9 +3480,8 @@ fn negamax_root(
 
     let in_check = game.is_in_check();
 
-    // Sort moves at root (TT move first, then by score)
-    // This reorders the `moves` vec in-place, preserving this ordering
-    // for the next iteration.
+    // Reorders `moves` in place, TT move first then by score, so the next iteration
+    // inherits the ordering.
     sort_moves_root(searcher, game, moves, &tt_move);
 
     let mut best_score = -INFINITY;
@@ -3690,10 +3594,9 @@ fn negamax_root(
             }
         }
 
-        // Track nodes spent on the first (best) root move. Accumulate across
-        // iterations so the ratio is comparable to the cumulative node count it is
-        // divided by (a single-iteration value can never reach the effort
-        // threshold). Recorded before the cutoff so a move-0 fail-high still counts.
+        // Accumulated across iterations so it is comparable to the cumulative node
+        // count it divides; a single iteration never reaches the effort threshold.
+        // Recorded before the cutoff so a move-0 fail-high still counts.
         if move_idx == 0 {
             searcher.hot.best_move_nodes += searcher.hot.nodes - nodes_before_move;
         }
@@ -4049,15 +3952,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
-    // Determine if this node is a TT PV node
     let mut tt_pv = is_pv || (tt_hit_node && tt_pv);
     searcher.tt_pv_stack[ply] = tt_pv;
 
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
-        // =================================================================
         // Pre-move pruning techniques
-        // =================================================================
 
         // Razoring: if eval is really low, drop to qsearch
         if !is_pv && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32 {
@@ -4179,9 +4079,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
-    // =========================================================================
     // ProbCut
-    // =========================================================================
     // If we have a good enough capture and a reduced search returns a value
     // much above beta, we can prune.
     let prob_cut_beta = beta + probcut_margin() - if improving { probcut_improving() } else { 0 };
@@ -4215,10 +4113,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             #[cfg(feature = "nnue")]
             searcher.nnue_push_move(game, ply, m);
 
-            // Install this node's context for the child search, matching the
-            // main loop. Previously ProbCut searched its child with whatever
-            // context an earlier sibling left, corrupting continuation/
-            // correction history in the ProbCut subtree.
+            // Install this node's context for the child search, matching the main
+            // loop. Without it a sibling's stale context corrupts continuation and
+            // correction history across the ProbCut subtree.
             let pc_is_capture = game.is_en_passant(&m)
                 || game
                     .board
@@ -4310,9 +4207,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
-    // =========================================================================
     // Staged Move Generation - generate moves in stages for better efficiency
-    // =========================================================================
     let mut movegen = StagedMoveGen::new(tt_move, ply, depth as i32, searcher, game);
 
     let mut best_score = -INFINITY;
@@ -4417,7 +4312,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     continue;
                 }
 
-                // Adjust LMR depth based on history
                 let adj_lmr_depth = (lmr_depth + history / 3208).max(0);
 
                 // Quiet futility: skip moves that can't raise alpha
@@ -4543,10 +4437,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.in_check_history[ply] = in_check_backup;
             searcher.capture_history_stack[ply] = capture_backup;
 
-            // Save the child NNUE accumulator we just computed for `m`, so we can
-            // restore it after the singular recursion clobbers stack[ply+1] while
-            // exploring other moves. nnue_stack[ply] itself is not touched by
-            // singular (only children of singular write to [ply+1..]).
+            // Singular recursion clobbers stack[ply+1] while exploring other moves, so
+            // stash the child accumulator computed for `m` and restore it afterwards.
             #[cfg(feature = "nnue")]
             searcher.nnue_save_scratch(ply + 1);
 
@@ -4634,12 +4526,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
-        // Record the stat score of the move we are about to search so the child
-        // reads it (as stat_score_stack[ply]) for evaluation smoothing. Set for
-        // every move, not just on a beta cutoff, so it reflects the actual
-        // parent move rather than a stale value from a prior sibling subtree.
-        searcher.stat_score_stack[ply] =
-            searcher.history[p_type as usize][hash_move_dest(&m)];
+        // The child reads this for evaluation smoothing. Set for every move, not only
+        // on a beta cutoff, or it reflects a prior sibling's subtree instead.
+        searcher.stat_score_stack[ply] = searcher.history[p_type as usize][hash_move_dest(&m)];
 
         let score;
         if legal_moves == 1 {
@@ -4653,11 +4542,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 NodeType::Cut
             };
 
-            // Full window search for first legal move. Clear the reduction
-            // slot the child reads: unlike the LMR branch (which sets it), the
-            // first move is unreduced, and a depth-0 child that drops straight
-            // to qsearch never consumes/clears it, so it could otherwise be
-            // left stale from an earlier node at this ply.
+            // Full window search for the first legal move. It is unreduced, and a
+            // depth-0 child dropping straight to qsearch never clears the slot, so
+            // clear it here or it stays stale from an earlier node at this ply.
             searcher.reduction_stack[ply] = 0;
             let new_depth = ((depth as i32) - 1 + extension).max(0) as usize;
             score = -negamax(&mut NegamaxContext {
@@ -4754,9 +4641,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // and history is really bad, prune this move entirely.
                     if new_depth <= 0 && value < hlp_history_leaf() {
                         game.undo_move(&m, undo);
-                        // Restore the full node context (all five fields) before
-                        // continuing — the earlier version left in_check_history
-                        // and capture_history_stack stale.
+                        // Restore all five node-context fields before continuing, or
+                        // in_check_history and capture_history_stack go stale.
                         searcher.prev_move_stack[ply] = prev_entry_backup;
                         searcher.move_history[ply] = move_history_backup;
                         searcher.moved_piece_history[ply] = piece_history_backup;
@@ -4767,10 +4653,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
             }
 
-            // Allow new_depth to reach 0 so that the child call will
-            // transition to quiescence (depth == 0) instead of being
-            // artificially clamped to 1, which can cause very deep
-            // "depth 1" trees and huge node counts.
+            // Letting new_depth reach 0 hands the child to quiescence; clamping to 1
+            // instead grows very deep "depth 1" trees and huge node counts.
             let search_depth = if new_depth <= 0 {
                 0
             } else {
@@ -4816,11 +4700,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     - (do_shallower_search as i32))
                     .max(0) as usize;
 
-                // TT move extension: prevent dropping to qsearch if TT has decisive/deep info
-                // For PV nodes with the TT move, if about to go to qsearch and:
-                // - TT has mate score with depth > 0, OR
-                // - TT depth > 1
-                // then ensure minimum depth of 1
+                // Keep a PV node with a decisive or deep TT entry out of qsearch by
+                // giving it a minimum depth of 1.
                 let mut pv_depth = adjusted_depth;
                 if is_pv && is_tt_move && pv_depth == 0 {
                     let has_decisive =
@@ -4844,14 +4725,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     excluded_move: None,
                 });
 
-                // Post LMR continuation history update
-                // When a reduced search fails high and we had to re-search, the move
-                // proved to be good - give it a bonus in continuation history.
-                //
-                // Bonus and malus logic for quiet moves:
-                // 1. Depth-proportional: deeper searches = more reliable signal = bigger bonus
-                // 2. Scaled down: LMR re-search is weaker signal than beta-cutoff (~1/3 bonus)
-                // 3. Quiets only: continuation history only helps quiet move ordering
+                // A reduced search that forced a re-search proved the quiet move good,
+                // so credit it in continuation history. The bonus is depth-proportional
+                // but scaled down, since a re-search is weaker evidence than a cutoff.
                 if reduction > 0 && !is_capture && !is_promotion {
                     let lmr_bonus = 100 * depth as i32;
                     let offsets = [1usize, 2, 4];
@@ -4916,13 +4792,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     searcher.pv_table[ply_base + 1 + j] = searcher.pv_table[child_base + j];
                 }
                 searcher.pv_length[ply] = child_len + 1;
-
-                // Depth reduction on alpha improvement
-                // Reduce depth for remaining moves after finding a score improvement
-                // NOTE: Disabled - requires proper conditions to match engine behavior
-                // if depth > 2 && depth < 14 && !is_decisive(score) {
-                //     depth -= 2;
-                // }
             }
         }
 
@@ -4937,7 +4806,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // so children see the actual parent move rather than only a cutoff.
 
             if !is_capture {
-                // History bonus for quiet cutoff move, with maluses for previously searched quiets
+                // Credit the quiet that cut off, and penalize the quiets tried before it.
                 let idx = hash_move_dest(&m);
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
@@ -4950,7 +4819,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     bonus * pawn_history_bonus_scale(),
                 );
 
-                // Low Ply History update:
                 searcher.update_low_ply_history(ply, idx, bonus);
 
                 for quiet in &quiets_searched {
@@ -5022,8 +4890,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                                 // Use gravity-based update
                                 let cur = *entry as i32;
-                                *entry =
-                                    (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
+                                *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14))
+                                    as i16;
                             }
                         }
                     }
@@ -5068,10 +4936,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         tt_pv = true;
     }
 
-    // Store in TT with correct flag based on original alpha/beta (per Wikipedia pseudocode)
-    // - UPPERBOUND: best_score <= alpha_orig (failed low, didn't improve alpha)
-    // - LOWERBOUND: best_score >= beta_orig (failed high, caused beta cutoff)
-    // - EXACT: alpha_orig < best_score < beta_orig (true minimax value)
+    // The bound flag follows the ORIGINAL window: at or below alpha is an upper
+    // bound, at or above beta a lower bound, and anything between them exact.
     let tt_data_bound = if best_score <= alpha_orig {
         TTFlag::UpperBound
     } else if best_score >= beta_orig {
@@ -5119,9 +4985,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         searcher.tt_move_history += delta - ((searcher.tt_move_history * delta.abs()) >> 13);
     }
 
-    // Fail-low bonus: reward opponent's previous move that caused this node to fail low.
-    // When no move improved alpha (best_score <= alpha_orig) and we have legal moves,
-    // the opponent's last move was good — reward it in the history tables.
+    // No move improved alpha, so the opponent's previous move was good; credit it in
+    // the history tables.
     if best_score <= alpha_orig && legal_moves > 0 && ply > 0 {
         let prior_capture = searcher.capture_history_stack[ply - 1];
 
@@ -5164,7 +5029,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                             let entry = &mut searcher.cont_history[idx][anc_cap][anc_ic][anc_piece]
                                 [anc_to][opponent_from_hash][opponent_to_hash];
                             let cur = *entry as i32;
-                            *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
+                            *entry =
+                                (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
                         }
                     }
                 }
@@ -5186,10 +5052,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
     }
 
-    // Update correction history when conditions are met:
-    // - Not in check
-    // - Best move is quiet or doesn't exist
-    // - Score respects bound constraints relative to static eval
+    // Correction history only learns from quiet, out-of-check nodes whose score
+    // respects the bound relative to the static eval.
     if !in_check {
         let best_move_is_quiet = match best_move {
             Some(m) => {
@@ -5240,7 +5104,6 @@ fn quiescence(
     node_type: NodeType,
 ) -> i32 {
     let is_pv = node_type == NodeType::PV;
-    // Check for max ply
     if ply >= MAX_PLY - 1 {
         #[cfg(feature = "nnue")]
         return evaluate(game, searcher.nnue_at(ply));
@@ -5535,10 +5398,9 @@ fn quiescence(
         let captures_royal_for_win = captured.is_some_and(|p| p.piece_type().is_royal())
             && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
-        // Obstocean breakout: a pawn capturing a (neutral) obstacle is the variant's
-        // defining line-opening tactic, but it classifies as "quiet" because the
-        // victim is neutral. Exempt it from the quiet-move cutoff; it still faces the
-        // SEE/delta prune below, which bounds node growth (unlike a blanket exemption).
+        // A pawn capturing a neutral obstacle is Obstocean's defining line-opening
+        // tactic, yet it scores as quiet. Exempt it from the quiet cutoff; the SEE and
+        // delta prunes below still bound the node growth.
         let is_obstocean_breakout = game.variant == Some(crate::Variant::Obstocean)
             && m.piece.piece_type() == PieceType::Pawn
             && captured.is_some_and(|p| p.piece_type() == PieceType::Obstacle);
@@ -5584,10 +5446,8 @@ fn quiescence(
 
         legal_moves += 1;
 
-        // Install the full node context so deeper qsearch nodes read the right
-        // previous move (prev_sq / correction previous-move index) and the
-        // continuation-history offsets see this node's piece/in-check/capture
-        // flags rather than stale values from an earlier sibling.
+        // Deeper qsearch nodes read the previous move and continuation-history offsets
+        // from here, so without the full context they see an earlier sibling's values.
         let qs_ctx = searcher.push_move_context(ply, m, in_check, is_capture);
 
         let score = -quiescence(
@@ -5660,10 +5520,8 @@ fn quiescence(
         },
     );
 
-    // Update correction history for QSearch.
-    // We learn from the search result relative to the static evaluation, so only
-    // when a real static eval was computed (tactical_check nodes leave the eval
-    // at the INFINITY+1 sentinel, e.g. royal-capture resolution while in check).
+    // Learning is relative to the static eval, so it needs a real one: tactical_check
+    // nodes leave the sentinel behind instead.
     if !tactical_check {
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];

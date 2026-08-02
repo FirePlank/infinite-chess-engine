@@ -37,12 +37,11 @@ pub fn score_move(
         let victim_val = game.get_piece_value(target.piece_type(), target.color());
         let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
         // Include promotion gain so capture-promotions sort by their true value.
-        let promo_gain = m
-            .promotion
-            .map_or(0, |pt| game.get_piece_value(pt, m.piece.color()) - attacker_val);
+        let promo_gain = m.promotion.map_or(0, |pt| {
+            game.get_piece_value(pt, m.piece.color()) - attacker_val
+        });
         let mvv_lva = (victim_val + promo_gain) * 10 - attacker_val;
 
-        // SEE threshold check
         let is_winning = super::see_ge(game, m, see_winning_threshold());
 
         // Capture history
@@ -93,7 +92,6 @@ pub fn score_move(
             let pt_idx = m.piece.piece_type() as usize;
             score += 2 * searcher.history[pt_idx][idx];
 
-            // Pawn history heuristic
             let ph_idx = (game.pawn_hash & crate::search::PAWN_HISTORY_MASK) as usize;
             score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
@@ -196,9 +194,9 @@ fn capture_sort_key(game: &GameState, m: &Move) -> i32 {
         .board
         .get_piece(m.to.x, m.to.y)
         .map_or(0, |t| game.get_piece_value(t.piece_type(), t.color()));
-    let promo_gain = m
-        .promotion
-        .map_or(0, |pt| game.get_piece_value(pt, attacker_color) - attacker_val);
+    let promo_gain = m.promotion.map_or(0, |pt| {
+        game.get_piece_value(pt, attacker_color) - attacker_val
+    });
     (victim_val + promo_gain) * 10 - attacker_val
 }
 
@@ -260,7 +258,6 @@ pub fn hash_coord_32(x: i64, y: i64) -> usize {
         ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
     ((h ^ (h >> 32)) & 0x1F) as usize
 }
-
 
 #[cfg(test)]
 mod tests {

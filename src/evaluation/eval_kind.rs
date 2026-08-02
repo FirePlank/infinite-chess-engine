@@ -1,14 +1,6 @@
-// Position-characteristic evaluation dispatch.
-//
-// The evaluator to use is derived from the *shape* of the position — board
-// bounds, piece composition, obstacle density, promotion lines — rather than
-// the `[Variant "…"]` meta tag, which is often absent. `detect` runs once per
-// received position (at the end of `GameState::setup_position_from_icn`, after
-// any moves are replayed) and caches its result in `GameState::eval_kind`, so
-// the per-node `evaluate` dispatch is a single enum match with no board
-// scanning. Because it reflects the *current* board, a position's kind can
-// change over a game — e.g. Obstocean reverts to the base evaluator once its
-// obstacles clear, and Pawn Horde does so once promotions outweigh the pawns.
+//! Evaluation dispatch keyed on the shape of the position (bounds, piece mix,
+//! obstacle density) rather than the often-absent `[Variant]` tag. `detect` caches
+//! into `GameState::eval_kind`, and can change mid-game as the board does.
 
 use crate::board::{PieceType, PlayerColor};
 use crate::game::{GameState, WinCondition};
@@ -45,7 +37,7 @@ pub enum EvalKind {
     /// Obstocean: a not-too-large bounded board whose otherwise-empty squares
     /// are almost entirely obstacles, orthodox pieces only.
     Obstocean,
-    /// Everything else — routed to NNUE (when applicable) or the base HCE.
+    /// Everything else, routed to NNUE when applicable and the base HCE otherwise.
     #[default]
     Generic,
 }
@@ -56,9 +48,8 @@ pub fn detect(game: &GameState) -> EvalKind {
     detect_in_region(game, crate::moves::get_coord_bounds())
 }
 
-/// Core of [`detect`], parameterized on the board region `(min_x, max_x, min_y,
-/// max_y)` so it never touches the world-bounds global — keeps the logic pure
-/// and unit-testable without mutating process-wide state.
+/// Core of [`detect`], taking the board region explicitly so it never reads the
+/// world-bounds global and stays testable without mutating process-wide state.
 fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind {
     let (min_x, max_x, min_y, max_y) = region;
     // Single board pass: obstacle count + per-side orthodox composition, plus a
@@ -104,7 +95,7 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
     let w_royals = game.white_royals.len();
     let b_royals = game.black_royals.len();
 
-    // ── Chess: an 8×8 board with a single king each and normal promotion. ──
+    // Chess: an 8×8 board with a single king each and normal promotion.
     let is_8x8 = min_x == 1 && max_x == 8 && min_y == 1 && max_y == 8;
     if is_8x8
         && obstacle_count == 0
@@ -116,12 +107,9 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         return EvalKind::Chess;
     }
 
-    // ── Pawn Horde: White is a kingless, pawn-dominated army; Black an army. ──
-    // The horde evaluator is hard-wired to White-as-horde, so only that
-    // orientation qualifies; a Black horde falls back to the base evaluator.
-    // Promotions are tolerated while pawns still dominate White's material — a
-    // mostly-promoted White (e.g. many queens, few pawns) no longer fits the
-    // pawn-mass heuristics, so it reverts to the base evaluator.
+    // Pawn Horde: White is a kingless, pawn-dominated army. The evaluator is
+    // hard-wired to White-as-horde, and a mostly-promoted White no longer fits its
+    // pawn-mass heuristics, so both cases fall back to the base evaluator.
     if w_royals == 0
         && (1..=PAWN_HORDE_MAX_PAWNS).contains(&w_pawns)
         && b_royals >= 1
@@ -134,7 +122,7 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         }
     }
 
-    // ── Obstocean: a bounded board packed with obstacles. ──
+    // Obstocean: a bounded board packed with obstacles.
     let world_size = (max_x.saturating_sub(min_x)).max(max_y.saturating_sub(min_y));
     if obstacle_count > 0 && world_size <= OBSTOCEAN_MAX_WORLD_SIZE {
         let width = (max_x - min_x + 1) as i128;
@@ -271,8 +259,8 @@ mod tests {
 
     #[test]
     fn queen_heavy_kingless_white_is_generic() {
-        // Once White is mostly promoted officers the pawn-mass eval no longer
-        // fits, even though White is still kingless with an AllPiecesCaptured win.
+        // A White of mostly promoted officers no longer fits the pawn-mass eval, even
+        // while still kingless with an AllPiecesCaptured win.
         use PieceType::*;
         const INF: i64 = 1_000_000_000_000_000;
         let mut b = Builder::new()

@@ -1,16 +1,11 @@
-// Pawn Horde Variant Evaluation
-//
-// In Pawn Horde, White (Pawns) must advance and promote. Black (Pieces) must capture all pawns.
-// This evaluation optimizes for:
-// 1. White: Phalanx structure, advancement, promotion threats.
-// 2. Black: Breaking the wall, back-rank penetration, picking off weak pawns.
+//! Pawn Horde evaluation. White must advance and promote its pawns, so it scores
+//! phalanx structure, advancement and promotion threats; Black must capture them all,
+//! so it scores wall breaks, back-rank penetration and weak pawns.
 
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 use rustc_hash::FxHashSet;
-
-// ==================== Constants ====================
 
 // Piece Values
 const PAWN_VALUE: i32 = 90;
@@ -150,8 +145,7 @@ pub fn evaluate(game: &GameState) -> i32 {
     // 3. Black Logic (Pieces)
     b_phase = b_phase.min(MAX_B_PHASE);
     let taper = |mg: i32, eg: i32| -> i32 {
-        ((mg * b_phase.min(MAX_B_PHASE))
-            + (eg * (MAX_B_PHASE - b_phase.min(MAX_B_PHASE))))
+        ((mg * b_phase.min(MAX_B_PHASE)) + (eg * (MAX_B_PHASE - b_phase.min(MAX_B_PHASE))))
             / MAX_B_PHASE
     };
     for (pos, ptype) in &black_pieces {

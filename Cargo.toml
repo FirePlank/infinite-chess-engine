@@ -42,6 +42,9 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(coverage_nightly)',
 ] }
 
+[lints.clippy]
+too_many_arguments = "allow"
+
 [dependencies]
 arrayvec = "0.7"
 js-sys = "0.3"

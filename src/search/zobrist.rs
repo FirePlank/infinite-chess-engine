@@ -233,10 +233,18 @@ static REP_CASTLING_COMBINATIONS: [u64; 16] = {
     let mut i = 0;
     while i < 16 {
         let mut h = 0u64;
-        if i & 1 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[0]; }
-        if i & 2 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[1]; }
-        if i & 4 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[2]; }
-        if i & 8 != 0 { h ^= REP_CASTLING_RIGHTS_KEYS[3]; }
+        if i & 1 != 0 {
+            h ^= REP_CASTLING_RIGHTS_KEYS[0];
+        }
+        if i & 2 != 0 {
+            h ^= REP_CASTLING_RIGHTS_KEYS[1];
+        }
+        if i & 4 != 0 {
+            h ^= REP_CASTLING_RIGHTS_KEYS[2];
+        }
+        if i & 8 != 0 {
+            h ^= REP_CASTLING_RIGHTS_KEYS[3];
+        }
         table[i] = h;
         i += 1;
     }

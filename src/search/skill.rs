@@ -27,12 +27,9 @@ struct SkillConfig {
     deep_tactic_chance: f64,
 }
 
-/// Site levels 1..7. Level 8 bypasses the limiter and uses the full parallel search.
-///
-/// `mean_loss_permille` is a target loss in winning probability, not centipawns.
-/// This is important when converting an advantage: the same centipawn loss matters
-/// much less at +10 than in an equal position, so weak levels naturally allow larger
-/// givebacks instead of becoming nearly perfect as soon as the opponent blunders.
+/// Site levels 1..7; level 8 bypasses the limiter for the full parallel search.
+/// `mean_loss_permille` targets a loss in winning probability rather than centipawns,
+/// so weak levels keep giving ground instead of turning near-perfect once ahead.
 const SKILL_CONFIGS: [SkillConfig; 7] = [
     SkillConfig {
         depth_cap: Some(3),
@@ -141,10 +138,9 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
     },
 ];
 
-// Non-neural difficulty modifiers fitted from a depth-4 sample of 11,582
-// human moves (held-out game split: 9,194 train / 2,388 validation).
-// Humans found a clear, depth-stable best move far more often, while positions
-// whose best move changed between shallow and final depth produced fewer best moves.
+// Fitted from 11,582 human moves at depth 4. Humans find a clear, depth-stable best
+// move far more often, and far less often when it changes between shallow and final
+// depth.
 const CLEAR_BEST_GAP_PERMILLE: i32 = 50;
 const CLEAR_BEST_ODDS_MULTIPLIER: f64 = 3.0;
 const UNSTABLE_ODDS_MULTIPLIER: f64 = 0.40;
@@ -158,10 +154,9 @@ const CONVERSION_SCORE_FLOOR: i32 = 100;
 /// final depth needed to count a move as a "deep-only" forced tactic.
 const DEEP_TACTIC_SURPRISE_PERMILLE: i32 = 120;
 
-/// Maps an engine score to winning probability in permille.
-///
-/// The deliberately shallow curve matches the site's infinite-chess review model.
-/// Mate scores sit at the endpoints without feeding their sentinel values to exp().
+/// Maps an engine score to winning probability in permille, on the deliberately
+/// shallow curve the site's review model uses. Mate scores return the endpoints
+/// directly, so their sentinels never reach exp().
 #[inline]
 pub fn score_to_win_chance_permille(score: i32) -> i32 {
     if score > MATE_SCORE {
@@ -240,17 +235,10 @@ fn is_reduced_material_position(game: &GameState) -> bool {
     total_pieces <= 12 || (starting_non_pawns >= 4 && current_non_pawns * 2 <= starting_non_pawns)
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ConversionContext {
-    winner: PlayerColor,
-}
-
-fn active_conversion(game: &GameState) -> Option<ConversionContext> {
+/// The side to move, when it is the one converting a won endgame.
+fn active_conversion(game: &GameState) -> Option<PlayerColor> {
     let (winner, _) = crate::evaluation::mop_up::active_mop_up(game)?;
-    if winner != game.turn {
-        return None;
-    }
-    Some(ConversionContext { winner })
+    (winner == game.turn).then_some(winner)
 }
 
 /// All proven wins form a hard outcome class. Once this level's own capped
@@ -383,7 +371,8 @@ fn is_obvious_material_hang(game: &GameState, line: &PVLine, loss_permille: i32)
 /// Halfway to max_depth, so "deep" scales with this search's own depth budget
 /// instead of a fixed depth that's trivial once caps rise into double digits.
 pub(crate) fn deep_tactic_reference_depth(max_depth: usize) -> usize {
-    ((max_depth + 1) / 2)
+    max_depth
+        .div_ceil(2)
         .max(2)
         .min(max_depth.saturating_sub(1).max(1))
 }
@@ -402,13 +391,9 @@ fn is_deep_only_tactic(result: &MultiPVResult, mv: Move, final_score: i32) -> bo
     deep_tactic_surprise_permille(result, mv, final_score) >= DEEP_TACTIC_SURPRISE_PERMILLE
 }
 
-/// Selects a plausible move near a sampled loss in winning probability.
-///
-/// The point mass at zero lets every level play good moves. On an error, an
-/// exponential regret sample creates frequent small misses and rare larger ones,
-/// but selection is soft and favors moves that ranked well at depth 2. Obvious
-/// one-ply major-piece hangs are a separate rare event, rather than the default
-/// mechanism for satisfying a large sampled regret.
+/// Selects a plausible move near a sampled loss in winning probability. A point mass
+/// at zero lets every level play good moves; errors draw an exponential regret, then
+/// pick softly among moves that already ranked well at depth 2.
 fn pick_best(
     game: &GameState,
     result: &MultiPVResult,
@@ -429,8 +414,7 @@ fn pick_best(
         return Some((best.mv, best.score));
     }
 
-    let conversion = active_conversion(game);
-    let conversion_position = conversion.is_some();
+    let conversion_position = active_conversion(game).is_some();
     let behavior = adjusted_skill_behavior(result, config, conversion_position);
     let top_chance = score_to_win_chance_permille(result.lines[0].score);
     let clear_conversion = conversion_position && top_chance >= CLEAR_CONVERSION_WIN_CHANCE;
@@ -469,7 +453,7 @@ fn pick_best(
                 continue;
             }
             equivalent_count += 1;
-            if rng.next_u64() % equivalent_count == 0 {
+            if rng.next_u64().is_multiple_of(equivalent_count) {
                 chosen_idx = Some(idx);
             }
         }
@@ -608,12 +592,9 @@ pub(crate) fn get_best_move_limited(
             .hot
             .set_time_limits(opt_time_ms, max_time_ms, is_soft_limit);
 
-        // Level 7 models a skilled player's occasional lapse instead of paying
-        // MultiPV overhead on every move. Clean decisions get a normal single-PV,
-        // single-threaded search; lapse decisions search two plausible candidates
-        // and force the regret sampler's error branch. This keeps its move-quality
-        // distribution below perfect while avoiding an artificial compute cliff
-        // immediately before level 8's full parallel search.
+        // Level 7 pays MultiPV only on the decisions it lapses on: clean ones get a
+        // plain single-PV search. That keeps it below perfect without an artificial
+        // compute cliff right before level 8's full parallel search.
         let skilled_clean_search = input_skill == MAX_SITE_SKILL - 1
             && searcher.rng.next_f64() < LEVEL_7_CLEAN_SEARCH_CHANCE;
         if skilled_clean_search {
@@ -760,8 +741,8 @@ mod tests {
     fn test_skill_uses_actual_mop_up_activation() {
         let mut game = GameState::new();
         game.setup_position_from_icn("w (8;q|1;q) K1,1|Q2,2|R3,1|k9,9");
-        let conversion = active_conversion(&game).expect("white should be converting");
-        assert_eq!(conversion.winner, PlayerColor::White);
+        let winner = active_conversion(&game).expect("white should be converting");
+        assert_eq!(winner, PlayerColor::White);
 
         game.turn = PlayerColor::Black;
         assert!(
@@ -908,9 +889,8 @@ mod tests {
         let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
         let deep_mv = Move::new(Coordinate::new(0, 0), Coordinate::new(0, 1), piece);
         let plain_mv = Move::new(Coordinate::new(1, 0), Coordinate::new(1, 1), piece);
-        // Same final score for both (so both are "equivalent best"), but deep_mv
-        // only looked good at full depth (-100 shallow vs 200 final), while
-        // plain_mv looked the same shallow and deep — no forced line behind it.
+        // Both end on the same score, but deep_mv only looks good at full depth
+        // (-100 shallow, 200 final) while plain_mv has no forced line behind it.
         let result = MultiPVResult {
             lines: vec![
                 PVLine {

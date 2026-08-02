@@ -2,15 +2,15 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
 use apeiron::Engine;
 use apeiron::Variant;
 use apeiron::board::{Coordinate, PieceType, PlayerColor};
 use apeiron::game::GameState;
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 // Commit SHA and date baked in at compile time by build.rs.
 const BUILD_COMMIT: Option<&str> = option_env!("SPRT_GIT_COMMIT");
@@ -24,6 +24,8 @@ struct Cli {
     command: Option<Commands>,
 }
 
+// Parsed once at startup, so the variant size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Run an SPRT session comparing two engine versions
@@ -197,11 +199,11 @@ impl CommitInfo {
     fn display_str(&self) -> String {
         let mut result = self.commit.clone();
         let mut suffix = String::new();
-        
+
         if !self.date.is_empty() {
             suffix.push_str(&self.date);
         }
-        
+
         if self.dirty {
             if !suffix.is_empty() {
                 suffix.push_str(", dirty");
@@ -209,11 +211,11 @@ impl CommitInfo {
                 suffix.push_str("dirty");
             }
         }
-        
+
         if !suffix.is_empty() {
             result.push_str(&format!(" ({})", suffix));
         }
-        
+
         result
     }
 }
@@ -257,17 +259,19 @@ fn try_get_commit_info_from_git(rev: &str) -> Option<CommitInfo> {
         return None;
     }
     let date = get_commit_date_from_git(rev);
-    Some(CommitInfo { commit, date, dirty: false })
+    Some(CommitInfo {
+        commit,
+        date,
+        dirty: false,
+    })
 }
 
 /// Print the "NEW: … vs OLD: …" commit identity line (shared by startup banner and final summary).
 fn print_commit_context(new_info: &Option<CommitInfo>, old_info: &Option<CommitInfo>) {
     match (new_info, old_info) {
-        (Some(nc), Some(oc)) => println!(
-            "  NEW: {}  vs  OLD: {}",
-            nc.display_str(),
-            oc.display_str()
-        ),
+        (Some(nc), Some(oc)) => {
+            println!("  NEW: {}  vs  OLD: {}", nc.display_str(), oc.display_str())
+        }
         (Some(nc), None) => println!("  NEW: {}  vs  OLD: (unknown)", nc.display_str()),
         (None, Some(oc)) => println!("  NEW: (unknown)  vs  OLD: {}", oc.display_str()),
         (None, None) => {}
@@ -625,7 +629,7 @@ impl SprtModel {
     }
 }
 
-/// Pentanomial LLR — the SPRT decision statistic (matches fastchess/Fishtest).
+/// Pentanomial LLR, the SPRT decision statistic, matching fastchess and Fishtest.
 fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtModel) -> f64 {
     if p.total_pairs() == 0 {
         return 0.0;
@@ -636,7 +640,13 @@ fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtM
     let wd = regularize(p.wd);
     let ww = regularize(p.ww);
     let total = ww + wd + wl_dd + ld + ll;
-    let probs = [ll / total, ld / total, wl_dd / total, wd / total, ww / total];
+    let probs = [
+        ll / total,
+        ld / total,
+        wl_dd / total,
+        wd / total,
+        ww / total,
+    ];
     let scores = [0.0, 0.25, 0.5, 0.75, 1.0];
     match model {
         SprtModel::Normalized => {
@@ -653,9 +663,9 @@ fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtM
     }
 }
 
-/// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the
-/// logistic Elo (`elo`) and normalized Elo (`nelo`) point-estimates are computed
-/// from the same pair-score distribution — they do not depend on the SPRT model.
+/// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the logistic
+/// and normalized point-estimates come from the same pair-score distribution, so
+/// neither depends on the SPRT model.
 #[derive(Clone, Copy, Debug, Default)]
 struct PentaElo {
     elo: f64,
@@ -770,13 +780,12 @@ fn load_resume_state(path: &str) -> ResumeState {
 
     for icn in &games {
         let mut this_idx: Option<usize> = None;
-        if let Some(event) = parse_icn_tag(icn, "Event") {
-            if let Some(idx_str) = event.strip_prefix("SPRT Test Game ") {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    max_game_idx = Some(max_game_idx.map_or(idx, |m| m.max(idx)));
-                    this_idx = Some(idx);
-                }
-            }
+        if let Some(event) = parse_icn_tag(icn, "Event")
+            && let Some(idx_str) = event.strip_prefix("SPRT Test Game ")
+            && let Ok(idx) = idx_str.parse::<usize>()
+        {
+            max_game_idx = Some(max_game_idx.map_or(idx, |m| m.max(idx)));
+            this_idx = Some(idx);
         }
 
         let result_tag = parse_icn_tag(icn, "Result");
@@ -785,10 +794,18 @@ fn load_resume_state(path: &str) -> ResumeState {
 
         let result = match result_tag.as_deref() {
             Some("1-0") => {
-                if new_plays_white { GameResult::Win } else { GameResult::Loss }
+                if new_plays_white {
+                    GameResult::Win
+                } else {
+                    GameResult::Loss
+                }
             }
             Some("0-1") => {
-                if new_plays_white { GameResult::Loss } else { GameResult::Win }
+                if new_plays_white {
+                    GameResult::Loss
+                } else {
+                    GameResult::Win
+                }
             }
             _ => GameResult::Draw,
         };
@@ -826,9 +843,10 @@ fn load_resume_state(path: &str) -> ResumeState {
     let mut penta = PentaCounts::default();
     if let Some(max_idx) = max_game_idx {
         for k in 0..=(max_idx / 2) {
-            if let (Some(&a), Some(&b)) =
-                (results_by_idx.get(&(2 * k)), results_by_idx.get(&(2 * k + 1)))
-            {
+            if let (Some(&a), Some(&b)) = (
+                results_by_idx.get(&(2 * k)),
+                results_by_idx.get(&(2 * k + 1)),
+            ) {
                 penta.add_pair(a, b);
             }
         }
@@ -849,10 +867,10 @@ fn load_resume_state(path: &str) -> ResumeState {
 
 fn save_games_file(path: &str, game_logs: &[String]) {
     let tmp_path = format!("{}.tmp", path);
-    if let Ok(json_data) = serde_json::to_string_pretty(game_logs) {
-        if std::fs::write(&tmp_path, &json_data).is_ok() {
-            let _ = std::fs::rename(&tmp_path, path);
-        }
+    if let Ok(json_data) = serde_json::to_string_pretty(game_logs)
+        && std::fs::write(&tmp_path, &json_data).is_ok()
+    {
+        let _ = std::fs::rename(&tmp_path, path);
     }
 }
 
@@ -1032,12 +1050,9 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
         PlayerColor::Neutral => return None,
     };
 
-    // ── AllPiecesCaptured ──────────────────────────────────────────────────────
-    // Game over when the current player has zero pieces AND zero royals.
-    // This MUST be checked before has_lost_by_royal_capture() because capturing
-    // the king (the last piece) sets royals=0, which causes that function to return
-    // true and fall into the wrong `_ => None` branch, silently skipping termination
-    // and also bypassing the fifty-move rule check below.
+    // AllPiecesCaptured must be checked before has_lost_by_royal_capture: taking the
+    // last piece also zeroes royals, which sends that function down a branch that
+    // skips termination and the fifty-move check entirely.
     if opp_wc == WinCondition::AllPiecesCaptured {
         let has_royals = match game.turn {
             PlayerColor::White => !game.white_royals.is_empty(),
@@ -1052,8 +1067,8 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
         // Not yet over (opponent still has pieces/royals left to capture).
         // Fall through so the fifty-move rule and other draw checks still run.
 
-    // ── RoyalCapture / AllRoyalsCaptured ──────────────────────────────────────
-    // Only run for win conditions that actually target royals.
+        // RoyalCapture / AllRoyalsCaptured
+        // Only run for win conditions that actually target royals.
     } else if game.has_lost_by_royal_capture() {
         return match opp_wc {
             WinCondition::RoyalCapture => Some(TerminalState::RoyalCapture {
@@ -1068,7 +1083,7 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
         };
     }
 
-    // ── No legal moves → checkmate / stalemate / piece-loss ───────────────────
+    // No legal moves → checkmate / stalemate / piece-loss
     let in_check = game.is_in_check();
     let has_legal_move = has_any_fully_legal_move(game);
     if !has_legal_move {
@@ -1090,8 +1105,9 @@ fn detect_terminal_state(game: &GameState) -> Option<TerminalState> {
         return Some(TerminalState::Draw("stalemate"));
     }
 
-    // ── Draw conditions ────────────────────────────────────────────────────────
-    if apeiron::evaluation::insufficient_material::evaluate_insufficient_material_game_handler(game) {
+    // Draw conditions
+    if apeiron::evaluation::insufficient_material::evaluate_insufficient_material_game_handler(game)
+    {
         return Some(TerminalState::Draw("insufficient_material"));
     }
 
@@ -1182,7 +1198,7 @@ fn play_game(
         *repetition_counts.entry(key).or_insert(0) += 1;
     }
 
-    for ply in 0..config.max_moves {
+    for (ply, &seed_val) in seeds.iter().enumerate().take(config.max_moves) {
         if STOP.load(Ordering::SeqCst) {
             if USER_STOP.load(Ordering::SeqCst) {
                 return GameOutcome {
@@ -1263,12 +1279,12 @@ fn play_game(
 
         // Material adjudication (after terminal checks, only if both engines agree)
         // Requires at least 20 plies and both engines to have provided evals
-        if variant != Variant::PawnHorde && move_history_clean.len() >= 20 && last_eval_new.is_some() && last_eval_old.is_some() {
+        if variant != Variant::PawnHorde
+            && move_history_clean.len() >= 20
+            && let (Some(eval_new), Some(eval_old)) = (last_eval_new, last_eval_old)
+        {
             let threshold = config.adjudication_threshold;
             if threshold > 0 {
-                let eval_new = last_eval_new.unwrap();
-                let eval_old = last_eval_old.unwrap();
-                
                 // Determine winner from each engine's eval
                 let new_winner = if eval_new >= threshold {
                     Some('w')
@@ -1277,7 +1293,7 @@ fn play_game(
                 } else {
                     None
                 };
-                
+
                 let old_winner = if eval_old >= threshold {
                     Some('w')
                 } else if eval_old <= -threshold {
@@ -1285,19 +1301,19 @@ fn play_game(
                 } else {
                     None
                 };
-                
+
                 // Only adjudicate if both engines agree on the same winner
-                if let (Some(new_w), Some(old_w)) = (new_winner, old_winner) {
-                    if new_w == old_w {
-                        let white_winning = new_w == 'w';
-                        let result = if white_winning == new_plays_white {
-                            GameResult::Win
-                        } else {
-                            GameResult::Loss
-                        };
-                        let result_str = if white_winning { "1-0" } else { "0-1" };
-                        return game_outcome!(result, "material adjudication", result_str);
-                    }
+                if let (Some(new_w), Some(old_w)) = (new_winner, old_winner)
+                    && new_w == old_w
+                {
+                    let white_winning = new_w == 'w';
+                    let result = if white_winning == new_plays_white {
+                        GameResult::Win
+                    } else {
+                        GameResult::Loss
+                    };
+                    let result_str = if white_winning { "1-0" } else { "0-1" };
+                    return game_outcome!(result, "material adjudication", result_str);
                 }
             }
         }
@@ -1344,7 +1360,6 @@ fn play_game(
             cmd.arg("--noise-amp").arg(config.search_noise.to_string());
         }
 
-        let seed_val = seeds[ply];
         cmd.arg("--seed").arg(seed_val.to_string());
 
         let strength = if is_new_turn {
@@ -1353,8 +1368,7 @@ fn play_game(
             config.old_strength
         };
         if strength < apeiron::search::MAX_SITE_SKILL {
-            cmd.arg("--strength-level")
-                .arg(strength.to_string());
+            cmd.arg("--strength-level").arg(strength.to_string());
         }
 
         if config.verbose {
@@ -1936,7 +1950,7 @@ fn main() {
                 }
             };
 
-            // Default CLI values used to detect whether user explicitly overrode them
+            // Compared against the parsed args to tell an explicit flag from a default.
             const DEFAULT_TC_STR: &str = "10+0.1";
             const DEFAULT_VARIANTS_STR: &str = "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers";
 
@@ -1950,8 +1964,9 @@ fn main() {
                 }
             });
 
-            let resume_pair_offset_val =
-                resume_state_opt.as_ref().map_or(0, |rs| rs.resume_pair_offset);
+            let resume_pair_offset_val = resume_state_opt
+                .as_ref()
+                .map_or(0, |rs| rs.resume_pair_offset);
 
             // Auto-detect TC from resume if the user didn't supply an explicit value
             let tc = match &resume_state_opt {
@@ -1969,14 +1984,9 @@ fn main() {
                 _ => variants,
             };
 
-            // ── Variant presets ──────────────────────────────────────────────────────
-            // all      — every variant in the engine
-            // site     — variants live on the public site (image order), no Abundance/Showcase
-            // base_only — base-eval standard variants; no multi-king, no AllPieces, no Abundance
-            //             Default for testing base.rs changes against typical positions.
-            // base_full — all base-eval variants including multi-king and AllPiecesClassical
-            // multi_king — only the double/triple-king variants
-            // coaip    — only the Chess-on-an-Infinite-Plane family
+            // Presets: "all" is every variant, "site" those live on the public site,
+            // "base_only" the plain base-eval ones (the default for base.rs changes),
+            // "base_full" those plus multi-king, "multi_king" and "coaip" one family.
 
             // Every variant in the engine
             const ALL_VARIANTS: &[Variant] = &[
@@ -2026,9 +2036,8 @@ fn main() {
                 Variant::Chess,
             ];
 
-            // Standard base-eval variants — no Chess/Obstocean/PawnHorde custom evals,
-            // no multi-king, no AllPiecesClassical, no Abundance.
-            // Best default for testing base.rs changes.
+            // Base-eval variants only: no custom evaluators, multi-king,
+            // AllPiecesClassical or Abundance. The best default for base.rs changes.
             const BASE_ONLY_VARIANTS: &[Variant] = &[
                 Variant::Classical,
                 Variant::ConfinedClassical,
@@ -2087,12 +2096,12 @@ fn main() {
             ];
 
             let parsed_variants = match variants.trim().to_lowercase().as_str() {
-                "all"        => ALL_VARIANTS.to_vec(),
-                "site"       => SITE_VARIANTS.to_vec(),
-                "base_only"  => BASE_ONLY_VARIANTS.to_vec(),
-                "base_full"  => BASE_FULL_VARIANTS.to_vec(),
+                "all" => ALL_VARIANTS.to_vec(),
+                "site" => SITE_VARIANTS.to_vec(),
+                "base_only" => BASE_ONLY_VARIANTS.to_vec(),
+                "base_full" => BASE_FULL_VARIANTS.to_vec(),
                 "multi_king" => MULTI_KING_VARIANTS.to_vec(),
-                "coaip"      => COAIP_VARIANTS.to_vec(),
+                "coaip" => COAIP_VARIANTS.to_vec(),
                 _ => {
                     let mut parsed = Vec::new();
                     for name in variants.split(',') {
@@ -2170,7 +2179,11 @@ fn main() {
             // Resolve old commit info: explicit CLI arg > query the old binary itself.
             config.old_commit_info = if let Some(sha) = old_commit {
                 let date = get_commit_date_from_git(&sha);
-                Some(CommitInfo { commit: sha, date, dirty: false })
+                Some(CommitInfo {
+                    commit: sha,
+                    date,
+                    dirty: false,
+                })
             } else {
                 try_query_binary_commit_info(&config.old_bin)
             };
@@ -2178,7 +2191,11 @@ fn main() {
             // Resolve new commit info: explicit CLI arg > build-time embedded value > git HEAD.
             config.new_commit_info = if let Some(sha) = new_commit {
                 let date = get_commit_date_from_git(&sha);
-                Some(CommitInfo { commit: sha, date, dirty: false })
+                Some(CommitInfo {
+                    commit: sha,
+                    date,
+                    dirty: false,
+                })
             } else if let Some(commit) = BUILD_COMMIT.filter(|s| !s.is_empty()) {
                 let is_dirty = BUILD_DIRTY.map(|d| d == "1").unwrap_or(false);
                 Some(CommitInfo {
@@ -2396,11 +2413,11 @@ fn main() {
                 }
 
                 // Batch save: write the games file periodically so progress is not lost on crash
-                if let Some(ref path) = games_path {
-                    if game_logs.len().saturating_sub(last_save_len) >= config.save_interval {
-                        save_games_file(path, &game_logs);
-                        last_save_len = game_logs.len();
-                    }
+                if let Some(ref path) = games_path
+                    && game_logs.len().saturating_sub(last_save_len) >= config.save_interval
+                {
+                    save_games_file(path, &game_logs);
+                    last_save_len = game_logs.len();
                 }
 
                 // Pentanomial LLR drives the SPRT decision (Fishtest model).
@@ -2548,19 +2565,13 @@ fn main() {
                 }
                 .to_string();
                 let res = FinalResults {
-                    new_commit: config
-                        .new_commit_info
-                        .as_ref()
-                        .map(|c| c.commit.clone()),
+                    new_commit: config.new_commit_info.as_ref().map(|c| c.commit.clone()),
                     new_commit_date: config
                         .new_commit_info
                         .as_ref()
                         .filter(|c| !c.date.is_empty())
                         .map(|c| c.date.clone()),
-                    old_commit: config
-                        .old_commit_info
-                        .as_ref()
-                        .map(|c| c.commit.clone()),
+                    old_commit: config.old_commit_info.as_ref().map(|c| c.commit.clone()),
                     old_commit_date: config
                         .old_commit_info
                         .as_ref()
@@ -2707,12 +2718,26 @@ mod pentanomial_tests {
     #[test]
     fn logistic_pentanomial_matches_fastchess() {
         // "logistic pentanomial 1": Stats(223, 9863, 20279, 1000, 10037, 246), elo [0.5, 2.5] → -3.07
-        let p1 = PentaCounts { ww: 246, wd: 10037, wl: 20279, dd: 1000, ld: 9863, ll: 223 };
+        let p1 = PentaCounts {
+            ww: 246,
+            wd: 10037,
+            wl: 20279,
+            dd: 1000,
+            ld: 9863,
+            ll: 223,
+        };
         let llr1 = calculate_pentanomial_llr(&p1, 0.5, 2.5, SprtModel::Logistic);
         assert!((llr1 - (-3.07)).abs() < 0.02, "case 1 got {}", llr1);
 
         // "logistic pentanomial 2": Stats(871, 26175, 55003, 980, 26678, 821), elo [0, 2] → -4.98
-        let p2 = PentaCounts { ww: 821, wd: 26678, wl: 55003, dd: 980, ld: 26175, ll: 871 };
+        let p2 = PentaCounts {
+            ww: 821,
+            wd: 26678,
+            wl: 55003,
+            dd: 980,
+            ld: 26175,
+            ll: 871,
+        };
         let llr2 = calculate_pentanomial_llr(&p2, 0.0, 2.0, SprtModel::Logistic);
         assert!((llr2 - (-4.98)).abs() < 0.02, "case 2 got {}", llr2);
     }
@@ -2720,17 +2745,38 @@ mod pentanomial_tests {
     #[test]
     fn normalized_pentanomial_matches_fastchess() {
         // "normalized pentanomial 1": Stats(365, 16618, 36029, 200, 16974, 390), elo [0, 2] → 2.25
-        let p1 = PentaCounts { ww: 390, wd: 16974, wl: 36029, dd: 200, ld: 16618, ll: 365 };
+        let p1 = PentaCounts {
+            ww: 390,
+            wd: 16974,
+            wl: 36029,
+            dd: 200,
+            ld: 16618,
+            ll: 365,
+        };
         let llr1 = calculate_pentanomial_llr(&p1, 0.0, 2.0, SprtModel::Normalized);
         assert!((llr1 - 2.25).abs() < 0.02, "case 1 got {}", llr1);
 
         // "normalized pentanomial 2": Stats(127, 4883, 10311, 401, 5150, 104), elo [-1.75, 0.25] → 3.01
-        let p2 = PentaCounts { ww: 104, wd: 5150, wl: 10311, dd: 401, ld: 4883, ll: 127 };
+        let p2 = PentaCounts {
+            ww: 104,
+            wd: 5150,
+            wl: 10311,
+            dd: 401,
+            ld: 4883,
+            ll: 127,
+        };
         let llr2 = calculate_pentanomial_llr(&p2, -1.75, 0.25, SprtModel::Normalized);
         assert!((llr2 - 3.01).abs() < 0.02, "case 2 got {}", llr2);
 
         // "normalized pentanomial 3": Stats(0, 0, 0, 0, 0, 5550), elo [0, 5] → 111.82
-        let p3 = PentaCounts { ww: 5550, wd: 0, wl: 0, dd: 0, ld: 0, ll: 0 };
+        let p3 = PentaCounts {
+            ww: 5550,
+            wd: 0,
+            wl: 0,
+            dd: 0,
+            ld: 0,
+            ll: 0,
+        };
         let llr3 = calculate_pentanomial_llr(&p3, 0.0, 5.0, SprtModel::Normalized);
         assert!((llr3 - 111.82).abs() < 0.1, "case 3 got {}", llr3);
     }

@@ -20,13 +20,19 @@ fn main() {
             .unwrap_or_default();
 
         let date = Command::new("git")
-            .args(["log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d", "HEAD"])
+            .args([
+                "log",
+                "-1",
+                "--format=%cd",
+                "--date=format-local:%Y-%m-%d",
+                "HEAD",
+            ])
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
-        
+
         // Check if the worktree is dirty (has uncommitted .rs files).
         let is_dirty = Command::new("git")
             .args(["status", "--porcelain", "--", "*.rs"])
@@ -35,11 +41,14 @@ fn main() {
             .filter(|o| o.status.success())
             .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
             .unwrap_or(false);
-        
+
         println!("cargo:rustc-env=SPRT_GIT_COMMIT={}", commit);
         println!("cargo:rustc-env=SPRT_GIT_DATE={}", date);
-        println!("cargo:rustc-env=SPRT_GIT_DIRTY={}", if is_dirty { "1" } else { "0" });
-        
+        println!(
+            "cargo:rustc-env=SPRT_GIT_DIRTY={}",
+            if is_dirty { "1" } else { "0" }
+        );
+
         // Watch .git/HEAD to detect branch/commit changes
         println!("cargo:rerun-if-changed=.git/HEAD");
         // Also watch all src files to catch local changes

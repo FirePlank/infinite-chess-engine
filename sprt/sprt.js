@@ -86,7 +86,7 @@ function snapshotOldFromRoot() {
 }
 
 function buildNewWebPkg() {
-    // MT (Lazy SMP) is the default build now — .cargo/config.toml carries the atomics/
+    // MT (Lazy SMP) is the default build: .cargo/config.toml carries the atomics/
     // build-std flags persistently, so a plain wasm-pack build produces the threaded engine.
     console.log('\n[web-sprt] Building NEW WASM (Multi-threaded / Lazy SMP is default)...');
     try {
