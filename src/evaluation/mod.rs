@@ -34,7 +34,7 @@ pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_f
 /// Returns the mop-up bonus from the side-to-move's perspective (positive = good for side to move).
 /// Activation, scaling, and magnitude saturation all live in the mop_up
 /// module (`active_mop_up` / `evaluate_mop_up_scaled`), shared with the
-/// search's mop-up check extension.
+/// search's conversion-aware skill policy.
 #[inline]
 fn compute_mop_up_term(game: &GameState) -> i32 {
     let Some((winner, scale)) = crate::evaluation::mop_up::active_mop_up(game) else {
