@@ -337,13 +337,25 @@ pub fn is_piece_attacking_square(
         }
     }
 
-    // 2. Leapers
+    // 2. Handle early exit for sliders and check leapers
     match pt {
-        PieceType::Knight => {
+        // Prevent any unnecessary computation for pure sliders (Rook, Bishop, Queen) which
+        // are already handled above.
+        PieceType::Rook | PieceType::Bishop | PieceType::Queen => {
+            return false;
+        }
+
+        // Knight or slider + knight compound pieces
+        PieceType::Knight
+        | PieceType::Archbishop
+        | PieceType::Chancellor
+        | PieceType::Amazon => {
             let dx = (to.x - from.x).abs();
             let dy = (to.y - from.y).abs();
             return (dx == 1 && dy == 2) || (dx == 2 && dy == 1);
         }
+
+        // Other leapers
         PieceType::Pawn => {
             let direction = if our_color == PlayerColor::White {
                 1
@@ -359,63 +371,63 @@ pub fn is_piece_attacking_square(
             let dy = (to.y - from.y).abs();
             return dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
         }
+
+        // Optimized huygen check (prime-distance orthogonal slider)
+        // Avoids fallback to move generation which has limits
+        PieceType::Huygen => {
+            let dx = to.x - from.x;
+            let dy = to.y - from.y;
+
+            // Must be on same row or column (orthogonal)
+            if dx != 0 && dy != 0 {
+                return false;
+            }
+
+            // Must be different square
+            if dx == 0 && dy == 0 {
+                return false;
+            }
+
+            let dist = dx.abs().max(dy.abs());
+
+            // Must be at prime distance
+            if !is_prime_fast(dist) {
+                return false;
+            }
+
+            // Check for blocker at closer prime distance using spatial indices
+            let is_horizontal = dy == 0;
+            let line_vec = if is_horizontal {
+                indices.rows.get(&from.y)
+            } else {
+                indices.cols.get(&from.x)
+            };
+
+            let our_coord = if is_horizontal { from.x } else { from.y };
+            let target_coord = if is_horizontal { to.x } else { to.y };
+            let sign = (target_coord - our_coord).signum();
+
+            if let Some(vec) = line_vec {
+                // Check all pieces between Huygen and target for blockers at prime distances
+                for (coord, _packed) in vec {
+                    let d = (coord - our_coord) * sign; // Distance in direction of target
+                    if d <= 0 || d >= dist {
+                        continue; // Not between Huygen and target
+                    }
+
+                    // If this piece is at a prime distance from the Huygen, it blocks
+                    if is_prime_fast(d) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
         _ => {}
     }
 
-    // 3. Optimized Huygen check (prime-distance orthogonal slider)
-    // Avoids fallback to move generation which has limits
-    if pt == PieceType::Huygen {
-        let dx = to.x - from.x;
-        let dy = to.y - from.y;
-
-        // Must be on same row or column (orthogonal)
-        if dx != 0 && dy != 0 {
-            return false;
-        }
-
-        // Must be different square
-        if dx == 0 && dy == 0 {
-            return false;
-        }
-
-        let dist = dx.abs().max(dy.abs());
-
-        // Must be at prime distance
-        if !is_prime_fast(dist) {
-            return false;
-        }
-
-        // Check for blocker at closer prime distance using spatial indices
-        let is_horizontal = dy == 0;
-        let line_vec = if is_horizontal {
-            indices.rows.get(&from.y)
-        } else {
-            indices.cols.get(&from.x)
-        };
-
-        let our_coord = if is_horizontal { from.x } else { from.y };
-        let target_coord = if is_horizontal { to.x } else { to.y };
-        let sign = (target_coord - our_coord).signum();
-
-        if let Some(vec) = line_vec {
-            // Check all pieces between Huygen and target for blockers at prime distances
-            for (coord, _packed) in vec {
-                let d = (coord - our_coord) * sign; // Distance in direction of target
-                if d <= 0 || d >= dist {
-                    continue; // Not between Huygen and target
-                }
-
-                // If this piece is at a prime distance from the Huygen, it blocks
-                if is_prime_fast(d) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    // 4. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
+    // 3. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
     let mut moves = MoveList::new();
     let ctx = MoveGenContext {
         special_rights: &FxHashSet::default(),
