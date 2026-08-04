@@ -180,7 +180,7 @@ pub fn material_key(piece_type: PieceType, color: PlayerColor) -> u64 {
 #[inline(always)]
 pub fn material_key_at(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
     let k = material_key(piece_type, color);
-    if piece_type == PieceType::Bishop && (x + y).rem_euclid(2) == 1 {
+    if piece_type == PieceType::Bishop && ((x + y) & 1) == 1 {
         k.rotate_left(17)
     } else {
         k
