@@ -3187,9 +3187,24 @@ pub(crate) fn get_best_moves_multipv_impl(
                         excluded_move: None,
                     });
                 }
+            } else if multipv_alpha == -INFINITY {
+                // No K-th best score yet, so a scout window of -INFINITY
+                // always "beats" it and forces the re-search anyway.
+                score = -negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: depth - 1,
+                    ply: 1,
+                    alpha: -INFINITY,
+                    beta: INFINITY,
+                    allow_null: true,
+                    node_type: NodeType::PV,
+                    was_null_move: false,
+                    excluded_move: None,
+                });
+                exact = !searcher.hot.stopped;
             } else {
                 // Use PVS for efficiency with MultiPV-aware alpha bound
-                // If we haven't filled our PV slots yet, window is effectively [-INF, INF]
                 let target_alpha = multipv_alpha;
 
                 score = -negamax(&mut NegamaxContext {
