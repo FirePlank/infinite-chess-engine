@@ -341,7 +341,7 @@ pub fn is_piece_attacking_square(
     match pt {
         // Prevent any unnecessary computation for pure sliders (Rook, Bishop, Queen) which
         // are already handled above.
-        PieceType::Rook | PieceType::Bishop | PieceType::Queen => {
+        PieceType::Rook | PieceType::Bishop | PieceType::Queen | PieceType::RoyalQueen => {
             return false;
         }
 
@@ -370,6 +370,48 @@ pub fn is_piece_attacking_square(
             let dx = (to.x - from.x).abs();
             let dy = (to.y - from.y).abs();
             return dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
+        }
+
+        // Pure (m,n) leapers: the generator emits all 8 sign/swap offsets.
+        PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            let (m, n) = match pt {
+                PieceType::Camel => (1, 3),
+                PieceType::Giraffe => (1, 4),
+                _ => (2, 3),
+            };
+            return (dx == m && dy == n) || (dx == n && dy == m);
+        }
+
+        // Compass at exactly 2 and 3: ortho or diagonal only, so (2,3) is NOT
+        // attacked. Leaps, so no blocker check.
+        PieceType::Hawk => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            let at = |d: i64| (dx == d && dy == 0) || (dx == 0 && dy == d) || (dx == d && dy == d);
+            return at(2) || at(3);
+        }
+
+        // King step plus knight leap.
+        PieceType::Centaur => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            return (dx <= 1 && dy <= 1 && (dx != 0 || dy != 0))
+                || (dx == 1 && dy == 2)
+                || (dx == 2 && dy == 1);
+        }
+
+        // Same as Centaur, but is_pseudo_legal has no RoyalCentaur arm and so
+        // relies on the fallback below to validate its castling moves.
+        PieceType::RoyalCentaur => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            if !(dy == 0 && dx >= 2) {
+                return (dx <= 1 && dy <= 1 && (dx != 0 || dy != 0))
+                    || (dx == 1 && dy == 2)
+                    || (dx == 2 && dy == 1);
+            }
         }
 
         // Optimized huygen check (prime-distance orthogonal slider)
