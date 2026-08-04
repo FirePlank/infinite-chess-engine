@@ -174,7 +174,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("knightrider", crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER as i64, 500, 900, 8.0, 0.002, "Knightrider value"),
     EvalParamSpec::new("hawk", crate::evaluation::base::DEFAULT_EVAL_HAWK as i64, 400, 800, 6.0, 0.002, "Hawk value"),
     EvalParamSpec::new("archbishop", crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP as i64, 700, 1100, 8.0, 0.002, "Archbishop value"),
-    EvalParamSpec::new("rose", crate::evaluation::base::DEFAULT_EVAL_ROSE as i64, 250, 650, 6.0, 0.002, "Rose value"),
+    EvalParamSpec::new("rose", crate::evaluation::base::DEFAULT_EVAL_ROSE as i64, 700, 1250, 6.0, 0.002, "Rose value"),
     EvalParamSpec::new("huygen", crate::evaluation::base::DEFAULT_EVAL_HUYGEN as i64, 155, 555, 4.0, 0.002, "Huygen value"),
     EvalParamSpec::new("chancellor_bonus", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS as i64, 0, 300, 4.0, 0.002, "Chancellor extra value bonus"),
     EvalParamSpec::new("mg_doubled_pawn_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY as i64, 0, 208, 2.0, 0.002, "Middlegame doubled pawn penalty"),
@@ -651,6 +651,27 @@ define_accessor!(delta_margin, i32, DEFAULT_DELTA_MARGIN);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every spec's default must fall inside its own tunable range, or the
+    /// first SPSA perturbation clamps both candidates to the same wrong side
+    /// and silently discards whatever produced that default.
+    #[test]
+    fn all_param_defaults_are_within_their_own_bounds() {
+        for spec in TUNABLE_PARAM_SPECS {
+            assert!(
+                spec.min <= spec.default && spec.default <= spec.max,
+                "{}: default {} outside [{}, {}]",
+                spec.name, spec.default, spec.min, spec.max
+            );
+        }
+        for spec in TUNABLE_EVAL_PARAM_SPECS {
+            assert!(
+                spec.min <= spec.default && spec.default <= spec.max,
+                "{}: default {} outside [{}, {}]",
+                spec.name, spec.default, spec.min, spec.max
+            );
+        }
+    }
 
     #[test]
     fn test_params_default() {
