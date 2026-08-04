@@ -254,6 +254,14 @@ fn pick_proven_mate(
         return None;
     }
 
+    // A mate delivered by this move is not a stylistic preference or a
+    // calculation detail. Once the capped search has one, every level must
+    // finish immediately instead of sampling a slower mating continuation.
+    if best_score >= mate_in(1) {
+        let best = &result.lines[0];
+        return Some((best.mv, best.score));
+    }
+
     let candidates: Vec<(usize, f64)> = result
         .lines
         .iter()
@@ -787,8 +795,12 @@ mod tests {
             let (mv, score, _) =
                 get_best_move_limited(&mut game, 3, 2000, 2000, Some(level), true, false)
                     .expect("position has legal moves");
-            assert_eq!((mv.to.x, mv.to.y), (0, 5), "site level {level}");
             assert!(score > MATE_SCORE, "site level {level}: score={score}");
+            assert_eq!(
+                (mv.to.x, mv.to.y),
+                (0, 5),
+                "site level {level}: selected {mv:?} with mate score {score}"
+            );
         }
     }
 
