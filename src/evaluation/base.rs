@@ -2220,7 +2220,7 @@ pub fn evaluate_queen(
             && is_clear_line_between_fast(&game.spatial_indices, &from, ek)
         {
             let mut line_bonus = 15;
-            let lin_dist = dx.abs().max(dy.abs()) as i32;
+            let lin_dist = saturating_dist_i32(dx.abs().max(dy.abs()));
             let max_lin = 20;
             let clamped = lin_dist.min(max_lin);
             let diff = (clamped - QUEEN_IDEAL_LINE_DIST).abs();
@@ -3528,9 +3528,9 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
         // Find the nearest king to the pawn.
         for wk in white_royals {
             if matches!(wk.piece_type, PieceType::King) {
-                let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as i32;
+                let d = saturating_dist_i32((wx - wk.x).abs().max((wy - wk.y).abs()));
                 min_d = min_d.min(d);
-                let md = ((wx - wk.x).abs() + (wy - wk.y).abs()) as i32;
+                let md = saturating_dist_i32((wx - wk.x).abs() + (wy - wk.y).abs());
                 min_friendly_md = min_friendly_md.min(md);
             }
         }
@@ -3539,9 +3539,9 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
         min_d = 255; // reset it back
         for bk in black_royals {
             if matches!(bk.piece_type, PieceType::King) {
-                let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as i32;
+                let d = saturating_dist_i32((wx - bk.x).abs().max((wy - bk.y).abs()));
                 min_d = min_d.min(d);
-                let md = ((wx - bk.x).abs() + (wy - bk.y).abs()) as i32;
+                let md = saturating_dist_i32((wx - bk.x).abs() + (wy - bk.y).abs());
                 min_enemy_md = min_enemy_md.min(md);
             }
         }
@@ -3591,9 +3591,9 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
         // Find the nearest king to the pawn.
         for bk in black_royals {
             if matches!(bk.piece_type, PieceType::King) {
-                let d = (bx - bk.x).abs().max((by - bk.y).abs()) as i32;
+                let d = saturating_dist_i32((bx - bk.x).abs().max((by - bk.y).abs()));
                 min_d = min_d.min(d);
-                let md = ((bx - bk.x).abs() + (by - bk.y).abs()) as i32;
+                let md = saturating_dist_i32((bx - bk.x).abs() + (by - bk.y).abs());
                 min_friendly_md = min_friendly_md.min(md);
             }
         }
@@ -3602,9 +3602,9 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
         min_d = 255; // reset it back
         for wk in white_royals {
             if matches!(wk.piece_type, PieceType::King) {
-                let d = (bx - wk.x).abs().max((by - wk.y).abs()) as i32;
+                let d = saturating_dist_i32((bx - wk.x).abs().max((by - wk.y).abs()));
                 min_d = min_d.min(d);
-                let md = ((bx - wk.x).abs() + (by - wk.y).abs()) as i32;
+                let md = saturating_dist_i32((bx - wk.x).abs() + (by - wk.y).abs());
                 min_enemy_md = min_enemy_md.min(md);
             }
         }
@@ -3616,7 +3616,7 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     }
 
     // Apply adjustments to nullify the effect if both friendly and enemy kings are far.
-    let max_effective_dist = nearest_pawn_distance + 5;
+    let max_effective_dist = nearest_pawn_distance.saturating_add(5);
     for (friendly_dist, enemy_dist) in w_king_pawn_distances {
         w_activity += (enemy_dist.min(max_effective_dist) - friendly_dist.min(max_effective_dist))
             .clamp(-30, 30);
@@ -3681,6 +3681,44 @@ mod tests {
     use super::*;
 
     use crate::game::GameState;
+
+    /// A non-mating, non-insufficient-material position must never evaluate
+    /// past MATE_SCORE: crossing it makes is_decisive() true and lets a
+    /// coordinate-overflow bug pass as a real forced mate into the TT.
+    fn assert_sane_envelope(icn: &str) {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        let score = evaluate(&game);
+        assert!(
+            score.abs() < crate::search::MATE_SCORE,
+            "{icn}: eval {score} crosses MATE_SCORE ({})",
+            crate::search::MATE_SCORE
+        );
+    }
+
+    /// Distance-based terms (queen line-tropism, king-pawn tropism) must stay
+    /// bounded and roughly constant in SIGN/magnitude class as coordinates
+    /// grow, instead of wrapping through i32 at huge but legitimate distances.
+    #[test]
+    fn far_coordinates_do_not_overflow() {
+        for coord in [
+            0i64,
+            1,
+            1_000_000,
+            1_000_000_000,
+            1_000_000_000_000_000,
+            i32::MAX as i64,
+            i32::MAX as i64 + 1,
+            i64::MAX / 4,
+        ] {
+            assert_sane_envelope(&format!("w (8|1) K1,1|k5,8|Q5,{}", -coord.max(1)));
+            assert_sane_envelope(&format!(
+                "w (8|1) K{},1|k{},8|P4,7",
+                -coord.max(1),
+                coord.max(1)
+            ));
+        }
+    }
 
     /// Only for debugging purposes, excluded during tests or releases
     #[test]
