@@ -1738,7 +1738,7 @@ fn play_game(
             };
             return game_outcome!(
                 result,
-                "adjudication",
+                "max-ply adjudication",
                 if white_won { "1-0" } else { "0-1" }
             );
         }
@@ -1877,6 +1877,12 @@ fn generate_icn(
                 format!(
                     "Material adjudication (|eval| >= {} cp)",
                     config.adjudication_threshold
+                )
+            }
+            "max-ply adjudication" => {
+                format!(
+                    "Max-ply adjudication (|eval| >= {} cp)",
+                    config.maxply_adjudication
                 )
             }
             "checkmate" => "Checkmate".to_string(),
