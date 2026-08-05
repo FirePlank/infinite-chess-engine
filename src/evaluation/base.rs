@@ -546,7 +546,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut w_pawn_threats = 0;
     let mut b_pawn_threats = 0;
     let mut w_minor_threats = 0;
+    let mut w_slider_threats = 0;
     let mut b_minor_threats = 0;
+    let mut b_slider_threats = 0;
 
     // Readiness counts (Unified Loop)
     let mut w_sliders_in_zone = 0;
@@ -610,6 +612,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     const PAWN_THREATENS_MINOR: i32 = 25;
     const PAWN_THREATENS_ROOK: i32 = 40;
     const PAWN_THREATENS_QUEEN: i32 = 60;
+    // Sliders are graded by value gap rather than bucketed: on an unbounded
+    // board they are the pieces that can threaten from anywhere, and a fixed
+    // tier would have to be re-cut every time the piece values are refitted.
+    const SLIDER_THREAT_DIV: i32 = 12;
+    const SLIDER_THREAT_CAP: i32 = 45;
     const MINOR_THREATENS_ROOK: i32 = 20;
     const MINOR_THREATENS_QUEEN: i32 = 35;
 
@@ -1032,6 +1039,46 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             }
                                         }
                                     }
+                                } else if crate::attacks::is_slider(pt) {
+                                    // A slider attacks exactly the first piece on each of
+                                    // its rays, so one binary search per direction gives the
+                                    // true attack set - no scan and no approximation.
+                                    const ORTHO: [(i64, i64); 4] =
+                                        [(1, 0), (-1, 0), (0, 1), (0, -1)];
+                                    const DIAG: [(i64, i64); 4] =
+                                        [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+                                    let mut rays: SmallVec<[(i64, i64); 8]> = SmallVec::new();
+                                    if crate::attacks::is_ortho_slider(pt) {
+                                        rays.extend_from_slice(&ORTHO);
+                                    }
+                                    if crate::attacks::is_diag_slider(pt) {
+                                        rays.extend_from_slice(&DIAG);
+                                    }
+                                    for (dx, dy) in rays {
+                                        let Some(victim) =
+                                            first_on_ray(&game.spatial_indices, x, y, dx, dy)
+                                        else {
+                                            continue;
+                                        };
+                                        let vt = victim.piece_type();
+                                        if victim.color() == piece.color()
+                                            || vt.is_royal()
+                                            || vt.is_neutral_type()
+                                        {
+                                            continue;
+                                        }
+                                        let gain = get_piece_value_base(vt) - piece_val;
+                                        if gain <= 0 {
+                                            continue;
+                                        }
+                                        let bonus =
+                                            (gain / SLIDER_THREAT_DIV).min(SLIDER_THREAT_CAP);
+                                        if is_white {
+                                            w_slider_threats += bonus;
+                                        } else {
+                                            b_slider_threats += bonus;
+                                        }
+                                    }
                                 }
 
                                 // 8. Minor stats
@@ -1404,8 +1451,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         // Interaction Threats (Result from merged loop)
                         tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
                         tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
+                        tracer.record("Threats: Slider", w_slider_threats, b_slider_threats);
                         score +=
-                            (w_pawn_threats + w_minor_threats) - (b_pawn_threats + b_minor_threats);
+                            (w_pawn_threats + w_minor_threats + w_slider_threats)
+                                - (b_pawn_threats + b_minor_threats + b_slider_threats);
 
                         // Global Tropism
                         let gt_att_mult = taper(180, 360);
@@ -1825,6 +1874,32 @@ pub struct RoyalTropismMetrics {
 #[inline(always)]
 fn compute_tropism_addend(slider_count: i32) -> i32 {
     12 - slider_count.clamp(1, 7)
+}
+
+/// The first piece a slider meets along one ray, i.e. the only piece it attacks
+/// in that direction. The spatial lines are sorted, so this is a binary search
+/// rather than a walk - which is what makes it affordable on an unbounded board.
+#[inline]
+fn first_on_ray(
+    indices: &crate::moves::SpatialIndices,
+    x: i64,
+    y: i64,
+    dx: i64,
+    dy: i64,
+) -> Option<Piece> {
+    let line = if dx == 0 {
+        indices.cols.get(&x)
+    } else if dy == 0 {
+        indices.rows.get(&y)
+    } else if dx == dy {
+        indices.diag1.get(&(x - y))
+    } else {
+        indices.diag2.get(&(x + y))
+    };
+    // Diagonal lines are indexed by x, vertical ones by y.
+    let (search, step) = if dx == 0 { (y, dy) } else { (x, dx) };
+    line.and_then(|v| v.find_nearest(search, step))
+        .map(|(_, packed)| Piece::from_packed(packed))
 }
 
 /// Saturating i64->i32 cast for a (non-negative) Chebyshev distance.
