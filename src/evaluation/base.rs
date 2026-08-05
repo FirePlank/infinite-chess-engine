@@ -492,6 +492,8 @@ pub fn evaluate_inner(game: &GameState) -> i32 {
 /// Core evaluation logic with tracing support
 pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
     let mut score = game.material_score;
+    // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
+    tracer.record("Material (net)", game.material_score, 0);
 
     let (white_royals, black_royals) = (game.white_royals.as_slice(), game.black_royals.as_slice());
     let white_king = white_royals.first().copied();
@@ -3112,8 +3114,8 @@ fn compute_pawn_core<T: EvaluationTracer>(
     if tracer.is_active() {
         tracer.record(
             "Pawn: Doubled",
-            taper(w_doubled.0, w_doubled.1).abs(),
-            taper(b_doubled.0, b_doubled.1).abs(),
+            taper(w_doubled.0, w_doubled.1),
+            taper(b_doubled.0, b_doubled.1),
         );
         tracer.record(
             "Pawn: Candidate",
@@ -3127,13 +3129,13 @@ fn compute_pawn_core<T: EvaluationTracer>(
         );
         tracer.record(
             "Pawn: Isolated",
-            taper(w_isolated.0, w_isolated.1).abs(),
-            taper(b_isolated.0, b_isolated.1).abs(),
+            taper(w_isolated.0, w_isolated.1),
+            taper(b_isolated.0, b_isolated.1),
         );
         tracer.record(
             "Pawn: Backward",
-            taper(w_backward.0, w_backward.1).abs(),
-            taper(b_backward.0, b_backward.1).abs(),
+            taper(w_backward.0, w_backward.1),
+            taper(b_backward.0, b_backward.1),
         );
     }
 
@@ -3681,6 +3683,36 @@ mod tests {
     use super::*;
 
     use crate::game::GameState;
+
+    /// The trace must be an accounting identity: summing the rows has to
+    /// reproduce the base evaluation exactly, or every CP tuned against it is
+    /// tuned against the wrong number.
+    #[test]
+    fn trace_rows_sum_to_the_base_evaluation() {
+        for icn in [
+            "w (8|1) K5,1|k5,8|Q4,4|R1,1|P2,2|p7,7|n6,6",
+            "w (8|1) K5,1|k5,8|R1,1|R8,1|P1,2|P2,2|P3,2|p1,7|p2,7|b4,5",
+            "b (8|1) K5,1|k5,8|P4,7|p4,2|N2,3|n7,6",
+        ] {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+
+            let mut trace = ActiveTrace::default();
+            let traced = evaluate_inner_traced(&game, &mut trace);
+            let summed: i32 = trace.rows.iter().map(|(_, w, b)| w - b).sum();
+
+            // Rows are white-relative; the return is side-to-move relative.
+            let white_relative = if game.turn == PlayerColor::Black {
+                -traced
+            } else {
+                traced
+            };
+            assert_eq!(
+                summed, white_relative,
+                "{icn}: rows sum to {summed} but the white-relative evaluation is {white_relative}"
+            );
+        }
+    }
 
     /// A non-mating, non-insufficient-material position must never evaluate
     /// past MATE_SCORE: crossing it makes is_decisive() true and lets a
