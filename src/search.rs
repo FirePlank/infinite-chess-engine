@@ -123,6 +123,14 @@ fn get_noise(seed: u64, hash: u64, amp: i32) -> i32 {
 pub const MAX_PLY: usize = 64;
 pub const MAX_QSEARCH_DEPTH: usize = 16;
 pub const INFINITY: i32 = 1_000_000;
+
+/// Far quiet slider pruning: distance at which a quiet slider move counts as
+/// "far", the history score below which it is dropped, and the depth ceiling.
+const FAR_SLIDER_PRUNE_DIST: i64 = 4;
+const FAR_SLIDER_PRUNE_HIST: i32 = 0;
+const FAR_SLIDER_PRUNE_MAX_DEPTH: usize = 6;
+/// Bounded-board cutoff, matching the threshold used by eval/mop-up.
+const FAR_SLIDER_PRUNE_MAX_WORLD: i64 = 200;
 pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
@@ -4324,6 +4332,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // History-based pruning: skip moves with very bad history
                 if history < -4083 * depth as i32 && !is_obstocean_breakout {
+                    continue;
+                }
+
+                // Bounded boards only: with an edge to work against, a far quiet
+                // slider aim is usually junk; on an open plane it is manoeuvring.
+                if !is_obstocean_breakout
+                    && crate::moves::get_world_size() <= FAR_SLIDER_PRUNE_MAX_WORLD
+                    && depth <= FAR_SLIDER_PRUNE_MAX_DEPTH
+                    && history < FAR_SLIDER_PRUNE_HIST
+                    && (crate::attacks::is_ortho_slider(p_type)
+                        || crate::attacks::is_diag_slider(p_type))
+                    && (m.to.x - m.from.x).abs().max((m.to.y - m.from.y).abs())
+                        >= FAR_SLIDER_PRUNE_DIST
+                {
                     continue;
                 }
 
