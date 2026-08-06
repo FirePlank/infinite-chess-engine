@@ -96,8 +96,8 @@ pub fn score_move(
             score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
             // Continuation history
-            let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
-            let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
+            let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
+            let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
 
             // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
             let offsets = [1usize, 2, 4];
@@ -108,7 +108,7 @@ pub fn score_move(
                 {
                     let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
                     if prev_piece < 32 {
-                        let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                        let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
                         let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                         let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
@@ -257,6 +257,16 @@ pub fn hash_coord_32(x: i64, y: i64) -> usize {
     let h = (x as u64).wrapping_mul(0x517cc1b727220a95)
         ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
     ((h ^ (h >> 32)) & 0x1F) as usize
+}
+
+/// Continuation-history coordinate hash. Deliberately narrower than
+/// `hash_coord_32`: the extra aliasing generalises across regions of an
+/// unbounded board, and it keeps the table small enough to stay cached.
+#[inline]
+pub fn hash_coord_16(x: i64, y: i64) -> usize {
+    let h = (x as u64).wrapping_mul(0x517cc1b727220a95)
+        ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
+    ((h ^ (h >> 32)) & 0x0F) as usize
 }
 
 #[cfg(test)]

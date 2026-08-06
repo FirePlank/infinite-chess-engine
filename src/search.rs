@@ -339,7 +339,9 @@ mod shared_tt;
 use shared_tt::SharedTranspositionTable;
 
 mod ordering;
-use ordering::{hash_coord_32, hash_move_dest, hash_move_from, sort_captures, sort_moves_root};
+use ordering::{
+    hash_coord_16, hash_coord_32, hash_move_dest, hash_move_from, sort_captures, sort_moves_root,
+};
 
 pub mod movegen;
 use movegen::StagedMoveGen;
@@ -946,7 +948,7 @@ pub struct Searcher {
     // Continuation history, keyed by ply offset (1, 2 and 4 plies ago) then capture,
     // check, previous piece and the from/to hashes. The gravity update self-bounds to
     // 16384, so i16 is lossless and the search's hottest table stays at 25MB.
-    pub cont_history: Box<[[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3]>,
+    pub cont_history: Box<[[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -1094,9 +1096,9 @@ impl Searcher {
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i16; 3 * 2 * 2 * 32 * 32 * 32 * 32].into_boxed_slice(),
+                    vec![0i16; 3 * 2 * 2 * 32 * 16 * 16 * 16].into_boxed_slice(),
                 )
-                    as *mut [[[[[[[i16; 32]; 32]; 32]; 32]; 2]; 2]; 3])
+                    as *mut [[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(
@@ -1392,8 +1394,8 @@ impl Searcher {
             for c in 0..2 {
                 for ic in 0..2 {
                     for p in 0..32 {
-                        for t in 0..32 {
-                            for f in 0..32 {
+                        for t in 0..16 {
+                            for f in 0..16 {
                                 self.cont_history[idx][c][ic][p][t][f].fill(0);
                             }
                         }
@@ -4789,9 +4791,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         {
                             let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
                             if prev_piece < 32 {
-                                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                                let cf_hash = hash_coord_32(m.from.x, m.from.y);
-                                let ct_hash = hash_coord_32(m.to.x, m.to.y);
+                                let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
+                                let cf_hash = hash_coord_16(m.from.x, m.from.y);
+                                let ct_hash = hash_coord_16(m.to.x, m.to.y);
 
                                 let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                                 let prev_cap =
@@ -4921,14 +4923,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     {
                         let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
                         if prev_piece < 32 {
-                            let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                            let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
                             let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                             let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                             // Update all searched quiets (best with bonus, others with malus)
                             for quiet in &quiets_searched {
-                                let q_from_hash = hash_coord_32(quiet.from.x, quiet.from.y);
-                                let q_to_hash = hash_coord_32(quiet.to.x, quiet.to.y);
+                                let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
+                                let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
                                 let is_best = quiet.from == m.from && quiet.to == m.to;
 
                                 let entry = &mut searcher.cont_history[idx][prev_cap][prev_ic]
@@ -5051,8 +5053,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // Update continuation history for opponent's previous move
                 // We use the same offsets (1, 2, 4) relative to the opponent's ply (ply - 1).
-                let opponent_from_hash = hash_coord_32(prev_move.from.x, prev_move.from.y);
-                let opponent_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                let opponent_from_hash = hash_coord_16(prev_move.from.x, prev_move.from.y);
+                let opponent_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
 
                 let offsets = [1usize, 2, 4];
                 const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
@@ -5068,7 +5070,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     {
                         let anc_piece = searcher.moved_piece_history[tp] as usize;
                         if anc_piece < 32 {
-                            let anc_to = hash_coord_32(ancestor_move.to.x, ancestor_move.to.y);
+                            let anc_to = hash_coord_16(ancestor_move.to.x, ancestor_move.to.y);
                             let anc_ic = searcher.in_check_history[tp] as usize;
                             let anc_cap = searcher.capture_history_stack[tp] as usize;
 

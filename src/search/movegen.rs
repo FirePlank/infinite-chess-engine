@@ -4,7 +4,7 @@
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
 use super::{
-    LOW_PLY_HISTORY_MASK, LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_32,
+    LOW_PLY_HISTORY_MASK, LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_16,
     hash_move_dest,
 };
 use crate::board::{PieceType, PlayerColor};
@@ -569,8 +569,8 @@ impl StagedMoveGen {
         score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);
 
         // Continuation history - Optimized using pre-calculated indices
-        let cur_from_hash = hash_coord_32(m.from.x, m.from.y);
-        let cur_to_hash = hash_coord_32(m.to.x, m.to.y);
+        let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
+        let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
 
         const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
@@ -1001,7 +1001,7 @@ impl StagedMoveGen {
                             {
                                 let prev_piece = prev_piece as usize;
                                 if prev_piece < 32 {
-                                    let prev_to_h = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                    let prev_to_h = hash_coord_16(prev_move.to.x, prev_move.to.y);
                                     let prev_ic = searcher.in_check_history[prev_idx] as usize;
                                     let prev_cap =
                                         searcher.capture_history_stack[prev_idx] as usize;
