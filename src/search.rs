@@ -131,6 +131,10 @@ const FAR_SLIDER_PRUNE_HIST: i32 = 0;
 const FAR_SLIDER_PRUNE_MAX_DEPTH: usize = 6;
 /// Bounded-board cutoff, matching the threshold used by eval/mop-up.
 const FAR_SLIDER_PRUNE_MAX_WORLD: i64 = 200;
+/// LMP is tuned for open-plane branching; scale the count down when bounded.
+const LMP_BOUNDED_WORLD: i64 = 200;
+const LMP_BOUNDED_NUM: usize = 2;
+const LMP_BOUNDED_DEN: usize = 3;
 pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
@@ -4298,7 +4302,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if !is_pv && game.has_non_pawn_material(game.turn) && !is_loss(best_score) {
             // Late move pruning: skip quiet moves after seeing enough
             let improving_div = if improving { 1 } else { 2 };
-            let lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
+            // Bounded boards branch ~29 wide against ~101 on an open plane, so a
+            // count tuned for the latter lets far too many quiets through. Not
+            // Obstocean: its defining breakout is a QUIET pawn-takes-obstacle, so
+            // skipping quiets sooner throws the variant's main tactic away.
+            let mut lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
+            if crate::moves::get_world_size() <= LMP_BOUNDED_WORLD
+                && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
+            {
+                lmp_count = (lmp_count * LMP_BOUNDED_NUM / LMP_BOUNDED_DEN).max(1);
+            }
 
             // Signal movegen to skip quiet generation entirely (truly lazy)
             if legal_moves >= lmp_count {
