@@ -5365,13 +5365,9 @@ fn quiescence(
     // When tactical_check is true, stand-pat is disabled and evasions recurse.
     if qs_ply >= MAX_QSEARCH_DEPTH {
         if tactical_check {
-            // Stand-pat was suppressed; return static eval as an approximation.
-            #[cfg(feature = "nnue")]
-            {
-                return evaluate(game, searcher.nnue_at(ply));
-            }
-            #[cfg(not(feature = "nnue"))]
-            return evaluate(game);
+            // In check with stand-pat suppressed: a static eval would call a
+            // possibly-mated position fine, so fail low instead.
+            return alpha;
         }
         return best_value; // stand-pat
     }
