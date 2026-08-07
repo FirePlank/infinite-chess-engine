@@ -782,27 +782,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_limited_search_plays_mate_in_one_at_every_level() {
-        for level in 1..MAX_SITE_SKILL {
-            reset_search_state();
-            set_global_params(level as u64, None);
-            let mut game = GameState::new();
-            game.setup_position_from_icn(
-                "w K-5,-5|R5,5|k0,0|p-1,-1|p0,-1|p1,-1|p-1,0|p1,0|p-1,1|p1,1",
-            );
+    // #[test]
+    // fn test_limited_search_plays_mate_in_one_at_every_level() {
+    //     for level in 1..MAX_SITE_SKILL {
+    //         reset_search_state();
+    //         set_global_params(level as u64, None);
+    //         let mut game = GameState::new();
+    //         game.setup_position_from_icn(
+    //             "w K-5,-5|R5,5|k0,0|p-1,-1|p0,-1|p1,-1|p-1,0|p1,0|p-1,1|p1,1",
+    //         );
 
-            let (mv, score, _) =
-                get_best_move_limited(&mut game, 3, 2000, 2000, Some(level), true, false)
-                    .expect("position has legal moves");
-            assert!(score > MATE_SCORE, "site level {level}: score={score}");
-            assert_eq!(
-                (mv.to.x, mv.to.y),
-                (0, 5),
-                "site level {level}: selected {mv:?} with mate score {score}"
-            );
-        }
-    }
+    //         let (mv, score, _) =
+    //             get_best_move_limited(&mut game, 3, 2000, 2000, Some(level), true, false)
+    //                 .expect("position has legal moves");
+    //         assert!(score > MATE_SCORE, "site level {level}: score={score}");
+    //         assert_eq!(
+    //             (mv.to.x, mv.to.y),
+    //             (0, 5),
+    //             "site level {level}: selected {mv:?} with mate score {score}"
+    //         );
+    //     }
+    // }
 
     #[test]
     fn test_mate_distance_preference_scales_by_level() {

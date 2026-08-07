@@ -885,6 +885,13 @@ pub fn reset_search_state() {
     if let Some(tt) = SHARED_TT.get() {
         tt.clear()
     }
+
+    // Pawn history is process-global, so without this a new game keeps ordering
+    // bias from unrelated positions while every other table starts empty.
+    #[cfg(feature = "multithreading")]
+    unsafe {
+        std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+    }
 }
 
 /// Search state that persists across the search
