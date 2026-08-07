@@ -68,7 +68,7 @@ pub const DEFAULT_NMP_REDUCTION_DIV: usize = 3;
 
 pub const DEFAULT_LMR_MIN_DEPTH: usize = 3;
 pub const DEFAULT_LMR_MIN_MOVES: usize = 4;
-pub const DEFAULT_LMR_DIVISOR: usize = 3;
+pub const DEFAULT_LMR_DIVISOR: usize = 2;
 pub const DEFAULT_LMR_CUTOFF_THRESH: u8 = 2;
 pub const DEFAULT_LMR_TT_HISTORY_THRESH: i32 = -1000;
 
