@@ -257,8 +257,8 @@ pub fn value_draw(nodes: u64) -> i32 {
 /// even ply, so the sign flips with parity to make a draw cost us either way.
 const CONTEMPT: i32 = 15;
 #[inline(always)]
-fn draw_contempt(ply: usize) -> i32 {
-    if ply.is_multiple_of(2) { -CONTEMPT } else { CONTEMPT }
+fn draw_contempt(contempt: i32, ply: usize) -> i32 {
+    if ply.is_multiple_of(2) { -contempt } else { contempt }
 }
 
 // Correction History constants (adapted for Infinite Chess)
@@ -999,6 +999,9 @@ pub struct Searcher {
 
     /// Dynamic move rule limit (e.g. 100 for 50-move rule)
     pub move_rule_limit: i32,
+    /// Draw aversion in centipawns. Zero for analysis, so review scores stay
+    /// objective rather than inheriting play's preference for keeping games alive.
+    pub contempt: i32,
 
     /// `[ply][move_hash] -> score` for the first 4 plies from the root, boosting the
     /// ordering of moves that worked near the root.
@@ -1150,6 +1153,7 @@ impl Searcher {
             reduction_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
             move_rule_limit: 100,             // Default, will be updated from GameState
+            contempt: CONTEMPT,
             low_ply_history: unsafe {
                 Box::from_raw(Box::into_raw(
                     vec![0i32; LOW_PLY_HISTORY_ENTRIES * LOW_PLY_HISTORY_SIZE].into_boxed_slice(),
@@ -2757,6 +2761,7 @@ pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
             .game_rules
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
+        searcher.contempt = CONTEMPT;
 
         let _ = search_with_searcher(searcher, &mut game, MAX_PLY);
         searcher.helper_epoch = 0;
@@ -2809,6 +2814,7 @@ pub(crate) fn get_best_move_threaded(
             .game_rules
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
+        searcher.contempt = CONTEMPT;
 
         let result = search_with_searcher(searcher, game, max_depth);
         let stats = build_search_stats(searcher);
@@ -2859,6 +2865,7 @@ pub fn get_best_moves_multipv(
             .game_rules
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
+        searcher.contempt = 0;
 
         // MultiPV = 1: Zero overhead path - just do normal search
         if multi_pv == 1 {
@@ -2944,6 +2951,7 @@ pub fn analyse_position(
             .game_rules
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
+        searcher.contempt = 0;
 
         // slice_ms == 0 means "run to max_depth" (no deadline); otherwise stop after the
         // first completed depth past the deadline, so a new position can be picked up
@@ -3728,7 +3736,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Check if we have an upcoming move that draws by repetition
     if ply > 0 && alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(ply);
+        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
         if draw_val >= beta {
             return draw_val;
         }
@@ -3772,7 +3780,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if ply > 0 {
         // Draw by fifty-move rule or repetition
         if game.is_draw(ply, in_check) {
-            return value_draw(searcher.hot.nodes) + draw_contempt(ply);
+            return value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
         }
 
         // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
@@ -5173,7 +5181,7 @@ fn quiescence(
 
     // Check if we have an upcoming move that draws by repetition
     if alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(ply);
+        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
         if draw_val >= beta {
             return draw_val;
         }
@@ -5192,7 +5200,7 @@ fn quiescence(
 
     // Draw by fifty-move rule or repetition
     if game.is_draw(ply, in_check) {
-        return VALUE_DRAW + draw_contempt(ply);
+        return VALUE_DRAW + draw_contempt(searcher.contempt, ply);
     }
 
     // Royal capture loss must be resolved before TT probes.
