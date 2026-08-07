@@ -2547,6 +2547,64 @@ fn find_cross_ray_targets_into(
     }
 }
 
+/// Ray distances whose destination square would attack an enemy piece with a
+/// KNIGHT leap. Compound knight-sliders need these separately: ray interception
+/// only proposes squares near pieces already on the ray, so a knight fork or
+/// check reachable from an otherwise-empty diagonal is never generated.
+#[allow(clippy::too_many_arguments)]
+fn collect_knight_attack_dists(
+    indices: &SpatialIndices,
+    from: &Coordinate,
+    our_color: PlayerColor,
+    dir_x: i64,
+    dir_y: i64,
+    max_dist: i64,
+    out: &mut Vec<i64>,
+) {
+    const KNIGHT_OFFSETS: [(i64, i64); 8] = [
+        (1, 2),
+        (2, 1),
+        (2, -1),
+        (1, -2),
+        (-1, -2),
+        (-2, -1),
+        (-2, 1),
+        (-1, 2),
+    ];
+    for (ox, oy) in KNIGHT_OFFSETS {
+        // Every square `from + d*dir + offset` sits on the line through
+        // `from + offset` parallel to dir, so one index lookup covers all d.
+        let bx = from.x + ox;
+        let by = from.y + oy;
+        let (line, base, step) = if dir_y == 0 {
+            (indices.rows.get(&by), bx, dir_x)
+        } else if dir_x == 0 {
+            (indices.cols.get(&bx), by, dir_y)
+        } else if dir_x == dir_y {
+            (indices.diag1.get(&(bx - by)), bx, dir_x)
+        } else {
+            (indices.diag2.get(&(bx + by)), bx, dir_x)
+        };
+        let Some(line) = line else {
+            continue;
+        };
+        for i in 0..line.len() {
+            let d = (line.coords[i] - base) / step;
+            if d <= 0 || d > max_dist {
+                continue;
+            }
+            let p = Piece::from_packed(line.pieces[i]);
+            if p.color() == our_color
+                || p.color() == PlayerColor::Neutral
+                || p.piece_type().is_uncapturable()
+            {
+                continue;
+            }
+            out.push(d);
+        }
+    }
+}
+
 fn generate_sliding_moves_impl(
     ctx: &SlidingMoveContext,
     out: &mut MoveList,
@@ -2584,6 +2642,12 @@ fn generate_sliding_moves_impl(
     // Reuse maps across directions to avoid allocations
     let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
     let mut royal_dists: FxHashSet<i64> = FxHashSet::default();
+    let mut knight_dists: Vec<i64> = Vec::new();
+    // Archbishop/chancellor also threaten from squares their ray logic ignores.
+    let has_knight_leap = matches!(
+        piece.piece_type(),
+        PieceType::Archbishop | PieceType::Chancellor
+    );
 
     // Helper to increment piece count for a distance
     #[inline(always)]
@@ -2662,6 +2726,18 @@ fn generate_sliding_moves_impl(
             } else {
                 dist_counts.clear();
                 royal_dists.clear();
+                knight_dists.clear();
+                if has_knight_leap {
+                    collect_knight_attack_dists(
+                        indices,
+                        from,
+                        our_color,
+                        dir_x,
+                        dir_y,
+                        max_dist,
+                        &mut knight_dists,
+                    );
+                }
 
                 // 1. Direct Ray iteration (O(log pieces_on_line + pieces_near_slider))
                 if is_horizontal {
@@ -2983,6 +3059,7 @@ fn generate_sliding_moves_impl(
                         shared_targets.push(d);
                     }
                 }
+                shared_targets.extend(knight_dists.iter().copied());
                 shared_targets.sort_unstable();
                 shared_targets.dedup();
 
