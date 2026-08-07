@@ -253,6 +253,14 @@ pub fn value_draw(nodes: u64) -> i32 {
     -1 + ((nodes & 0x2) as i32)
 }
 
+/// Draw aversion. Scores are side-to-move relative and the root side moves at
+/// even ply, so the sign flips with parity to make a draw cost us either way.
+const CONTEMPT: i32 = 15;
+#[inline(always)]
+fn draw_contempt(ply: usize) -> i32 {
+    if ply.is_multiple_of(2) { -CONTEMPT } else { CONTEMPT }
+}
+
 // Correction History constants (adapted for Infinite Chess)
 // Size of correction history tables (power of 2 for fast masking)
 pub const CORRHIST_SIZE: usize = 16384; // 16K entries per color (for piece/material hashes)
@@ -3720,7 +3728,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Check if we have an upcoming move that draws by repetition
     if ply > 0 && alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes);
+        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(ply);
         if draw_val >= beta {
             return draw_val;
         }
@@ -3764,7 +3772,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if ply > 0 {
         // Draw by fifty-move rule or repetition
         if game.is_draw(ply, in_check) {
-            return value_draw(searcher.hot.nodes);
+            return value_draw(searcher.hot.nodes) + draw_contempt(ply);
         }
 
         // Royal capture loss: if our king was just captured (RoyalCapture/AllRoyalsCaptured variants)
@@ -5165,7 +5173,7 @@ fn quiescence(
 
     // Check if we have an upcoming move that draws by repetition
     if alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes);
+        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(ply);
         if draw_val >= beta {
             return draw_val;
         }
@@ -5184,7 +5192,7 @@ fn quiescence(
 
     // Draw by fifty-move rule or repetition
     if game.is_draw(ply, in_check) {
-        return VALUE_DRAW;
+        return VALUE_DRAW + draw_contempt(ply);
     }
 
     // Royal capture loss must be resolved before TT probes.
