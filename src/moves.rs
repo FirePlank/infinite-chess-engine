@@ -2646,7 +2646,7 @@ fn generate_sliding_moves_impl(
     // Archbishop/chancellor also threaten from squares their ray logic ignores.
     let has_knight_leap = matches!(
         piece.piece_type(),
-        PieceType::Archbishop | PieceType::Chancellor
+        PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon
     );
 
     // Helper to increment piece count for a distance
