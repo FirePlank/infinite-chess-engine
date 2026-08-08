@@ -339,6 +339,10 @@ const KING_DEFENDER_VALUE_THRESHOLD: i32 = 400; // Pieces below this value are d
 // Game Phase
 
 pub const MAX_PHASE: i32 = 24;
+// A cp edge cashes far less often with a big army still aboard (measured:
+// p>=0.8 evals win 61% in CoaIP vs 79% in Classical), so damp by excess phase.
+const COMPLEXITY_DAMP: i32 = 8;
+const COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const MAX_KING_PHASE: i32 = 8;
 
 pub fn get_piece_phase(piece_type: PieceType) -> i32 {
@@ -1508,6 +1512,15 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
             }); // bp
         }); // wp
     }); // pl
+
+    // Damp the whole score by material complexity: the same advantage is worth
+    // less with more resistance left, and trading it away raises the scaled score.
+    let excess = (phase - MAX_PHASE).clamp(0, COMPLEXITY_EXCESS_MAX);
+    if excess > 0 {
+        let scaled = score * (1024 - COMPLEXITY_DAMP * excess) / 1024;
+        tracer.record("Complexity scale", scaled - score, 0);
+        score = scaled;
+    }
 
     // Return from current player's perspective
     if game.turn == PlayerColor::Black {
