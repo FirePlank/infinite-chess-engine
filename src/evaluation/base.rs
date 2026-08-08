@@ -388,18 +388,18 @@ pub fn get_piece_phase(piece_type: PieceType) -> i32 {
 // Tapered Evaluation Constants (MG, EG)
 
 // King Safety
-const MG_BEHIND_KING_BONUS: i32 = 40;
-const EG_BEHIND_KING_BONUS: i32 = 60; // More important to be behind king in EG
+pub const DEFAULT_EVAL_MG_BEHIND_KING_BONUS: i32 = 40;
+pub const DEFAULT_EVAL_EG_BEHIND_KING_BONUS: i32 = 60; // More important to be behind king in EG
 
-const MG_KING_TROPISM_BONUS: i32 = 4;
-const EG_KING_TROPISM_BONUS: i32 = 6; // King centralized -> piece proximity matters more
+pub const DEFAULT_EVAL_MG_KING_TROPISM_BONUS: i32 = 4;
+pub const DEFAULT_EVAL_EG_KING_TROPISM_BONUS: i32 = 6; // King centralized -> piece proximity matters more
 
 // Shelter / Ring
-const MG_KING_RING_MISSING_PENALTY: i32 = 45;
-const EG_KING_RING_MISSING_PENALTY: i32 = 10; // Less penalty in EG
+pub const DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY: i32 = 45;
+pub const DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY: i32 = 10; // Less penalty in EG
 
-const MG_KING_PAWN_SHIELD_BONUS: i32 = 18;
-const EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
+pub const DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS: i32 = 18;
+pub const DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS: i32 = 5; // Shield less critical
 
 // A pawn only shelters the king when it is close in front; on an unbounded
 // board an ahead pawn could otherwise be arbitrarily far and fabricate cover.
@@ -408,15 +408,15 @@ const KING_SHIELD_AHEAD_MAX_DIST: i64 = 3;
 const MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
 const EG_KING_PAWN_AHEAD_PENALTY: i32 = 0;
 
-const MG_KING_OPEN_FILE_PENALTY: i32 = 25;
-const EG_KING_OPEN_FILE_PENALTY: i32 = 0;
+pub const DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY: i32 = 25;
+pub const DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY: i32 = 0;
 
 // Structural
-const MG_CONNECTED_PAWN_BONUS: i32 = 8;
-const EG_CONNECTED_PAWN_BONUS: i32 = 15; // Chains critical in EG
+pub const DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS: i32 = 8;
+pub const DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS: i32 = 15; // Chains critical in EG
 
-const MG_KING_DEFENDER_BONUS: i32 = 6;
-const EG_KING_DEFENDER_BONUS: i32 = 2; // Less need for defenders
+pub const DEFAULT_EVAL_MG_KING_DEFENDER_BONUS: i32 = 6;
+pub const DEFAULT_EVAL_EG_KING_DEFENDER_BONUS: i32 = 2; // Less need for defenders
 
 const MG_KING_ATTACKER_NEAR_OWN_KING_PENALTY: i32 = 8;
 const EG_KING_ATTACKER_NEAR_OWN_KING_PENALTY: i32 = 2;
@@ -450,8 +450,8 @@ const PAWN_ENEMY_KING_DIST: [i32; 6] = [3, 4, 5, 6, 7, 10];
 const PASSED_FRIENDLY_KING_DIST: [i32; 6] = [1, 2, 3, 5, 8, 12];
 const PASSED_ENEMY_KING_DIST: [i32; 6] = [1, 2, 3, 4, 6, 9];
 
-const MG_PASSED_SAFE_PATH_BONUS: i32 = 40;
-const EG_PASSED_SAFE_PATH_BONUS: i32 = 80;
+pub const DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS: i32 = 40;
+pub const DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS: i32 = 80;
 
 /// Probe a square offset (dx, dy) from a piece at local tile index `idx`.
 /// Targets that stay inside the current 8x8 tile are read straight from the
@@ -1817,7 +1817,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 let dist = (x - ok.x).abs().max((y - ok.y).abs());
                 if dist <= 3 {
                     if piece_val < KING_DEFENDER_VALUE_THRESHOLD {
-                        piece_score += taper(MG_KING_DEFENDER_BONUS, EG_KING_DEFENDER_BONUS);
+                        piece_score += taper(crate::search::params::mg_king_defender_bonus(), crate::search::params::eg_king_defender_bonus());
                     } else {
                         piece_score -= taper(
                             MG_KING_ATTACKER_NEAR_OWN_KING_PENALTY,
@@ -2176,7 +2176,7 @@ pub fn evaluate_rook(
     for &ek in enemy_royals {
         // Behind enemy king along the rank direction.
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
-            king_bonus += taper(MG_BEHIND_KING_BONUS, EG_BEHIND_KING_BONUS);
+            king_bonus += taper(crate::search::params::mg_behind_king_bonus(), crate::search::params::eg_behind_king_bonus());
             break;
         }
     }
@@ -2321,7 +2321,7 @@ pub fn evaluate_queen(
             let clamped = lin_dist.min(max_lin);
             let diff = (clamped - QUEEN_IDEAL_LINE_DIST).abs();
             let base = (max_lin - diff * 2).max(0);
-            line_bonus += base * (taper(MG_KING_TROPISM_BONUS, EG_KING_TROPISM_BONUS) / 2).max(1);
+            line_bonus += base * (taper(crate::search::params::mg_king_tropism_bonus(), crate::search::params::eg_king_tropism_bonus()) / 2).max(1);
             let line_bonus = line_bonus
                 + if (color == PlayerColor::White && y > ek.y)
                     || (color == PlayerColor::Black && y < ek.y)
@@ -2422,7 +2422,7 @@ pub fn evaluate_bishop(
     for &ek in enemy_royals {
         // Bishop behind enemy king along the rank direction (less direct than rook/queen).
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
-            bonus += taper(MG_BEHIND_KING_BONUS, EG_BEHIND_KING_BONUS) / 2 * king_mult / 100;
+            bonus += taper(crate::search::params::mg_behind_king_bonus(), crate::search::params::eg_behind_king_bonus()) / 2 * king_mult / 100;
             break;
         }
     }
@@ -2597,7 +2597,7 @@ fn evaluate_king_shelter(
 
     // 1. Local pawn / guard cover (Optimized: Ring cover passed in)
     if !has_ring_cover {
-        safety -= taper(MG_KING_RING_MISSING_PENALTY, EG_KING_RING_MISSING_PENALTY);
+        safety -= taper(crate::search::params::mg_king_ring_missing_penalty(), crate::search::params::eg_king_ring_missing_penalty());
         bump_feat!(king_ring_missing_penalty, -1);
     }
 
@@ -2631,14 +2631,14 @@ fn evaluate_king_shelter(
 
         // King on Open File Penalty (No friendly pawns on file)
         if dx == 0 && on_file_count == 0 {
-            safety -= taper(MG_KING_OPEN_FILE_PENALTY, EG_KING_OPEN_FILE_PENALTY);
+            safety -= taper(crate::search::params::mg_king_open_file_penalty(), crate::search::params::eg_king_open_file_penalty());
         }
     }
 
     // A pawn ahead shelters the king regardless of any pawn behind it; only the
     // absence of a forward pawn (with one behind) draws the penalty.
     if has_pawn_ahead {
-        safety += taper(MG_KING_PAWN_SHIELD_BONUS, EG_KING_PAWN_SHIELD_BONUS);
+        safety += taper(crate::search::params::mg_king_pawn_shield_bonus(), crate::search::params::eg_king_pawn_shield_bonus());
     } else if has_pawn_behind {
         safety -= taper(MG_KING_PAWN_AHEAD_PENALTY, EG_KING_PAWN_AHEAD_PENALTY);
     }
@@ -3094,11 +3094,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
             if is_passed {
-                w_connected.0 += (MG_CONNECTED_PAWN_BONUS * 3) / 2;
-                w_connected.1 += (EG_CONNECTED_PAWN_BONUS * 3) / 2;
+                w_connected.0 += (crate::search::params::mg_connected_pawn_bonus() * 3) / 2;
+                w_connected.1 += (crate::search::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                w_connected.0 += MG_CONNECTED_PAWN_BONUS;
-                w_connected.1 += EG_CONNECTED_PAWN_BONUS;
+                w_connected.0 += crate::search::params::mg_connected_pawn_bonus();
+                w_connected.1 += crate::search::params::eg_connected_pawn_bonus();
             }
         }
     }
@@ -3196,11 +3196,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
         {
             if is_passed {
-                b_connected.0 += (MG_CONNECTED_PAWN_BONUS * 3) / 2;
-                b_connected.1 += (EG_CONNECTED_PAWN_BONUS * 3) / 2;
+                b_connected.0 += (crate::search::params::mg_connected_pawn_bonus() * 3) / 2;
+                b_connected.1 += (crate::search::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                b_connected.0 += MG_CONNECTED_PAWN_BONUS;
-                b_connected.1 += EG_CONNECTED_PAWN_BONUS;
+                b_connected.0 += crate::search::params::mg_connected_pawn_bonus();
+                b_connected.1 += crate::search::params::eg_connected_pawn_bonus();
             }
         }
     }
@@ -3312,7 +3312,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
             }
         }
         let safe_path_bonus = if safe_path {
-            taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+            taper(crate::search::params::mg_passed_safe_path_bonus(), crate::search::params::eg_passed_safe_path_bonus())
         } else {
             0
         };
@@ -3367,7 +3367,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
             }
         }
         let safe_path_bonus = if safe_path {
-            taper(MG_PASSED_SAFE_PATH_BONUS, EG_PASSED_SAFE_PATH_BONUS)
+            taper(crate::search::params::mg_passed_safe_path_bonus(), crate::search::params::eg_passed_safe_path_bonus())
         } else {
             0
         };

@@ -185,6 +185,22 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("rook_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS as i64, 0, 220, 2.0, 0.002, "Rook semi-open file bonus"),
     EvalParamSpec::new("queen_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS as i64, 0, 225, 2.0, 0.002, "Queen open file bonus"),
     EvalParamSpec::new("queen_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS as i64, 0, 210, 2.0, 0.002, "Queen semi-open file bonus"),
+    EvalParamSpec::new("mg_king_ring_missing_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY as i64, 0, 160, 2.0, 0.002, "Middlegame king ring missing penalty"),
+    EvalParamSpec::new("eg_king_ring_missing_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY as i64, 0, 160, 2.0, 0.002, "Endgame king ring missing penalty"),
+    EvalParamSpec::new("mg_king_pawn_shield_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS as i64, 0, 100, 2.0, 0.002, "Middlegame king pawn shield bonus"),
+    EvalParamSpec::new("eg_king_pawn_shield_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS as i64, 0, 100, 2.0, 0.002, "Endgame king pawn shield bonus"),
+    EvalParamSpec::new("mg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Middlegame piece behind king bonus"),
+    EvalParamSpec::new("eg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Endgame piece behind king bonus"),
+    EvalParamSpec::new("mg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Middlegame king tropism bonus"),
+    EvalParamSpec::new("eg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Endgame king tropism bonus"),
+    EvalParamSpec::new("mg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Middlegame connected pawn bonus"),
+    EvalParamSpec::new("eg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Endgame connected pawn bonus"),
+    EvalParamSpec::new("mg_passed_safe_path_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS as i64, 0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus"),
+    EvalParamSpec::new("eg_passed_safe_path_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS as i64, 0, 240, 2.0, 0.002, "Endgame passed pawn safe path bonus"),
+    EvalParamSpec::new("mg_king_open_file_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY as i64, 0, 120, 2.0, 0.002, "Middlegame king open file penalty"),
+    EvalParamSpec::new("eg_king_open_file_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY as i64, 0, 120, 2.0, 0.002, "Endgame king open file penalty"),
+    EvalParamSpec::new("mg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Middlegame king defender bonus"),
+    EvalParamSpec::new("eg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Endgame king defender bonus"),
     EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
     EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
 ];
@@ -217,6 +233,22 @@ pub struct EvalParams {
     pub rook_semi_open_file_bonus: i32,
     pub queen_open_file_bonus: i32,
     pub queen_semi_open_file_bonus: i32,
+    pub mg_king_ring_missing_penalty: i32,
+    pub eg_king_ring_missing_penalty: i32,
+    pub mg_king_pawn_shield_bonus: i32,
+    pub eg_king_pawn_shield_bonus: i32,
+    pub mg_behind_king_bonus: i32,
+    pub eg_behind_king_bonus: i32,
+    pub mg_king_tropism_bonus: i32,
+    pub eg_king_tropism_bonus: i32,
+    pub mg_connected_pawn_bonus: i32,
+    pub eg_connected_pawn_bonus: i32,
+    pub mg_passed_safe_path_bonus: i32,
+    pub eg_passed_safe_path_bonus: i32,
+    pub mg_king_open_file_penalty: i32,
+    pub eg_king_open_file_penalty: i32,
+    pub mg_king_defender_bonus: i32,
+    pub eg_king_defender_bonus: i32,
     pub mg_outpost_bonus: i32,
     pub eg_outpost_bonus: i32,
 }
@@ -251,6 +283,22 @@ impl Default for EvalParams {
             queen_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS,
             queen_semi_open_file_bonus:
                 crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
+            mg_king_ring_missing_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY,
+            eg_king_ring_missing_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY,
+            mg_king_pawn_shield_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS,
+            eg_king_pawn_shield_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS,
+            mg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS,
+            eg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS,
+            mg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS,
+            eg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS,
+            mg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS,
+            eg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS,
+            mg_passed_safe_path_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS,
+            eg_passed_safe_path_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS,
+            mg_king_open_file_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY,
+            eg_king_open_file_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY,
+            mg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS,
+            eg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
         }
@@ -359,6 +407,70 @@ define_eval_accessor!(
 define_eval_accessor!(
     queen_semi_open_file_bonus,
     crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    mg_king_ring_missing_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY
+);
+define_eval_accessor!(
+    eg_king_ring_missing_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY
+);
+define_eval_accessor!(
+    mg_king_pawn_shield_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS
+);
+define_eval_accessor!(
+    eg_king_pawn_shield_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS
+);
+define_eval_accessor!(
+    mg_behind_king_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS
+);
+define_eval_accessor!(
+    eg_behind_king_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS
+);
+define_eval_accessor!(
+    mg_king_tropism_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS
+);
+define_eval_accessor!(
+    eg_king_tropism_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS
+);
+define_eval_accessor!(
+    mg_connected_pawn_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS
+);
+define_eval_accessor!(
+    eg_connected_pawn_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS
+);
+define_eval_accessor!(
+    mg_passed_safe_path_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS
+);
+define_eval_accessor!(
+    eg_passed_safe_path_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS
+);
+define_eval_accessor!(
+    mg_king_open_file_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY
+);
+define_eval_accessor!(
+    eg_king_open_file_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY
+);
+define_eval_accessor!(
+    mg_king_defender_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS
+);
+define_eval_accessor!(
+    eg_king_defender_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS
 );
 define_eval_accessor!(
     mg_outpost_bonus,
