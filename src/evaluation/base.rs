@@ -339,6 +339,13 @@ const KING_DEFENDER_VALUE_THRESHOLD: i32 = 400; // Pieces below this value are d
 // Game Phase
 
 pub const MAX_PHASE: i32 = 24;
+
+/// The taper clock runs on the game's own starting material: a variant that
+/// begins with double an army reaches "endgame" at double the removals.
+#[inline(always)]
+pub fn effective_phase(raw_phase: i32, initial_phase: i32) -> i32 {
+    (raw_phase * MAX_PHASE / initial_phase.max(MAX_PHASE)).min(MAX_PHASE)
+}
 // A cp edge cashes far less often with a big army still aboard (measured:
 // p>=0.8 evals win 61% in CoaIP vs 79% in Classical), so damp by excess phase.
 const COMPLEXITY_DAMP: i32 = 8;
@@ -503,10 +510,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let white_king = white_royals.first().copied();
     let black_king = black_royals.first().copied();
 
+    let eff_phase = effective_phase(game.total_phase, game.initial_phase);
     let taper = |mg: i32, eg: i32| -> i32 {
-        ((mg * game.total_phase.min(MAX_PHASE))
-            + (eg * (MAX_PHASE - game.total_phase.min(MAX_PHASE))))
-            / MAX_PHASE
+        ((mg * eff_phase) + (eg * (MAX_PHASE - eff_phase))) / MAX_PHASE
     };
 
     // Single-Pass Collection and Scoring
@@ -1325,7 +1331,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         }
 
                         // Post-Pass processing
-                        let final_phase = phase.min(MAX_PHASE);
+                        let final_phase = effective_phase(phase, game.initial_phase);
                         let cloud_center = if cloud_count > 0 {
                             Some(Coordinate {
                                 x: ref_x + cloud_sum_dx / cloud_count,
@@ -2784,7 +2790,7 @@ fn evaluate_king_shelter(
 }
 
 pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
-    let phase = game.total_phase.min(MAX_PHASE);
+    let phase = effective_phase(game.total_phase, game.initial_phase);
     // For standalone call, we must fill the vectors
     EVAL_WHITE_PAWNS.with(|wp_cell| {
         EVAL_BLACK_PAWNS.with(|bp_cell| {

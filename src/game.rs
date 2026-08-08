@@ -270,6 +270,10 @@ pub struct GameState {
     /// Incremental game phase tracking.
     #[serde(skip)]
     pub total_phase: i32,
+    /// Phase of the game's starting position - the anchor for the relative
+    /// taper clock, so each variant ages on its own material scale.
+    #[serde(skip)]
+    pub initial_phase: i32,
     /// Minor piece position hash for correction history (Knights and Bishops).
     #[serde(skip)]
     pub minor_hash: u64,
@@ -459,6 +463,7 @@ impl GameState {
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
+            initial_phase: 0,
             white_royal_bonus: 50,
             black_royal_bonus: 50,
         }
@@ -514,6 +519,7 @@ impl GameState {
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
+            initial_phase: 0,
             white_royal_bonus: 50,
             black_royal_bonus: 50,
         }
@@ -3947,6 +3953,7 @@ impl GameState {
 
         // Recompute piece counts/lists BEFORE selecting win conditions
         self.recompute_piece_counts();
+        self.initial_phase = self.total_phase;
 
         // Finalize win conditions based on piece presence
         let white_has_royal = self.white_pieces.iter().any(|&(px, py)| {
@@ -4072,6 +4079,7 @@ impl GameState {
     fn finalize_setup(&mut self) {
         // 1. Rebuild piece lists and counts to find royals
         self.recompute_piece_counts();
+        self.initial_phase = self.total_phase;
 
         // 2. Set starting royal counts if not already set (e.g. at game start)
         if self.starting_white_royals == 0 {
