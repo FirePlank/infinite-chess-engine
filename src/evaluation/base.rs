@@ -625,8 +625,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // Sliders are graded by value gap rather than bucketed: on an unbounded
     // board they are the pieces that can threaten from anywhere, and a fixed
     // tier would have to be re-cut every time the piece values are refitted.
-    const SLIDER_THREAT_DIV: i32 = 12;
-    const SLIDER_THREAT_CAP: i32 = 45;
     const MINOR_THREATENS_ROOK: i32 = 20;
     const MINOR_THREATENS_QUEEN: i32 = 35;
 
@@ -1051,38 +1049,35 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     }
                                 } else if crate::attacks::is_slider(pt) {
                                     // A slider attacks exactly the first piece on each of
-                                    // its rays, so one binary search per direction gives the
-                                    // true attack set - no scan and no approximation.
-                                    const ORTHO: [(i64, i64); 4] =
-                                        [(1, 0), (-1, 0), (0, 1), (0, -1)];
-                                    const DIAG: [(i64, i64); 4] =
-                                        [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-                                    let mut rays: SmallVec<[(i64, i64); 8]> = SmallVec::new();
+                                    // its rays; both ends of a line share one binary search.
+                                    let idx_sp = &game.spatial_indices;
+                                    let own = piece.color();
+                                    let mut bonus = 0;
                                     if crate::attacks::is_ortho_slider(pt) {
-                                        rays.extend_from_slice(&ORTHO);
+                                        if let Some(l) = idx_sp.rows.get(&y) {
+                                            let (f, b) = l.neighbors(x);
+                                            bonus += slider_threat_bonus(f, own, piece_val)
+                                                + slider_threat_bonus(b, own, piece_val);
+                                        }
+                                        if let Some(l) = idx_sp.cols.get(&x) {
+                                            let (f, b) = l.neighbors(y);
+                                            bonus += slider_threat_bonus(f, own, piece_val)
+                                                + slider_threat_bonus(b, own, piece_val);
+                                        }
                                     }
                                     if crate::attacks::is_diag_slider(pt) {
-                                        rays.extend_from_slice(&DIAG);
+                                        if let Some(l) = idx_sp.diag1.get(&(x - y)) {
+                                            let (f, b) = l.neighbors(x);
+                                            bonus += slider_threat_bonus(f, own, piece_val)
+                                                + slider_threat_bonus(b, own, piece_val);
+                                        }
+                                        if let Some(l) = idx_sp.diag2.get(&(x + y)) {
+                                            let (f, b) = l.neighbors(x);
+                                            bonus += slider_threat_bonus(f, own, piece_val)
+                                                + slider_threat_bonus(b, own, piece_val);
+                                        }
                                     }
-                                    for (dx, dy) in rays {
-                                        let Some(victim) =
-                                            first_on_ray(&game.spatial_indices, x, y, dx, dy)
-                                        else {
-                                            continue;
-                                        };
-                                        let vt = victim.piece_type();
-                                        if victim.color() == piece.color()
-                                            || vt.is_royal()
-                                            || vt.is_neutral_type()
-                                        {
-                                            continue;
-                                        }
-                                        let gain = get_piece_value_base(vt) - piece_val;
-                                        if gain <= 0 {
-                                            continue;
-                                        }
-                                        let bonus =
-                                            (gain / SLIDER_THREAT_DIV).min(SLIDER_THREAT_CAP);
+                                    if bonus > 0 {
                                         if is_white {
                                             w_slider_threats += bonus;
                                         } else {
@@ -1895,31 +1890,27 @@ fn compute_tropism_addend(slider_count: i32) -> i32 {
     12 - slider_count.clamp(1, 7)
 }
 
-/// The first piece a slider meets along one ray, i.e. the only piece it attacks
-/// in that direction. The spatial lines are sorted, so this is a binary search
-/// rather than a walk - which is what makes it affordable on an unbounded board.
+const SLIDER_THREAT_DIV: i32 = 12;
+const SLIDER_THREAT_CAP: i32 = 45;
+
+/// Threat bonus for the piece a slider meets at one end of one of its lines.
 #[inline]
-fn first_on_ray(
-    indices: &crate::moves::SpatialIndices,
-    x: i64,
-    y: i64,
-    dx: i64,
-    dy: i64,
-) -> Option<Piece> {
-    let line = if dx == 0 {
-        indices.cols.get(&x)
-    } else if dy == 0 {
-        indices.rows.get(&y)
-    } else if dx == dy {
-        indices.diag1.get(&(x - y))
-    } else {
-        indices.diag2.get(&(x + y))
+fn slider_threat_bonus(end: Option<(i64, u8)>, own: PlayerColor, piece_val: i32) -> i32 {
+    let Some((_, packed)) = end else {
+        return 0;
     };
-    // Diagonal lines are indexed by x, vertical ones by y.
-    let (search, step) = if dx == 0 { (y, dy) } else { (x, dx) };
-    line.and_then(|v| v.find_nearest(search, step))
-        .map(|(_, packed)| Piece::from_packed(packed))
+    let victim = Piece::from_packed(packed);
+    let vt = victim.piece_type();
+    if victim.color() == own || vt.is_royal() || vt.is_neutral_type() {
+        return 0;
+    }
+    let gain = get_piece_value_base(vt) - piece_val;
+    if gain <= 0 {
+        return 0;
+    }
+    (gain / SLIDER_THREAT_DIV).min(SLIDER_THREAT_CAP)
 }
+
 
 /// Saturating i64->i32 cast for a (non-negative) Chebyshev distance.
 #[inline(always)]

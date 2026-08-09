@@ -483,6 +483,9 @@ pub fn is_piece_attacking_square(
     moves.iter().any(|m| m.to.x == to.x && m.to.y == to.y)
 }
 
+/// A piece found at one end of a line: (coordinate along the line, packed piece).
+pub type LineEnd = Option<(i64, u8)>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SpatialLine {
     pub coords: Vec<i64>,
@@ -551,6 +554,32 @@ impl SpatialLine {
 
     pub fn iter(&self) -> impl Iterator<Item = (i64, u8)> + '_ {
         self.coords.iter().copied().zip(self.pieces.iter().copied())
+    }
+
+    /// Both neighbours of `from` in one binary search - the two `find_nearest`
+    /// directions share the same partition point, so this halves the work.
+    #[inline]
+    pub fn neighbors(&self, from: i64) -> (LineEnd, LineEnd) {
+        let len = self.coords.len();
+        if len == 0 {
+            return (None, None);
+        }
+        let lo = self.coords.partition_point(|&c| c < from);
+        let back = if lo > 0 {
+            Some((self.coords[lo - 1], self.pieces[lo - 1]))
+        } else {
+            None
+        };
+        let mut hi = lo;
+        while hi < len && self.coords[hi] <= from {
+            hi += 1;
+        }
+        let fwd = if hi < len {
+            Some((self.coords[hi], self.pieces[hi]))
+        } else {
+            None
+        };
+        (fwd, back)
     }
 
     /// Find nearest piece in a direction.
