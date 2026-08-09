@@ -78,7 +78,9 @@ default = ["multithreading"]
 param_tuning = ["serde_json", "rand", "rayon", "clap", "ctrlc"]
 eval_tuning = ["param_tuning"]
 search_tuning = ["param_tuning"]
-sprt = ["param_tuning"]
+# Deps only - deliberately NOT param_tuning: that turns every eval-parameter read
+# into a runtime load and costs ~14% of eval, so matches would test a slower engine.
+sprt = ["serde_json", "rand", "rayon", "clap", "ctrlc"]
 multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
 puzzle_gen = ["csv", "serde_json", "rayon", "indicatif"]

@@ -220,6 +220,58 @@ pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 50;
 
 // Piece Values
 
+
+/// Nearest piece along each of the king's 8 rays, plus whether the ring is covered.
+/// Index map matches the per-piece form it replaces: 0=NE 1=SE 2=NW 3=SW 4=E 5=W 6=N 7=S.
+/// One index lookup per line replaces a scan of every piece on the board.
+fn king_rays_from_indices(
+    indices: &crate::moves::SpatialIndices,
+    kx: i64,
+    ky: i64,
+    own: PlayerColor,
+) -> ([(i32, i32, PlayerColor, PieceType); 8], bool) {
+    let mut rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    let mut ring = false;
+    let mut put = |slot: usize, along: i64, end: crate::moves::LineEnd, base: i64| {
+        if let Some((coord, packed)) = end {
+            let p = Piece::from_packed(packed);
+            let pt = p.piece_type();
+            let dist = saturating_dist_i32((coord - base).abs());
+            if dist < rays[slot].0 {
+                rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
+            }
+            if dist == 1
+                && ((p.color() == own && (pt == PieceType::Pawn || pt == PieceType::Guard))
+                    || pt.is_neutral_type())
+            {
+                ring = true;
+            }
+            let _ = along;
+        }
+    };
+    if let Some(l) = indices.rows.get(&ky) {
+        let (f, b) = l.neighbors(kx);
+        put(4, 0, f, kx);
+        put(5, 0, b, kx);
+    }
+    if let Some(l) = indices.cols.get(&kx) {
+        let (f, b) = l.neighbors(ky);
+        put(6, 0, f, ky);
+        put(7, 0, b, ky);
+    }
+    if let Some(l) = indices.diag1.get(&(kx - ky)) {
+        let (f, b) = l.neighbors(kx);
+        put(0, 0, f, kx);
+        put(3, 0, b, kx);
+    }
+    if let Some(l) = indices.diag2.get(&(kx + ky)) {
+        let (f, b) = l.neighbors(kx);
+        put(1, 0, f, kx);
+        put(2, 0, b, kx);
+    }
+    (rays, ring)
+}
+
 pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
     match piece_type {
         // neutral/blocking pieces - no material value
@@ -879,94 +931,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     }
                                 }
 
-                                // Check White Kings
-                                for &wk in white_royals {
-                                    let dx = x - wk.x;
-                                    let dy = y - wk.y;
-                                    let adx = dx.abs();
-                                    let ady = dy.abs();
-                                    let dist = saturating_dist_i32(adx.max(ady));
-
-                                    // Ring Cover: own pawn/guard, or a neutral wall
-                                    // (obstacle/void) which shields either king.
-                                    if !w_king_ring_covered
-                                        && dist == 1
-                                        && ((is_white
-                                            && (pt == PieceType::Pawn || pt == PieceType::Guard))
-                                            || pt.is_neutral_type())
-                                    {
-                                        w_king_ring_covered = true;
-                                    }
-
-                                    // Rays
-                                    if dx != 0 && dy == 0 {
-                                        let idx = if dx > 0 { 4 } else { 5 };
-                                        if dist < w_king_rays[idx].0 {
-                                            w_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    } else if dx == 0 && dy != 0 {
-                                        let idx = if dy > 0 { 6 } else { 7 };
-                                        if dist < w_king_rays[idx].0 {
-                                            w_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    } else if adx == ady && dist > 0 {
-                                        let idx = if dx > 0 {
-                                            if dy > 0 { 0 } else { 1 }
-                                        } else if dy > 0 {
-                                            2
-                                        } else {
-                                            3
-                                        };
-                                        if dist < w_king_rays[idx].0 {
-                                            w_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    }
-                                }
-
-                                // Check Black Kings
-                                for &bk in black_royals {
-                                    let dx = x - bk.x;
-                                    let dy = y - bk.y;
-                                    let adx = dx.abs();
-                                    let ady = dy.abs();
-                                    let dist = saturating_dist_i32(adx.max(ady));
-
-                                    // Ring Cover: own pawn/guard, or a neutral wall
-                                    // (obstacle/void) which shields either king.
-                                    if !b_king_ring_covered
-                                        && dist == 1
-                                        && ((piece.color() == PlayerColor::Black
-                                            && (pt == PieceType::Pawn || pt == PieceType::Guard))
-                                            || pt.is_neutral_type())
-                                    {
-                                        b_king_ring_covered = true;
-                                    }
-
-                                    // Rays
-                                    if dx != 0 && dy == 0 {
-                                        let idx = if dx > 0 { 4 } else { 5 };
-                                        if dist < b_king_rays[idx].0 {
-                                            b_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    } else if dx == 0 && dy != 0 {
-                                        let idx = if dy > 0 { 6 } else { 7 };
-                                        if dist < b_king_rays[idx].0 {
-                                            b_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    } else if adx == ady && dist > 0 {
-                                        let idx = if dx > 0 {
-                                            if dy > 0 { 0 } else { 1 }
-                                        } else if dy > 0 {
-                                            2
-                                        } else {
-                                            3
-                                        };
-                                        if dist < b_king_rays[idx].0 {
-                                            b_king_rays[idx] = (dist, piece_val, piece.color(), pt);
-                                        }
-                                    }
-                                }
-
                                 // 6. Interaction Threats
                                 if pt == PieceType::Pawn {
                                     let enemy = if is_white {
@@ -1239,6 +1203,37 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     }
                                 }
                             }
+                        }
+
+                        // King rays come from the spatial index: one lookup per line
+                        // replaces testing every piece for alignment.
+                        for &wk in white_royals {
+                            let (r, ring) = king_rays_from_indices(
+                                &game.spatial_indices,
+                                wk.x,
+                                wk.y,
+                                PlayerColor::White,
+                            );
+                            for i in 0..8 {
+                                if r[i].0 < w_king_rays[i].0 {
+                                    w_king_rays[i] = r[i];
+                                }
+                            }
+                            w_king_ring_covered |= ring;
+                        }
+                        for &bk in black_royals {
+                            let (r, ring) = king_rays_from_indices(
+                                &game.spatial_indices,
+                                bk.x,
+                                bk.y,
+                                PlayerColor::Black,
+                            );
+                            for i in 0..8 {
+                                if r[i].0 < b_king_rays[i].0 {
+                                    b_king_rays[i] = r[i];
+                                }
+                            }
+                            b_king_ring_covered |= ring;
                         }
 
                         // Finalize slider totals, defender units, and king tropism addends.
