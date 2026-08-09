@@ -55,16 +55,11 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
     },
-    /// Apply tuned values from a result or checkpoint JSON back into the Rust source constants.
+    /// Apply tuned values from JSON back into the Rust source constants.
     Apply {
         /// Optional result/checkpoint JSON path. Defaults to the latest checkpoint.
         #[arg(long, default_value = "sprt/data/eval_params_tuned.json")]
         input: PathBuf,
-    },
-    Revert {
-        /// Parameter selection preset or comma-separated names: `all`, `piece-values`, or explicit names.
-        #[arg(long, default_value = "all")]
-        params: String,
     },
     List {
         /// Parameter selection preset or comma-separated names: `all`, `piece-values`, or explicit names.
@@ -310,29 +305,15 @@ fn infer_default_value(name: &str, base_text: &str) -> Option<i64> {
 fn const_name_candidates(name: &str) -> Vec<String> {
     let normalized = to_const_name(name);
     let mut names = vec![
-        normalized.clone(),
         format!("DEFAULT_{}", normalized),
         format!("DEFAULT_EVAL_{}", normalized),
+        normalized.clone(),
     ];
-
-    if name.starts_with("mg_") {
-        let tail = to_const_name(&name[3..]);
-        names.push(format!("DEFAULT_EVAL_MG_{}", tail));
-        names.push(format!("MG_{}", tail));
-    }
-    if name.starts_with("eg_") {
-        let tail = to_const_name(&name[3..]);
-        names.push(format!("DEFAULT_EVAL_EG_{}", tail));
-        names.push(format!("EG_{}", tail));
-    }
 
     if !name.starts_with("mg_") && !name.starts_with("eg_") {
         names.push(format!("MG_{}", normalized));
         names.push(format!("EG_{}", normalized));
     }
-
-    names.push(format!("DEFAULT_{}", name.to_ascii_uppercase().replace('-', "_")));
-    names.push(format!("DEFAULT_EVAL_{}", name.to_ascii_uppercase().replace('-', "_")));
 
     let mut deduped = Vec::new();
     let mut seen = HashSet::new();
@@ -401,31 +382,6 @@ fn parse_const_name(line: &str) -> Option<String> {
     Some(name_part.trim().to_string())
 }
 
-fn const_name_for_param(name: &str) -> Vec<String> {
-    let mut candidates = vec![to_const_name(name)];
-    let normalized = to_const_name(name);
-    candidates.push(format!("DEFAULT_{}", normalized));
-    candidates.push(format!("DEFAULT_EVAL_{}", normalized));
-
-    if name.starts_with("mg_") {
-        let tail = to_const_name(&name[3..]);
-        candidates.push(format!("DEFAULT_EVAL_MG_{}", tail));
-    }
-    if name.starts_with("eg_") {
-        let tail = to_const_name(&name[3..]);
-        candidates.push(format!("DEFAULT_EVAL_EG_{}", tail));
-    }
-
-    let mut unique = Vec::new();
-    let mut seen = HashSet::new();
-    for candidate in candidates {
-        if seen.insert(candidate.clone()) {
-            unique.push(candidate);
-        }
-    }
-    unique
-}
-
 fn update_const_values_in_source(src: &str, updates: &HashMap<String, i64>) -> String {
     let mut output = String::new();
     for line in src.lines() {
@@ -433,7 +389,7 @@ fn update_const_values_in_source(src: &str, updates: &HashMap<String, i64>) -> S
         let trimmed = line.trim();
         if let Some(const_name) = parse_const_name(trimmed) {
             if let Some(value) = updates.iter().find_map(|(param_name, value)| {
-                const_name_for_param(param_name).iter().any(|candidate| *candidate == const_name).then_some(*value)
+                const_name_candidates(param_name).iter().any(|candidate| *candidate == const_name).then_some(*value)
             }) {
                 if let Some(eq_idx) = line.find('=') {
                     if let Some(semi_idx) = line.find(';') {
@@ -608,7 +564,6 @@ fn run() -> Result<(), String> {
             verbose,
         }) => run_tuner(games, params, output, rounds, cp_scale, min_step_fraction, verbose),
         Some(Commands::Apply { input }) => apply_tuned_params(input),
-        Some(Commands::Revert { params }) => revert_tuned_params(&params),
         Some(Commands::List { params }) => list_tunable_params(&params),
         None => Err("no command specified; use --help for usage".to_string()),
     }
@@ -636,33 +591,6 @@ fn list_tunable_params(selector: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn revert_tuned_params(selector: &str) -> Result<(), String> {
-    let base_text = fs::read_to_string(EVAL_BASE_RS_PATH)
-        .map_err(|e| format!("failed to read {}: {}", EVAL_BASE_RS_PATH, e))?;
-    let available = PIECE_VALUE_NAMES
-        .iter()
-        .map(|name| (*name).to_string())
-        .collect::<HashSet<_>>();
-    let selected = resolve_param_names(selector, Some(&available));
-    let mut updates = HashMap::new();
-
-    for name in selected {
-        if let Some(value) = infer_default_value(&name, &base_text) {
-            updates.insert(name.clone(), value);
-        }
-    }
-
-    if updates.is_empty() {
-        return Err("no tunable parameters matched the requested selector".to_string());
-    }
-
-    let updated = update_const_values_in_source(&base_text, &updates);
-    fs::write(EVAL_BASE_RS_PATH, updated)
-        .map_err(|e| format!("failed to write {}: {}", EVAL_BASE_RS_PATH, e))?;
-    println!("[texel_tuner] reverted {} constants in {}", updates.len(), EVAL_BASE_RS_PATH);
-    Ok(())
-}
-
 fn apply_tuned_params(input: PathBuf) -> Result<(), String> {
     let params = read_json_params(&input)?;
     if params.is_empty() {
@@ -674,7 +602,7 @@ fn apply_tuned_params(input: PathBuf) -> Result<(), String> {
 
     let mut updates = HashMap::new();
     for (name, value) in params {
-        let candidates = const_name_for_param(&name);
+        let candidates = const_name_candidates(&name);
         let matched = candidates.iter().find_map(|candidate| {
             extract_const_int(&base_text, candidate).map(|_| candidate.clone())
         });
