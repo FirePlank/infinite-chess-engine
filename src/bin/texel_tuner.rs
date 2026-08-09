@@ -16,6 +16,12 @@ use serde_json::Value;
 
 const EVAL_BASE_RS_PATH: &str = "src/evaluation/base.rs";
 
+/// Parameters that you don't want to tune, even if they are present in the evaluation
+/// features. This is useful for keeping certain parameters fixed.
+const PARAMS_TO_IGNORE: &[&str] = &[
+    "pawn",
+];
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Texel-style tuner for evaluation parameters")]
 struct Cli {
@@ -40,7 +46,7 @@ enum Commands {
         output: PathBuf,
 
         /// Number of tuning rounds.
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 5)]
         rounds: usize,
 
         /// Scale factor for evaluation output before logistic activation.
@@ -185,6 +191,38 @@ const PIECE_VALUE_NAMES: &[&str] = &[
     "rose",
     "huygen",
     "chancellor_bonus",
+    "amazon_bonus",
+];
+const ALL_EVAL_NAMES: &[&str] = &[
+    "pawn",
+    "knight",
+    "bishop",
+    "rook",
+    "guard",
+    "centaur",
+    "compound_bonus",
+    "camel",
+    "giraffe",
+    "zebra",
+    "knightrider",
+    "hawk",
+    "archbishop",
+    "rose",
+    "huygen",
+    "chancellor_bonus",
+    "amazon_bonus",
+    "mg_bishop_pair_bonus",
+    "eg_bishop_pair_bonus",
+    "mg_bishop_pair_both_bonus",
+    "eg_bishop_pair_both_bonus",
+    "mg_doubled_pawn_penalty",
+    "eg_doubled_pawn_penalty",
+    "mg_outpost_bonus",
+    "eg_outpost_bonus",
+    "rook_open_file_bonus",
+    "rook_semi_open_file_bonus",
+    "queen_open_file_bonus",
+    "queen_semi_open_file_bonus",
 ];
 
 fn parse_param_list(input: &str) -> HashSet<String> {
@@ -198,7 +236,7 @@ fn parse_param_list(input: &str) -> HashSet<String> {
 
 fn resolve_param_names(selector: &str, available: Option<&HashSet<String>>) -> Vec<String> {
     let available_names: HashSet<String> = available.cloned().unwrap_or_else(|| {
-        PIECE_VALUE_NAMES
+        ALL_EVAL_NAMES
             .iter()
             .map(|name| (*name).to_string())
             .collect()
@@ -266,14 +304,15 @@ fn build_tunable_specs(
         feature_names.iter().cloned().collect::<Vec<_>>()
     };
 
-    let mut candidate_names: Vec<String> = if requested.is_some() {
-        resolve_param_names(
-            &requested_names.join(","),
-            Some(&feature_names),
-        )
-    } else {
-        feature_names.iter().cloned().collect::<Vec<_>>()
-    };
+    // Remove any parameters that are in the ignore list or not present in the feature names
+    let mut candidate_names: Vec<String> = resolve_param_names(
+        &requested_names.join(","),
+        Some(&feature_names),
+    )
+        .iter()
+        .filter(|name| !PARAMS_TO_IGNORE.contains(&name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
 
     candidate_names.sort();
 
@@ -547,7 +586,7 @@ fn tune_single_param(
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("[texel_tuner] error: {}", err);
+        eprintln!("\x1b[31m[texel_tuner] error:\x1b[0m {}", err);
         std::process::exit(1);
     }
 }
@@ -572,7 +611,7 @@ fn run() -> Result<(), String> {
 fn list_tunable_params(selector: &str) -> Result<(), String> {
     let base_text = fs::read_to_string(EVAL_BASE_RS_PATH)
         .map_err(|e| format!("failed to read {}: {}", EVAL_BASE_RS_PATH, e))?;
-    let available = PIECE_VALUE_NAMES
+    let available = ALL_EVAL_NAMES
         .iter()
         .map(|name| (*name).to_string())
         .collect::<HashSet<_>>();
@@ -586,7 +625,12 @@ fn list_tunable_params(selector: &str) -> Result<(), String> {
     }
 
     for (name, default_value, step, min, max) in specs {
-        println!("{:<28} default={:<6} step={:<6} range=[{}, {}]", name, default_value, step, min, max);
+        if PARAMS_TO_IGNORE.contains(&name.as_str()) {
+            let name_text = format!("{} (ignored)", name);
+            println!("\x1b[90m{:<28}\x1b[0m default={:<6} step={:<6} range=[{}, {}]", name_text, default_value, step, min, max);
+        } else {
+            println!("{:<28} default={:<6} step={:<6} range=[{}, {}]", name, default_value, step, min, max);
+        };
     }
     Ok(())
 }
@@ -727,7 +771,7 @@ fn run_tuner(
     fs::write(&output_path, json)
         .map_err(|e| format!("failed to write {}: {}", output_path.display(), e))?;
 
-    println!("[texel_tuner] tuning complete. wrote tuned parameters to {}", output_path.display());
+    println!("\x1b[32m[texel_tuner] tuning complete. wrote tuned parameters to {} \x1b[0m", output_path.display());
     Ok(())
 }
 
@@ -737,21 +781,26 @@ mod tests {
 
     #[test]
     fn selector_expands_presets_and_names() {
-        let names = resolve_param_names("piece-values,knight", Some(&HashSet::from([
-            "pawn".to_string(),
-            "knight".to_string(),
-            "bishop".to_string(),
-            "rook".to_string(),
-            "queen".to_string(),
-        ])))
-        .into_iter()
+        let names = resolve_param_names(
+            "piece-values,mg_bishop_pair_bonus",
+            Some(&HashSet::from([
+                "knight".to_string(),
+                "bishop".to_string(),
+                "rook".to_string(),
+                "queen".to_string(),
+                "mg_bishop_pair_bonus".to_string(),
+                "eg_bishop_pair_bonus".to_string(),
+            ]))
+        ).into_iter()
         .collect::<HashSet<_>>();
 
         assert!(names.contains("knight"));
-        assert!(names.contains("pawn"));
         assert!(names.contains("bishop"));
         assert!(names.contains("rook"));
-        assert!(!names.contains("queen"));
+        assert!(!names.contains("queen")); // no DEFAULT_EVAL_QUEEN constant in base.rs
+        assert!(!names.contains("hawk"));
+        assert!(names.contains("mg_bishop_pair_bonus"));
+        assert!(!names.contains("eg_bishop_pair_bonus"));
     }
 
     #[test]
