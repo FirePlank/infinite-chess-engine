@@ -346,10 +346,7 @@ pub fn is_piece_attacking_square(
         }
 
         // Knight or slider + knight compound pieces
-        PieceType::Knight
-        | PieceType::Archbishop
-        | PieceType::Chancellor
-        | PieceType::Amazon => {
+        PieceType::Knight | PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon => {
             let dx = (to.x - from.x).abs();
             let dy = (to.y - from.y).abs();
             return (dx == 1 && dy == 2) || (dx == 2 && dy == 1);

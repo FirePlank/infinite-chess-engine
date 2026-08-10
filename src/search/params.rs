@@ -203,6 +203,94 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("eg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Endgame king defender bonus"),
     EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
     EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
+    EvalParamSpec::new("amazon_compound_bonus", crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS as i64, 0, 500, 4.0, 0.002, "Amazon compound-piece bonus"),
+    EvalParamSpec::new("slider_net_bonus", crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS as i64, 0, 80, 2.0, 0.002, "Slider net-control bonus"),
+    EvalParamSpec::new("far_slider_cheb_radius", crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS as i64, 6, 40, 2.0, 0.002, "Chebyshev radius beyond which a slider is far from the action"),
+    EvalParamSpec::new("far_slider_cheb_max_excess", crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS as i64, 10, 100, 2.0, 0.002, "Max excess distance counted for the far-slider penalty"),
+    EvalParamSpec::new("far_queen_penalty", crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY as i64, 0, 30, 2.0, 0.002, "Per-excess-square penalty for a far queen"),
+    EvalParamSpec::new("far_rook_penalty", crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY as i64, 0, 25, 2.0, 0.002, "Per-excess-square penalty for a far rook"),
+    EvalParamSpec::new("piece_cloud_cheb_radius", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS as i64, 4, 40, 2.0, 0.002, "Chebyshev radius of the piece-cloud cohesion zone"),
+    EvalParamSpec::new("slider_axis_wiggle", crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE as i64, 1, 20, 2.0, 0.002, "Wiggle room for a slider ray to count as passing through center"),
+    EvalParamSpec::new("piece_cloud_cheb_max_excess", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS as i64, 16, 160, 2.0, 0.002, "Max excess distance counted for the piece-cloud penalty"),
+    EvalParamSpec::new("cloud_penalty_per_100_value", crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE as i64, 0, 6, 2.0, 0.002, "Cloud-spread penalty per 100 value of piece worth"),
+    EvalParamSpec::new("cloud_center_max_skew_dist", crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST as i64, 4, 40, 2.0, 0.002, "Max skew distance for the cloud-center reference point"),
+    EvalParamSpec::new("queen_ideal_line_dist", crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST as i64, 1, 16, 2.0, 0.002, "Ideal file/rank distance for queen line pressure"),
+    EvalParamSpec::new("leaper_tropism_divisor", crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR as i64, 100, 1000, 4.0, 0.002, "Divisor turning leaper value into a tropism multiplier"),
+    EvalParamSpec::new("chancellor_rook_scale", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE as i64, 20, 150, 2.0, 0.002, "Chancellor rook-component scale (% of rook eval)"),
+    EvalParamSpec::new("archbishop_bishop_scale", crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE as i64, 20, 150, 2.0, 0.002, "Archbishop bishop-component scale (% of bishop eval)"),
+    EvalParamSpec::new("amazon_rook_scale", crate::evaluation::base::DEFAULT_EVAL_AMAZON_ROOK_SCALE as i64, 10, 120, 2.0, 0.002, "Amazon rook-component scale (% of rook eval)"),
+    EvalParamSpec::new("amazon_queen_scale", crate::evaluation::base::DEFAULT_EVAL_AMAZON_QUEEN_SCALE as i64, 10, 150, 2.0, 0.002, "Amazon queen-component scale (% of queen eval)"),
+    EvalParamSpec::new("centaur_guard_scale", crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE as i64, 10, 120, 2.0, 0.002, "Centaur guard/leaper-component scale (% of guard eval)"),
+    EvalParamSpec::new("pawn_full_value_threshold", crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD as i64, 2, 16, 2.0, 0.002, "Ranks from promotion within which a pawn keeps full value"),
+    EvalParamSpec::new("pawn_past_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY as i64, 0, 250, 2.0, 0.002, "Penalty for a pawn that can never promote"),
+    EvalParamSpec::new("pawn_far_from_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY as i64, 0, 150, 2.0, 0.002, "Flat penalty for a pawn far from promotion"),
+    EvalParamSpec::new("minor_development_penalty_threshold", crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which the stronger undeveloped-minor penalty applies"),
+    EvalParamSpec::new("min_minor_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY as i64, 0, 40, 2.0, 0.002, "Undeveloped-minor penalty for low-value pieces"),
+    EvalParamSpec::new("min_major_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY as i64, 0, 30, 2.0, 0.002, "Undeveloped-major penalty"),
+    EvalParamSpec::new("king_defender_value_threshold", crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which a piece counts as a king defender"),
+    EvalParamSpec::new("complexity_damp", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP as i64, 0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score"),
+    EvalParamSpec::new("complexity_excess_max", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX as i64, 8, 100, 2.0, 0.002, "Cap on phase excess counted for complexity damping"),
+    EvalParamSpec::new("king_shield_ahead_max_dist", crate::evaluation::base::DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST as i64, 1, 10, 2.0, 0.002, "Max distance ahead of the king counted for pawn shield"),
+    EvalParamSpec::new("mg_king_pawn_ahead_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_AHEAD_PENALTY as i64, 0, 80, 2.0, 0.002, "Middlegame penalty for a pawn stuck ahead of its own king"),
+    EvalParamSpec::new("eg_king_pawn_ahead_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_AHEAD_PENALTY as i64, 0, 60, 2.0, 0.002, "Endgame penalty for a pawn stuck ahead of its own king"),
+    EvalParamSpec::new("mg_far_slider_penalty_mult", crate::evaluation::base::DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT as i64, 20, 200, 2.0, 0.002, "Middlegame far-slider penalty scale (%)"),
+    EvalParamSpec::new("eg_far_slider_penalty_mult", crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT as i64, 0, 150, 2.0, 0.002, "Endgame far-slider penalty scale (%)"),
+    EvalParamSpec::new("slider_threat_div", crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV as i64, 2, 40, 2.0, 0.002, "Divisor for slider-threat scoring"),
+    EvalParamSpec::new("slider_threat_cap", crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP as i64, 5, 150, 2.0, 0.002, "Cap on slider-threat scoring"),
+    EvalParamSpec::new("candidate_passer_bonus_0", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [0]"),
+    EvalParamSpec::new("candidate_passer_bonus_1", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [1]"),
+    EvalParamSpec::new("candidate_passer_bonus_2", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [2]"),
+    EvalParamSpec::new("candidate_passer_bonus_3", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_3 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [3]"),
+    EvalParamSpec::new("candidate_passer_bonus_4", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_4 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [4]"),
+    EvalParamSpec::new("candidate_passer_bonus_5", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_5 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [5]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_0", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_0 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [0]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_1", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_1 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [1]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_2", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_2 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [2]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_3", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_3 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [3]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_4", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_4 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [4]"),
+    EvalParamSpec::new("pawn_friendly_king_dist_5", crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_5 as i64, 0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [5]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_0", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_0 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [0]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_1", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_1 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [1]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_2", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_2 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [2]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_3", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_3 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [3]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_4", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_4 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [4]"),
+    EvalParamSpec::new("pawn_enemy_king_dist_5", crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_5 as i64, 0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [5]"),
+    EvalParamSpec::new("passed_friendly_king_dist_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_0 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [0]"),
+    EvalParamSpec::new("passed_friendly_king_dist_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_1 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [1]"),
+    EvalParamSpec::new("passed_friendly_king_dist_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_2 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [2]"),
+    EvalParamSpec::new("passed_friendly_king_dist_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_3 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [3]"),
+    EvalParamSpec::new("passed_friendly_king_dist_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_4 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [4]"),
+    EvalParamSpec::new("passed_friendly_king_dist_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_5 as i64, 0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [5]"),
+    EvalParamSpec::new("passed_enemy_king_dist_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_0 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [0]"),
+    EvalParamSpec::new("passed_enemy_king_dist_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_1 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [1]"),
+    EvalParamSpec::new("passed_enemy_king_dist_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_2 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [2]"),
+    EvalParamSpec::new("passed_enemy_king_dist_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_3 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [3]"),
+    EvalParamSpec::new("passed_enemy_king_dist_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_4 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [4]"),
+    EvalParamSpec::new("passed_enemy_king_dist_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_5 as i64, 0, 40, 2.0, 0.002, "Passed-pawn enemy-king-distance weight by relative rank [5]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_0 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=0]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_1 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=1]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_2 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=2]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_3 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=3]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_4 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=4]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_0_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_5 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=0][rank=5]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_0 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=0]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_1 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=1]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_2 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=2]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_3 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=3]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_4 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=4]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_0_1_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_5 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=0][safeAdvance=1][rank=5]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_0 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=0]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_1 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=1]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_2 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=2]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_3 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=3]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_4 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=4]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_0_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_5 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=0][rank=5]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_0", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_0 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=0]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_1", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_1 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=1]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_2", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_2 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=2]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_3", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_3 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=3]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_4", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_4 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=4]"),
+    EvalParamSpec::new("passed_pawn_adv_bonus_1_1_5", crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5 as i64, 0, 300, 2.0, 0.002, "Passed pawn advance bonus [canAdvance=1][safeAdvance=1][rank=5]"),
 ];
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -251,6 +339,94 @@ pub struct EvalParams {
     pub eg_king_defender_bonus: i32,
     pub mg_outpost_bonus: i32,
     pub eg_outpost_bonus: i32,
+    pub amazon_compound_bonus: i32,
+    pub slider_net_bonus: i32,
+    pub far_slider_cheb_radius: i32,
+    pub far_slider_cheb_max_excess: i32,
+    pub far_queen_penalty: i32,
+    pub far_rook_penalty: i32,
+    pub piece_cloud_cheb_radius: i32,
+    pub slider_axis_wiggle: i32,
+    pub piece_cloud_cheb_max_excess: i32,
+    pub cloud_penalty_per_100_value: i32,
+    pub cloud_center_max_skew_dist: i32,
+    pub queen_ideal_line_dist: i32,
+    pub leaper_tropism_divisor: i32,
+    pub chancellor_rook_scale: i32,
+    pub archbishop_bishop_scale: i32,
+    pub amazon_rook_scale: i32,
+    pub amazon_queen_scale: i32,
+    pub centaur_guard_scale: i32,
+    pub pawn_full_value_threshold: i32,
+    pub pawn_past_promo_penalty: i32,
+    pub pawn_far_from_promo_penalty: i32,
+    pub minor_development_penalty_threshold: i32,
+    pub min_minor_development_penalty: i32,
+    pub min_major_development_penalty: i32,
+    pub king_defender_value_threshold: i32,
+    pub complexity_damp: i32,
+    pub complexity_excess_max: i32,
+    pub king_shield_ahead_max_dist: i32,
+    pub mg_king_pawn_ahead_penalty: i32,
+    pub eg_king_pawn_ahead_penalty: i32,
+    pub mg_far_slider_penalty_mult: i32,
+    pub eg_far_slider_penalty_mult: i32,
+    pub slider_threat_div: i32,
+    pub slider_threat_cap: i32,
+    pub candidate_passer_bonus_0: i32,
+    pub candidate_passer_bonus_1: i32,
+    pub candidate_passer_bonus_2: i32,
+    pub candidate_passer_bonus_3: i32,
+    pub candidate_passer_bonus_4: i32,
+    pub candidate_passer_bonus_5: i32,
+    pub pawn_friendly_king_dist_0: i32,
+    pub pawn_friendly_king_dist_1: i32,
+    pub pawn_friendly_king_dist_2: i32,
+    pub pawn_friendly_king_dist_3: i32,
+    pub pawn_friendly_king_dist_4: i32,
+    pub pawn_friendly_king_dist_5: i32,
+    pub pawn_enemy_king_dist_0: i32,
+    pub pawn_enemy_king_dist_1: i32,
+    pub pawn_enemy_king_dist_2: i32,
+    pub pawn_enemy_king_dist_3: i32,
+    pub pawn_enemy_king_dist_4: i32,
+    pub pawn_enemy_king_dist_5: i32,
+    pub passed_friendly_king_dist_0: i32,
+    pub passed_friendly_king_dist_1: i32,
+    pub passed_friendly_king_dist_2: i32,
+    pub passed_friendly_king_dist_3: i32,
+    pub passed_friendly_king_dist_4: i32,
+    pub passed_friendly_king_dist_5: i32,
+    pub passed_enemy_king_dist_0: i32,
+    pub passed_enemy_king_dist_1: i32,
+    pub passed_enemy_king_dist_2: i32,
+    pub passed_enemy_king_dist_3: i32,
+    pub passed_enemy_king_dist_4: i32,
+    pub passed_enemy_king_dist_5: i32,
+    pub passed_pawn_adv_bonus_0_0_0: i32,
+    pub passed_pawn_adv_bonus_0_0_1: i32,
+    pub passed_pawn_adv_bonus_0_0_2: i32,
+    pub passed_pawn_adv_bonus_0_0_3: i32,
+    pub passed_pawn_adv_bonus_0_0_4: i32,
+    pub passed_pawn_adv_bonus_0_0_5: i32,
+    pub passed_pawn_adv_bonus_0_1_0: i32,
+    pub passed_pawn_adv_bonus_0_1_1: i32,
+    pub passed_pawn_adv_bonus_0_1_2: i32,
+    pub passed_pawn_adv_bonus_0_1_3: i32,
+    pub passed_pawn_adv_bonus_0_1_4: i32,
+    pub passed_pawn_adv_bonus_0_1_5: i32,
+    pub passed_pawn_adv_bonus_1_0_0: i32,
+    pub passed_pawn_adv_bonus_1_0_1: i32,
+    pub passed_pawn_adv_bonus_1_0_2: i32,
+    pub passed_pawn_adv_bonus_1_0_3: i32,
+    pub passed_pawn_adv_bonus_1_0_4: i32,
+    pub passed_pawn_adv_bonus_1_0_5: i32,
+    pub passed_pawn_adv_bonus_1_1_0: i32,
+    pub passed_pawn_adv_bonus_1_1_1: i32,
+    pub passed_pawn_adv_bonus_1_1_2: i32,
+    pub passed_pawn_adv_bonus_1_1_3: i32,
+    pub passed_pawn_adv_bonus_1_1_4: i32,
+    pub passed_pawn_adv_bonus_1_1_5: i32,
 }
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -301,6 +477,94 @@ impl Default for EvalParams {
             eg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
+            amazon_compound_bonus: crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS,
+            slider_net_bonus: crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS,
+            far_slider_cheb_radius: crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS,
+            far_slider_cheb_max_excess: crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS,
+            far_queen_penalty: crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY,
+            far_rook_penalty: crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY,
+            piece_cloud_cheb_radius: crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS,
+            slider_axis_wiggle: crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE,
+            piece_cloud_cheb_max_excess: crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS,
+            cloud_penalty_per_100_value: crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE,
+            cloud_center_max_skew_dist: crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST,
+            queen_ideal_line_dist: crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST,
+            leaper_tropism_divisor: crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR,
+            chancellor_rook_scale: crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE,
+            archbishop_bishop_scale: crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE,
+            amazon_rook_scale: crate::evaluation::base::DEFAULT_EVAL_AMAZON_ROOK_SCALE,
+            amazon_queen_scale: crate::evaluation::base::DEFAULT_EVAL_AMAZON_QUEEN_SCALE,
+            centaur_guard_scale: crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE,
+            pawn_full_value_threshold: crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD,
+            pawn_past_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY,
+            pawn_far_from_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY,
+            minor_development_penalty_threshold: crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD,
+            min_minor_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY,
+            min_major_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY,
+            king_defender_value_threshold: crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD,
+            complexity_damp: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP,
+            complexity_excess_max: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX,
+            king_shield_ahead_max_dist: crate::evaluation::base::DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST,
+            mg_king_pawn_ahead_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_AHEAD_PENALTY,
+            eg_king_pawn_ahead_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_AHEAD_PENALTY,
+            mg_far_slider_penalty_mult: crate::evaluation::base::DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT,
+            eg_far_slider_penalty_mult: crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT,
+            slider_threat_div: crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV,
+            slider_threat_cap: crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP,
+            candidate_passer_bonus_0: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0,
+            candidate_passer_bonus_1: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1,
+            candidate_passer_bonus_2: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2,
+            candidate_passer_bonus_3: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_3,
+            candidate_passer_bonus_4: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_4,
+            candidate_passer_bonus_5: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_5,
+            pawn_friendly_king_dist_0: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_0,
+            pawn_friendly_king_dist_1: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_1,
+            pawn_friendly_king_dist_2: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_2,
+            pawn_friendly_king_dist_3: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_3,
+            pawn_friendly_king_dist_4: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_4,
+            pawn_friendly_king_dist_5: crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_5,
+            pawn_enemy_king_dist_0: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_0,
+            pawn_enemy_king_dist_1: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_1,
+            pawn_enemy_king_dist_2: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_2,
+            pawn_enemy_king_dist_3: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_3,
+            pawn_enemy_king_dist_4: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_4,
+            pawn_enemy_king_dist_5: crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_5,
+            passed_friendly_king_dist_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_0,
+            passed_friendly_king_dist_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_1,
+            passed_friendly_king_dist_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_2,
+            passed_friendly_king_dist_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_3,
+            passed_friendly_king_dist_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_4,
+            passed_friendly_king_dist_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_5,
+            passed_enemy_king_dist_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_0,
+            passed_enemy_king_dist_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_1,
+            passed_enemy_king_dist_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_2,
+            passed_enemy_king_dist_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_3,
+            passed_enemy_king_dist_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_4,
+            passed_enemy_king_dist_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_5,
+            passed_pawn_adv_bonus_0_0_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_0,
+            passed_pawn_adv_bonus_0_0_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_1,
+            passed_pawn_adv_bonus_0_0_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_2,
+            passed_pawn_adv_bonus_0_0_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_3,
+            passed_pawn_adv_bonus_0_0_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_4,
+            passed_pawn_adv_bonus_0_0_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_5,
+            passed_pawn_adv_bonus_0_1_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_0,
+            passed_pawn_adv_bonus_0_1_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_1,
+            passed_pawn_adv_bonus_0_1_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_2,
+            passed_pawn_adv_bonus_0_1_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_3,
+            passed_pawn_adv_bonus_0_1_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_4,
+            passed_pawn_adv_bonus_0_1_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_5,
+            passed_pawn_adv_bonus_1_0_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_0,
+            passed_pawn_adv_bonus_1_0_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_1,
+            passed_pawn_adv_bonus_1_0_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_2,
+            passed_pawn_adv_bonus_1_0_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_3,
+            passed_pawn_adv_bonus_1_0_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_4,
+            passed_pawn_adv_bonus_1_0_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_5,
+            passed_pawn_adv_bonus_1_1_0: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_0,
+            passed_pawn_adv_bonus_1_1_1: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_1,
+            passed_pawn_adv_bonus_1_1_2: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_2,
+            passed_pawn_adv_bonus_1_1_3: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_3,
+            passed_pawn_adv_bonus_1_1_4: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_4,
+            passed_pawn_adv_bonus_1_1_5: crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5,
         }
     }
 }
@@ -308,16 +572,29 @@ impl Default for EvalParams {
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub static EVAL_PARAMS: Lazy<RwLock<EvalParams>> = Lazy::new(|| RwLock::new(EvalParams::default()));
 
+/// Bumped on every write to [`EVAL_PARAMS`]. Threads compare it against their
+/// cached copy's generation to know whether that copy is stale.
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+pub static EVAL_PARAMS_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replace the live eval parameters. Always use this (never write through
+/// [`EVAL_PARAMS`] directly) so the generation counter invalidates thread caches.
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+pub fn set_eval_params(params: EvalParams) -> bool {
+    match EVAL_PARAMS.write() {
+        Ok(mut guard) => {
+            *guard = params;
+            EVAL_PARAMS_GEN.fetch_add(1, std::sync::atomic::Ordering::Release);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub fn set_eval_params_from_json(json: &str) -> bool {
     match serde_json::from_str::<EvalParams>(json) {
-        Ok(params) => match EVAL_PARAMS.write() {
-            Ok(mut guard) => {
-                *guard = params;
-                true
-            }
-            Err(_) => false,
-        },
+        Ok(params) => set_eval_params(params),
         Err(_) => false,
     }
 }
@@ -331,8 +608,31 @@ pub fn get_eval_params_as_json() -> String {
 }
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+thread_local! {
+    /// Per-thread snapshot of the eval parameters, refreshed only when the global
+    /// generation moves. A single eval reads well over a hundred parameters, so
+    /// taking the shared `RwLock` per read made every eval acquire 130+ locks and
+    /// had all threads ping-ponging one cache line — the dominant cost in a tuning
+    /// build. This turns each read into a relaxed atomic load plus a field access.
+    static EVAL_PARAMS_TLS: std::cell::RefCell<(u64, EvalParams)> =
+        std::cell::RefCell::new((u64::MAX, EvalParams::default()));
+}
+
+#[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 macro_rules! eval_param {
-    ($field:ident) => {{ EVAL_PARAMS.read().unwrap().$field }};
+    ($field:ident) => {{
+        EVAL_PARAMS_TLS.with(|cell| {
+            let generation = EVAL_PARAMS_GEN.load(std::sync::atomic::Ordering::Acquire);
+            let mut cached = cell.borrow_mut();
+            if cached.0 != generation {
+                if let Ok(guard) = EVAL_PARAMS.read() {
+                    cached.1 = guard.clone();
+                    cached.0 = generation;
+                }
+            }
+            cached.1.$field
+        })
+    }};
 }
 
 macro_rules! define_eval_accessor {
@@ -480,6 +780,133 @@ define_eval_accessor!(
     eg_outpost_bonus,
     crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS
 );
+define_eval_accessor!(amazon_compound_bonus, crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS);
+define_eval_accessor!(slider_net_bonus, crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS);
+define_eval_accessor!(far_slider_cheb_radius, crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS);
+define_eval_accessor!(far_slider_cheb_max_excess, crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS);
+define_eval_accessor!(far_queen_penalty, crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY);
+define_eval_accessor!(far_rook_penalty, crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY);
+define_eval_accessor!(piece_cloud_cheb_radius, crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS);
+define_eval_accessor!(slider_axis_wiggle, crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE);
+define_eval_accessor!(piece_cloud_cheb_max_excess, crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS);
+define_eval_accessor!(cloud_penalty_per_100_value, crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE);
+define_eval_accessor!(cloud_center_max_skew_dist, crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST);
+define_eval_accessor!(queen_ideal_line_dist, crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST);
+define_eval_accessor!(leaper_tropism_divisor, crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR);
+define_eval_accessor!(chancellor_rook_scale, crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE);
+define_eval_accessor!(archbishop_bishop_scale, crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE);
+define_eval_accessor!(amazon_rook_scale, crate::evaluation::base::DEFAULT_EVAL_AMAZON_ROOK_SCALE);
+define_eval_accessor!(amazon_queen_scale, crate::evaluation::base::DEFAULT_EVAL_AMAZON_QUEEN_SCALE);
+define_eval_accessor!(centaur_guard_scale, crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE);
+define_eval_accessor!(pawn_full_value_threshold, crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD);
+define_eval_accessor!(pawn_past_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY);
+define_eval_accessor!(pawn_far_from_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY);
+define_eval_accessor!(minor_development_penalty_threshold, crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD);
+define_eval_accessor!(min_minor_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY);
+define_eval_accessor!(min_major_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY);
+define_eval_accessor!(king_defender_value_threshold, crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD);
+define_eval_accessor!(complexity_damp, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP);
+define_eval_accessor!(complexity_excess_max, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX);
+define_eval_accessor!(king_shield_ahead_max_dist, crate::evaluation::base::DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST);
+define_eval_accessor!(mg_king_pawn_ahead_penalty, crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_AHEAD_PENALTY);
+define_eval_accessor!(eg_king_pawn_ahead_penalty, crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_AHEAD_PENALTY);
+define_eval_accessor!(mg_far_slider_penalty_mult, crate::evaluation::base::DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT);
+define_eval_accessor!(eg_far_slider_penalty_mult, crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT);
+define_eval_accessor!(slider_threat_div, crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV);
+define_eval_accessor!(slider_threat_cap, crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP);
+define_eval_accessor!(candidate_passer_bonus_0, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0);
+define_eval_accessor!(candidate_passer_bonus_1, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1);
+define_eval_accessor!(candidate_passer_bonus_2, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2);
+define_eval_accessor!(candidate_passer_bonus_3, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_3);
+define_eval_accessor!(candidate_passer_bonus_4, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_4);
+define_eval_accessor!(candidate_passer_bonus_5, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_5);
+define_eval_accessor!(pawn_friendly_king_dist_0, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_0);
+define_eval_accessor!(pawn_friendly_king_dist_1, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_1);
+define_eval_accessor!(pawn_friendly_king_dist_2, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_2);
+define_eval_accessor!(pawn_friendly_king_dist_3, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_3);
+define_eval_accessor!(pawn_friendly_king_dist_4, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_4);
+define_eval_accessor!(pawn_friendly_king_dist_5, crate::evaluation::base::DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_5);
+define_eval_accessor!(pawn_enemy_king_dist_0, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_0);
+define_eval_accessor!(pawn_enemy_king_dist_1, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_1);
+define_eval_accessor!(pawn_enemy_king_dist_2, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_2);
+define_eval_accessor!(pawn_enemy_king_dist_3, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_3);
+define_eval_accessor!(pawn_enemy_king_dist_4, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_4);
+define_eval_accessor!(pawn_enemy_king_dist_5, crate::evaluation::base::DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_5);
+define_eval_accessor!(passed_friendly_king_dist_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_0);
+define_eval_accessor!(passed_friendly_king_dist_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_1);
+define_eval_accessor!(passed_friendly_king_dist_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_2);
+define_eval_accessor!(passed_friendly_king_dist_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_3);
+define_eval_accessor!(passed_friendly_king_dist_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_4);
+define_eval_accessor!(passed_friendly_king_dist_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_5);
+define_eval_accessor!(passed_enemy_king_dist_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_0);
+define_eval_accessor!(passed_enemy_king_dist_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_1);
+define_eval_accessor!(passed_enemy_king_dist_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_2);
+define_eval_accessor!(passed_enemy_king_dist_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_3);
+define_eval_accessor!(passed_enemy_king_dist_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_4);
+define_eval_accessor!(passed_enemy_king_dist_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_5);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_0);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_1);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_2);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_3);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_4);
+define_eval_accessor!(passed_pawn_adv_bonus_0_0_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_5);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_0);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_1);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_2);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_3);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_4);
+define_eval_accessor!(passed_pawn_adv_bonus_0_1_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_5);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_0);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_1);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_2);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_3);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_4);
+define_eval_accessor!(passed_pawn_adv_bonus_1_0_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_5);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_0, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_0);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_1, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_1);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_2, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_2);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_3, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_3);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_4, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_4);
+define_eval_accessor!(passed_pawn_adv_bonus_1_1_5, crate::evaluation::base::DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5);
+
+#[inline]
+pub fn candidate_passer_bonus() -> [i32; 6] {
+    [candidate_passer_bonus_0(), candidate_passer_bonus_1(), candidate_passer_bonus_2(), candidate_passer_bonus_3(), candidate_passer_bonus_4(), candidate_passer_bonus_5()]
+}
+
+#[inline]
+pub fn pawn_friendly_king_dist() -> [i32; 6] {
+    [pawn_friendly_king_dist_0(), pawn_friendly_king_dist_1(), pawn_friendly_king_dist_2(), pawn_friendly_king_dist_3(), pawn_friendly_king_dist_4(), pawn_friendly_king_dist_5()]
+}
+
+#[inline]
+pub fn pawn_enemy_king_dist() -> [i32; 6] {
+    [pawn_enemy_king_dist_0(), pawn_enemy_king_dist_1(), pawn_enemy_king_dist_2(), pawn_enemy_king_dist_3(), pawn_enemy_king_dist_4(), pawn_enemy_king_dist_5()]
+}
+
+#[inline]
+pub fn passed_friendly_king_dist() -> [i32; 6] {
+    [passed_friendly_king_dist_0(), passed_friendly_king_dist_1(), passed_friendly_king_dist_2(), passed_friendly_king_dist_3(), passed_friendly_king_dist_4(), passed_friendly_king_dist_5()]
+}
+
+#[inline]
+pub fn passed_enemy_king_dist() -> [i32; 6] {
+    [passed_enemy_king_dist_0(), passed_enemy_king_dist_1(), passed_enemy_king_dist_2(), passed_enemy_king_dist_3(), passed_enemy_king_dist_4(), passed_enemy_king_dist_5()]
+}
+
+#[inline]
+pub fn passed_pawn_adv_bonus() -> [[[i32; 6]; 2]; 2] {
+    [
+    [
+        [passed_pawn_adv_bonus_0_0_0(), passed_pawn_adv_bonus_0_0_1(), passed_pawn_adv_bonus_0_0_2(), passed_pawn_adv_bonus_0_0_3(), passed_pawn_adv_bonus_0_0_4(), passed_pawn_adv_bonus_0_0_5()],
+        [passed_pawn_adv_bonus_0_1_0(), passed_pawn_adv_bonus_0_1_1(), passed_pawn_adv_bonus_0_1_2(), passed_pawn_adv_bonus_0_1_3(), passed_pawn_adv_bonus_0_1_4(), passed_pawn_adv_bonus_0_1_5()],
+    ],
+    [
+        [passed_pawn_adv_bonus_1_0_0(), passed_pawn_adv_bonus_1_0_1(), passed_pawn_adv_bonus_1_0_2(), passed_pawn_adv_bonus_1_0_3(), passed_pawn_adv_bonus_1_0_4(), passed_pawn_adv_bonus_1_0_5()],
+        [passed_pawn_adv_bonus_1_1_0(), passed_pawn_adv_bonus_1_1_1(), passed_pawn_adv_bonus_1_1_2(), passed_pawn_adv_bonus_1_1_3(), passed_pawn_adv_bonus_1_1_4(), passed_pawn_adv_bonus_1_1_5()],
+    ],
+    ]
+}
 
 #[inline]
 pub fn queen_value() -> i32 {
