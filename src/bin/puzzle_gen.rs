@@ -31,6 +31,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // annotation scale
@@ -204,6 +205,7 @@ impl Default for Scan {
     }
 }
 
+#[derive(Clone)]
 struct Cfg {
     scan: Scan,
     corpus: Vec<PathBuf>,
@@ -374,7 +376,11 @@ fn print_help() {
   --dry-run             stages 0-1 only, print candidate stats
 
 Rows are appended as they are found and every processed candidate is recorded in
-<out>.progress, so re-running the same command resumes instead of redoing work."
+<out>.progress, so re-running the same command resumes instead of redoing work.
+--recook and --deep-verify checkpoint the same way, into <out>.recook.jsonl and
+<out>.deepverify.jsonl: a killed or stalled pass resumes rather than restarting,
+and each candidate's search is abandoned (not left to block the batch) if it runs
+well past its time budget. --fresh clears these checkpoints too."
     );
 }
 
@@ -569,7 +575,10 @@ fn scan_game(
         if cands.len() >= max_per_game {
             break;
         }
-        if cands.iter().all(|k| k.ply.abs_diff(c.ply) >= sc.min_ply_gap) {
+        if cands
+            .iter()
+            .all(|k| k.ply.abs_diff(c.ply) >= sc.min_ply_gap)
+        {
             cands.push(c);
         }
     }
@@ -613,9 +622,11 @@ fn scan(cfg: &Cfg) -> Vec<GameRec> {
     println!("stage 0: scanning {} corpus files", files.len());
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
-        ProgressStyle::with_template("  [{elapsed_precise}] [{bar:32.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
+        ProgressStyle::with_template(
+            "  [{elapsed_precise}] [{bar:32.cyan/blue}] {pos}/{len} {msg}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
     );
 
     let recs: Vec<GameRec> = files
@@ -790,7 +801,15 @@ fn replay(rec: &GameRec) -> Vec<Candidate> {
 /// Soft limit at `cap_ms` so whole depths complete, hard ceiling at 4x so a single
 /// dense position cannot run for minutes and strand its variant batch on one core.
 fn mpv(st: &mut GameState, depth: usize, cap_ms: u128, lines: usize) -> search::MultiPVResult {
-    search::get_best_moves_multipv(st, depth, cap_ms, cap_ms.saturating_mul(4), lines, true, true)
+    search::get_best_moves_multipv(
+        st,
+        depth,
+        cap_ms,
+        cap_ms.saturating_mul(4),
+        lines,
+        true,
+        true,
+    )
 }
 
 /// Fully legal moves. `get_legal_moves` is pseudo-legal and keeps the slider
@@ -887,7 +906,11 @@ mod rej {
         ];
         println!("\nmate lines stopped because:");
         for i in 0..5 {
-            println!("  {:<24}{:>7}", STOP[i], MATE_STOP[i].load(Ordering::Relaxed));
+            println!(
+                "  {:<24}{:>7}",
+                STOP[i],
+                MATE_STOP[i].load(Ordering::Relaxed)
+            );
         }
 
         const NAMES: [&str; N] = [
@@ -905,10 +928,17 @@ mod rej {
             println!("  {:<26}{:>7}", NAMES[i], COUNTS[i].load(Ordering::Relaxed));
         }
         println!("  by source:");
-        for (i, n) in ["turning_point", "mate_shot", "missed_save"].iter().enumerate() {
+        for (i, n) in ["turning_point", "mate_shot", "missed_save"]
+            .iter()
+            .enumerate()
+        {
             let ok = SRC_OK[i].load(Ordering::Relaxed);
             let seen = SRC_SEEN[i].load(Ordering::Relaxed) + ok;
-            let pct = if seen > 0 { 100.0 * ok as f64 / seen as f64 } else { 0.0 };
+            let pct = if seen > 0 {
+                100.0 * ok as f64 / seen as f64
+            } else {
+                0.0
+            };
             println!("    {n:<16}{seen:>7} seen{ok:>7} kept  {pct:>5.1}%");
         }
         println!("  runner-up score at the root (puzzle needs this below HELD_CP):");
@@ -935,7 +965,12 @@ struct Cooked {
     defender_replies: Vec<usize>,
 }
 
-fn cook(st: &mut GameState, winner: PlayerColor, looking_for_mate: bool, cfg: &Cfg) -> Option<Cooked> {
+fn cook(
+    st: &mut GameState,
+    winner: PlayerColor,
+    looking_for_mate: bool,
+    cfg: &Cfg,
+) -> Option<Cooked> {
     let mut line: Vec<Move> = Vec::new();
     let mut defender_replies = Vec::new();
     // Trailing winner moves with no alternative are filler, not part of the puzzle.
@@ -1016,9 +1051,10 @@ fn cook(st: &mut GameState, winner: PlayerColor, looking_for_mate: bool, cfg: &C
                 }
                 let undo = st.make_move(&l.mv);
                 let a = mpv(st, cfg.verify_depth, cfg.cap_ms, 2);
-                let forced = a.lines.first().is_some_and(|b| {
-                    valid_attack(b.score, a.lines.get(1).map(|x| x.score))
-                });
+                let forced = a
+                    .lines
+                    .first()
+                    .is_some_and(|b| valid_attack(b.score, a.lines.get(1).map(|x| x.score)));
                 st.undo_move(&l.mv, undo);
                 if forced {
                     choice = l.mv;
@@ -1294,7 +1330,10 @@ fn parse_coord(s: &str) -> Option<Coordinate> {
     let s = s.split('=').next()?;
     let (x, y) = s.split_once(',')?;
     let y = y.trim_matches(|c| c == '+' || c == '!' || c == '#' || c == '?');
-    Some(Coordinate::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+    Some(Coordinate::new(
+        x.trim().parse().ok()?,
+        y.trim().parse().ok()?,
+    ))
 }
 
 fn chebyshev(a: Coordinate, b: Coordinate) -> i64 {
@@ -1736,7 +1775,89 @@ fn spawn_writer(out: PathBuf, prog: PathBuf, rx: mpsc::Receiver<Emit>) -> thread
 /// forced mate at all -- the cook truncates a line as soon as two moves both mate,
 /// so a mate in 4 can end up recorded as a quiet material win and miss the mate
 /// discount -- and a final check that the stored answer is still the unique one.
+/// Runs `f` on a fresh OS thread and waits up to `dur`. `check_time`'s hard-limit
+/// polling has not proven reliable on every position this engine's own movegen can
+/// produce -- a `--deep-verify` pass has stalled for hours on a single candidate
+/// with 15 of 16 cores idle. This is the backstop: past the deadline the candidate
+/// is abandoned (its thread keeps running until process exit, but no longer blocks
+/// its batch) and treated as a failure rather than holding up everything behind it.
+fn with_hard_timeout<T: Send + 'static>(
+    dur: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(dur).ok()
+}
+
+/// Append-only JSONL cache keyed by `position_icn`, so an expensive pass
+/// (`--deep-verify`, `--recook`) can resume after a kill instead of restarting.
+/// On load, the LAST entry per key wins, so a resumed run's fresh results
+/// naturally supersede a stale line without any explicit invalidation.
+struct Checkpoint<T> {
+    done: FxHashMap<String, T>,
+    writer: Mutex<BufWriter<fs::File>>,
+}
+
+impl<T: Serialize + serde::de::DeserializeOwned + Clone> Checkpoint<T> {
+    fn open(path: PathBuf) -> Self {
+        let mut done = FxHashMap::default();
+        if let Ok(f) = fs::File::open(&path) {
+            for line in BufReader::new(f).lines().map_while(Result::ok) {
+                if let Ok((k, v)) = serde_json::from_str::<(String, T)>(&line) {
+                    done.insert(k, v);
+                }
+            }
+        }
+        let f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("failed to open checkpoint file");
+        Self {
+            done,
+            writer: Mutex::new(BufWriter::new(f)),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&T> {
+        self.done.get(key)
+    }
+
+    fn record(&self, key: &str, value: &T) {
+        let line = serde_json::to_string(&(key, value)).expect("checkpoint value must serialize");
+        let mut w = self.writer.lock().unwrap();
+        let _ = writeln!(w, "{line}");
+        let _ = w.flush();
+    }
+}
+
+fn checkpoint_path(out: &Path, tag: &str) -> PathBuf {
+    let mut p = out.to_path_buf();
+    let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("csv");
+    p.set_extension(format!("{ext}.{tag}.jsonl"));
+    p
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct DeepVerifyResult {
+    mate_in: i32,
+    deep_eval: i32,
+    verified: bool,
+}
+
 fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
+    let ckpt: Checkpoint<DeepVerifyResult> =
+        Checkpoint::open(checkpoint_path(&cfg.out, "deepverify"));
+    if !ckpt.done.is_empty() {
+        println!(
+            "  resuming deep verify: {} candidates already checked",
+            ckpt.done.len()
+        );
+    }
+
     let mut by_variant: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
     for (i, p) in puzzles.iter().enumerate() {
         by_variant.entry(p.variant.as_str()).or_default().push(i);
@@ -1751,63 +1872,120 @@ fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
 
     let pb = ProgressBar::new(puzzles.len() as u64);
     pb.set_style(
-        ProgressStyle::with_template("  deep verify [{elapsed_precise}] [{bar:28.green/blue}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=>-"),
+        ProgressStyle::with_template(
+            "  deep verify [{elapsed_precise}] [{bar:28.green/blue}] {pos}/{len}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
     );
-    let results: Mutex<Vec<(usize, i32, i32, bool)>> = Mutex::new(Vec::new());
+    pb.inc(ckpt.done.len() as u64);
+    let results: Mutex<Vec<(usize, DeepVerifyResult)>> = Mutex::new(Vec::new());
+    let hard_deadline = Duration::from_millis(cfg.deep_cap_ms as u64 * 6);
 
     for (v, idx) in groups {
         let b = v.get_default_bounds();
         apeiron::moves::set_world_bounds(b.0, b.1, b.2, b.3);
         idx.par_iter().for_each(|&i| {
             let p = &puzzles[i];
-            let mut st = GameState::new();
-            st.setup_position_from_icn(&p.position_icn);
-            forget_history(&mut st);
-            let r = mpv(&mut st, cfg.deep_depth, cfg.deep_cap_ms, 2);
-            let out = match r.lines.first() {
-                None => (i, 0, 0, false),
-                Some(best) => {
-                    let mate_in = if search::is_win(best.score) {
-                        (search::MATE_VALUE - best.score + 1) / 2
-                    } else {
-                        0
-                    };
-                    let second = r.lines.get(1).map(|l| l.score);
-                    let first_ok = p
-                        .solution_moves
-                        .split_whitespace()
-                        .next()
-                        .is_some_and(|m| m == move_to_icn(&best.mv));
-                    (i, mate_in, best.score, first_ok && valid_attack(best.score, second))
+            if let Some(cached) = ckpt.get(&p.position_icn) {
+                results.lock().unwrap().push((i, cached.clone()));
+                pb.inc(1);
+                return;
+            }
+            let icn = p.position_icn.clone();
+            let sol = p.solution_moves.clone();
+            let depth = cfg.deep_depth;
+            let cap = cfg.deep_cap_ms;
+            let out = with_hard_timeout(hard_deadline, move || {
+                let mut st = GameState::new();
+                st.setup_position_from_icn(&icn);
+                forget_history(&mut st);
+                let r = mpv(&mut st, depth, cap, 2);
+                match r.lines.first() {
+                    None => DeepVerifyResult {
+                        mate_in: 0,
+                        deep_eval: 0,
+                        verified: false,
+                    },
+                    Some(best) => {
+                        let mate_in = if search::is_win(best.score) {
+                            (search::MATE_VALUE - best.score + 1) / 2
+                        } else {
+                            0
+                        };
+                        let second = r.lines.get(1).map(|l| l.score);
+                        let first_ok = sol
+                            .split_whitespace()
+                            .next()
+                            .is_some_and(|m| m == move_to_icn(&best.mv));
+                        DeepVerifyResult {
+                            mate_in,
+                            deep_eval: best.score,
+                            verified: first_ok && valid_attack(best.score, second),
+                        }
+                    }
                 }
-            };
-            results.lock().unwrap().push(out);
+            })
+            .unwrap_or_else(|| {
+                // Abandoned past the hard deadline. Not proof the puzzle is bad, but
+                // a position this engine cannot search in bounded time is not one to
+                // ship unverified either.
+                pb.suspend(|| eprintln!("  ! timed out, dropping: {}", p.position_icn));
+                DeepVerifyResult {
+                    mate_in: 0,
+                    deep_eval: 0,
+                    verified: false,
+                }
+            });
+            ckpt.record(&p.position_icn, &out);
+            results.lock().unwrap().push((i, out));
             pb.inc(1);
         });
     }
     pb.finish_and_clear();
 
     let (mut mates, mut failed) = (0usize, 0usize);
-    for (i, mate_in, score, ok) in results.into_inner().unwrap() {
-        puzzles[i].mate_in = mate_in;
-        puzzles[i].deep_eval = score;
-        puzzles[i].verified = ok;
-        if mate_in > 0 {
+    for (i, r) in results.into_inner().unwrap() {
+        puzzles[i].mate_in = r.mate_in;
+        puzzles[i].deep_eval = r.deep_eval;
+        puzzles[i].verified = r.verified;
+        if r.mate_in > 0 {
             mates += 1;
         }
-        if !ok {
+        if !r.verified {
             failed += 1;
         }
     }
+    // Left on disk deliberately, same as generation's `.progress` file: the CSV
+    // write can still fail (a locked file has happened before), and only `--fresh`
+    // should throw away work that might not have made it to disk yet.
     (mates, failed)
 }
 
 /// Rebuilds every stored puzzle's line from its own position, with the smarter
 /// defence. Cheap next to generation because the candidate hunt is already done:
 /// only the cook re-runs. Lines usually get longer, never less forced.
+#[derive(Serialize, Deserialize, Clone)]
+struct RecookResult {
+    solution_moves: String,
+    solution_plies: usize,
+    ends_in_mate: bool,
+    final_eval: i32,
+    shallow_rank: usize,
+    only_move_margin: f64,
+    mean_defender_replies: f64,
+}
+
 fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
+    let ckpt: Checkpoint<Option<RecookResult>> =
+        Checkpoint::open(checkpoint_path(&cfg.out, "recook"));
+    if !ckpt.done.is_empty() {
+        println!(
+            "  resuming recook: {} puzzles already rebuilt",
+            ckpt.done.len()
+        );
+    }
+
     let mut by_variant: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
     for (i, p) in puzzles.iter().enumerate() {
         by_variant.entry(p.variant.as_str()).or_default().push(i);
@@ -1828,40 +2006,49 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
         .unwrap()
         .progress_chars("=>-"),
     );
-    let out: Mutex<Vec<(usize, Option<Cooked>)>> = Mutex::new(Vec::new());
+    pb.inc(ckpt.done.len() as u64);
+    let out: Mutex<Vec<(usize, Option<RecookResult>)>> = Mutex::new(Vec::new());
+    // Cooking a long line can chase many multi-PV searches; give it real room, but
+    // not unbounded room -- the same stall class hit deep_verify.
+    let hard_deadline = Duration::from_millis(cfg.budget_ms * 3);
 
     for (v, idx) in groups {
         let b = v.get_default_bounds();
         apeiron::moves::set_world_bounds(b.0, b.1, b.2, b.3);
         idx.par_iter().for_each(|&i| {
-            let icn = &puzzles[i].position_icn;
-            let mut st = GameState::new();
-            st.setup_position_from_icn(icn);
-            forget_history(&mut st);
-            let winner = st.turn;
-            let looking_for_mate = puzzles[i].mate_in > 0 || puzzles[i].ends_in_mate;
-            let c = cook(&mut st, winner, looking_for_mate, cfg);
-            out.lock().unwrap().push((i, c));
-            pb.inc(1);
-        });
-    }
-    pb.finish_and_clear();
-
-    let (mut longer, mut kept) = (0usize, 0usize);
-    for (i, c) in out.into_inner().unwrap() {
-        match c {
-            Some(c) => {
-                if c.line.len() > puzzles[i].solution_plies {
-                    longer += 1;
-                }
-                puzzles[i].solution_moves =
-                    c.line.iter().map(move_to_icn).collect::<Vec<_>>().join(" ");
-                puzzles[i].solution_plies = c.line.len();
-                puzzles[i].ends_in_mate = c.ends_in_mate;
-                puzzles[i].final_eval = c.final_score;
-                puzzles[i].shallow_rank = c.shallow_rank;
-                puzzles[i].only_move_margin = (c.root_margin * 1000.0).round() / 1000.0;
-                puzzles[i].mean_defender_replies = if c.defender_replies.is_empty() {
+            let p = &puzzles[i];
+            if let Some(cached) = ckpt.get(&p.position_icn) {
+                out.lock().unwrap().push((i, cached.clone()));
+                pb.inc(1);
+                return;
+            }
+            let icn = p.position_icn.clone();
+            let looking_for_mate = p.mate_in > 0 || p.ends_in_mate;
+            let cfg_owned = cfg.clone();
+            let r = with_hard_timeout(hard_deadline, move || {
+                let mut st = GameState::new();
+                st.setup_position_from_icn(&icn);
+                forget_history(&mut st);
+                let winner = st.turn;
+                cook(&mut st, winner, looking_for_mate, &cfg_owned)
+            })
+            .unwrap_or_else(|| {
+                pb.suspend(|| {
+                    eprintln!(
+                        "  ! recook timed out, keeping prior line: {}",
+                        p.position_icn
+                    )
+                });
+                None
+            })
+            .map(|c| RecookResult {
+                solution_moves: c.line.iter().map(move_to_icn).collect::<Vec<_>>().join(" "),
+                solution_plies: c.line.len(),
+                ends_in_mate: c.ends_in_mate,
+                final_eval: c.final_score,
+                shallow_rank: c.shallow_rank,
+                only_move_margin: (c.root_margin * 1000.0).round() / 1000.0,
+                mean_defender_replies: if c.defender_replies.is_empty() {
                     0.0
                 } else {
                     (c.defender_replies.iter().sum::<usize>() as f64
@@ -1869,12 +2056,33 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
                         * 10.0)
                         .round()
                         / 10.0
-                };
+                },
+            });
+            ckpt.record(&p.position_icn, &r);
+            out.lock().unwrap().push((i, r));
+            pb.inc(1);
+        });
+    }
+    pb.finish_and_clear();
+
+    let (mut longer, mut kept) = (0usize, 0usize);
+    for (i, r) in out.into_inner().unwrap() {
+        match r {
+            Some(r) => {
+                if r.solution_plies > puzzles[i].solution_plies {
+                    longer += 1;
+                }
+                puzzles[i].solution_moves = r.solution_moves;
+                puzzles[i].solution_plies = r.solution_plies;
+                puzzles[i].ends_in_mate = r.ends_in_mate;
+                puzzles[i].final_eval = r.final_eval;
+                puzzles[i].shallow_rank = r.shallow_rank;
+                puzzles[i].only_move_margin = r.only_move_margin;
+                puzzles[i].mean_defender_replies = r.mean_defender_replies;
             }
-            // A re-cook can fail two ways: the reply it now prefers runs into a
-            // repetition, or the root fails the only-move test at cook depth. Neither
-            // says the puzzle is unsound -- the stored line already passed at depth
-            // 20, which is deeper. So keep what we had rather than throwing it away.
+            // A re-cook can fail (repetition, root no longer only-move at cook depth,
+            // or a timeout) without the puzzle being unsound -- the stored line
+            // already passed at depth 20, which is deeper. Keep what we had.
             None => kept += 1,
         }
     }
@@ -2027,7 +2235,10 @@ fn finalize_ratings(path: &Path, cfg: &Cfg) -> Vec<PuzzleRecord> {
     if cfg.deep_verify || cfg.recook {
         let before = puzzles.len();
         puzzles.retain(|p| p.verified);
-        println!("dropped {} unsound or repeating puzzles", before - puzzles.len());
+        println!(
+            "dropped {} unsound or repeating puzzles",
+            before - puzzles.len()
+        );
     }
     // Two candidates can rewind onto the same root, which the pre-rewind hash dedup
     // cannot see. Collapse them here, keeping the longest solution found.
@@ -2055,7 +2266,10 @@ fn finalize_ratings(path: &Path, cfg: &Cfg) -> Vec<PuzzleRecord> {
     // Rename is atomic but fails outright if anything holds the file open (a
     // spreadsheet, typically), so fall back to writing through it in place.
     if let Err(e) = fs::rename(&tmp, path) {
-        eprintln!("note: could not replace {} ({e}); writing in place", path.display());
+        eprintln!(
+            "note: could not replace {} ({e}); writing in place",
+            path.display()
+        );
         let mut w = csv::Writer::from_path(path).expect("failed to open output CSV");
         for p in &puzzles {
             w.serialize(p).expect("failed to serialize puzzle");
@@ -2113,7 +2327,11 @@ fn position_to_icn(st: &GameState, start_icn: &str) -> String {
     } else {
         String::new()
     };
-    let turn = if st.turn == PlayerColor::White { "w" } else { "b" };
+    let turn = if st.turn == PlayerColor::White {
+        "w"
+    } else {
+        "b"
+    };
     let limit = st.game_rules.move_rule_limit.unwrap_or(100);
 
     let mut pieces: Vec<_> = st.board.iter().collect();
@@ -2134,7 +2352,10 @@ fn position_to_icn(st: &GameState, start_icn: &str) -> String {
         .collect::<Vec<_>>()
         .join("|");
 
-    let head = format!("{turn} {}/{limit} {}", st.halfmove_clock, st.fullmove_number);
+    let head = format!(
+        "{turn} {}/{limit} {}",
+        st.halfmove_clock, st.fullmove_number
+    );
     if middle.is_empty() {
         format!("{head} {pieces_str}")
     } else {
@@ -2380,6 +2601,8 @@ fn main() {
     if cfg.fresh {
         let _ = fs::remove_file(&cfg.out);
         let _ = fs::remove_file(progress_path(&cfg.out));
+        let _ = fs::remove_file(checkpoint_path(&cfg.out, "deepverify"));
+        let _ = fs::remove_file(checkpoint_path(&cfg.out, "recook"));
     }
     if cfg.rate_only {
         let puzzles = finalize_ratings(&cfg.out, &cfg);
@@ -2457,7 +2680,11 @@ fn main() {
             continue;
         }
         if cfg.dry_run {
-            println!("  {:<22} {:>6} unique candidate positions", v.to_str(), cands.len());
+            println!(
+                "  {:<22} {:>6} unique candidate positions",
+                v.to_str(),
+                cands.len()
+            );
             done.fetch_add(cands.len(), Ordering::Relaxed);
             continue;
         }
@@ -2539,7 +2766,10 @@ fn report(puzzles: &[PuzzleRecord], out: &Path) {
         }
     }
     println!("\n{} puzzles written to {}", puzzles.len(), out.display());
-    println!("  mate puzzles: {mates}   tactical: {}", puzzles.len() - mates);
+    println!(
+        "  mate puzzles: {mates}   tactical: {}",
+        puzzles.len() - mates
+    );
     println!(
         "  rating bands: <1000 {} | 1000-1399 {} | 1400-1799 {} | 1800-2199 {} | 2200+ {}",
         bands[0], bands[1], bands[2], bands[3], bands[4]
