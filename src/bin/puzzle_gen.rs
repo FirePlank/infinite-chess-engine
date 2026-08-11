@@ -1130,6 +1130,8 @@ fn depth_to_find(st: &mut GameState, solution: Move, cfg: &Cfg) -> usize {
 #[derive(Default)]
 struct Features {
     shallow_rank: usize,
+    /// Effective work in the line: sum of per-move find-difficulty, not ply count.
+    calc_load: f64,
     depth_to_find: usize,
     margin: f64,
     plies: usize,
@@ -1198,6 +1200,8 @@ const ACTION_RADIUS: i64 = 6;
 /// generation and `--refresh` so a retune reproduces the original numbers exactly.
 struct BoardFeats {
     pieces: u32,
+    /// Summed per-move find-difficulty over the solver moves.
+    calc_load: f64,
     /// Pieces that actually bear on the tactic: near the squares the solution
     /// touches, or lined up on them from a distance. A board carrying forty pawns
     /// twenty squares away is not forty pawns harder to read.
@@ -1246,6 +1250,8 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
     seen.insert(st.hash);
     let (mut forcing_moves, mut solver_moves) = (0usize, 0usize);
     let mut fairy_used: f64 = 0.0;
+    let mut calc_load: f64 = 0.0;
+    let mut prev_capture: Option<Coordinate> = None;
 
     for (k, mv) in solution.iter().enumerate() {
         let from = mv.split_once('>').and_then(|(f, _)| parse_coord(f));
@@ -1269,13 +1275,17 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
 
         // Guards against a movegen change invalidating a stored line, not just
         // against a bad parse.
-        if !legal_moves(&mut st).iter().any(|m| move_to_icn(m) == *mv) {
-            return None;
+        let legal_here = legal_moves(&mut st);
+        let chosen = legal_here.iter().find(|m| move_to_icn(m) == *mv).copied()?;
+        if solver {
+            calc_load += move_find_difficulty(&st, &chosen, prev_capture, legal_here.len());
         }
+        let capture_sq = captured.then_some(chosen.to);
         let (to, _) = apply_icn_move(&mut st, mv)?;
         if !seen.insert(st.hash) {
             return None;
         }
+        prev_capture = capture_sq;
         if solver {
             action.push(to);
             solver_moves += 1;
@@ -1316,6 +1326,7 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
 
     Some(BoardFeats {
         pieces,
+        calc_load,
         relevant,
         fairy_used,
         fairy_present,
@@ -1361,47 +1372,66 @@ fn chebyshev(a: Coordinate, b: Coordinate) -> i64 {
 fn puzzle_rating(f: &Features) -> i32 {
     let n = |v: f64, hi: f64| (v / hi).clamp(0.0, 1.0);
     let forcing = f.forcing.clamp(0.0, 1.0);
+    let fairy_used = f.fairy_used.clamp(0.0, 1.0);
 
     // Forcing only makes a line cheap if you can see the moves at a glance. A
     // sequence of huygen jumps has to be verified square by square, so an exotic
     // key piece takes most of that discount back.
-    let eff_forcing = forcing * (1.0 - 0.50 * f.fairy_used.clamp(0.0, 1.0));
-    // How much has to be calculated. 0.45, not 0.60: forcing shortens the work but
-    // every move still has to be checked, and over-discounting put forced mates in
-    // 3 below mates in 2.
-    let depth = f.plies.max(f.mate_plies);
-    let eff_plies = depth.saturating_sub(1) as f64 * (1.0 - 0.45 * eff_forcing);
-    let calc = n(eff_plies, 6.0);
+    let eff_forcing = forcing * (1.0 - 0.50 * fairy_used);
+
+    // What actually has to be worked out. `calc_load` sums how hard each solver
+    // move is to FIND, so a line whose tail only collects material the first move
+    // already won counts as the one idea it is. Ply count is kept solely as a floor
+    // for deep-verified mates, whose recorded line can stop short of the mate.
+    // A deep-verified mate whose recorded line stops short still has to be seen
+    // through, but the tail of a forced mate is nearly all checks, so it is far
+    // cheaper per ply than a move that has to be found -- and the solver only plays
+    // the moves actually stored. Capped, or a mate-in-9 shown as a one-mover
+    // saturates the whole calc term on plies nobody is asked to play.
+    let mate_tail = (f.mate_plies.saturating_sub(f.plies) as f64 * 0.20).min(2.0);
+    let load = f.calc_load + mate_tail;
+    // 5.5, not 4: the longest genuinely hard lines run past four hard moves, and a
+    // lower ceiling flattened them all onto the same rating.
+    let calc = n(load, 5.5);
+
     // How invisible the key move is. Engine-centric, and it can read zero on a
-    // position humans find hard, so it no longer dominates the scale.
-    let obscure = 0.60 * n(f.shallow_rank as f64, 10.0)
-        + 0.40 * n(f.depth_to_find.saturating_sub(2) as f64, 12.0);
-    // How much board the solver has to hold in their head. Exotic pieces count for
-    // most when the solution uses one, but a huygen merely sitting there still
-    // warps what is possible, and `fairy_present` is complexity-weighted so a
-    // huygen or knightrider counts far above a chancellor.
-    let complex = 0.55 * n(f.relevant as f64, 45.0)
-        + 0.25 * f.fairy_used.clamp(0.0, 1.0)
-        + 0.20 * n(f.fairy_present, 2.0);
+    // position humans find hard, so it no longer dominates the scale. Damped by how
+    // much there is to find: an invisible move is still only one move, and paying
+    // this in full regardless of length put one-movers level with nine-ply
+    // combinations.
+    let obscure = (0.60 * n(f.shallow_rank as f64, 10.0)
+        + 0.40 * n(f.depth_to_find.saturating_sub(2) as f64, 12.0))
+        * (0.50 + 0.50 * calc);
+
+    // How much board the solver has to hold in their head. Every normalizer here
+    // used to saturate on any crowded fairy board -- `relevant` past 45 and
+    // `fairy_present` past 2.0 are the norm, not the exception -- so the term paid
+    // out in full to almost everything and stopped separating anything. It also
+    // only counts once the solution is actually hard: an obvious move is obvious on
+    // a busy board too, which is what let mere fairy presence buy a 2000+ rating.
+    let raw_complex =
+        0.55 * n(f.relevant as f64, 110.0) + 0.25 * fairy_used + 0.20 * n(f.fairy_present, 4.0);
+    let complex = raw_complex * (0.35 + 0.65 * calc);
+
     // How exactly it has to be played.
     let precision = 0.50 * (1.0 - n(f.margin, 1.4)) + 0.50 * n(f.mean_replies, 30.0);
-    // Red herrings: how many moves actually have to be looked at. When the answer
-    // is forcing the solver scans only checks and captures -- but on a crowded
-    // board that is still a long list, so count it rather than zeroing it out.
-    // Scaled by depth as well: sifting fifty candidates is only expensive when each
-    // one has to be calculated out. For a mate in 1 you glance at the checks and
-    // you are done, so a crowded board must not inflate it.
+
+    // Red herrings: how many moves actually have to be looked at. On an unbounded
+    // board the legal-move count is in the hundreds for every position, so a linear
+    // normalizer pinned this at maximum every time; it needs a log scale to say
+    // anything, and like `complex` it only matters when the moves have to be
+    // calculated rather than glanced at.
     let candidates =
         eff_forcing * f.root_forcing as f64 + (1.0 - eff_forcing) * f.root_moves as f64;
-    let branching = n(candidates, 50.0) * n(depth as f64, 3.0);
+    let branching = n((candidates.max(1.0)).log2() / 9.0, 1.0) * calc;
 
-    let r = 640.0
-        + 660.0 * calc
-        + 460.0 * obscure
-        + 620.0 * complex
-        + 300.0 * branching
-        + 260.0 * precision
-        + 180.0 * if f.quiet_key { 1.0 } else { 0.0 }
+    let r = 560.0
+        + 1500.0 * calc
+        + 420.0 * obscure
+        + 330.0 * complex
+        + 170.0 * branching
+        + 240.0 * precision
+        + 170.0 * if f.quiet_key { 1.0 } else { 0.0 }
         + 120.0 * n(f.sacrifice as f64, 900.0)
         - 120.0 * eff_forcing
         - 100.0 * if f.ends_in_mate { 1.0 } else { 0.0 };
@@ -1470,6 +1500,88 @@ fn checkers(st: &GameState) -> usize {
                 )
         })
         .count()
+}
+
+/// How many pieces of `side` bear on `sq`. Used to tell a free capture from a real
+/// one: taking an undefended piece needs no calculation, taking a defended one does.
+fn attackers_of(st: &GameState, sq: Coordinate, side: PlayerColor) -> usize {
+    st.board
+        .iter()
+        .filter(|(ax, ay, p)| {
+            p.color() == side
+                && !(*ax == sq.x && *ay == sq.y)
+                && apeiron::moves::is_piece_attacking_square(
+                    &st.board,
+                    p,
+                    &Coordinate::new(*ax, *ay),
+                    &sq,
+                    &st.spatial_indices,
+                    &st.game_rules,
+                )
+        })
+        .count()
+}
+
+/// How hard one solver move is to FIND, from 0 (writes itself) to ~1.2 (has to be
+/// seen). Raw ply count treats every move alike, which is what lets a line rate as
+/// long when its tail is just collecting the material the first move already won --
+/// the skewer whose follow-up is "take the other one" is three plies but one idea.
+///
+/// `st` is the position before the move; `prev_capture` is where the opponent just
+/// captured, if they did.
+fn move_find_difficulty(
+    st: &GameState,
+    mv: &Move,
+    prev_capture: Option<Coordinate>,
+    legal_here: usize,
+) -> f64 {
+    // Nothing to find when there is nothing to choose between.
+    if legal_here <= 1 {
+        return 0.0;
+    }
+
+    let mover = mv.piece.color();
+    let victim = st.board.get_piece(mv.to.x, mv.to.y);
+    let is_cap = victim.is_some();
+    let gives_check = {
+        let mut probe = st.clone();
+        probe.make_move(mv);
+        probe.is_in_check()
+    };
+
+    // Recapturing on the square just vacated by an enemy capture is the first move
+    // any solver looks at.
+    if is_cap && prev_capture == Some(mv.to) {
+        return 0.15;
+    }
+
+    if let Some(v) = victim {
+        let vv = apeiron::evaluation::get_piece_value_base(v.piece_type());
+        let av = apeiron::evaluation::get_piece_value_base(mv.piece.piece_type());
+        let defended = attackers_of(st, mv.to, mover.opponent()) > 0;
+        if !defended && vv >= 250 {
+            // Free material. This is the "collect the loose piece" move that a fork
+            // or skewer has already won; finding it is not the puzzle.
+            return 0.20;
+        }
+        if !defended {
+            return 0.40;
+        }
+        if vv > av + 100 {
+            // Winning exchange on a defended square: still largely self-suggesting.
+            return 0.55;
+        }
+        if vv + 100 < av {
+            // Giving up material to take something smaller is a sacrifice, and those
+            // are exactly the moves that do not suggest themselves.
+            return 1.20;
+        }
+        return 0.85;
+    }
+
+    // Quiet moves carry the full load; a quiet move that also ignores the enemy's
+    // threats is the hardest thing in any puzzle.
+    if gives_check { 0.75 } else { 1.0 }
 }
 
 /// Counts enemy pieces the just-moved piece now hits that are worth hitting:
@@ -1705,6 +1817,16 @@ struct PuzzleRecord {
     /// What the annotation-only scan thought, before any search. Handy for
     /// re-tuning stage 0 without re-running the engine.
     scan_eval: i32,
+    /// Sum of per-move find-difficulty over the solver's moves, which is what the
+    /// rating measures instead of raw ply count: a move that recaptures or takes a
+    /// hanging piece scores near zero, so lines that "collect" after the real shot
+    /// no longer read as long.
+    #[serde(default)]
+    calc_load: f64,
+    /// Which generation run this row came from, so puzzles from different runs stay
+    /// distinguishable after merges.
+    #[serde(default)]
+    generated_date: String,
 }
 
 /// Rows stream to disk as they are found, so a stopped run keeps its work. The
@@ -2145,6 +2267,7 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
             p.fairy_count = (bf.fairy_used * 100.0).round() as usize;
             p.ends_in_mate = bf.ends_in_mate;
             p.forcing_pct = (bf.forcing * 100.0).round() as i32;
+            p.calc_load = (bf.calc_load * 100.0).round() / 100.0;
 
             // A position deep-verified as a forced mate is a mate puzzle even when
             // the recorded line stops short, so the themes have to say so.
@@ -2168,6 +2291,7 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
             }
 
             let feats = Features {
+                calc_load: bf.calc_load,
                 shallow_rank: p.shallow_rank,
                 depth_to_find: p.depth_to_find,
                 margin: p.only_move_margin,
@@ -2517,6 +2641,7 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
     }
 
     let feats = Features {
+        calc_load: bf.calc_load,
         shallow_rank: cooked.shallow_rank,
         depth_to_find: dtf,
         margin: cooked.root_margin,
@@ -2593,6 +2718,8 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
         deep_eval: 0,
         verified: false,
         scan_eval: cand.ann_score,
+        calc_load: bf.calc_load,
+        generated_date: String::new(),
     })
 }
 
