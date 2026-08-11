@@ -73,6 +73,7 @@ indicatif = { version = "0.18", optional = true }
 # For SPRT testing
 clap = { version = "4.5.60", features = ["derive"], optional = true }
 ctrlc = { version = "3.5", optional = true }
+regex = "1.13.1"
 
 [features]
 # MT (Lazy SMP) is on by default so a bare `wasm-pack build` ships the threaded engine.

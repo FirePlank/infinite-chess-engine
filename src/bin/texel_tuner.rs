@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apeiron::evaluation::{self, reset_eval_features, snapshot_eval_features};
 use apeiron::game::GameState;
 use clap::{Parser, Subcommand};
+use rand::{random_range};
+use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -54,7 +56,7 @@ enum Commands {
         cp_scale: f64,
 
         /// Minimum step size fraction of the initial step.
-        #[arg(long, default_value_t = 0.25)]
+        #[arg(long, default_value_t = 0.05)]
         min_step_fraction: f64,
 
         /// Print extra tuning information.
@@ -102,17 +104,76 @@ struct Output {
 fn parse_samples_from_games(values: Vec<String>, path: &PathBuf) -> Result<Vec<Sample>, String> {
     let mut samples = Vec::new();
     for (index, value) in values.into_iter().enumerate() {
-        samples.push(parse_sample_icn(&value, index + 1, path)?);
+        if let Some(sample) = parse_sample_icn(&value, index + 1, path)? {
+            samples.push(sample);
+        }
+    }
+
+    if samples.is_empty() {
+        return Err(format!(
+            "no quiet samples were found in {}",
+            path.display()
+        ));
     }
     Ok(samples)
 }
 
-fn parse_sample_icn(icn: &str, index: usize, path: &PathBuf) -> Result<Sample, String> {
+fn modify_icn_to_stop_at_random_move(icn: &str) -> String {
+    // Remove comments in the ICN to avoid parsing issues
+    let clean_icn = Regex::new(r"\{[^}]+\}")
+        .unwrap()
+        .replace_all(icn, "")
+        .to_string();
+
+    // Truncate the move sequence at a random move number greater than 12
+    let mut modified_icn = String::new();
+    for token in clean_icn.split_whitespace() {
+        if token.contains('>') || token.contains('x') {
+            // Parse move string
+            let mut move_count = 0;
+            let move_strs = token.split('|').collect::<Vec<_>>();
+            let random_move_number = random_range(13..=move_strs.len().max(13));
+            for move_str in move_strs {
+                move_count += 1;
+                if move_count > random_move_number {
+                    break;
+                }
+                if move_count > 1 {
+                    modified_icn.push('|');
+                }
+                modified_icn.push_str(move_str);
+            }
+        } else {
+            modified_icn.push_str(token);
+        }
+        modified_icn.push(' ');
+    }
+    modified_icn.trim_end().to_string()
+}
+
+fn parse_sample_icn(icn: &str, index: usize, path: &PathBuf) -> Result<Option<Sample>, String> {
     let result = parse_result_from_icn(icn).ok_or_else(|| {
         format!("missing or invalid result tag in ICN line in {} at line {}", path.display(), index)
     })?;
-    let features = compute_features_from_icn(icn)?;
-    Ok(Sample { result, features })
+
+    let mut attempts = 0;
+    while attempts < 3 {
+        // Modify the ICN to make it stop at a random move number
+        let modified_icn = modify_icn_to_stop_at_random_move(icn);
+
+        let mut game = GameState::new();
+        game.setup_position_from_icn(modified_icn.as_str());
+
+        // Filter checks by default
+        if !game.is_in_check() {
+            // Compute evaluation features
+            let features = compute_features_from_icn(modified_icn.as_str())?;
+            return Ok(Some(Sample { result, features }));
+        }
+        attempts += 1;
+    }
+    // Skip this sample if it always results in check
+    Ok(None)
 }
 
 fn parse_result_from_icn(icn: &str) -> Option<f64> {
@@ -778,6 +839,13 @@ fn run_tuner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[ignore]
+    #[test]
+    fn test_random_modified_icn_generation() {
+        let icn = "[Event \"SPRT Test Game 180\"] [Variant \"Classical\"] [Result \"1/2-1/2\"] [TimeControl \"10+0.1\"] [White \"Apeiron New\"] [Black \"Apeiron Old\"] [WhiteStrength \"8\"] [BlackStrength \"8\"] [Termination \"Threefold repetition\"] [Variant \"Classical\"] w 0/100 1 (8;q,r,b,n|1;q,r,b,n) -1000000000000000,1000000000000000,-1000000000000000,1000000000000000 r1,8+|n2,8|b3,8|q4,8|k5,8+|b6,8|n7,8|r8,8+|p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|R1,1+|N2,1|B3,1|Q4,1|K5,1+|B6,1|N7,1|R8,1+ 3,2>3,4{[%clk 0:00:09.9] [%eval -0.45]}|4,8>9,13{[%clk 0:00:09.9] [%eval -0.22]}|6,2>6,4{[%clk 0:00:09.9] [%eval +0.16]}|7,8>6,6{[%clk 0:00:09.8] [%eval +0.04]}|7,2>7,3{[%clk 0:00:09.8] [%eval -0.05]}|2,8>4,9{[%clk 0:00:09.7] [%eval -0.11]}|4,1>8,-3{[%clk 0:00:09.5] [%eval +0.05]}|9,13>9,6{[%clk 0:00:09.5] [%eval +0.05]}|7,1>5,0{[%clk 0:00:09.5] [%eval +0.01]}|8,7>8,6{[%clk 0:00:09.3] [%eval +0.03]}|8,-3>19,-3{[%clk 0:00:09.4] [%eval +0.06]}|8,8>9,8{[%clk 0:00:09.2] [%eval +0.23]}|2,1>4,0{[%clk 0:00:09.4] [%eval +0.16]}|7,7>7,5{[%clk 0:00:09.0] [%eval +0.26]}|6,4>7,5{[%clk 0:00:09.0] [%eval -0.02]}|8,6>7,5{[%clk 0:00:09.0] [%eval -0.01]}|19,-3>11,5{[%clk 0:00:08.8] [%eval -0.01]}|9,6>9,-3{[%clk 0:00:09.0] [%eval +0.01]}|5,1>4,1{[%clk 0:00:08.8] [%eval -0.01]}|9,-3>0,-3{[%clk 0:00:08.9] [%eval +0.01]}|4,1>5,1{[%clk 0:00:08.8] [%eval -0.00]}|0,-3>9,-3{[%clk 0:00:08.8] [%eval +0.00]}|5,1>4,1{[%clk 0:00:08.7] [%eval -0.01]}|9,-3>0,-3{[%clk 0:00:08.7] [%eval +0.01]}|4,1>5,1{[%clk 0:00:08.7] [%eval -0.01]}|0,-3>9,-3{[%clk 0:00:08.6] [%eval +0.01]}|5,1>4,1{[%clk 0:00:08.7] [%eval +0.01]}";
+        println!("{}", modify_icn_to_stop_at_random_move(icn));
+    }
 
     #[test]
     fn selector_expands_presets_and_names() {
