@@ -2,7 +2,6 @@ use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::nnue::{self, NnueState};
 
-// Setup game from ICN string
 fn setup_game(icn: &str) -> GameState {
     let mut game = GameState::new();
     game.setup_position_from_icn(icn);
@@ -48,7 +47,6 @@ fn test_incremental_vs_scratch() {
         rook_coord: None,
     };
 
-    // Update state incrementally
     state.update_for_move(&game, m);
 
     // Apply move to board manually for verification
@@ -58,7 +56,6 @@ fn test_incremental_vs_scratch() {
     game_after.turn = PlayerColor::Black;
     game_after.recompute_piece_counts();
 
-    // Calculate state from scratch
     let state_scratch = NnueState::from_position(&game_after);
 
     // Verify consistency

@@ -1,7 +1,5 @@
-// Variant-specific evaluation modules
-//
-// Design: Only variants with custom logic have files here.
-// All other variants use base.rs evaluation automatically.
+//! Variant evaluators. Only variants needing custom logic appear here; the rest
+//! fall through to base.rs.
 
 pub mod chess;
 pub mod obstocean;

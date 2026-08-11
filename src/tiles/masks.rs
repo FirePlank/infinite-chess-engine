@@ -1,14 +1,9 @@
-//! Precomputed leaper attack masks for 8×8 tiles.
-//!
-//! Each mask table is indexed as [from_local_square][neighbor_tile_index] -> u64 bitmask.
-//! The neighbor_tile_index encodes (dx, dy) in {-1, 0, 1}^2 as (dy+1)*3 + (dx+1).
-//! Index 4 is the center tile (same tile as the piece).
-//!
+//! Precomputed leaper attack masks for 8x8 tiles, indexed
+//! `[from_local_square][neighbor_tile_index]`. The neighbor index encodes (dx, dy) in
+//! {-1, 0, 1} as (dy+1)*3 + (dx+1), so index 4 is the piece's own tile.
 use crate::tiles::TILE_SIZE;
 
-// ============================================================================
 // Mask Generation Helpers
-// ============================================================================
 
 /// Compute target tile delta and local index for a move from local (lx, ly) by offset (dx, dy).
 /// Returns (tile_dx, tile_dy, target_local_index) where tile_dx/dy are -1, 0, or 1.
@@ -68,9 +63,7 @@ const fn generate_masks<const N: usize>(offsets: &[(i64, i64); N]) -> [[u64; 9];
     masks
 }
 
-// ============================================================================
 // Leaper Offset Arrays
-// ============================================================================
 
 const KNIGHT_OFFSETS: [(i64, i64); 8] = [
     (1, 2),
@@ -154,9 +147,7 @@ const WHITE_PAWN_ATTACK_OFFSETS: [(i64, i64); 2] = [(-1, 1), (1, 1)];
 // Black pawn attacks (captures down-left and down-right from the pawn)
 const BLACK_PAWN_ATTACK_OFFSETS: [(i64, i64); 2] = [(-1, -1), (1, -1)];
 
-// ============================================================================
 // Precomputed Mask Tables
-// ============================================================================
 
 /// Knight attack masks: [from_local_square][neighbor_tile] -> target squares bitmask
 pub static KNIGHT_MASKS: [[u64; 9]; 64] = generate_masks(&KNIGHT_OFFSETS);
@@ -182,10 +173,6 @@ pub static WHITE_PAWN_ATTACK_MASKS: [[u64; 9]; 64] = generate_masks(&WHITE_PAWN_
 /// Black pawn attack masks (attacking squares, not movement)
 pub static BLACK_PAWN_ATTACK_MASKS: [[u64; 9]; 64] = generate_masks(&BLACK_PAWN_ATTACK_OFFSETS);
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
 /// Get the attack mask for a pawn of the given color from the perspective of the defender.
 /// i.e., "which squares can attack this square with a pawn?"
 /// For attack detection: we look for enemy pawns that could capture TO this square.
@@ -197,10 +184,6 @@ pub fn pawn_attacker_masks(attacker_is_white: bool) -> &'static [[u64; 9]; 64] {
         &WHITE_PAWN_ATTACK_MASKS // Look at squares that black pawns attack FROM
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -272,11 +255,8 @@ mod tests {
         // Giraffe (1,4 leaper) from center (3, 3)
         let from_idx = 27;
 
-        // (3,3) + (1,4) = (4,7) - in center tile
-        // (3,3) + (-1,4) = (2,7) - in center tile
-        // (3,3) + (4,1) = (7,4) - in center tile
-        // (3,3) + (-4,1) = (-1,4) - neighbor tile
-        // etc.
+        // From (3,3) the giraffe reaches (4,7), (2,7) and (7,4) inside the center
+        // tile, while (-1,4) lands in a neighbor tile.
         let mut total_bits = 0;
         for mask in GIRAFFE_MASKS[from_idx] {
             total_bits += mask.count_ones();

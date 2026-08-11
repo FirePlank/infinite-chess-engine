@@ -28,7 +28,7 @@ function currentThreadCounts() {
 }
 
 /** Re-derives ONLY the concurrency cap from the current per-engine thread counts. Called when
- * the user edits a thread input — it must not touch time control or any other setting. */
+ * the user edits a thread input, so it must not touch time control or anything else. */
 function recomputeConcurrencyCap() {
     if (!isOldEngineMT && !isNewEngineMT) return;
     const { o, n } = currentThreadCounts();
@@ -58,7 +58,7 @@ function updateMTUI() {
         }
         log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
-        // Default to a fast STC for MT experiments (once, at load — not on every thread edit).
+        // Default to a fast STC for MT experiments, once at load, not per thread edit.
         sprtTcMode.value = 'standard';
         sprtTimeControlEl.value = '3+0.03';
         updateTcUi();
@@ -79,7 +79,7 @@ const sprtMtThreadsOldEl = document.getElementById('sprtMtThreadsOld');
 const sprtMtThreadsNewEl = document.getElementById('sprtMtThreadsNew');
 const sprtHashOldEl = document.getElementById('sprtHashOld');
 const sprtHashNewEl = document.getElementById('sprtHashNew');
-// Changing either engine's thread count re-derives ONLY the concurrency cap — nothing else.
+// Changing either engine's thread count re-derives ONLY the concurrency cap.
 sprtMtThreadsOldEl.addEventListener('change', recomputeConcurrencyCap);
 sprtMtThreadsNewEl.addEventListener('change', recomputeConcurrencyCap);
 const sprtMinGames = document.getElementById('sprtMinGames');
@@ -949,7 +949,7 @@ function llrNormalized(total, scores, probs, t0, t1) {
     return total * acc;
 }
 
-// Pentanomial LLR — the SPRT decision statistic (Fishtest model). model: 'normalized' | 'logistic'.
+// Pentanomial LLR, the SPRT decision statistic (Fishtest model). model: 'normalized' | 'logistic'.
 function calculatePentanomialLLR(p, elo0, elo1, model) {
     if (pentaTotalPairs(p) === 0) return 0;
     const ll = regularize(p.ll);

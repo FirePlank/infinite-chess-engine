@@ -1,9 +1,6 @@
-﻿//! Search Parameters Module
-//!
-//! This file is the single source of truth for search tuning:
-//! - production defaults live here as compile-time constants
-//! - runtime overrides (behind `search_tuning`) deserialize into `SearchParams`
-//! - SPSA tuning metadata lives here to prevent drift with external scripts
+//! Single source of truth for search tuning: production defaults as compile-time
+//! constants, runtime overrides deserialized into `SearchParams`, and the SPSA
+//! metadata, kept together so external scripts cannot drift from the engine.
 
 #[cfg(any(feature = "param_tuning", feature = "search_tuning"))]
 use once_cell::sync::Lazy;
@@ -71,7 +68,7 @@ pub const DEFAULT_NMP_REDUCTION_DIV: usize = 3;
 
 pub const DEFAULT_LMR_MIN_DEPTH: usize = 3;
 pub const DEFAULT_LMR_MIN_MOVES: usize = 4;
-pub const DEFAULT_LMR_DIVISOR: usize = 3;
+pub const DEFAULT_LMR_DIVISOR: usize = 2;
 pub const DEFAULT_LMR_CUTOFF_THRESH: u8 = 2;
 pub const DEFAULT_LMR_TT_HISTORY_THRESH: i32 = -1000;
 
@@ -163,6 +160,7 @@ impl EvalParamSpec {
     }
 }
 
+#[rustfmt::skip]
 pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("knight", crate::evaluation::base::DEFAULT_EVAL_KNIGHT as i64, 150, 450, 4.0, 0.002, "Knight value"),
     EvalParamSpec::new("bishop", crate::evaluation::base::DEFAULT_EVAL_BISHOP as i64, 250, 650, 4.0, 0.002, "Bishop value"),
@@ -176,7 +174,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("knightrider", crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER as i64, 500, 900, 8.0, 0.002, "Knightrider value"),
     EvalParamSpec::new("hawk", crate::evaluation::base::DEFAULT_EVAL_HAWK as i64, 400, 800, 6.0, 0.002, "Hawk value"),
     EvalParamSpec::new("archbishop", crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP as i64, 700, 1100, 8.0, 0.002, "Archbishop value"),
-    EvalParamSpec::new("rose", crate::evaluation::base::DEFAULT_EVAL_ROSE as i64, 250, 650, 6.0, 0.002, "Rose value"),
+    EvalParamSpec::new("rose", crate::evaluation::base::DEFAULT_EVAL_ROSE as i64, 700, 1250, 6.0, 0.002, "Rose value"),
     EvalParamSpec::new("huygen", crate::evaluation::base::DEFAULT_EVAL_HUYGEN as i64, 155, 555, 4.0, 0.002, "Huygen value"),
     EvalParamSpec::new("chancellor_bonus", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS as i64, 0, 300, 4.0, 0.002, "Chancellor extra value bonus"),
     EvalParamSpec::new("mg_doubled_pawn_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY as i64, 0, 208, 2.0, 0.002, "Middlegame doubled pawn penalty"),
@@ -187,6 +185,22 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("rook_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS as i64, 0, 220, 2.0, 0.002, "Rook semi-open file bonus"),
     EvalParamSpec::new("queen_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS as i64, 0, 225, 2.0, 0.002, "Queen open file bonus"),
     EvalParamSpec::new("queen_semi_open_file_bonus", crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS as i64, 0, 210, 2.0, 0.002, "Queen semi-open file bonus"),
+    EvalParamSpec::new("mg_king_ring_missing_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY as i64, 0, 160, 2.0, 0.002, "Middlegame king ring missing penalty"),
+    EvalParamSpec::new("eg_king_ring_missing_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY as i64, 0, 160, 2.0, 0.002, "Endgame king ring missing penalty"),
+    EvalParamSpec::new("mg_king_pawn_shield_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS as i64, 0, 100, 2.0, 0.002, "Middlegame king pawn shield bonus"),
+    EvalParamSpec::new("eg_king_pawn_shield_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS as i64, 0, 100, 2.0, 0.002, "Endgame king pawn shield bonus"),
+    EvalParamSpec::new("mg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Middlegame piece behind king bonus"),
+    EvalParamSpec::new("eg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Endgame piece behind king bonus"),
+    EvalParamSpec::new("mg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Middlegame king tropism bonus"),
+    EvalParamSpec::new("eg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Endgame king tropism bonus"),
+    EvalParamSpec::new("mg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Middlegame connected pawn bonus"),
+    EvalParamSpec::new("eg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Endgame connected pawn bonus"),
+    EvalParamSpec::new("mg_passed_safe_path_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS as i64, 0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus"),
+    EvalParamSpec::new("eg_passed_safe_path_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS as i64, 0, 240, 2.0, 0.002, "Endgame passed pawn safe path bonus"),
+    EvalParamSpec::new("mg_king_open_file_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY as i64, 0, 120, 2.0, 0.002, "Middlegame king open file penalty"),
+    EvalParamSpec::new("eg_king_open_file_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY as i64, 0, 120, 2.0, 0.002, "Endgame king open file penalty"),
+    EvalParamSpec::new("mg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Middlegame king defender bonus"),
+    EvalParamSpec::new("eg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Endgame king defender bonus"),
     EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
     EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
 ];
@@ -219,6 +233,22 @@ pub struct EvalParams {
     pub rook_semi_open_file_bonus: i32,
     pub queen_open_file_bonus: i32,
     pub queen_semi_open_file_bonus: i32,
+    pub mg_king_ring_missing_penalty: i32,
+    pub eg_king_ring_missing_penalty: i32,
+    pub mg_king_pawn_shield_bonus: i32,
+    pub eg_king_pawn_shield_bonus: i32,
+    pub mg_behind_king_bonus: i32,
+    pub eg_behind_king_bonus: i32,
+    pub mg_king_tropism_bonus: i32,
+    pub eg_king_tropism_bonus: i32,
+    pub mg_connected_pawn_bonus: i32,
+    pub eg_connected_pawn_bonus: i32,
+    pub mg_passed_safe_path_bonus: i32,
+    pub eg_passed_safe_path_bonus: i32,
+    pub mg_king_open_file_penalty: i32,
+    pub eg_king_open_file_penalty: i32,
+    pub mg_king_defender_bonus: i32,
+    pub eg_king_defender_bonus: i32,
     pub mg_outpost_bonus: i32,
     pub eg_outpost_bonus: i32,
 }
@@ -248,9 +278,27 @@ impl Default for EvalParams {
             mg_bishop_pair_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS,
             eg_bishop_pair_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS,
             rook_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS,
-            rook_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS,
+            rook_semi_open_file_bonus:
+                crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS,
             queen_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS,
-            queen_semi_open_file_bonus: crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
+            queen_semi_open_file_bonus:
+                crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS,
+            mg_king_ring_missing_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY,
+            eg_king_ring_missing_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY,
+            mg_king_pawn_shield_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS,
+            eg_king_pawn_shield_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS,
+            mg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS,
+            eg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS,
+            mg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS,
+            eg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS,
+            mg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS,
+            eg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS,
+            mg_passed_safe_path_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS,
+            eg_passed_safe_path_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS,
+            mg_king_open_file_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY,
+            eg_king_open_file_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY,
+            mg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS,
+            eg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
         }
@@ -309,32 +357,136 @@ define_eval_accessor!(bishop, crate::evaluation::base::DEFAULT_EVAL_BISHOP);
 define_eval_accessor!(rook, crate::evaluation::base::DEFAULT_EVAL_ROOK);
 define_eval_accessor!(guard, crate::evaluation::base::DEFAULT_EVAL_GUARD);
 define_eval_accessor!(centaur, crate::evaluation::base::DEFAULT_EVAL_CENTAUR);
-define_eval_accessor!(compound_bonus, crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS);
+define_eval_accessor!(
+    compound_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS
+);
 define_eval_accessor!(camel, crate::evaluation::base::DEFAULT_EVAL_CAMEL);
 define_eval_accessor!(giraffe, crate::evaluation::base::DEFAULT_EVAL_GIRAFFE);
 define_eval_accessor!(zebra, crate::evaluation::base::DEFAULT_EVAL_ZEBRA);
-define_eval_accessor!(knightrider, crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER);
+define_eval_accessor!(
+    knightrider,
+    crate::evaluation::base::DEFAULT_EVAL_KNIGHTRIDER
+);
 define_eval_accessor!(hawk, crate::evaluation::base::DEFAULT_EVAL_HAWK);
 define_eval_accessor!(archbishop, crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP);
 define_eval_accessor!(rose, crate::evaluation::base::DEFAULT_EVAL_ROSE);
 define_eval_accessor!(huygen, crate::evaluation::base::DEFAULT_EVAL_HUYGEN);
-define_eval_accessor!(chancellor_bonus, crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS);
-define_eval_accessor!(mg_doubled_pawn_penalty, crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY);
-define_eval_accessor!(eg_doubled_pawn_penalty, crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY);
-define_eval_accessor!(mg_bishop_pair_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS);
-define_eval_accessor!(eg_bishop_pair_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS);
-define_eval_accessor!(rook_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS);
-define_eval_accessor!(rook_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS);
-define_eval_accessor!(queen_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS);
-define_eval_accessor!(queen_semi_open_file_bonus, crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS);
-define_eval_accessor!(mg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS);
-define_eval_accessor!(eg_outpost_bonus, crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS);
+define_eval_accessor!(
+    chancellor_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS
+);
+define_eval_accessor!(
+    mg_doubled_pawn_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY
+);
+define_eval_accessor!(
+    eg_doubled_pawn_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY
+);
+define_eval_accessor!(
+    mg_bishop_pair_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS
+);
+define_eval_accessor!(
+    eg_bishop_pair_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS
+);
+define_eval_accessor!(
+    rook_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    rook_semi_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    queen_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    queen_semi_open_file_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS
+);
+define_eval_accessor!(
+    mg_king_ring_missing_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY
+);
+define_eval_accessor!(
+    eg_king_ring_missing_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY
+);
+define_eval_accessor!(
+    mg_king_pawn_shield_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS
+);
+define_eval_accessor!(
+    eg_king_pawn_shield_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS
+);
+define_eval_accessor!(
+    mg_behind_king_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS
+);
+define_eval_accessor!(
+    eg_behind_king_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS
+);
+define_eval_accessor!(
+    mg_king_tropism_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS
+);
+define_eval_accessor!(
+    eg_king_tropism_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS
+);
+define_eval_accessor!(
+    mg_connected_pawn_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS
+);
+define_eval_accessor!(
+    eg_connected_pawn_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS
+);
+define_eval_accessor!(
+    mg_passed_safe_path_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS
+);
+define_eval_accessor!(
+    eg_passed_safe_path_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS
+);
+define_eval_accessor!(
+    mg_king_open_file_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY
+);
+define_eval_accessor!(
+    eg_king_open_file_penalty,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY
+);
+define_eval_accessor!(
+    mg_king_defender_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_KING_DEFENDER_BONUS
+);
+define_eval_accessor!(
+    eg_king_defender_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS
+);
+define_eval_accessor!(
+    mg_outpost_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS
+);
+define_eval_accessor!(
+    eg_outpost_bonus,
+    crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS
+);
 
 #[inline]
 pub fn queen_value() -> i32 {
     rook() * 2 + compound_bonus()
 }
 
+#[rustfmt::skip]
 pub const TUNABLE_PARAM_SPECS: &[SearchParamSpec] = &[
     SearchParamSpec::new("razoring_linear", SearchParamKind::I32, DEFAULT_RAZORING_LINEAR as i64, 200, 700, 16.0, 0.002, "Razoring linear margin"),
     SearchParamSpec::new("razoring_quad", SearchParamKind::I32, DEFAULT_RAZORING_QUAD as i64, 100, 500, 12.0, 0.002, "Razoring quadratic margin"),
@@ -577,7 +729,11 @@ define_accessor!(probcut_improving, i32, DEFAULT_PROBCUT_IMPROVING);
 define_accessor!(probcut_min_depth, usize, DEFAULT_PROBCUT_MIN_DEPTH);
 define_accessor!(probcut_depth_sub, usize, DEFAULT_PROBCUT_DEPTH_SUB);
 define_accessor!(probcut_divisor, i32, DEFAULT_PROBCUT_DIVISOR);
-define_accessor!(low_depth_probcut_margin, i32, DEFAULT_LOW_DEPTH_PROBCUT_MARGIN);
+define_accessor!(
+    low_depth_probcut_margin,
+    i32,
+    DEFAULT_LOW_DEPTH_PROBCUT_MARGIN
+);
 define_accessor!(iir_min_depth, usize, DEFAULT_IIR_MIN_DEPTH);
 define_accessor!(see_capture_linear, i32, DEFAULT_SEE_CAPTURE_LINEAR);
 define_accessor!(see_capture_hist_div, i32, DEFAULT_SEE_CAPTURE_HIST_DIV);
@@ -592,19 +748,56 @@ define_accessor!(history_bonus_base, i32, DEFAULT_HISTORY_BONUS_BASE);
 define_accessor!(history_bonus_sub, i32, DEFAULT_HISTORY_BONUS_SUB);
 define_accessor!(history_bonus_cap, i32, DEFAULT_HISTORY_BONUS_CAP);
 define_accessor!(history_max_gravity, i32, DEFAULT_HISTORY_MAX_GRAVITY);
-define_accessor!(pawn_history_bonus_scale, i32, DEFAULT_PAWN_HISTORY_BONUS_SCALE);
-define_accessor!(pawn_history_malus_scale, i32, DEFAULT_PAWN_HISTORY_MALUS_SCALE);
+define_accessor!(
+    pawn_history_bonus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_BONUS_SCALE
+);
+define_accessor!(
+    pawn_history_malus_scale,
+    i32,
+    DEFAULT_PAWN_HISTORY_MALUS_SCALE
+);
 define_accessor!(delta_margin, i32, DEFAULT_DELTA_MARGIN);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every spec's default must fall inside its own tunable range, or the
+    /// first SPSA perturbation clamps both candidates to the same wrong side
+    /// and silently discards whatever produced that default.
+    #[test]
+    fn all_param_defaults_are_within_their_own_bounds() {
+        for spec in TUNABLE_PARAM_SPECS {
+            assert!(
+                spec.min <= spec.default && spec.default <= spec.max,
+                "{}: default {} outside [{}, {}]",
+                spec.name, spec.default, spec.min, spec.max
+            );
+        }
+        for spec in TUNABLE_EVAL_PARAM_SPECS {
+            assert!(
+                spec.min <= spec.default && spec.default <= spec.max,
+                "{}: default {} outside [{}, {}]",
+                spec.name, spec.default, spec.min, spec.max
+            );
+        }
+    }
+
     #[test]
     fn test_params_default() {
         assert_eq!(razoring_linear(), DEFAULT_RAZORING_LINEAR);
-        assert!(TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "delta_margin"));
-        assert!(!TUNABLE_PARAM_SPECS.iter().any(|spec| spec.name == "nmp_reduction"));
+        assert!(
+            TUNABLE_PARAM_SPECS
+                .iter()
+                .any(|spec| spec.name == "delta_margin")
+        );
+        assert!(
+            !TUNABLE_PARAM_SPECS
+                .iter()
+                .any(|spec| spec.name == "nmp_reduction")
+        );
     }
 
     #[test]

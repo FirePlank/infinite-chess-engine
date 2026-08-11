@@ -1,14 +1,6 @@
-//! NNUE Dataset Generator for Infinite Chess
-//!
-//! Generates training data for InfNNUE-v1 by playing self-play games with variants
-//! that only use standard chess pieces (K,Q,R,B,N,P).
-//!
-//! Features:
-//! - RelKP: Translation-invariant piece positions relative to king (25 piece codes × 1018 buckets)
-//! - ThreatEdges: Attack/defense relationships with distance binning (6768 features)
-//! - Dynamic pawn promotion distance bins for shifted promotion lines
-//! - Rayon-based parallel game generation
-//! - Compact binary output format for efficient training
+//! Generates InfNNUE-v1 training data by self-playing variants that use only
+//! standard chess pieces, encoding each sampled position as RelKP plus ThreatEdges
+//! features and writing them to a compact binary format.
 
 use apeiron::{
     Variant,
@@ -24,10 +16,6 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
 
 /// Variants that only use standard chess pieces (suitable for NNUE training)
 const NNUE_VARIANTS: &[Variant] = &[
@@ -56,9 +44,7 @@ const RANDOM_PLY_START: u32 = 8;
 /// Maximum game length in plies
 const MAX_GAME_PLY: u32 = 300; // Reduced from 500 to prune super long games
 
-// ============================================================================
 // FEATURE ENCODING CONSTANTS
-// ============================================================================
 
 /// Number of RelKP buckets per piece code
 const NUM_RELKP_BUCKETS: u32 = 1018;
@@ -67,10 +53,8 @@ const NEAR_ZONE_SIZE: i64 = 8;
 /// Near zone bucket count: (2*8+1)^2 = 289
 const NEAR_ZONE_BUCKETS: u32 = 289;
 
-/// Piece codes for RelKP:
-/// - Friendly: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen = 12 codes
-/// - Enemy: Pawn×8 (promo bins), Knight, Bishop, Rook, Queen, King = 13 codes
-///   Total = 25 codes
+/// Piece codes for RelKP: 12 friendly (pawns split into 8 promotion bins) plus 13
+/// enemy (the same, with the king).
 const FRIENDLY_PAWN_BASE: u32 = 0; // 0-7: friendly pawn promo bins
 const FRIENDLY_KNIGHT: u32 = 8;
 const FRIENDLY_BISHOP: u32 = 9;
@@ -97,9 +81,7 @@ const KING_THREAT_FEATURES: u32 = 192; // 2*2*8*6
 pub const TOTAL_THREAT_FEATURES: u32 =
     SLIDER_THREAT_FEATURES + KNIGHT_THREAT_FEATURES + PAWN_THREAT_FEATURES + KING_THREAT_FEATURES;
 
-// ============================================================================
 // BINARY FORMAT
-// ============================================================================
 
 /// Magic bytes for file identification
 const MAGIC: &[u8; 8] = b"INNUE1\0\0";
@@ -108,9 +90,7 @@ const VERSION: u32 = 1;
 /// Header size in bytes (unused but kept for reference)
 const _HEADER_SIZE: usize = 16;
 
-// ============================================================================
 // PRNG (from search.rs)
-// ============================================================================
 
 #[derive(Clone)]
 struct Prng {
@@ -144,9 +124,7 @@ impl Prng {
     }
 }
 
-// ============================================================================
 // RELKP FEATURE ENCODING
-// ============================================================================
 
 /// Compute sign code for far zone: 0=negative, 1=zero, 2=positive
 #[inline]
@@ -342,9 +320,7 @@ fn build_relkp_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
     features
 }
 
-// ============================================================================
 // THREATGEDGES FEATURE ENCODING
-// ============================================================================
 
 /// Victim type encoding
 #[inline]
@@ -658,9 +634,7 @@ fn build_threat_list(gs: &GameState, perspective: PlayerColor) -> Vec<u32> {
     features
 }
 
-// ============================================================================
 // NNUE APPLICABILITY
-// ============================================================================
 
 /// Check if position is suitable for NNUE (standard pieces only)
 fn is_nnue_applicable(gs: &GameState) -> bool {
@@ -687,9 +661,7 @@ fn is_nnue_applicable(gs: &GameState) -> bool {
     true
 }
 
-// ============================================================================
 // SAMPLE RECORD
-// ============================================================================
 
 /// Pending sample before game result is known
 struct PendingSample {
@@ -741,9 +713,7 @@ impl SampleRecord {
     }
 }
 
-// ============================================================================
 // GAME PLAYING
-// ============================================================================
 
 /// Determine game result: +1 = White wins, 0 = Draw, -1 = Black wins
 fn determine_game_result(gs: &GameState) -> i8 {
@@ -874,7 +844,6 @@ fn play_game(
             match get_best_move(&mut gs, selfplay_depth, u128::MAX, true, false) {
                 Some((m, _, _)) => m,
                 None => {
-                    // Fallback to first legal move
                     let fallback = gs.get_legal_moves().into_iter().next();
                     fallback.expect("has_any_legal_move was true but no legal move found")
                 }
@@ -924,8 +893,8 @@ fn play_game(
                     },
                 ));
 
-            // Quiet-position filter: reject if teacher eval (which includes qsearch)
-            // differs significantly from static eval — indicates tactical volatility
+            // A teacher eval far from the static eval means the position is
+            // tactically volatile, so it is not a useful training sample.
             if (teacher_cp - static_eval).abs() <= 150 {
                 let clamped_cp = teacher_cp.clamp(-31000, 31000);
 
@@ -940,20 +909,17 @@ fn play_game(
             }
         }
 
-        // Make move
         gs.make_move(&chosen_move);
     }
 
-    // Determine game result
-    // If the game ended naturally (checkmate, stalemate, repetition, 50-move),
-    // use the real result. If we hit MAX_GAME_PLY, adjudicate via teacher eval
-    // to avoid injecting fake draws into the dataset.
+    // A natural ending gives the real result; hitting MAX_GAME_PLY is adjudicated by
+    // teacher eval so the dataset gets no fake draws.
     let game_ended_naturally = gs.is_repetition(0) || gs.is_fifty() || !has_any_legal_move(&gs);
 
     let result = if game_ended_naturally {
         determine_game_result(&gs)
     } else {
-        // Ply-cap reached — adjudicate with a teacher search
+        // Ply-cap reached, so adjudicate with a teacher search.
         let (_, adj_cp, _) = get_best_move(&mut gs, teacher_depth, u128::MAX, true, false)
             .unwrap_or((
                 Move::new(
@@ -1024,9 +990,7 @@ fn play_game(
     (1, final_samples)
 }
 
-// ============================================================================
 // MAIN
-// ============================================================================
 
 fn main() {
     #[cfg(debug_assertions)]
@@ -1167,7 +1131,6 @@ fn main() {
             .expect("Failed to read sample count");
         initial_samples = u64::from_le_bytes(count_buf);
 
-        // Seek to end for appending
         file.seek(std::io::SeekFrom::End(0)).unwrap();
         println!(
             "[gen_nnue_data] Resuming from existing file with {} samples",
@@ -1201,7 +1164,6 @@ fn main() {
             // Select variant round-robin
             let variant = NNUE_VARIANTS[(game_id % NNUE_VARIANTS.len() as u64) as usize];
 
-            // Play game
             let (_games_run, samples) = play_game(
                 variant,
                 rayon::current_thread_index().unwrap_or(0), // thread_id
@@ -1372,9 +1334,7 @@ fn verify_data_file(path: &str) {
     println!("File appears valid.");
 }
 
-// ============================================================================
 // UNIT TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

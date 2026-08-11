@@ -1,14 +1,10 @@
-//! NNUE Feature Encoding
-//!
-//! Implements the same feature encoding as gen_nnue_data.rs for consistency.
-//! This ensures training and inference use identical feature mappings.
+//! NNUE feature encoding. Must stay identical to `gen_nnue_data.rs`, or training
+//! and inference disagree on what each feature index means.
 
 use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 
-// ============================================================================
 // FEATURE ENCODING CONSTANTS
-// ============================================================================
 
 /// Number of RelKP buckets per piece code
 pub const NUM_RELKP_BUCKETS: u32 = 1018;
@@ -35,9 +31,7 @@ const SLIDER_THREAT_FEATURES: u32 = 6336;
 const KNIGHT_THREAT_FEATURES: u32 = 192;
 const PAWN_THREAT_FEATURES: u32 = 48;
 
-// ============================================================================
 // RELKP ENCODING
-// ============================================================================
 
 /// Compute sign code for far zone: 0=negative, 1=zero, 2=positive
 #[inline]
@@ -234,9 +228,7 @@ pub fn build_relkp_active_lists(gs: &GameState) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
-// ============================================================================
 // THREATGEDGES ENCODING
-// ============================================================================
 
 /// Victim type encoding
 #[inline]

@@ -195,8 +195,8 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
             // Shallow node under tight generation: keep the ray minimal.
             2
         } else {
-            // Open ray (no blocker, so quiets only): the old flat cap of 2 hid
-            // every longer knightrider maneuver from the search.
+            // Open ray, so quiets only. The cap must exceed 2, or every longer
+            // knightrider maneuver stays hidden from the search.
             KR_OPEN_RAY_STEPS
         };
 
@@ -337,13 +337,25 @@ pub fn is_piece_attacking_square(
         }
     }
 
-    // 2. Leapers
+    // 2. Handle early exit for sliders and check leapers
     match pt {
-        PieceType::Knight => {
+        // Prevent any unnecessary computation for pure sliders (Rook, Bishop, Queen) which
+        // are already handled above.
+        PieceType::Rook | PieceType::Bishop | PieceType::Queen | PieceType::RoyalQueen => {
+            return false;
+        }
+
+        // Knight or slider + knight compound pieces
+        PieceType::Knight
+        | PieceType::Archbishop
+        | PieceType::Chancellor
+        | PieceType::Amazon => {
             let dx = (to.x - from.x).abs();
             let dy = (to.y - from.y).abs();
             return (dx == 1 && dy == 2) || (dx == 2 && dy == 1);
         }
+
+        // Other leapers
         PieceType::Pawn => {
             let direction = if our_color == PlayerColor::White {
                 1
@@ -359,63 +371,105 @@ pub fn is_piece_attacking_square(
             let dy = (to.y - from.y).abs();
             return dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
         }
-        _ => {}
-    }
 
-    // 3. Optimized Huygen check (prime-distance orthogonal slider)
-    // Avoids fallback to move generation which has limits
-    if pt == PieceType::Huygen {
-        let dx = to.x - from.x;
-        let dy = to.y - from.y;
-
-        // Must be on same row or column (orthogonal)
-        if dx != 0 && dy != 0 {
-            return false;
+        // Pure (m,n) leapers: the generator emits all 8 sign/swap offsets.
+        PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            let (m, n) = match pt {
+                PieceType::Camel => (1, 3),
+                PieceType::Giraffe => (1, 4),
+                _ => (2, 3),
+            };
+            return (dx == m && dy == n) || (dx == n && dy == m);
         }
 
-        // Must be different square
-        if dx == 0 && dy == 0 {
-            return false;
+        // Compass at exactly 2 and 3: ortho or diagonal only, so (2,3) is NOT
+        // attacked. Leaps, so no blocker check.
+        PieceType::Hawk => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            let at = |d: i64| (dx == d && dy == 0) || (dx == 0 && dy == d) || (dx == d && dy == d);
+            return at(2) || at(3);
         }
 
-        let dist = dx.abs().max(dy.abs());
-
-        // Must be at prime distance
-        if !is_prime_fast(dist) {
-            return false;
+        // King step plus knight leap.
+        PieceType::Centaur => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            return (dx <= 1 && dy <= 1 && (dx != 0 || dy != 0))
+                || (dx == 1 && dy == 2)
+                || (dx == 2 && dy == 1);
         }
 
-        // Check for blocker at closer prime distance using spatial indices
-        let is_horizontal = dy == 0;
-        let line_vec = if is_horizontal {
-            indices.rows.get(&from.y)
-        } else {
-            indices.cols.get(&from.x)
-        };
-
-        let our_coord = if is_horizontal { from.x } else { from.y };
-        let target_coord = if is_horizontal { to.x } else { to.y };
-        let sign = (target_coord - our_coord).signum();
-
-        if let Some(vec) = line_vec {
-            // Check all pieces between Huygen and target for blockers at prime distances
-            for (coord, _packed) in vec {
-                let d = (coord - our_coord) * sign; // Distance in direction of target
-                if d <= 0 || d >= dist {
-                    continue; // Not between Huygen and target
-                }
-
-                // If this piece is at a prime distance from the Huygen, it blocks
-                if is_prime_fast(d) {
-                    return false;
-                }
+        // Same as Centaur, but is_pseudo_legal has no RoyalCentaur arm and so
+        // relies on the fallback below to validate its castling moves.
+        PieceType::RoyalCentaur => {
+            let dx = (to.x - from.x).abs();
+            let dy = (to.y - from.y).abs();
+            if !(dy == 0 && dx >= 2) {
+                return (dx <= 1 && dy <= 1 && (dx != 0 || dy != 0))
+                    || (dx == 1 && dy == 2)
+                    || (dx == 2 && dy == 1);
             }
         }
 
-        return true;
+        // Optimized huygen check (prime-distance orthogonal slider)
+        // Avoids fallback to move generation which has limits
+        PieceType::Huygen => {
+            let dx = to.x - from.x;
+            let dy = to.y - from.y;
+
+            // Must be on same row or column (orthogonal)
+            if dx != 0 && dy != 0 {
+                return false;
+            }
+
+            // Must be different square
+            if dx == 0 && dy == 0 {
+                return false;
+            }
+
+            let dist = dx.abs().max(dy.abs());
+
+            // Must be at prime distance
+            if !is_prime_fast(dist) {
+                return false;
+            }
+
+            // Check for blocker at closer prime distance using spatial indices
+            let is_horizontal = dy == 0;
+            let line_vec = if is_horizontal {
+                indices.rows.get(&from.y)
+            } else {
+                indices.cols.get(&from.x)
+            };
+
+            let our_coord = if is_horizontal { from.x } else { from.y };
+            let target_coord = if is_horizontal { to.x } else { to.y };
+            let sign = (target_coord - our_coord).signum();
+
+            if let Some(vec) = line_vec {
+                // Check all pieces between Huygen and target for blockers at prime distances
+                for (coord, _packed) in vec {
+                    let d = (coord - our_coord) * sign; // Distance in direction of target
+                    if d <= 0 || d >= dist {
+                        continue; // Not between Huygen and target
+                    }
+
+                    // If this piece is at a prime distance from the Huygen, it blocks
+                    if is_prime_fast(d) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+        _ => {}
     }
 
-    // 4. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
+    // 3. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
     let mut moves = MoveList::new();
     let ctx = MoveGenContext {
         special_rights: &FxHashSet::default(),
@@ -428,6 +482,12 @@ pub fn is_piece_attacking_square(
     get_pseudo_legal_moves_for_piece_into(board, piece, from, &ctx, &mut moves);
     moves.iter().any(|m| m.to.x == to.x && m.to.y == to.y)
 }
+
+/// A piece found at one end of a line: (coordinate along the line, packed piece).
+pub type LineEnd = Option<(i64, u8)>;
+
+/// Below this length a linear scan beats a binary search on these lines.
+const LINEAR_SCAN_MAX: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SpatialLine {
@@ -499,6 +559,42 @@ impl SpatialLine {
         self.coords.iter().copied().zip(self.pieces.iter().copied())
     }
 
+    /// Both neighbours of `from` in one binary search - the two `find_nearest`
+    /// directions share the same partition point, so this halves the work.
+    #[inline]
+    pub fn neighbors(&self, from: i64) -> (LineEnd, LineEnd) {
+        let len = self.coords.len();
+        if len == 0 {
+            return (None, None);
+        }
+        // Lines hold a handful of pieces on an unbounded board (measured: 90% have
+        // <= 4), where a predictable scan beats partition_point's branchy search.
+        let lo = if len <= LINEAR_SCAN_MAX {
+            let mut i = 0;
+            while i < len && self.coords[i] < from {
+                i += 1;
+            }
+            i
+        } else {
+            self.coords.partition_point(|&c| c < from)
+        };
+        let back = if lo > 0 {
+            Some((self.coords[lo - 1], self.pieces[lo - 1]))
+        } else {
+            None
+        };
+        let mut hi = lo;
+        while hi < len && self.coords[hi] <= from {
+            hi += 1;
+        }
+        let fwd = if hi < len {
+            Some((self.coords[hi], self.pieces[hi]))
+        } else {
+            None
+        };
+        (fwd, back)
+    }
+
     /// Find nearest piece in a direction.
     /// Returns (coord, packed_piece) if found.
     #[inline]
@@ -510,17 +606,29 @@ impl SpatialLine {
 
         if direction > 0 {
             // Look forward: Find first element > from
-            // partition_point returns the index of the first element where the predicate is false.
-            // Predicate: x <= from. False means x > from.
-            let idx = self.coords.partition_point(|&c| c <= from);
+            let idx = if len <= LINEAR_SCAN_MAX {
+                let mut i = 0;
+                while i < len && self.coords[i] <= from {
+                    i += 1;
+                }
+                i
+            } else {
+                self.coords.partition_point(|&c| c <= from)
+            };
             if idx < len {
                 return Some((self.coords[idx], self.pieces[idx]));
             }
         } else {
             // Look backward: Find last element < from
-            // partition_point returns the index of the first element where the predicate is false.
-            // Predicate: x < from. False means x >= from.
-            let idx = self.coords.partition_point(|&c| c < from);
+            let idx = if len <= LINEAR_SCAN_MAX {
+                let mut i = 0;
+                while i < len && self.coords[i] < from {
+                    i += 1;
+                }
+                i
+            } else {
+                self.coords.partition_point(|&c| c < from)
+            };
             if idx > 0 {
                 return Some((self.coords[idx - 1], self.pieces[idx - 1]));
             }
@@ -528,6 +636,9 @@ impl SpatialLine {
         None
     }
 }
+
+/// Keyed by (x, y, dir_index); value is the sorted interception distances.
+pub type SliderCache = std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpatialIndices {
@@ -540,10 +651,8 @@ pub struct SpatialIndices {
     /// Anti-diagonal (x+y constant): key -> SpatialLine sorted by x
     pub diag2: FxHashMap<i64, SpatialLine>,
     /// Lazily-populated slider interception cache.
-    /// Key: (x, y, dir_index) where dir_index encodes the 8 cardinal/diagonal directions.
-    /// Value: Sorted list of valid interception distances for that slider position/direction.
     #[serde(skip)]
-    pub slider_cache: std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>,
+    pub slider_cache: SliderCache,
 
     // Fairy piece existence flags per color for O(1) early-exit in attack detection
     // [0] = white, [1] = black
@@ -624,8 +733,8 @@ impl SpatialIndices {
         self.diag1.entry(d1).or_default().insert(x, packed);
         self.diag2.entry(d2).or_default().insert(x, packed);
 
-        // Invalidate slider cache when anything changes
-        // self.slider_cache.borrow_mut().clear();
+        // The slider cache is deliberately not invalidated here; callers that need an
+        // exact move list bypass it instead. Clearing per edit measured much worse.
     }
 
     /// Incrementally remove a piece at (x, y) from the indices.
@@ -658,8 +767,8 @@ impl SpatialIndices {
             }
         }
 
-        // Invalidate slider cache when anything changes
-        // self.slider_cache.borrow_mut().clear();
+        // The slider cache is deliberately not invalidated here; callers that need an
+        // exact move list bypass it instead. Clearing per edit measured much worse.
     }
 
     /// Find first blocker on a ray starting from (from_x, from_y) in direction (dx, dy).
@@ -824,7 +933,9 @@ pub fn get_quiescence_captures(
 
     // Use get_quiescence_captures from evaluation/obstocean_search.rs when the variant is Obstocean.
     if ctx.game_rules.variant == Some(crate::Variant::Obstocean) {
-        return crate::evaluation::variants::obstocean_search::get_quiescence_captures(board, turn, ctx, out);
+        return crate::evaluation::variants::obstocean_search::get_quiescence_captures(
+            board, turn, ctx, out,
+        );
     }
 
     out.clear();
@@ -1004,7 +1115,15 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         }
         PieceType::King => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out);
-            generate_castling_moves_into(board, from, piece, special_rights, game_rules, indices, out);
+            generate_castling_moves_into(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices,
+                out,
+            );
         }
         PieceType::Guard => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out)
@@ -1150,7 +1269,15 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         PieceType::RoyalCentaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
-            generate_castling_moves_into(board, from, piece, special_rights, game_rules, indices, out);
+            generate_castling_moves_into(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices,
+                out,
+            );
         }
         PieceType::Huygen => {
             generate_huygen_moves_into(board, from, piece, indices, MoveGenType::All, out)
@@ -1159,7 +1286,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
     }
 }
 
-/// Legacy wrapper that allocates a new Vec. Prefer `get_pseudo_legal_moves_for_piece_into` for performance.
+/// Allocating wrapper; prefer `get_pseudo_legal_moves_for_piece_into` on hot paths.
 pub fn get_pseudo_legal_moves_for_piece(
     board: &Board,
     piece: &Piece,
@@ -1335,10 +1462,8 @@ pub fn is_square_attacked(
         }
     }
 
-    // Huygen check (prime distances) - O(1) early exit if no Huygens exist
-    // CRITICAL: Blocking is from the HUYGENS's perspective, not the target's!
-    // A Huygens at prime distance D attacks the target ONLY if there is no other piece
-    // at any prime distance from the HUYGENS that is closer than D (between Huygens and target).
+    // Blocking is judged from the Huygens, not the target: it attacks at prime
+    // distance D only when no piece sits at a smaller prime distance from it.
     if indices.has_huygen[attacker_idx] {
         // Check each orthogonal direction from the target to find Huygens
         for &(dx, dy) in &ORTHO_DIRS {
@@ -1392,10 +1517,9 @@ pub fn is_square_attacked(
                         // Calculate distance from HUYGENS to this piece
                         let dist_from_huygen = other_coord - huygen_coord;
 
-                        // Piece must be between Huygens and target (in the direction toward target, closer distance)
-                        // dist_to_target = huygen_coord - target_coord:
-                        //   - If dist_to_target > 0: Huygens is at HIGHER coord than target, so blockers are TOWARD target (negative dist_from_huygen)
-                        //   - If dist_to_target < 0: Huygens is at LOWER coord than target, so blockers are TOWARD target (positive dist_from_huygen)
+                        // A blocker must lie between the Huygens and the target, so its
+                        // offset from the Huygens must carry the opposite sign of
+                        // dist_to_target.
                         let toward_target = if dist_to_target > 0 {
                             // Huygens at higher coord, target at lower coord -> blockers have negative dist (toward target)
                             dist_from_huygen < 0 && dist_from_huygen.abs() < abs_dist_to_target
@@ -1490,7 +1614,6 @@ pub fn generate_pawn_quiet_promotions(
         return;
     }
 
-    // Get promotion ranks
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
@@ -1548,7 +1671,6 @@ fn generate_pawn_capture_moves(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    // Get promotion ranks for this color
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
@@ -1596,10 +1718,9 @@ fn generate_pawn_capture_moves(
 
         if let Some(target) = board.get_piece(capture_x, capture_y) {
             if is_enemy_piece(&target, piece.color()) {
-                // Obstocean Optimization:
-                // If it's a neutral piece (Obstacle), capturing it is a "quiet" move in material terms (0 -> 0).
-                // Doing this for all obstacles causes a QS explosion.
-                // We ONLY allow capturing obstacles in QS if it results in PROMOTION (Tactical win).
+                // Capturing a neutral obstacle wins no material, so admitting them all
+                // explodes qsearch. Only promoting obstacle captures are tactical
+                // enough to keep.
                 let is_neutral = target.piece_type().is_neutral_type();
                 if !is_neutral || promotion_ranks.contains(&capture_y) {
                     add_pawn_cap_move(
@@ -1647,7 +1768,9 @@ fn generate_castling_moves(
 
     // Find all pieces with special rights that could be castling partners
     for coord in special_rights.iter() {
-        if coord == from { continue; }
+        if coord == from {
+            continue;
+        }
         if let Some(target_piece) = board.get_piece(coord.x, coord.y) {
             // Must be same color and a valid castling partner (rook-like piece, not pawn)
             if target_piece.color() == piece.color()
@@ -1685,8 +1808,12 @@ fn generate_castling_moves(
 
                     let opponent = piece.color().opponent();
                     let opponent_can_checkmate = match piece.color() {
-                        PlayerColor::White => game_rules.black_win_condition.requires_check_evasion(),
-                        PlayerColor::Black => game_rules.white_win_condition.requires_check_evasion(),
+                        PlayerColor::White => {
+                            game_rules.black_win_condition.requires_check_evasion()
+                        }
+                        PlayerColor::Black => {
+                            game_rules.white_win_condition.requires_check_evasion()
+                        }
                         PlayerColor::Neutral => true,
                     };
 
@@ -1707,21 +1834,6 @@ fn generate_castling_moves(
     }
     moves
 }
-
-// fn is_ray_blocked_in_tile(from_local: usize, dx: i64, dy: i64, occ: u64) -> bool {
-//     let r = (from_local / 8) as i64;
-//     let f = (from_local % 8) as i64;
-//     let mut cr = r + dy;
-//     let mut cf = f + dx;
-//     while cr >= 0 && cr < 8 && cf >= 0 && cf < 8 {
-//         if (occ >> ((cr as usize) * 8 + cf as usize)) & 1 != 0 {
-//             return true;
-//         }
-//         cr += dy;
-//         cf += dx;
-//     }
-//     false
-// }
 
 /// Generate only sliding captures for quiescence search.
 /// Uses O(log n) SpatialIndices for infinite-range blocker detection.
@@ -1756,26 +1868,6 @@ pub fn generate_sliding_capture_moves(
         }
     }
 }
-
-// fn distance_to_tile_edge(from_local: usize, dx: i64, dy: i64) -> i64 {
-//     let r = (from_local / 8) as i64;
-//     let f = (from_local % 8) as i64;
-//     let dist_r = if dy > 0 {
-//         7 - r
-//     } else if dy < 0 {
-//         r
-//     } else {
-//         i64::MAX
-//     };
-//     let dist_f = if dx > 0 {
-//         7 - f
-//     } else if dx < 0 {
-//         f
-//     } else {
-//         i64::MAX
-//     };
-//     dist_r.min(dist_f)
-// }
 
 /// Generate only quiet (non-capturing) moves for staged move generation.
 /// This is the complement of get_quiescence_captures.
@@ -1837,7 +1929,8 @@ fn generate_quiets_for_piece(
         PieceType::King => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             // Castling is always a quiet move
-            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
+            let castling =
+                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Guard => {
@@ -1850,7 +1943,8 @@ fn generate_quiets_for_piece(
         PieceType::RoyalCentaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
-            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
+            let castling =
+                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Hawk => {
@@ -1947,7 +2041,8 @@ fn generate_quiets_for_piece(
                 out,
             );
             // Castling support for RoyalQueen
-            let castling = generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
+            let castling =
+                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
             out.extend(castling);
         }
         PieceType::Chancellor => {
@@ -2040,7 +2135,6 @@ fn generate_pawn_quiet_moves(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    // Get promotion ranks
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
@@ -2507,6 +2601,64 @@ fn find_cross_ray_targets_into(
     }
 }
 
+/// Ray distances whose destination square would attack an enemy piece with a
+/// KNIGHT leap. Compound knight-sliders need these separately: ray interception
+/// only proposes squares near pieces already on the ray, so a knight fork or
+/// check reachable from an otherwise-empty diagonal is never generated.
+#[allow(clippy::too_many_arguments)]
+fn collect_knight_attack_dists(
+    indices: &SpatialIndices,
+    from: &Coordinate,
+    our_color: PlayerColor,
+    dir_x: i64,
+    dir_y: i64,
+    max_dist: i64,
+    out: &mut Vec<i64>,
+) {
+    const KNIGHT_OFFSETS: [(i64, i64); 8] = [
+        (1, 2),
+        (2, 1),
+        (2, -1),
+        (1, -2),
+        (-1, -2),
+        (-2, -1),
+        (-2, 1),
+        (-1, 2),
+    ];
+    for (ox, oy) in KNIGHT_OFFSETS {
+        // Every square `from + d*dir + offset` sits on the line through
+        // `from + offset` parallel to dir, so one index lookup covers all d.
+        let bx = from.x + ox;
+        let by = from.y + oy;
+        let (line, base, step) = if dir_y == 0 {
+            (indices.rows.get(&by), bx, dir_x)
+        } else if dir_x == 0 {
+            (indices.cols.get(&bx), by, dir_y)
+        } else if dir_x == dir_y {
+            (indices.diag1.get(&(bx - by)), bx, dir_x)
+        } else {
+            (indices.diag2.get(&(bx + by)), bx, dir_x)
+        };
+        let Some(line) = line else {
+            continue;
+        };
+        for i in 0..line.len() {
+            let d = (line.coords[i] - base) / step;
+            if d <= 0 || d > max_dist {
+                continue;
+            }
+            let p = Piece::from_packed(line.pieces[i]);
+            if p.color() == our_color
+                || p.color() == PlayerColor::Neutral
+                || p.piece_type().is_uncapturable()
+            {
+                continue;
+            }
+            out.push(d);
+        }
+    }
+}
+
 fn generate_sliding_moves_impl(
     ctx: &SlidingMoveContext,
     out: &mut MoveList,
@@ -2544,6 +2696,12 @@ fn generate_sliding_moves_impl(
     // Reuse maps across directions to avoid allocations
     let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
     let mut royal_dists: FxHashSet<i64> = FxHashSet::default();
+    let mut knight_dists: Vec<i64> = Vec::new();
+    // Archbishop/chancellor also threaten from squares their ray logic ignores.
+    let has_knight_leap = matches!(
+        piece.piece_type(),
+        PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon
+    );
 
     // Helper to increment piece count for a distance
     #[inline(always)]
@@ -2622,6 +2780,18 @@ fn generate_sliding_moves_impl(
             } else {
                 dist_counts.clear();
                 royal_dists.clear();
+                knight_dists.clear();
+                if has_knight_leap {
+                    collect_knight_attack_dists(
+                        indices,
+                        from,
+                        our_color,
+                        dir_x,
+                        dir_y,
+                        max_dist,
+                        &mut knight_dists,
+                    );
+                }
 
                 // 1. Direct Ray iteration (O(log pieces_on_line + pieces_near_slider))
                 if is_horizontal {
@@ -2943,6 +3113,7 @@ fn generate_sliding_moves_impl(
                         shared_targets.push(d);
                     }
                 }
+                shared_targets.extend(knight_dists.iter().copied());
                 shared_targets.sort_unstable();
                 shared_targets.dedup();
 
@@ -3007,8 +3178,7 @@ fn generate_sliding_moves_impl(
     }
 }
 
-/// Find the closest blocker on a ray using spatial indices (O(log n))
-/// Now uses the new SpatialIndices format with inline piece data
+/// Closest blocker on a ray, found in O(log n) via the spatial indices.
 #[inline]
 fn find_blocker_via_indices(
     _board: &Board,
@@ -3231,13 +3401,9 @@ const ROSE_KNIGHT_DELTAS: [(i64, i64); 8] = [
     (-2, 1),  // index 7: W-ish
 ];
 
-/// Precomputed cumulative offsets for all 16 Rose spirals.
-/// Each spiral: 8 starting directions × 2 rotation directions (CCW=+1, CW=-1)
-/// Each entry is a sequence of 7 cumulative (dx, dy) values from the origin.
-/// Spiral stops if blocked at any intermediate square.
-///
-/// ROSE_SPIRALS[start_dir][rotation_dir][hop_index] = (cumulative_dx, cumulative_dy)
-/// rotation_dir: 0 = CCW (+1), 1 = CW (-1)
+/// Cumulative hop offsets for the 16 Rose spirals, indexed
+/// `[start_dir][rotation_dir][hop]` with rotation 0 counter-clockwise. A spiral stops
+/// at the first blocked intermediate square.
 pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
     // Build at compile time
     let mut spirals = [[[(0i64, 0i64); 7]; 2]; 8];
@@ -3369,7 +3535,6 @@ fn generate_pawn_moves_into(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    // Get promotion ranks for this color
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
@@ -3607,7 +3772,7 @@ mod tests {
             1_000_000_000_000_000,
         );
     }
-    
+
     // Helper to acquire bounds lock for tests that modify bounds
     fn with_bounds_lock<F, R>(f: F) -> R
     where
@@ -3616,8 +3781,6 @@ mod tests {
         let _guard = get_bounds_lock().lock().unwrap_or_else(|e| e.into_inner());
         f()
     }
-    
-    // ======================== Bounds Tests ========================
 
     #[test]
     fn test_in_bounds_default() {
@@ -3657,7 +3820,6 @@ mod tests {
             let size = get_world_size();
             assert_eq!(size, 200, "Width is larger than height");
 
-            // Reset
             reset_world_bounds();
         });
     }
@@ -3673,12 +3835,9 @@ mod tests {
             assert_eq!(min_y, -30);
             assert_eq!(max_y, 40);
 
-            // Reset
             reset_world_bounds();
         });
     }
-
-    // ======================== SpatialIndices Tests ========================
 
     #[test]
     fn test_spatial_indices_new_empty() {
@@ -3705,7 +3864,6 @@ mod tests {
         assert!(indices.diag1.contains_key(&-5)); // 5 - 10 = -5
         assert!(indices.diag2.contains_key(&15)); // 5 + 10 = 15
 
-        // Remove it
         indices.remove(5, 10);
 
         // Check it's removed from all indices
@@ -3766,8 +3924,6 @@ mod tests {
         );
     }
 
-    // ======================== Move Generation Tests ========================
-
     #[test]
     fn test_move_new() {
         let from = Coordinate::new(1, 2);
@@ -3790,11 +3946,8 @@ mod tests {
         let black_knight = Piece::new(PieceType::Knight, PlayerColor::Black);
         let void = Piece::new(PieceType::Void, PlayerColor::Neutral);
 
-        // White sees black as enemy
         assert!(is_enemy_piece(&black_knight, PlayerColor::White));
-        // Black sees white as enemy
         assert!(is_enemy_piece(&white_knight, PlayerColor::Black));
-        // Same color is not enemy
         assert!(!is_enemy_piece(&white_knight, PlayerColor::White));
         // Void is not enemy (it's neutral, but also blocked by piece type check)
         assert!(!is_enemy_piece(&void, PlayerColor::White));
@@ -3834,7 +3987,15 @@ mod tests {
             let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_leaper_moves_into(&game.board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
+            generate_leaper_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                1,
+                2,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             // Knight has 8 possible moves from center
             assert_eq!(moves.len(), 8, "Knight should have 8 moves from (4,4)");
@@ -3873,7 +4034,14 @@ mod tests {
             let piece = Piece::new(PieceType::King, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_compass_moves_into(&game.board, &from, &piece, 1, MoveGenType::All, &mut moves);
+            generate_compass_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                1,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             // King has 8 possible moves from center
             assert_eq!(moves.len(), 8, "King should have 8 moves from (4,4)");
@@ -3892,7 +4060,15 @@ mod tests {
             let piece = Piece::new(PieceType::Camel, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_leaper_moves_into(&game.board, &from, &piece, 1, 3, MoveGenType::All, &mut moves);
+            generate_leaper_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                1,
+                3,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             // Camel leaps (1,3) - 8 squares
             assert_eq!(moves.len(), 8, "Camel should have 8 moves from (4,4)");
@@ -3917,7 +4093,15 @@ mod tests {
             let piece = Piece::new(PieceType::Zebra, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_leaper_moves_into(&game.board, &from, &piece, 2, 3, MoveGenType::All, &mut moves);
+            generate_leaper_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                2,
+                3,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             // Zebra leaps (2,3) - 8 squares
             assert_eq!(moves.len(), 8, "Zebra should have 8 moves from (4,4)");
@@ -3937,7 +4121,15 @@ mod tests {
             let piece = Piece::new(PieceType::Knight, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_leaper_moves_into(&game.board, &from, &piece, 1, 2, MoveGenType::All, &mut moves);
+            generate_leaper_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                1,
+                2,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             assert_eq!(
                 moves.len(),
@@ -3976,7 +4168,15 @@ mod tests {
 
             let special = FxHashSet::default();
             let mut moves = MoveList::new();
-            generate_pawn_moves_into(&game.board, &from, &piece, &special, &None, &game.game_rules, &mut moves);
+            generate_pawn_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                &special,
+                &None,
+                &game.game_rules,
+                &mut moves,
+            );
 
             assert!(moves.len() >= 2, "Pawn should have at least 2 moves");
             // Should include forward move and capture
@@ -4133,7 +4333,14 @@ mod tests {
             let from = Coordinate::new(5, 1);
             let piece = Piece::new(PieceType::King, PlayerColor::White);
 
-            let moves = generate_castling_moves(&game.board, &from, &piece, &game.special_rights, &game.game_rules, &game.spatial_indices);
+            let moves = generate_castling_moves(
+                &game.board,
+                &from,
+                &piece,
+                &game.special_rights,
+                &game.game_rules,
+                &game.spatial_indices,
+            );
 
             // Test that the function runs without panicking and returns a MoveList
             // Castling availability depends on variant rules and board state
@@ -4213,7 +4420,14 @@ mod tests {
             let piece = Piece::new(PieceType::Hawk, PlayerColor::White);
 
             let mut moves = MoveList::new();
-            generate_compass_moves_into(&game.board, &from, &piece, 2, MoveGenType::All, &mut moves);
+            generate_compass_moves_into(
+                &game.board,
+                &from,
+                &piece,
+                2,
+                MoveGenType::All,
+                &mut moves,
+            );
 
             // Distance 2 compass should have 8 moves (4 ortho + 4 diag)
             assert_eq!(moves.len(), 8);
@@ -4240,8 +4454,14 @@ mod tests {
             let from = Coordinate::new(4, 4);
 
             // Looking up (positive y)
-            let (dist, captures) =
-                find_blocker_via_indices(&game.board, &from, 0, 1, &game.spatial_indices, PlayerColor::White);
+            let (dist, captures) = find_blocker_via_indices(
+                &game.board,
+                &from,
+                0,
+                1,
+                &game.spatial_indices,
+                PlayerColor::White,
+            );
 
             assert!(dist > 0, "Should find a blocker");
             assert!(!captures, "Own piece should not be a capture");
@@ -4327,7 +4547,6 @@ mod tests {
             let mut captures = MoveList::new();
             get_quiescence_captures(&game.board, PlayerColor::White, &ctx, &mut captures);
 
-            // Should find the knight capture
             assert!(!captures.is_empty(), "Should find capture moves");
             reset_world_bounds();
         });
@@ -4384,11 +4603,8 @@ mod tests {
 
     #[test]
     fn test_generate_rose_spirals_correct() {
-        // Verify the spiral constants are computed correctly
-        // Start direction 0, CCW: deltas[0] + deltas[1] + deltas[2] + ...
-        // deltas[0] = (-2, -1)
-        // deltas[1] = (-1, -2)
-        // Cumulative: hop 0 = (-2, -1), hop 1 = (-3, -3)
+        // Start direction 0, counter-clockwise: deltas (-2,-1) then (-1,-2) give
+        // cumulative hops (-2,-1) and (-3,-3).
         assert_eq!(ROSE_SPIRALS[0][0][0], (-2, -1), "First CCW hop from dir 0");
         assert_eq!(ROSE_SPIRALS[0][0][1], (-3, -3), "Second CCW hop from dir 0");
     }
@@ -4446,7 +4662,11 @@ mod tests {
 
             // Should include quiet promotion to (0, 8)
             let found_promo = moves.iter().any(|m| {
-                m.from.x == 0 && m.from.y == 7 && m.to.x == 0 && m.to.y == 8 && m.promotion.is_some()
+                m.from.x == 0
+                    && m.from.y == 7
+                    && m.to.x == 0
+                    && m.to.y == 8
+                    && m.promotion.is_some()
             });
 
             assert!(found_promo, "QSearch should generate quiet pawn promotions");
@@ -4484,7 +4704,6 @@ mod tests {
                 // Verify some moves were generated within bounds
                 assert!(!moves.is_empty());
 
-                // Reset bounds
                 super::reset_world_bounds();
             });
         }
@@ -4506,7 +4725,6 @@ mod tests {
                     assert!(in_bounds(m.to.x, m.to.y), "Move {:?} is out of bounds", m);
                 }
 
-                // Reset bounds
                 super::reset_world_bounds();
             });
         }
@@ -4523,12 +4741,19 @@ mod tests {
                 let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
 
                 let mut moves = MoveList::new();
-                generate_pawn_moves_into(&game.board, &from, &piece, &game.special_rights, &None, &game.game_rules, &mut moves);
+                generate_pawn_moves_into(
+                    &game.board,
+                    &from,
+                    &piece,
+                    &game.special_rights,
+                    &None,
+                    &game.game_rules,
+                    &mut moves,
+                );
 
                 // Should have NO moves because they all go to y=6 which is out of bounds
                 assert!(moves.is_empty(), "Pawn should have no moves out of bounds");
 
-                // Reset bounds
                 super::reset_world_bounds();
             });
         }

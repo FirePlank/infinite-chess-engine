@@ -5,7 +5,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
 use apeiron::board::PlayerColor;
 use apeiron::evaluation::{self};
 use apeiron::game::{GameState, WinCondition};
@@ -13,6 +12,7 @@ use apeiron::search::params::{
     self, EvalParams, SearchParams, TUNABLE_EVAL_PARAM_SPECS, TUNABLE_PARAM_SPECS,
 };
 use apeiron::{Engine, Variant};
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -488,7 +488,7 @@ fn play_game(
         }
     };
 
-    for ply in 0..config.max_moves {
+    for (ply, &seed_val) in seeds.iter().enumerate().take(config.max_moves) {
         if STOP.load(Ordering::SeqCst) {
             return GameOutcome {
                 result: GameResult::Draw,
@@ -574,7 +574,7 @@ fn play_game(
             .arg("--variant")
             .arg(variant.to_str())
             .arg("--seed")
-            .arg(seeds[ply].to_string());
+            .arg(seed_val.to_string());
         if let Some(json) = search_json {
             cmd.arg("--search-params-json").arg(json);
         }

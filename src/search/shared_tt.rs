@@ -295,14 +295,13 @@ impl SharedTranspositionTable {
         let key16 = self.hash_key16(params.hash);
         for e in &self.buckets[self.bucket_index(params.hash)].entries {
             if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16, params.hash) {
-                // Refresh on hit (Stockfish-style): keep USED entries current-generation so
-                // they win replacement fights; untouched stale ones age out. Racy vs a
-                // concurrent write, which at worst loses one refresh — benign.
+                // Keeping used entries current-generation lets them win replacement
+                // fights while untouched ones age out. Racing a concurrent write at
+                // worst loses one refresh.
                 unsafe {
                     let r#gen = *self.generation.get();
                     let meta = std::ptr::read_volatile(e.metadata.get());
-                    let new_gb =
-                        ((r#gen & GENERATION_MASK) | (((meta >> 24) as u8) & 0x07)) as u64;
+                    let new_gb = ((r#gen & GENERATION_MASK) | (((meta >> 24) as u8) & 0x07)) as u64;
                     std::ptr::write_volatile(
                         e.metadata.get(),
                         (meta & !(0xFFu64 << 24)) | (new_gb << 24),
@@ -450,7 +449,7 @@ impl SharedTranspositionTable {
                 replace_idx = i;
             }
         }
-        
+
         bucket.entries[replace_idx].write(
             key16,
             score_to_i16(adj_score),
@@ -550,11 +549,9 @@ mod tests {
 
     #[test]
     fn test_move_survives_best_move_none_restore() {
-        // Regression test for F37: a key-match store with best_move=None (preserve the
-        // existing move) used to read the move_data RAW (already XOR-protected) and
-        // feed it straight into the unconditional `^ hash_key` re-protect at the end,
-        // double-XORing it into garbage. The move must still decode correctly after a
-        // second store to the SAME position that doesn't supply a move.
+        // A key-match store with best_move=None must preserve the existing move: it
+        // has to un-protect the stored move_data before the final re-protect, or the
+        // double XOR turns it into garbage.
         let tt = SharedTranspositionTable::new(1);
         let hash = 0x1357924680ABCDEFu64;
         let m = Move {
@@ -574,8 +571,7 @@ mod tests {
             best_move: Some(m),
             ply: 0,
         });
-        // Re-store the same position with a deeper search but no move supplied - this
-        // must hit the key-match path and preserve the previously stored move.
+        // A deeper store with no move must take the key-match path and keep the move.
         tt.store(&TTStoreParams {
             hash,
             depth: 9,
@@ -606,10 +602,8 @@ mod tests {
 
     #[test]
     fn test_shallow_store_does_not_clobber_deep_entry() {
-        // Regression test for F38: the key-match replacement condition had an extra
-        // `|| params.depth == 0` clause (absent from the single-threaded tt.rs), so
-        // ANY depth-0 store (e.g. an eager static-eval store) unconditionally evicted
-        // an existing deep, same-generation, non-exact-beating entry's metadata.
+        // A depth-0 store, such as an eager static-eval store, must not evict the
+        // metadata of a deep same-generation entry.
         let tt = SharedTranspositionTable::new(1);
         let hash = 0x1122334455667788u64;
         tt.store(&TTStoreParams {

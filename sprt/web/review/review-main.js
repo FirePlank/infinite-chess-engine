@@ -419,7 +419,7 @@ function processResults(game, results) {
         // Eval from side-to-move's perspective
         const evalBefore = posBefore.eval;
 
-        // If next position is forced, evalAfter = evalBefore (no change — the forced move carries the same eval)
+        // A forced next position carries the same eval, so evalAfter = evalBefore.
         // Otherwise convert posAfter to the same side's perspective
         const evalAfter = posAfter.legalMoveCount === 1 ? evalBefore : -posAfter.eval;
 
@@ -647,7 +647,7 @@ function renderEvalGraph() {
         }
     }
 
-    // X-axis: full-move numbers — only one label per full move
+    // X-axis: full-move numbers, one label per full move.
     ctx.fillStyle = 'rgba(160,160,180,0.7)';
     ctx.font = '10px -apple-system,BlinkMacSystemFont,Inter,sans-serif';
     ctx.textAlign = 'center';

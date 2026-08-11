@@ -315,10 +315,9 @@ impl LocalTranspositionTable {
                     continue;
                 }
 
-                // Refresh on hit (Stockfish tt.cpp): entries the search actually USES stay
-                // current-generation and win replacement fights; untouched stale entries age
-                // out. Without this, larger tables hoard dead deep entries at the expense of
-                // the live search's.
+                // Entries the search actually uses stay current-generation and win
+                // replacement fights. Without this, large tables hoard dead deep
+                // entries at the live search's expense.
                 e.gen_bound = (self.generation & GENERATION_MASK) | (e.gen_bound & 0x07);
 
                 let score = value_from_tt(

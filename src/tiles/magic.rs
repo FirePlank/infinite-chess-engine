@@ -1,20 +1,12 @@
-//! Magic Bitboards for Sliders on 8×8 Tiles
-//!
-//! This module implements fast magic bitboards for O(1) slider attack
-//! generation within 8×8 tiles for infinite chess.
-//!
-//! ## Key Difference from Standard Chess
-//! Standard chess excludes edge squares from masks because edge blockers
-//! can't affect attacks (board boundary stops the ray anyway).
-//! For **infinite chess**, edges ARE included because rays continue to the next tile.
+//! Magic bitboards for O(1) slider attacks within an 8x8 tile. Unlike standard
+//! chess, edge squares stay in the masks: a ray does not stop at the tile boundary,
+//! so an edge blocker does affect the attack set.
 
 #![allow(static_mut_refs)]
 
 use std::sync::Once;
 
-// ============================================================================
 // Public API - Maximum performance with inline hints
-// ============================================================================
 
 /// Get rook attacks for a square within a single tile.
 /// Returns a bitboard of squares the rook can attack/move to within the tile.
@@ -54,14 +46,12 @@ pub fn init() {
     INIT.call_once(|| unsafe { init_tables() });
 }
 
-/// Legacy alias
+/// Alias kept for call sites that name the mask by its old spelling.
 pub fn init_magic_bitboards() {
     init();
 }
 
-// ============================================================================
 // Pre-generated Edge-Inclusive Magic Numbers
-// ============================================================================
 
 #[rustfmt::skip]
 const ROOK_MAGICS: [u64; 64] = [
@@ -127,9 +117,7 @@ const BISHOP_SHIFTS: [u8; 64] = [
     58, 59, 59, 59, 59, 59, 59, 58,
 ];
 
-// ============================================================================
 // Static Tables
-// ============================================================================
 
 static INIT: Once = Once::new();
 
@@ -146,9 +134,7 @@ static mut BISHOP_OFFSETS: [usize; 64] = [0; 64];
 static mut ROOK_MASKS: [u64; 64] = [0; 64];
 static mut BISHOP_MASKS: [u64; 64] = [0; 64];
 
-// ============================================================================
 // Initialization
-// ============================================================================
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn init_tables() {
@@ -349,10 +335,6 @@ fn gen_bishop_attacks(sq: usize, occ: u64) -> u64 {
     }
     a
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

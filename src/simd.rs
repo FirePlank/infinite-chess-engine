@@ -1,10 +1,6 @@
-// SIMD Optimization Module for WASM 128-bit SIMD
-//
-// Provides optimized bitboard operations using WebAssembly SIMD intrinsics.
-// Auto-enabled via .cargo/config.toml for WASM targets.
-//
-// Note: WASM SIMD has limited intrinsics. We use what's available and fall back
-// to scalar for operations like popcount that aren't in the stable API.
+//! Bitboard operations over WebAssembly 128-bit SIMD, auto-enabled for wasm targets
+//! via .cargo/config.toml. Operations with no stable intrinsic, such as popcount,
+//! fall back to scalar.
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 use core::arch::wasm32::*;
@@ -132,9 +128,7 @@ pub fn add_i32_pairs(a1: i32, a2: i32, b1: i32, b2: i32) -> (i32, i32) {
     (a1 + b1, a2 + b2)
 }
 
-// ============================================================================
 // Higher-Level SIMD Helpers for Chess
-// ============================================================================
 
 /// Count pieces for white and black simultaneously in a tile.
 #[inline]
@@ -160,9 +154,7 @@ pub fn combined_sliders(occ_bishops: u64, occ_rooks: u64, occ_queens: u64) -> (u
     or_pairs(occ_bishops, occ_rooks, occ_queens, occ_queens)
 }
 
-// ============================================================================
 // Advanced SIMD Operations for Evaluation
-// ============================================================================
 
 /// SIMD-optimized tapered evaluation.
 /// Computes: (mg_score * phase + eg_score * (256 - phase)) / 256

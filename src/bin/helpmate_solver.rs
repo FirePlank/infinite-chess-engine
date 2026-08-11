@@ -1,7 +1,5 @@
-//! Helpmate Solver for Infinite Chess
-//!
-//! A cooperative chess problem solver where both sides work together to achieve checkmate.
-//! Uses parallel exhaustive search with a thread-safe Transposition Table.
+//! Helpmate solver: both sides cooperate to reach checkmate. Runs a parallel
+//! exhaustive search over a thread-safe transposition table.
 
 use apeiron::{
     board::{Coordinate, PlayerColor},
@@ -14,9 +12,7 @@ use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::time::Instant;
 
-// ============================================================================
 // TRANSPOSITION TABLE
-// ============================================================================
 
 mod parallel_tt {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +47,11 @@ mod parallel_tt {
         mask: usize,
     }
 
+    /// (from_x, from_y, to_x, to_y)
+    pub type MoveCoords = (i16, i16, i16, i16);
+    /// (proof number, disproof number, best move, depth)
+    pub type ProbeResult = Option<(u32, u32, Option<MoveCoords>, u32)>;
+
     unsafe impl Sync for TranspositionTable {}
     unsafe impl Send for TranspositionTable {}
 
@@ -81,7 +82,7 @@ mod parallel_tt {
             (hash as usize) & self.mask
         }
 
-        pub fn probe(&self, hash: u64) -> Option<(u32, u32, Option<(i16, i16, i16, i16)>, u32)> {
+        pub fn probe(&self, hash: u64) -> ProbeResult {
             let bucket = &self.buckets[self.bucket_idx(hash)];
 
             for e in &bucket.entries {
@@ -193,9 +194,7 @@ mod parallel_tt {
     }
 }
 
-// ============================================================================
 // SOLVER
-// ============================================================================
 
 struct HelpmateSolver {
     tt: parallel_tt::TranspositionTable,
@@ -676,9 +675,7 @@ impl HelpmateSolver {
             if must_check {
                 for m in &piece_buf {
                     // Fast check filter before full validation
-                    if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(
-                        state, m,
-                    ) {
+                    if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(state, m) {
                         moves.push(*m);
                     }
                 }
@@ -803,8 +800,7 @@ impl HelpmateSolver {
                 let m = unsafe { piece_buf.get_unchecked(i) };
 
                 // FAST CHECK: Only process moves that give check
-                if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(state, m)
-                {
+                if apeiron::search::movegen::StagedMoveGen::move_gives_check_fast(state, m) {
                     let undo = state.make_move(m);
 
                     // Check for legal evasions
@@ -930,9 +926,7 @@ impl HelpmateSolver {
     }
 }
 
-// ============================================================================
 // UTILITIES & MAIN
-// ============================================================================
 
 struct Args {
     icn: String,
@@ -1045,20 +1039,14 @@ fn main() {
         min_y = min_y.saturating_sub(buffer);
         max_y = max_y.saturating_add(buffer);
 
-        let (cur_min_x, cur_max_x, cur_min_y, cur_max_y) =
-            apeiron::moves::get_coord_bounds();
+        let (cur_min_x, cur_max_x, cur_min_y, cur_max_y) = apeiron::moves::get_coord_bounds();
 
         let final_min_x = min_x.max(cur_min_x);
         let final_max_x = max_x.min(cur_max_x);
         let final_min_y = min_y.max(cur_min_y);
         let final_max_y = max_y.min(cur_max_y);
 
-        apeiron::moves::set_world_bounds(
-            final_min_x,
-            final_max_x,
-            final_min_y,
-            final_max_y,
-        );
+        apeiron::moves::set_world_bounds(final_min_x, final_max_x, final_min_y, final_max_y);
     }
 
     println!(

@@ -1,14 +1,15 @@
-//! Modified quiescence search for Obstocean
-//! 
-//! This is quite similar to the standard quiescence search, but it now accounts for pawn captures
-//! away from the center and outside the "board", as it is a common motif here.
+//! Obstocean quiescence search. Like the standard one, but it also follows pawn
+//! captures away from the center and outside the board, a common motif here.
 
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{EnPassantState, GameRules};
-use crate::moves::{Move, MoveGenContext, MoveGenType, MoveList,
-    generate_compass_moves_into, generate_huygen_moves_into, generate_knightrider_moves_into, generate_leaper_moves_into,
-    generate_pawn_quiet_promotions, generate_rose_moves_into, generate_sliding_capture_moves, is_enemy_piece};
-use rustc_hash::{FxHashSet};
+use crate::moves::{
+    Move, MoveGenContext, MoveGenType, MoveList, generate_compass_moves_into,
+    generate_huygen_moves_into, generate_knightrider_moves_into, generate_leaper_moves_into,
+    generate_pawn_quiet_promotions, generate_rose_moves_into, generate_sliding_capture_moves,
+    is_enemy_piece,
+};
+use rustc_hash::FxHashSet;
 
 /// Generate only capturing moves for quiescence search when the side to move is **not** in check.
 /// This avoids generating and then filtering thousands of quiet moves.
@@ -175,7 +176,6 @@ fn generate_pawn_capture_moves(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    // Get promotion ranks for this color
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
@@ -225,10 +225,15 @@ fn generate_pawn_capture_moves(
             if is_enemy_piece(&target, piece.color()) {
                 // In Obstocean, we allow pawn captures that promote to queen, are outside the "board", or go away from the center.
                 let is_neutral = target.piece_type().is_neutral_type();
-                let capturing_away = (capture_x <= 3 && capture_x < from.x) || (capture_x >= 6 && capture_x > from.x);
-                let capturing_outside = capture_x < 1 || capture_x > 8;
+                let capturing_away = (capture_x <= 3 && capture_x < from.x)
+                    || (capture_x >= 6 && capture_x > from.x);
+                let capturing_outside = !(1..=8).contains(&capture_x);
 
-                if !is_neutral || promotion_ranks.contains(&capture_y) || capturing_away || capturing_outside {
+                if !is_neutral
+                    || promotion_ranks.contains(&capture_y)
+                    || capturing_away
+                    || capturing_outside
+                {
                     add_pawn_cap_move(
                         out,
                         *from,

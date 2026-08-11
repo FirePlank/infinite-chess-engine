@@ -1,13 +1,6 @@
-//! NNUE (Efficiently Updatable Neural Network) Evaluation for Infinite Chess
-//!
-//! This module provides a quantized neural network evaluation trained on
-//! self-play games. The NNUE uses a two-stream architecture:
-//!
-//! - **RelKP Stream**: Translation-invariant piece positions relative to king (25450 → 256)
-//! - **ThreatEdges Stream**: Attack/defense relationships (6768 → 64)
-//!
-//! The accumulators are updated incrementally during make/undo for O(1) feature updates.
-//! For WASM compatibility, weights are embedded at compile time using `include_bytes!`.
+//! Quantized NNUE evaluation with two streams: RelKP (king-relative piece positions,
+//! 25450 to 256) and ThreatEdges (attack/defense relationships, 6768 to 64).
+//! Accumulators update incrementally on make/undo; weights are embedded at compile time.
 
 mod features;
 mod inference;
@@ -25,12 +18,8 @@ pub use weights::{NNUE_WEIGHTS, NnueWeights};
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;
 
-/// Check if NNUE evaluation is applicable to this position.
-///
-/// NNUE is only used when:
-/// - Every piece is a standard chess piece (K, Q, R, B, N, P)
-/// - Exactly one king per side exists
-/// - No obstacles, voids, or fairy pieces are present
+/// NNUE applies only to positions of standard chess pieces with exactly one king per
+/// side and no obstacles, voids, or fairy pieces.
 #[inline]
 pub fn is_applicable(gs: &GameState) -> bool {
     // The RelKP encoding anchors on a single king per side; a second same-color

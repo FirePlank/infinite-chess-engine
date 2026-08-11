@@ -12,11 +12,7 @@ use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-/// Win conditions for a player. Determines how they win the game.
-/// - Checkmate: Standard - win by checkmating the opponent
-/// - RoyalCapture: Win by capturing one of the opponent's royal pieces
-/// - AllRoyalsCaptured: Win when all of the opponent's royal pieces are captured
-/// - AllPiecesCaptured: Win when all of the opponent's pieces are captured
+/// How a player wins the game.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WinCondition {
     #[default]
@@ -172,8 +168,6 @@ pub struct UndoMove {
     pub old_effective_castling_rights: u8,
     pub old_castling_partner_counts: [u16; 4],
     pub old_total_phase: i32,
-    /// (white, black) non-pawn-material flags; promotion sets them in make_move.
-    pub old_non_pawn_material: (bool, bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +270,10 @@ pub struct GameState {
     /// Incremental game phase tracking.
     #[serde(skip)]
     pub total_phase: i32,
+    /// Phase of the game's starting position - the anchor for the relative
+    /// taper clock, so each variant ages on its own material scale.
+    #[serde(skip)]
+    pub initial_phase: i32,
     /// Minor piece position hash for correction history (Knights and Bishops).
     #[serde(skip)]
     pub minor_hash: u64,
@@ -291,17 +289,8 @@ pub struct GameState {
     /// Indexed by: 0=WKS, 1=WQS, 2=BKS, 3=BQS
     #[serde(skip)]
     pub castling_partner_counts: [u16; 4],
-    /// Fast non-pawn material flags for NMP zugzwang detection.
-    /// True if the side has at least one non-pawn, non-king piece.
-    /// Updated incrementally in make_move/undo_move.
-    #[serde(skip)]
-    pub white_non_pawn_material: bool,
-    #[serde(skip)]
-    pub black_non_pawn_material: bool,
-    /// Pinned pieces for white: maps (x, y) of a WHITE piece to (dx, dy) pin direction.
-    /// A piece at (x,y) pinned with direction (dx,dy) can only move along that line.
-    /// This is the direction FROM the king TO the pinner (through the pinned piece).
-    /// Updated by recompute_check_squares(). Used for fast legality checks (C1 optimization).
+    /// Maps a pinned white piece to its pin direction, running from the king through
+    /// the piece to the pinner. A pinned piece may only move along that line.
     #[serde(skip)]
     pub pinned_white: rustc_hash::FxHashMap<(i64, i64), (i64, i64)>,
     /// Pinned pieces for black
@@ -467,8 +456,6 @@ impl GameState {
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
-            white_non_pawn_material: false,
-            black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
@@ -476,6 +463,7 @@ impl GameState {
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
+            initial_phase: 0,
             white_royal_bonus: 50,
             black_royal_bonus: 50,
         }
@@ -524,8 +512,6 @@ impl GameState {
             material_hash: 0,
             minor_hash: 0,
             repetition: 0,
-            white_non_pawn_material: false,
-            black_non_pawn_material: false,
             effective_castling_rights: 0,
             castling_partner_counts: [0; 4],
             pinned_white: rustc_hash::FxHashMap::default(),
@@ -533,6 +519,7 @@ impl GameState {
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
             total_phase: 0,
+            initial_phase: 0,
             white_royal_bonus: 50,
             black_royal_bonus: 50,
         }
@@ -558,8 +545,6 @@ impl GameState {
         let mut white_pawns: u16 = 0;
         let mut black_pawns: u16 = 0;
         self.total_phase = 0;
-        let mut white_npm = false;
-        let mut black_npm = false;
         self.white_pieces.clear();
         self.black_pieces.clear();
         self.white_royals.clear();
@@ -601,8 +586,6 @@ impl GameState {
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             white_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            white_npm = true;
                         }
                     }
                     PlayerColor::Black => {
@@ -611,8 +594,6 @@ impl GameState {
                         // Track pawns and non-pawn material
                         if piece.piece_type() == PieceType::Pawn {
                             black_pawns += 1;
-                        } else if !piece.piece_type().is_royal() {
-                            black_npm = true;
                         }
                     }
                     PlayerColor::Neutral => {}
@@ -623,15 +604,11 @@ impl GameState {
         self.black_piece_count = black;
         self.white_pawn_count = white_pawns;
         self.black_pawn_count = black_pawns;
-        self.white_non_pawn_material = white_npm;
-        self.black_non_pawn_material = black_npm;
 
-        // Rebuild spatial indices from current board
         self.spatial_indices = SpatialIndices::new(&self.board);
         self.recompute_castling_state();
         // Recompute check squares for O(1) check detection
         self.recompute_pins();
-        // Recompute correction hashes for eval adjustment
         self.recompute_correction_hashes();
     }
 
@@ -662,7 +639,6 @@ impl GameState {
         for (dir_idx, (dx, dy)) in DIRECTIONS.iter().enumerate() {
             let is_ortho = dir_idx < 4;
 
-            // Find first blocker
             if let Some((bx, by)) = self.find_first_blocker_on_ray(king_pos.x, king_pos.y, *dx, *dy)
                 && self.board.is_occupied_by_color(bx, by, us)
                 && let Some((bx2, by2)) = self.find_first_blocker_on_ray(bx, by, *dx, *dy)
@@ -683,9 +659,7 @@ impl GameState {
     /// For each king, stores the (x, y, piece_type) tuples for squares from which
     /// knights and pawns can give check. Also computes slider rays for O(1) slider check.
     #[inline]
-    /// Recompute the pin maps consulted by SEE. This used to also build
-    /// check-square, slider-ray, discovered-check and checker-count caches; none
-    /// of those had any readers left, so only the pin scan remains.
+    /// Recompute the pin maps consulted by SEE.
     pub fn recompute_pins(&mut self) {
         use crate::attacks::{is_diag_slider, is_ortho_slider};
 
@@ -761,10 +735,8 @@ impl GameState {
         dx: i64,
         dy: i64,
     ) -> Option<(i64, i64)> {
-        // Use spatial indices to find nearest piece in direction
-        // SpatialIndices stores (coord, packed_piece) tuples sorted by coord
-        // Field names: cols (x -> list of y), rows (y -> list of x),
-        //              diag1 (x-y -> list of x), diag2 (x+y -> list of x)
+        // SpatialIndices keeps (coord, packed_piece) sorted per line, so the nearest
+        // piece in a direction is a binary search rather than a walk.
 
         if dx == 0 {
             // Vertical ray (N or S) - use cols[start_x] to get all y coords
@@ -896,7 +868,6 @@ impl GameState {
             // Target is adjacent, check if occupied by friendly
             return !self.board.is_occupied_by_color(to.x, to.y, self.turn);
         }
-        // Use find_first_blocker_on_ray to check path
         if let Some((bx, by)) = self.find_first_blocker_on_ray(from.x, from.y, step_x, step_y) {
             let blocker_dist = (bx - from.x).abs().max((by - from.y).abs());
             // Path is clear if blocker is at or beyond target (i.e., blocker_dist >= dist)
@@ -945,15 +916,9 @@ impl GameState {
         true
     }
 
-    /// Compute blocking squares for non-linear checkers (Rose).
-    ///
-    /// Algorithm:
-    /// 1. Find ALL spiral paths that can reach the target offset
-    /// 2. For each path, check if it's currently blocked by any piece
-    /// 3. If blocked, skip that path
-    /// 4. Collect ALL intermediate squares from unblocked paths
-    /// 5. If 1 path: return all intermediates (any block works)
-    /// 6. If N paths: return intersection (must block all)
+    /// Blocking squares for non-linear checkers (Rose). A single unblocked spiral
+    /// path can be interrupted anywhere along it, but several paths must all be
+    /// blocked at once, so the result is their intersection.
     fn get_nonlinear_blocking_squares(
         &self,
         checker_sq: &Coordinate,
@@ -1045,10 +1010,8 @@ impl GameState {
         result
     }
 
-    /// Initialize starting_squares from the current board: all non-pawn,
-    /// non-royal pieces' current coordinates are treated as their original
-    /// squares. Intended to be called once when constructing a GameState
-    /// from an initial position before replaying move history.
+    /// Treats every non-pawn, non-royal piece's current square as its original one.
+    /// Call once on the initial position, before replaying move history.
     pub fn init_starting_squares(&mut self) {
         self.starting_squares.clear();
         for (x, y, piece) in self.board.iter() {
@@ -1087,28 +1050,28 @@ impl GameState {
     }
 
     /// O(1) check for non-pawn material (for NMP zugzwang detection).
-    /// Returns true if the specified color has at least one non-pawn, non-king piece.
+    /// Derived from the live counters so captures and promotions stay correct.
     #[inline]
     pub fn has_non_pawn_material(&self, color: PlayerColor) -> bool {
-        match color {
-            PlayerColor::White => self.white_non_pawn_material,
-            PlayerColor::Black => self.black_non_pawn_material,
-            PlayerColor::Neutral => false,
-        }
+        let (pieces, pawns, royals) = match color {
+            PlayerColor::White => (
+                self.white_piece_count as usize,
+                self.white_pawn_count as usize,
+                self.white_royals.len(),
+            ),
+            PlayerColor::Black => (
+                self.black_piece_count as usize,
+                self.black_pawn_count as usize,
+                self.black_royals.len(),
+            ),
+            PlayerColor::Neutral => return false,
+        };
+        pieces > pawns + royals
     }
 
-    /// Returns true if the side-to-move must respond to check.
-    ///
-    /// In standard chess (checkmate win condition), you must escape check.
-    /// In capture-based variants (royalcapture, allroyalscaptured, allpiecescaptured),
-    /// the opponent wins by capturing pieces, not by giving checkmate, so checks
-    /// don't need to be escaped (the king can be captured).
-    ///
-    /// The logic: The OPPONENT's win condition determines if WE must escape check.
-    /// - white_win_condition = how White beats Black (what White must do to win)
-    /// - black_win_condition = how Black beats White (what Black must do to win)
-    /// - If White is to move: Black beats White via black_win_condition → if Checkmate, White must escape
-    /// - If Black is to move: White beats Black via white_win_condition → if Checkmate, Black must escape
+    /// Whether the side-to-move must respond to check. Only checkmate win conditions
+    /// require it: under capture-based ones the king may simply be taken. The
+    /// opponent's win condition is what decides this, since it is how we can lose.
     #[inline]
     pub fn must_escape_check(&self) -> bool {
         // The OPPONENT's win condition tells us how they beat us
@@ -1121,12 +1084,8 @@ impl GameState {
         opponent_win_condition.requires_check_evasion()
     }
 
-    /// Returns true if the given color's king can be captured (no check evasion needed).
-    /// This is the opposite of must_escape_check but for a specific color.
-    ///
-    /// The OPPONENT's win condition against this color determines if the king can be captured:
-    /// - If White's king can be captured: check black_win_condition (how Black beats White)
-    /// - If Black's king can be captured: check white_win_condition (how White beats Black)
+    /// Whether this color's king may simply be captured, the per-color inverse of
+    /// `must_escape_check`. Decided by the opponent's win condition.
     #[inline]
     pub fn king_capturable(&self, color: PlayerColor) -> bool {
         // The OPPONENT's win condition tells us how they beat this color
@@ -1139,13 +1098,9 @@ impl GameState {
         !opponent_win_condition.requires_check_evasion()
     }
 
-    /// Check if the side-to-move has lost by royal capture.
-    /// This is only relevant for RoyalCapture and AllRoyalsCaptured win conditions.
-    /// Returns true if the opponent (who just moved) has captured all required royals.
-    ///
-    /// The OPPONENT's win condition against us determines if we can lose by royal capture:
-    /// - If White is to move: check black_win_condition (how Black beats White)
-    /// - If Black is to move: check white_win_condition (how White beats Black)
+    /// Whether the side-to-move has lost by royal capture, which only applies under
+    /// the RoyalCapture and AllRoyalsCaptured win conditions. Decided by the
+    /// opponent's win condition, since it is how we can lose.
     #[inline]
     pub fn has_lost_by_royal_capture(&self) -> bool {
         let (current_count, initial_count) = match self.turn {
@@ -1174,14 +1129,9 @@ impl GameState {
         false
     }
 
-    /// Repetition detection for search.
-    /// Returns true if the current position should be treated as a draw due to repetition.
-    ///
-    /// For twofold (repetition > 0): Only a draw if the repetition distance is less than ply,
-    /// meaning the first occurrence is within the search tree.
-    ///
-    /// For threefold (repetition < 0): The negative value is always less than any positive ply,
-    /// so threefold is always detected as a draw at ply > 0.
+    /// Whether the position counts as a repetition draw for search. A twofold only
+    /// counts when the first occurrence lies inside the search tree; threefold is
+    /// stored negative, so it always compares below the ply and always counts.
     #[inline]
     pub fn is_repetition(&self, ply: usize) -> bool {
         // Don't check during null move search
@@ -1193,11 +1143,9 @@ impl GameState {
         self.repetition != 0 && self.repetition < (ply as i32)
     }
 
-    /// Check if we have an upcoming move that draws by repetition: some
-    /// reversible move by the side to move recreates a position from the
-    /// last `end` plies. Candidate transition moves are the reverses of our
-    /// own recent moves (an unbounded board has no precomputed cuckoo table),
-    /// verified against the exact hash difference to the earlier position.
+    /// Whether some reversible move by the side to move recreates a position from the
+    /// last `end` plies. An unbounded board has no cuckoo table, so the candidates are
+    /// the reverses of our own recent moves, checked against the exact hash difference.
     pub fn upcoming_repetition(&self, ply: usize) -> bool {
         use crate::search::zobrist::{SIDE_KEY, piece_key};
 
@@ -1216,10 +1164,8 @@ impl GameState {
             return false;
         }
 
-        // Our moves sit at history indices len-2, len-4, ... (the entry one
-        // ply back is the opponent's). Everything in the window is reversible:
-        // pawn moves and captures reset the halfmove clock. Keys are pure
-        // zobrist math; board playability is only verified on a key match.
+        // Our own moves sit at history indices len-2, len-4, and so on. Everything in
+        // the window is reversible, since pawn moves and captures reset the clock.
         let mut candidates: ArrayVec<(u64, usize), 32> = ArrayVec::new();
         let mut d = 2;
         while d <= end && !candidates.is_full() {
@@ -1270,10 +1216,9 @@ impl GameState {
         false
     }
 
-    /// True if the reverse of a recorded move (to -> from) can be played on
-    /// the current board: our matching piece still on `to`, `from` empty, and
-    /// a clear path for line moves. Bent-path riders are skipped since their
-    /// paths can't be verified cheaply (conservative false negative).
+    /// True if a recorded move can be played in reverse right now. Bent-path riders
+    /// are skipped, a conservative false negative, since verifying their paths is
+    /// not cheap.
     fn reverse_move_playable(&self, e: &MoveHistoryEntry) -> bool {
         match self.board.get_piece(e.to_x, e.to_y) {
             Some(p) if p.piece_type() == e.piece_type && p.color() == self.turn => {}
@@ -1595,14 +1540,12 @@ impl GameState {
     /// When in check and must escape (checkmate win condition), uses the optimized
     /// evasion generator that handles long-range blocking moves correctly.
     pub fn get_legal_moves_into(&self, out: &mut MoveList) {
-        // Exact list: skip the position-stale slider candidate cache, which can
-        // omit legal moves (standard-startpos perft D3 was 8842 vs 8902). The
-        // cache stays enabled for the interior search, where its speed is
-        // load-bearing and removing it measured much worse.
+        // The slider candidate cache can go stale and omit legal moves, so an exact
+        // list must bypass it. The interior search keeps it, where its speed matters
+        // more than the occasional miss.
         crate::moves::set_slider_cache_bypass(true);
-        let r = self.get_legal_moves_into_inner(out);
+        self.get_legal_moves_into_inner(out);
         crate::moves::set_slider_cache_bypass(false);
-        r
     }
 
     fn get_legal_moves_into_inner(&self, out: &mut MoveList) {
@@ -1679,11 +1622,14 @@ impl GameState {
 
         get_legal_moves_into(&self.board, self.turn, &ctx, out);
 
-        // Riders pin outside the queen rays (knightrider knight-rays, huygen
-        // prime-distance files), so the pin map can't clear a move — verify
-        // every non-royal move strictly when the enemy has one. (Rose spiral
-        // pins are rare enough that the blanket verify isn't worth its cost.)
-        let them_idx = if self.turn == PlayerColor::White { 1 } else { 0 };
+        // Riders pin outside the queen rays, so the pin map cannot clear a move and
+        // every non-royal move needs a strict check. Rose spiral pins are rare enough
+        // that a blanket verify is not worth its cost.
+        let them_idx = if self.turn == PlayerColor::White {
+            1
+        } else {
+            0
+        };
         let rider_pins_possible = self.spatial_indices.has_knightrider[them_idx]
             || self.spatial_indices.has_huygen[them_idx];
 
@@ -1723,8 +1669,8 @@ impl GameState {
                     || crate::attacks::is_diag_slider(pt)
                     || pt == PieceType::Pawn)
                 {
-                    // Collinear JUMPING piece can still leap past the king or
-                    // the pinner along the ray — verify strictly.
+                    // A collinear jumping piece can still leap past the king or the
+                    // pinner along the ray, so verify strictly.
                     let mut s_mut = self.clone();
                     let _undo = s_mut.make_move(&m);
                     if s_mut.is_move_illegal() {
@@ -1913,38 +1859,36 @@ impl GameState {
         // Knightrider blocking is special: blocking squares are along the knight hop path
         let is_knightrider_checker = checker_type == PieceType::Knightrider;
 
-        // Pre-compute knightrider blocking squares: the intermediate knight hops between checker and king
-        // The knightrider attacks along a line of repeated knight moves: (dx, dy) * n
-        // For a check from checker_sq to king_sq, we need to find which knight direction was used
-        // knightrider_check_ndx/ndy: the actual (±1,±2)/(±2,±1) hop direction from king→checker.
-        // knightrider_n: total hops (checker = king + n*(ndx,ndy)).
-        // Blocking squares are king + i*(ndx,ndy) for i in 1..n.
-        let (knightrider_blocking_squares, knightrider_check_ndx, knightrider_check_ndy, knightrider_n):
-            (arrayvec::ArrayVec<Coordinate, 32>, i64, i64, i64) =
-            if is_knightrider_checker {
-                use crate::attacks::KNIGHTRIDER_DIRS;
-                let mut blocking = arrayvec::ArrayVec::new();
-                let mut found = (0i64, 0i64, 0i64);
-                for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
-                    if ndx != 0 && ndy != 0 {
-                        let n_x = dx_check / ndx;
-                        let n_y = dy_check / ndy;
-                        if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
-                            found = (ndx, ndy, n_x);
-                            for i in 1..n_x {
-                                blocking.push(Coordinate::new(
-                                    king_sq.x + ndx * i,
-                                    king_sq.y + ndy * i,
-                                ));
-                            }
-                            break;
+        // A knightrider checks along repeated knight hops, so recover the hop
+        // direction (ndx, ndy) and count n from king to checker; the blocking squares
+        // are king + i*(ndx, ndy) for i in 1..n.
+        let (
+            knightrider_blocking_squares,
+            knightrider_check_ndx,
+            knightrider_check_ndy,
+            knightrider_n,
+        ): (arrayvec::ArrayVec<Coordinate, 32>, i64, i64, i64) = if is_knightrider_checker {
+            use crate::attacks::KNIGHTRIDER_DIRS;
+            let mut blocking = arrayvec::ArrayVec::new();
+            let mut found = (0i64, 0i64, 0i64);
+            for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
+                if ndx != 0 && ndy != 0 {
+                    let n_x = dx_check / ndx;
+                    let n_y = dy_check / ndy;
+                    if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
+                        found = (ndx, ndy, n_x);
+                        for i in 1..n_x {
+                            blocking
+                                .push(Coordinate::new(king_sq.x + ndx * i, king_sq.y + ndy * i));
                         }
+                        break;
                     }
                 }
-                (blocking, found.0, found.1, found.2)
-            } else {
-                (arrayvec::ArrayVec::new(), 0, 0, 0)
-            };
+            }
+            (blocking, found.0, found.1, found.2)
+        } else {
+            (arrayvec::ArrayVec::new(), 0, 0, 0)
+        };
 
         // For non-linear checkers, compute blocking squares up front
         let nonlinear_blocking_squares = if is_nonlinear_checker {
@@ -1994,7 +1938,8 @@ impl GameState {
 
                     // Iterate through all primes from the Huygen to find valid blocking squares
                     'outer_huygen_fast: for &p_from_huygen in &PRIMES_UNDER_128 {
-                        let block_coord = our_huygen_coord + (if our_huygen_coord < king_coord { 1 } else { -1 }) * p_from_huygen;
+                        let block_coord = our_huygen_coord
+                            + (if our_huygen_coord < king_coord { 1 } else { -1 }) * p_from_huygen;
 
                         // Must be between king and checker
                         let block_between = if checker_coord > king_coord {
@@ -2096,10 +2041,8 @@ impl GameState {
                 }
             };
 
-            // ==========================================
             // SLIDER BLOCKING (Rook/Bishop/Queen/etc)
             // Direct intersection calculation - O(1), works for infinite distances
-            // ==========================================
 
             // HUYGEN CHECKER: Special handling for ortho sliders
             // Compute where the slider intersects the check ray and verify it's at prime distance from checker
@@ -2115,7 +2058,6 @@ impl GameState {
                         let tx = from.x;
                         let ty = king_sq.y;
 
-                        // Check if this x is between king and checker
                         let between = if checker_sq.x > king_sq.x {
                             tx > king_sq.x && tx < checker_sq.x
                         } else {
@@ -2189,11 +2131,9 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // OPTIMIZED SLIDER BLOCKING FOR ROSE CHECKERS
             // For Rose checks, blocking squares are precomputed.
             // Generate moves to each reachable blocking square.
-            // ==========================================
             if is_nonlinear_checker && (can_ortho || can_diag) {
                 for block_sq in &nonlinear_blocking_squares {
                     // Check if this slider can reach the blocking square
@@ -2226,7 +2166,12 @@ impl GameState {
             }
 
             // Regular slider blocking for non-Huygen, non-Rose, non-Knightrider checkers (linear attack patterns)
-            if is_slider && can_ortho && !is_huygen_checker && !is_nonlinear_checker && !is_knightrider_checker {
+            if is_slider
+                && can_ortho
+                && !is_huygen_checker
+                && !is_nonlinear_checker
+                && !is_knightrider_checker
+            {
                 // Horizontal line y=from.y intersects check ray
                 if step_y != 0 {
                     let k = (from.y - king_sq.y) / step_y;
@@ -2255,19 +2200,15 @@ impl GameState {
                 }
             }
 
-            // ==========================================
-            // OPTIMIZED HUYGEN BLOCKING & CAPTURE
-            // Uses intersection logic for O(1) checks on cross-rays.
-            // Falls back to O(N) loop only for parallel rays.
-            // Pre-fetches spatial indices for max performance.
-            // ==========================================
+            // Cross-rays intersect in one square, so blocking is O(1) there; only
+            // parallel rays need the O(N) walk.
             if pt == PieceType::Huygen && is_slider {
                 use crate::utils::is_prime_fast;
                 // Pre-fetch spatial indices
                 let row_pieces = s.spatial_indices.rows.get(&from.y);
                 let col_pieces = s.spatial_indices.cols.get(&from.x);
 
-                // --- Helper: Check and push move to (tx, ty) ---
+                // Helper: Check and push move to (tx, ty)
                 // Returns true if move was valid and pushed
                 let mut try_add_move = |tx: i64, ty: i64, verify_checker_dist: bool| {
                     let d_x = tx - from.x;
@@ -2425,16 +2366,14 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // ORTHO/DIAG SLIDER BLOCKING AGAINST KNIGHTRIDER CHECKER
             // O(1) per sliding line: solve king + i*(cndx,cndy) = slider's line for i.
-            // ==========================================
             if is_knightrider_checker && (can_ortho || can_diag) {
                 let cndx = knightrider_check_ndx;
                 let cndy = knightrider_check_ndy;
-                let cn   = knightrider_n;
-                let kx   = king_sq.x;
-                let ky   = king_sq.y;
+                let cn = knightrider_n;
+                let kx = king_sq.x;
+                let ky = king_sq.y;
 
                 // Same column: from.x = kx + cndx*i  =>  i = (from.x - kx) / cndx
                 if can_ortho && cndx != 0 {
@@ -2445,8 +2384,7 @@ impl GameState {
                             let ty = ky + cndy * i;
                             if ty != from.y {
                                 let tgt = Coordinate::new(from.x, ty);
-                                if can_block_at(from.x, ty)
-                                    && s.is_path_clear_for_rook(&from, &tgt)
+                                if can_block_at(from.x, ty) && s.is_path_clear_for_rook(&from, &tgt)
                                 {
                                     out.push(Move::new(from, tgt, *piece));
                                 }
@@ -2464,8 +2402,7 @@ impl GameState {
                             let tx = kx + cndx * i;
                             if tx != from.x {
                                 let tgt = Coordinate::new(tx, from.y);
-                                if can_block_at(tx, from.y)
-                                    && s.is_path_clear_for_rook(&from, &tgt)
+                                if can_block_at(tx, from.y) && s.is_path_clear_for_rook(&from, &tgt)
                                 {
                                     out.push(Move::new(from, tgt, *piece));
                                 }
@@ -2485,9 +2422,7 @@ impl GameState {
                             let ty = ky + cndy * i;
                             if tx != from.x {
                                 let tgt = Coordinate::new(tx, ty);
-                                if can_block_at(tx, ty)
-                                    && s.is_path_clear_for_bishop(&from, &tgt)
-                                {
+                                if can_block_at(tx, ty) && s.is_path_clear_for_bishop(&from, &tgt) {
                                     out.push(Move::new(from, tgt, *piece));
                                 }
                             }
@@ -2506,9 +2441,7 @@ impl GameState {
                             let ty = ky + cndy * i;
                             if tx != from.x {
                                 let tgt = Coordinate::new(tx, ty);
-                                if can_block_at(tx, ty)
-                                    && s.is_path_clear_for_bishop(&from, &tgt)
-                                {
+                                if can_block_at(tx, ty) && s.is_path_clear_for_bishop(&from, &tgt) {
                                     out.push(Move::new(from, tgt, *piece));
                                 }
                             }
@@ -2517,17 +2450,15 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // KNIGHTRIDER BLOCKING
             // Slider along knight directions - intersection calculation
-            // ==========================================
             if is_slider && pt == PieceType::Knightrider {
                 if is_knightrider_checker {
                     // Use the real hop direction instead of the sign-only step_x/step_y.
                     // k ranges up to knightrider_n inclusive so capture (k==n) is covered.
                     let cndx = knightrider_check_ndx;
                     let cndy = knightrider_check_ndy;
-                    let cn   = knightrider_n;
+                    let cn = knightrider_n;
                     for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
                         let det = ndx * cndy - ndy * cndx;
                         if det != 0 {
@@ -2592,10 +2523,8 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // LEAPER BLOCKING (Knight, Camel, Zebra, Giraffe, Guard, Hawk)
             // Enumerate fixed jump patterns - O(jumps)
-            // ==========================================
             if is_slider {
                 // Knight-like blocking
                 if can_knight {
@@ -2664,10 +2593,8 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // DIRECT SLIDER CAPTURE OF CHECKER
             // O(1) checks for infinite-range slider captures - no move gen needed
-            // ==========================================
             if can_ortho {
                 // Check if checker is on same row or column
                 if from.x == checker_sq.x && from.y != checker_sq.y {
@@ -2695,10 +2622,8 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // HUYGEN CAPTURE OF CHECKER
             // O(n) check for Huygen capturing at prime distance
-            // ==========================================
             if pt == PieceType::Huygen {
                 let dx = checker_sq.x - from.x;
                 let dy = checker_sq.y - from.y;
@@ -2744,10 +2669,8 @@ impl GameState {
                 }
             }
 
-            // ==========================================
             // CAPTURE & BLOCKING DETECTION (for remaining pieces)
             // Uses pseudo-legal move generation for captures
-            // ==========================================
             let mut pseudo = MoveList::new();
             let ctx = crate::moves::MoveGenContext {
                 special_rights: &s.special_rights,
@@ -2829,11 +2752,9 @@ impl GameState {
         }
     }
 
-    /// Ultra-fast legality check (C1 Optimization).
-    /// Only does simple arithmetic - NO spatial index lookups for the common case.
-    /// Returns:
-    /// - Ok(true): Move is DEFINITELY LEGAL (piece not on any slider ray from king AND side not in check)
-    /// - Err(()): Cannot determine fast, must use full is_move_illegal check
+    /// Arithmetic-only legality check, with no spatial index lookups. `Ok(true)` means
+    /// definitely legal; `Err(())` means the caller must fall back to
+    /// `is_move_illegal`.
     #[inline(always)]
     #[allow(clippy::result_unit_err)]
     pub fn is_legal_fast(&self, m: &Move, in_check: bool) -> Result<bool, ()> {
@@ -2877,7 +2798,11 @@ impl GameState {
         // Knightriders pin along knight-rays, which the queen-ray fast test
         // below cannot see. (Rose spiral pins are rare enough that the full
         // verify on every move costs more than the legality risk.)
-        let them = if self.turn == PlayerColor::White { 1 } else { 0 };
+        let them = if self.turn == PlayerColor::White {
+            1
+        } else {
+            0
+        };
         if self.spatial_indices.has_knightrider[them] {
             return Err(());
         }
@@ -2908,22 +2833,16 @@ impl GameState {
         }
     }
 
-    /// Check if the side that just moved left their royal piece(s) in check (illegal move).
-    /// Call this AFTER make_move to verify legality.
-    /// Checks all royal pieces: King, RoyalQueen, RoyalCentaur
-    ///
-    /// Note: In capture-based win condition variants (royalcapture, allroyalscaptured,
-    /// allpiecescaptured), leaving your king in check is NOT illegal since the opponent
-    /// wins by capturing, not by checkmate.
+    /// Whether the side that just moved left any royal in check, which makes the move
+    /// illegal. Call after `make_move`. Under capture-based win conditions this is
+    /// legal, since the opponent wins by capturing rather than by mate.
     pub fn is_move_illegal(&self) -> bool {
         // After make_move, self.turn is the opponent (the side that will move next).
         // We need to check if the side that just moved (opponent of current turn) has any royal in check.
         let moved_color = self.turn.opponent();
 
-        // Check if the side that moved needs to escape check.
-        // moved_color's win condition tells us what their opponent does to beat them.
-        // If moved_color's win condition is capture-based (not checkmate), then
-        // leaving the king in check is NOT illegal (king can be captured).
+        // The mover's own win condition says how their opponent beats them; if that is
+        // capture-based, leaving the king en prise is legal.
         if self.king_capturable(moved_color) {
             return false; // Leaving king in check is legal in capture-based variants
         }
@@ -3117,9 +3036,8 @@ impl GameState {
         self.make_move(&m);
     }
 
-    /// True if `m` is an en-passant capture: a pawn moving onto the en-passant
-    /// square. The captured pawn sits on the adjacent `en_passant.pawn_square`,
-    /// so `m.to` itself is empty and ordinary `get_piece(m.to)` capture detection
+    /// True if `m` is an en-passant capture. The captured pawn sits on
+    /// `en_passant.pawn_square`, so `m.to` is empty and ordinary capture detection
     /// misses it.
     #[inline]
     pub fn is_en_passant(&self, m: &Move) -> bool {
@@ -3143,9 +3061,9 @@ impl GameState {
 
         let from_coord = Coordinate::new(m.from.x, m.from.y);
 
-        // Snapshot the old castling hash BEFORE the mover leaves the board:
-        // the precise-mode pair skips rights-squares with no piece on them, so
-        // computing it after removal never XORes out the mover's own key.
+        // Snapshot the castling hash before the mover leaves the board: precise mode
+        // skips empty rights-squares, so computing it after removal would never XOR
+        // out the mover's own key.
         let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
 
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
@@ -3187,7 +3105,6 @@ impl GameState {
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
             old_total_phase: self.total_phase,
-            old_non_pawn_material: (self.white_non_pawn_material, self.black_non_pawn_material),
         };
 
         // Track royal position updates
@@ -3207,9 +3124,8 @@ impl GameState {
             }
         }
 
-        // Once a piece moves from its original square, we no longer treat
-        // that coordinate as an undeveloped starting square. Record this so
-        // undo_move can restore starting_squares.
+        // A piece leaving its original square stops that coordinate counting as
+        // undeveloped; record it so undo_move can restore starting_squares.
         if self.starting_squares.remove(&from_coord) {
             undo_info.starting_square_restored = Some(from_coord);
         }
@@ -3360,12 +3276,10 @@ impl GameState {
                 self.material_score -= pawn_val;
                 self.material_score += promo_val;
                 self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
-                self.white_non_pawn_material = true;
             } else {
                 self.material_score += pawn_val;
                 self.material_score -= promo_val;
                 self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
-                self.black_non_pawn_material = true;
             }
 
             self.total_phase += get_piece_phase(promo_type);
@@ -3418,7 +3332,8 @@ impl GameState {
             let rook_to_x = m.to.x - direction;
             // Move rook in castling
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
-            self.rep_hash ^= rep_piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+            self.rep_hash ^=
+                rep_piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             self.rep_hash ^= rep_piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
 
@@ -3434,11 +3349,9 @@ impl GameState {
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             }
             self.board.set_piece(rook_to_x, m.from.y, rook);
-            // Update spatial indices for rook move
             self.spatial_indices.remove(rook_coord.x, rook_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
 
-            // Rook also loses special rights
             if self.special_rights.remove(rook_coord) {
                 undo_info.special_rights_removed.push(*rook_coord);
                 castling_state_dirty = true;
@@ -3459,7 +3372,12 @@ impl GameState {
             m.to.x,
             m.to.y,
         );
-        self.rep_hash ^= rep_piece_key(final_piece.piece_type(), final_piece.color(), m.to.x, m.to.y);
+        self.rep_hash ^= rep_piece_key(
+            final_piece.piece_type(),
+            final_piece.color(),
+            m.to.x,
+            m.to.y,
+        );
         if final_piece.piece_type() == PieceType::Pawn {
             self.pawn_hash ^= crate::search::zobrist::pawn_key(final_piece.color(), m.to.x, m.to.y);
         } else {
@@ -3667,7 +3585,6 @@ impl GameState {
             }
         }
 
-        // Restore captured piece
         if let Some(captured) = undo.captured_piece {
             // Restore material hash
             if captured.color() != PlayerColor::Neutral {
@@ -3740,7 +3657,6 @@ impl GameState {
             self.spatial_indices
                 .add(ep.pawn_square.x, ep.pawn_square.y, captured_pawn.packed());
 
-            // Restore material hash
             self.material_hash = self.material_hash.wrapping_add(material_key(
                 captured_pawn.piece_type(),
                 captured_pawn.color(),
@@ -3817,7 +3733,6 @@ impl GameState {
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
         self.total_phase = undo.old_total_phase;
-        (self.white_non_pawn_material, self.black_non_pawn_material) = undo.old_non_pawn_material;
 
         // Restore castling state
         self.effective_castling_rights = undo.old_effective_castling_rights;
@@ -4020,7 +3935,6 @@ impl GameState {
                     });
                 }
             } else if let Ok(val) = token.parse::<u32>() {
-                // Fullmove number
                 self.fullmove_number = val;
             } else {
                 // Check if it's a win condition list
@@ -4039,6 +3953,7 @@ impl GameState {
 
         // Recompute piece counts/lists BEFORE selecting win conditions
         self.recompute_piece_counts();
+        self.initial_phase = self.total_phase;
 
         // Finalize win conditions based on piece presence
         let white_has_royal = self.white_pieces.iter().any(|&(px, py)| {
@@ -4164,6 +4079,7 @@ impl GameState {
     fn finalize_setup(&mut self) {
         // 1. Rebuild piece lists and counts to find royals
         self.recompute_piece_counts();
+        self.initial_phase = self.total_phase;
 
         // 2. Set starting royal counts if not already set (e.g. at game start)
         if self.starting_white_royals == 0 {
@@ -4267,13 +4183,10 @@ impl GameState {
         // Cache starting non-pawn piece counts for phase detection
         self.init_starting_piece_counts();
 
-        // Initialize starting squares
         self.init_starting_squares();
 
-        // Compute initial hash
         self.recompute_hash();
 
-        // Rebuild spatial indices
         self.spatial_indices = SpatialIndices::new(&self.board);
     }
 
@@ -4366,7 +4279,6 @@ mod tests {
             assert_eq!(game.game_rules.white_win_condition, WinCondition::Checkmate);
             assert_eq!(game.game_rules.black_win_condition, WinCondition::Checkmate);
 
-            // Check allowed promotions
             let allowed = game.game_rules.promotions_allowed.as_ref().unwrap();
             assert!(allowed.contains(&"am".to_string()));
             assert!(allowed.contains(&"q".to_string()));
@@ -4374,12 +4286,10 @@ mod tests {
             // Check pieces
             let k = game.board.get_piece(5, 1).unwrap();
             assert_eq!(k.piece_type(), PieceType::King);
-            
+
             reset_world_bounds();
         });
     }
-
-    // ======================== 50-Move Rule Tests ========================
 
     #[test]
     fn test_is_fifty_returns_false_when_no_rule() {
@@ -4438,14 +4348,11 @@ mod tests {
         assert!(game.is_fifty());
     }
 
-    // ======================== Repetition Tests ========================
-
     #[test]
     fn test_rose_check_detection() {
         let mut game = create_test_game_from_icn("b (8;q|1;q) RO3,7|k5,8|K5,1");
         game.special_rights.clear();
 
-        // Build spatial indices
         game.spatial_indices = SpatialIndices::new(&game.board);
 
         // Test: The king at (5,8) should be attacked by the white rose at (3,7)
@@ -4599,8 +4506,6 @@ mod tests {
         assert!(!game.is_repetition(5), "Should not detect during null move");
     }
 
-    // ======================== Null Move Tests ========================
-
     #[test]
     fn test_null_move_flips_turn() {
         let mut game = create_test_game();
@@ -4646,8 +4551,6 @@ mod tests {
         assert_eq!(game.hash, original_hash, "Hash should be restored");
     }
 
-    // ======================== King Position Tests ========================
-
     #[test]
     fn test_king_positions_tracked() {
         let game = create_test_game_from_icn("w (8;q|1;q) K3,3|k7,7");
@@ -4676,8 +4579,6 @@ mod tests {
         );
     }
 
-    // ======================== Piece Count Tests ========================
-
     #[test]
     fn test_piece_counts_accurate() {
         let game = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,1|P3,1|P4,1|k1,8|r2,8");
@@ -4704,8 +4605,6 @@ mod tests {
             "Knight = has NPM"
         );
     }
-
-    // ======================== Hash Consistency Tests ========================
 
     #[test]
     fn test_hash_changes_on_move() {
@@ -4793,8 +4692,6 @@ mod tests {
         }
     }
 
-    // ======================== Move Make/Unmake Tests ========================
-
     #[test]
     fn test_halfmove_clock_increments() {
         let mut game = create_test_game();
@@ -4869,8 +4766,6 @@ mod tests {
         assert_eq!(game.halfmove_clock, 42, "Should restore halfmove clock");
     }
 
-    // ======================== Lone King Endgame Tests ========================
-
     #[test]
     fn test_is_lone_king_endgame_both_have_pieces() {
         let game = create_test_game_from_icn("w (8;q|1;q) K1,1|Q2,1|k1,8|r2,8");
@@ -4891,8 +4786,6 @@ mod tests {
 
         assert!(game.is_lone_king_endgame());
     }
-
-    // ======================== Check Detection Tests ========================
 
     #[test]
     fn test_is_in_check_basic() {
@@ -4921,8 +4814,6 @@ mod tests {
         assert!(!game.is_in_check(), "White king should not be in check");
     }
 
-    // ======================== Standard Chess Setup Tests ========================
-
     #[test]
     fn test_setup_standard_chess() {
         with_bounds_lock(|| {
@@ -4944,7 +4835,6 @@ mod tests {
                 Some(Coordinate::new(5, 8))
             );
 
-            // Check it's white's turn
             assert_eq!(game.turn, PlayerColor::White);
 
             // Check promotion ranks set
@@ -5124,7 +5014,7 @@ mod tests {
         assert!(game.starting_squares.contains(&Coordinate::new(8, 1)));
     }
 
-    // ===== TESTS FOR UNTESTED HIGH-IMPACT FUNCTIONS =====
+    // TESTS FOR UNTESTED HIGH-IMPACT FUNCTIONS
 
     #[test]
     fn test_recompute_piece_counts_empty_board() {
@@ -5162,7 +5052,7 @@ mod tests {
         let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,1");
         game.recompute_piece_counts();
 
-        assert!(game.white_non_pawn_material);
+        assert!(game.has_non_pawn_material(PlayerColor::White));
     }
 
     #[test]
@@ -5170,7 +5060,7 @@ mod tests {
         let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|P4,2");
         game.recompute_piece_counts();
 
-        assert!(!game.white_non_pawn_material);
+        assert!(!game.has_non_pawn_material(PlayerColor::White));
     }
 
     #[test]
@@ -5203,7 +5093,6 @@ mod tests {
         single.recompute_piece_counts();
         assert_eq!(single.is_legal_fast(&m, false), Ok(true));
     }
-
 
     #[test]
     fn test_get_piece_value_king() {
@@ -5288,7 +5177,8 @@ mod tests {
         let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8|R4,1");
 
         // With rook material, not a draw
-        let result = crate::evaluation::insufficient_material::evaluate_insufficient_material(&game);
+        let result =
+            crate::evaluation::insufficient_material::evaluate_insufficient_material(&game);
         // Just verify it returns a boolean without panicking
         let _ = result;
     }
@@ -5296,7 +5186,8 @@ mod tests {
     #[test]
     fn test_is_draw_returns_boolean() {
         let game = create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8");
-        let is_draw = crate::evaluation::insufficient_material::evaluate_insufficient_material(&game);
+        let is_draw =
+            crate::evaluation::insufficient_material::evaluate_insufficient_material(&game);
 
         // Should return true for K vs K
         assert!(is_draw);

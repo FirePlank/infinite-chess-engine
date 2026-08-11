@@ -1,7 +1,5 @@
-//! NNUE Accumulator State
-//!
-//! Stores the RelKP accumulator state for incremental updates.
-//! The threat stream is computed on-the-fly since it's fast enough.
+//! RelKP accumulator state for incremental updates. The threat stream is cheap
+//! enough to recompute on the fly.
 
 use super::features::build_relkp_active_lists;
 use super::weights::NNUE_WEIGHTS;
@@ -41,8 +39,7 @@ impl NnueState {
 
         let mut state = Self::default();
 
-        // Initialize with bias
-        // Fix: Use correct bias for each dimension! Previously used [0] for all.
+        // Each dimension takes its own bias.
         state.rel_acc_white.copy_from_slice(&weights.rel_bias);
         state.rel_acc_black.copy_from_slice(&weights.rel_bias);
 
@@ -294,11 +291,7 @@ impl NnueState {
                 self.add_feature(weights, idx, them == crate::board::PlayerColor::White);
             }
 
-            // Note: If we captured something, we must also remove it from the enemy accumulator
-            // because it's no longer on the board!
-            //
-            // Case A: Standard Capture
-            // Case A: Standard Capture
+            // A captured piece must also leave the enemy accumulator.
             if let Some(captured) = gs.board.get_piece(m.to.x, m.to.y)
                 && let Some(idx) = super::features::relkp_feature_id(
                     them,

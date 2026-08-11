@@ -20,7 +20,7 @@ const KNIGHT_EG_SUPERIORITY: i32 = 40;
 
 // Outside pawn connectivity
 const OUTSIDE_PHALANX_BONUS: i32 = 28; // two outside pawns same rank, adjacent files
-const OUTSIDE_CHAIN_BONUS: i32 = 18;   // outside pawn diagonally supported
+const OUTSIDE_CHAIN_BONUS: i32 = 18; // outside pawn diagonally supported
 
 // Phase increments
 const PHASE_KNIGHT: i32 = 1;
@@ -28,17 +28,12 @@ const PHASE_BISHOP: i32 = 1;
 const PHASE_ROOK: i32 = 2;
 const PHASE_QUEEN: i32 = 4;
 
-// ─── PIECE-SQUARE TABLES ────────────────────────────────────────────────────
-// Full board: x −6..=15 (22 files), y −3..=12 (16 ranks).
-// fi  = x + 6        (x=−6→0, x=15→21)
-// ri  = y + 3        for White  (y=−3→0, y=1→4=home, y=8→11=promo, y=12→15)
-// ri  = 12 − y       for Black  (y=12→0, y=8→4=home, y=1→11=promo, y=−3→15)
-//
-// Layout per row: [7 left-outside files | 8 core files (x=1–8) | 7 right-outside files]
-// Ranks 0–3 and 12–15 (obstacle zones / behind own lines): flat lane value across all 22 files.
-// Ranks 4–11 (y=1–8): lane value on outside files, chess-like values on core files.
+// Piece-square tables over the full board: x -6..=15 as fi = x + 6, and y -3..=12 as
+// ri = y + 3 for White or 12 - y for Black. Each row runs 7 outside files, the 8 core
+// files, then 7 more outside files; only ranks 4-11 use chess-like core values.
 
-// Knights are the dominant piece — obstacles block sliders but leapers jump freely.
+// Knights dominate here: obstacles block sliders, but leapers jump freely.
+#[rustfmt::skip]
 const KNIGHT_MG_PSQT: [[i32; 22]; 16] = [
     // ri=0  (y=−3 W / y=12 B): far behind own lines
     [-5,-5,-5,-5,-5,-5,-5,  -5,-5,-5,-5,-5,-5,-5,-5,  -5,-5,-5,-5,-5,-5,-5],
@@ -73,6 +68,7 @@ const KNIGHT_MG_PSQT: [[i32; 22]; 16] = [
     // ri=15 (y=12)
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
 ];
+#[rustfmt::skip]
 const KNIGHT_EG_PSQT: [[i32; 22]; 16] = [
     [-5,-5,-5,-5,-5,-5,-5,  -5,-5,-5,-5,-5,-5,-5,-5,  -5,-5,-5,-5,-5,-5,-5],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -95,6 +91,7 @@ const KNIGHT_EG_PSQT: [[i32; 22]; 16] = [
 ];
 
 // Bishops: long diagonals; modest outside-lane bonus.
+#[rustfmt::skip]
 const BISHOP_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -115,6 +112,7 @@ const BISHOP_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
 ];
+#[rustfmt::skip]
 const BISHOP_EG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -137,6 +135,7 @@ const BISHOP_EG_PSQT: [[i32; 22]; 16] = [
 ];
 
 // Rooks: 7th-rank penetration decisive; lane bonus for supporting pawn races.
+#[rustfmt::skip]
 const ROOK_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -157,6 +156,7 @@ const ROOK_MG_PSQT: [[i32; 22]; 16] = [
     [ 2, 2, 2, 2, 2, 2, 2,   2, 2, 2, 2, 2, 2, 2, 2,   2, 2, 2, 2, 2, 2, 2],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
 ];
+#[rustfmt::skip]
 const ROOK_EG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -179,6 +179,7 @@ const ROOK_EG_PSQT: [[i32; 22]; 16] = [
 ];
 
 // Queens: central activity.
+#[rustfmt::skip]
 const QUEEN_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -199,6 +200,7 @@ const QUEEN_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
 ];
+#[rustfmt::skip]
 const QUEEN_EG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -221,6 +223,7 @@ const QUEEN_EG_PSQT: [[i32; 22]; 16] = [
 ];
 
 // Pawns: outside lanes are the lifeblood; edge files good; center penalized.
+#[rustfmt::skip]
 const PAWN_MG_PSQT: [[i32; 22]; 16] = [
     // ri=0  (y=−3): behind own lines
     [15,15,15,15,15,15,15,   0, 0, 0, 0, 0, 0, 0, 0,   15,15,15,15,15,15,15],
@@ -255,6 +258,7 @@ const PAWN_MG_PSQT: [[i32; 22]; 16] = [
     // ri=15 (y=12)
     [10,10,10,10,10,10,10,  10,10,10,10,10,10,10,10,   10,10,10,10,10,10,10],
 ];
+#[rustfmt::skip]
 const PAWN_EG_PSQT: [[i32; 22]; 16] = [
     // ri=0  (y=−3)
     [20,20,20,20,20,20,20,  -5,-5,-5,-5,-5,-5,-5,-5,   20,20,20,20,20,20,20],
@@ -291,6 +295,7 @@ const PAWN_EG_PSQT: [[i32; 22]; 16] = [
 ];
 
 // King MG: stay safe at home.  King EG: march to edge files to support pawn races.
+#[rustfmt::skip]
 const KING_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
@@ -311,6 +316,7 @@ const KING_MG_PSQT: [[i32; 22]; 16] = [
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
     [ 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0],
 ];
+#[rustfmt::skip]
 const KING_EG_PSQT: [[i32; 22]; 16] = [
     [ 0, 5, 5, 5, 5, 5, 5,   5, 5, 5, 5, 5, 5, 5, 5,   5, 5, 5, 5, 5, 5, 0],
     [ 5, 8, 8, 8, 8, 8, 8,   8, 8, 8, 8, 8, 8, 8, 8,   8, 8, 8, 8, 8, 8, 5],
@@ -332,30 +338,32 @@ const KING_EG_PSQT: [[i32; 22]; 16] = [
     [ 8,10,10,10,10,10,10,  10,10,10,10,10,10,10,10,  10,10,10,10,10,10, 8],
 ];
 
-// ─── HELPERS ────────────────────────────────────────────────────────────────
-
 /// Tapered PSQT lookup over the full Obstocean board (x −6..=15, y −3..=12).
 #[inline]
 fn psqt_value(pt: PieceType, x: i64, y: i64, color: PlayerColor, phase: i32) -> i32 {
     if !(-6..=15).contains(&x) || !(-3..=12).contains(&y) {
         return 0;
     }
-    let fi = (x + 6) as usize;                                        // 0..=21
-    let ri = if color == PlayerColor::White { (y + 3) as usize }      // y=1→4, y=8→11
-             else                           { (12 - y) as usize };    // y=8→4, y=1→11
+    let fi = (x + 6) as usize; // 0..=21
+    let ri = if color == PlayerColor::White {
+        (y + 3) as usize
+    }
+    // y=1→4, y=8→11
+    else {
+        (12 - y) as usize
+    }; // y=8→4, y=1→11
     let (mg, eg) = match pt {
-        PieceType::Knight | PieceType::Archbishop | PieceType::Centaur | PieceType::RoyalCentaur =>
-            (KNIGHT_MG_PSQT[ri][fi], KNIGHT_EG_PSQT[ri][fi]),
-        PieceType::Bishop =>
-            (BISHOP_MG_PSQT[ri][fi], BISHOP_EG_PSQT[ri][fi]),
-        PieceType::Rook | PieceType::Chancellor =>
-            (ROOK_MG_PSQT[ri][fi], ROOK_EG_PSQT[ri][fi]),
-        PieceType::Queen | PieceType::Amazon | PieceType::RoyalQueen =>
-            (QUEEN_MG_PSQT[ri][fi], QUEEN_EG_PSQT[ri][fi]),
-        PieceType::King =>
-            (KING_MG_PSQT[ri][fi], KING_EG_PSQT[ri][fi]),
-        PieceType::Pawn =>
-            (PAWN_MG_PSQT[ri][fi], PAWN_EG_PSQT[ri][fi]),
+        PieceType::Knight
+        | PieceType::Archbishop
+        | PieceType::Centaur
+        | PieceType::RoyalCentaur => (KNIGHT_MG_PSQT[ri][fi], KNIGHT_EG_PSQT[ri][fi]),
+        PieceType::Bishop => (BISHOP_MG_PSQT[ri][fi], BISHOP_EG_PSQT[ri][fi]),
+        PieceType::Rook | PieceType::Chancellor => (ROOK_MG_PSQT[ri][fi], ROOK_EG_PSQT[ri][fi]),
+        PieceType::Queen | PieceType::Amazon | PieceType::RoyalQueen => {
+            (QUEEN_MG_PSQT[ri][fi], QUEEN_EG_PSQT[ri][fi])
+        }
+        PieceType::King => (KING_MG_PSQT[ri][fi], KING_EG_PSQT[ri][fi]),
+        PieceType::Pawn => (PAWN_MG_PSQT[ri][fi], PAWN_EG_PSQT[ri][fi]),
         _ => return 0,
     };
     (mg * phase + eg * (base::MAX_PHASE - phase)) / base::MAX_PHASE
@@ -363,10 +371,24 @@ fn psqt_value(pt: PieceType, x: i64, y: i64, color: PlayerColor, phase: i32) -> 
 
 /// Count available knight moves on full Obstocean board.
 #[inline]
-fn count_knight_mobility(board: &crate::board::Board, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
+fn count_knight_mobility(
+    board: &crate::board::Board,
+    x: i64,
+    y: i64,
+    piece: crate::board::Piece,
+) -> i32 {
     let our_color = piece.color();
     let mut count = 0i32;
-    for (dx, dy) in [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)] {
+    for (dx, dy) in [
+        (2, 1),
+        (2, -1),
+        (-2, 1),
+        (-2, -1),
+        (1, 2),
+        (1, -2),
+        (-1, 2),
+        (-1, -2),
+    ] {
         let (tx, ty) = (x + dx, y + dy);
         if !crate::moves::in_bounds(tx, ty) {
             continue;
@@ -382,17 +404,27 @@ fn count_knight_mobility(board: &crate::board::Board, x: i64, y: i64, piece: cra
 
 /// Bonus for a piece being close (Chebyshev) to an outside-lane pawn, scaled by advancement.
 #[inline]
-fn piece_pawn_escort(px: i64, py: i64, my_pawns: &[(i64, i64)], promo_rank: i64, is_white: bool) -> i32 {
+fn piece_pawn_escort(
+    px: i64,
+    py: i64,
+    my_pawns: &[(i64, i64)],
+    promo_rank: i64,
+    is_white: bool,
+) -> i32 {
     let mut bonus = 0i32;
     for &(qx, qy) in my_pawns {
-        if qx >= 1 && qx <= 8 {
+        if (1..=8).contains(&qx) {
             continue;
         }
         let dist = (px - qx).unsigned_abs().max((py - qy).unsigned_abs()) as usize;
         if dist >= ESCORT_DIST_BONUS.len() {
             continue;
         }
-        let advance_dist = if is_white { (promo_rank - qy).max(0) } else { (qy - promo_rank).max(0) };
+        let advance_dist = if is_white {
+            (promo_rank - qy).max(0)
+        } else {
+            (qy - promo_rank).max(0)
+        };
         let scale = (8 - advance_dist.min(8)) as i32;
         bonus += (ESCORT_DIST_BONUS[dist] * scale) / 8;
     }
@@ -401,17 +433,28 @@ fn piece_pawn_escort(px: i64, py: i64, my_pawns: &[(i64, i64)], promo_rank: i64,
 
 /// Bishop escort + diagonal cover bonus.
 #[inline]
-fn bishop_pawn_support(game: &GameState, bx: i64, by: i64, color: PlayerColor, my_pawns: &[(i64, i64)], promo_rank: i64) -> i32 {
+fn bishop_pawn_support(
+    game: &GameState,
+    bx: i64,
+    by: i64,
+    color: PlayerColor,
+    my_pawns: &[(i64, i64)],
+    promo_rank: i64,
+) -> i32 {
     let forward: i64 = if color == PlayerColor::White { 1 } else { -1 };
     let is_white = color == PlayerColor::White;
     let mut bonus = 0i32;
     for &(px, py) in my_pawns {
-        if px >= 1 && px <= 8 {
+        if (1..=8).contains(&px) {
             continue;
         }
         let dist = (bx - px).unsigned_abs().max((by - py).unsigned_abs()) as usize;
         if dist < ESCORT_DIST_BONUS.len() {
-            let advance_dist = if is_white { (promo_rank - py).max(0) } else { (py - promo_rank).max(0) };
+            let advance_dist = if is_white {
+                (promo_rank - py).max(0)
+            } else {
+                (py - promo_rank).max(0)
+            };
             let scale = (8 - advance_dist.min(8)) as i32;
             bonus += (ESCORT_DIST_BONUS[dist] * scale) / 8;
         }
@@ -451,9 +494,18 @@ fn eval_knight(
     let mg_mob = KNIGHT_MOB_MG[mob_idx];
     let eg_mob = KNIGHT_MOB_EG[mob_idx];
     let mob_bonus = (mg_mob * phase + eg_mob * (base::MAX_PHASE - phase)) / base::MAX_PHASE;
-    let superiority = (KNIGHT_MG_SUPERIORITY * phase + KNIGHT_EG_SUPERIORITY * (base::MAX_PHASE - phase))
+    let superiority = (KNIGHT_MG_SUPERIORITY * phase
+        + KNIGHT_EG_SUPERIORITY * (base::MAX_PHASE - phase))
         / base::MAX_PHASE;
-    mob_bonus + superiority + piece_pawn_escort(x, y, my_pawns, promo_rank, piece.color() == PlayerColor::White)
+    mob_bonus
+        + superiority
+        + piece_pawn_escort(
+            x,
+            y,
+            my_pawns,
+            promo_rank,
+            piece.color() == PlayerColor::White,
+        )
 }
 
 /// Outside pawn connectivity: phalanx and chain bonuses.
@@ -462,12 +514,11 @@ fn eval_outside_pawn_structure(pawns: &[(i64, i64)]) -> i32 {
     let mut bonus = 0i32;
     for i in 0..pawns.len() {
         let (ax, ay) = pawns[i];
-        if ax >= 1 && ax <= 8 {
+        if (1..=8).contains(&ax) {
             continue;
         }
-        for j in (i + 1)..pawns.len() {
-            let (bx, by) = pawns[j];
-            if bx >= 1 && bx <= 8 {
+        for &(bx, by) in &pawns[i + 1..] {
+            if (1..=8).contains(&bx) {
                 continue;
             }
             let dx = (ax - bx).abs();
@@ -484,7 +535,7 @@ fn eval_outside_pawn_structure(pawns: &[(i64, i64)]) -> i32 {
     bonus
 }
 
-// ─── PAWN EVAL ───────────────────────────────────────────────────────────────
+// PAWN EVAL
 
 /// Lane-based pawn evaluation: huge outside bonus, edge priority, center penalty.
 #[inline]
@@ -515,10 +566,14 @@ fn eval_pawn(x: i64, y: i64, color: PlayerColor, game: &GameState) -> i32 {
     b
 }
 
-// ─── RACE EVAL ───────────────────────────────────────────────────────────────
+// RACE EVAL
 
 /// Promotion race: who's closest on the outside/edge lanes?
-fn race_eval_optimized(game: &GameState, white_pawns: &[(i64, i64)], black_pawns: &[(i64, i64)]) -> i32 {
+fn race_eval_optimized(
+    game: &GameState,
+    white_pawns: &[(i64, i64)],
+    black_pawns: &[(i64, i64)],
+) -> i32 {
     let mut w_min: i64 = 100;
     let mut b_min: i64 = 100;
 
@@ -552,8 +607,6 @@ fn race_eval_optimized(game: &GameState, white_pawns: &[(i64, i64)], black_pawns
     }
     s
 }
-
-// ─── MAIN EVALUATOR ──────────────────────────────────────────────────────────
 
 #[inline]
 pub fn evaluate(game: &GameState) -> i32 {
@@ -644,8 +697,13 @@ fn evaluate_inner(game: &GameState) -> i32 {
                         for &(x, y, p) in heavy_pieces.iter() {
                             let is_white = p.color() == PlayerColor::White;
                             let pt = p.piece_type();
-                            let my_pawns: &[(i64, i64)] = if is_white { white_pawns } else { black_pawns };
-                            let promo_rank = if is_white { game.white_promo_rank } else { game.black_promo_rank };
+                            let my_pawns: &[(i64, i64)] =
+                                if is_white { white_pawns } else { black_pawns };
+                            let promo_rank = if is_white {
+                                game.white_promo_rank
+                            } else {
+                                game.black_promo_rank
+                            };
 
                             let functional = match pt {
                                 PieceType::Knight
@@ -656,23 +714,48 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                 }
                                 PieceType::Bishop => {
                                     base::evaluate_bishop(
-                                        game, x, y, p.color(),
-                                        white_royals, black_royals,
-                                        phase, white_pawns, black_pawns,
-                                    ) + bishop_pawn_support(game, x, y, p.color(), my_pawns, promo_rank)
+                                        game,
+                                        x,
+                                        y,
+                                        p.color(),
+                                        white_royals,
+                                        black_royals,
+                                        phase,
+                                        white_pawns,
+                                        black_pawns,
+                                    ) + bishop_pawn_support(
+                                        game,
+                                        x,
+                                        y,
+                                        p.color(),
+                                        my_pawns,
+                                        promo_rank,
+                                    )
                                 }
                                 PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => {
                                     base::evaluate_rook(
-                                        game, x, y, p.color(),
-                                        white_royals, black_royals,
-                                        phase, white_pawns, black_pawns,
+                                        game,
+                                        x,
+                                        y,
+                                        p.color(),
+                                        white_royals,
+                                        black_royals,
+                                        phase,
+                                        white_pawns,
+                                        black_pawns,
                                     ) + piece_pawn_escort(x, y, my_pawns, promo_rank, is_white)
                                 }
                                 PieceType::Queen | PieceType::RoyalQueen => {
                                     base::evaluate_queen(
-                                        game, x, y, p.color(),
-                                        white_royals, black_royals,
-                                        phase, white_pawns, black_pawns,
+                                        game,
+                                        x,
+                                        y,
+                                        p.color(),
+                                        white_royals,
+                                        black_royals,
+                                        phase,
+                                        white_pawns,
+                                        black_pawns,
                                     ) + piece_pawn_escort(x, y, my_pawns, promo_rank, is_white)
                                 }
                                 _ => 0, // King: PSQT only
@@ -681,7 +764,11 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             let positional = psqt_value(pt, x, y, p.color(), phase);
                             let v = functional + positional;
 
-                            if is_white { score += v; } else { score -= v; }
+                            if is_white {
+                                score += v;
+                            } else {
+                                score -= v;
+                            }
                         }
 
                         // 4. Pawn structure
@@ -709,7 +796,11 @@ fn evaluate_inner(game: &GameState) -> i32 {
         });
     });
 
-    if game.turn == PlayerColor::Black { -score } else { score }
+    if game.turn == PlayerColor::Black {
+        -score
+    } else {
+        score
+    }
 }
 
 #[cfg(test)]
@@ -746,7 +837,12 @@ mod tests {
         game.white_promo_rank = 8;
         let edge = eval_pawn(1, 4, PlayerColor::White, &game);
         let center = eval_pawn(4, 4, PlayerColor::White, &game);
-        assert!(edge > center, "Edge pawn ({}) > center pawn ({})", edge, center);
+        assert!(
+            edge > center,
+            "Edge pawn ({}) > center pawn ({})",
+            edge,
+            center
+        );
     }
 
     #[test]
@@ -767,11 +863,17 @@ mod tests {
         let mut b = Vec::new();
         for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
-                if p.color() == PlayerColor::White { w.push((x, y)); }
-                else if p.color() == PlayerColor::Black { b.push((x, y)); }
+                if p.color() == PlayerColor::White {
+                    w.push((x, y));
+                } else if p.color() == PlayerColor::Black {
+                    b.push((x, y));
+                }
             }
         }
-        assert!(race_eval_optimized(&game, &w, &b) > 0, "White near promo should be positive");
+        assert!(
+            race_eval_optimized(&game, &w, &b) > 0,
+            "White near promo should be positive"
+        );
     }
 
     #[test]
@@ -792,11 +894,18 @@ mod tests {
         let mut b = Vec::new();
         for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
-                if p.color() == PlayerColor::White { w.push((x, y)); }
-                else if p.color() == PlayerColor::Black { b.push((x, y)); }
+                if p.color() == PlayerColor::White {
+                    w.push((x, y));
+                } else if p.color() == PlayerColor::Black {
+                    b.push((x, y));
+                }
             }
         }
-        assert!(race_eval_optimized(&game, &w, &b) > 0, "White closer to promo: {}", race_eval_optimized(&game, &w, &b));
+        assert!(
+            race_eval_optimized(&game, &w, &b) > 0,
+            "White closer to promo: {}",
+            race_eval_optimized(&game, &w, &b)
+        );
     }
 
     #[test]
@@ -805,7 +914,11 @@ mod tests {
         game.white_promo_rank = 8;
         game.black_promo_rank = 1;
         let score = evaluate_inner(&game);
-        assert!(score.abs() < 100000, "Score should be reasonable: {}", score);
+        assert!(
+            score.abs() < 100000,
+            "Score should be reasonable: {}",
+            score
+        );
     }
 
     #[test]
@@ -817,11 +930,18 @@ mod tests {
         let mut b = Vec::new();
         for (x, y, p) in game.board.iter() {
             if p.piece_type() == PieceType::Pawn {
-                if p.color() == PlayerColor::White { w.push((x, y)); }
-                else if p.color() == PlayerColor::Black { b.push((x, y)); }
+                if p.color() == PlayerColor::White {
+                    w.push((x, y));
+                } else if p.color() == PlayerColor::Black {
+                    b.push((x, y));
+                }
             }
         }
-        assert!(race_eval_optimized(&game, &w, &b) < 0, "Black closer to promo: {}", race_eval_optimized(&game, &w, &b));
+        assert!(
+            race_eval_optimized(&game, &w, &b) < 0,
+            "Black closer to promo: {}",
+            race_eval_optimized(&game, &w, &b)
+        );
     }
 
     #[test]
@@ -841,7 +961,15 @@ mod tests {
             if p.piece_type() == PieceType::Knight && p.color() == PlayerColor::White {
                 let mob = count_knight_mobility(&game.board, x, y, p);
                 assert!(mob > 0, "Knight should have mobility");
-                let score = eval_knight(&game, x, y, p, base::MAX_PHASE / 2, &[], game.white_promo_rank);
+                let score = eval_knight(
+                    &game,
+                    x,
+                    y,
+                    p,
+                    base::MAX_PHASE / 2,
+                    &[],
+                    game.white_promo_rank,
+                );
                 assert!(score.abs() < 500, "Knight eval should be reasonable");
                 break;
             }
@@ -852,14 +980,22 @@ mod tests {
     fn test_outside_pawn_phalanx() {
         let pawns = vec![(-1i64, 5i64), (-2i64, 5i64)];
         let bonus = eval_outside_pawn_structure(&pawns);
-        assert!(bonus >= OUTSIDE_PHALANX_BONUS, "Phalanx should give bonus: {}", bonus);
+        assert!(
+            bonus >= OUTSIDE_PHALANX_BONUS,
+            "Phalanx should give bonus: {}",
+            bonus
+        );
     }
 
     #[test]
     fn test_outside_pawn_chain() {
         let pawns = vec![(-1i64, 5i64), (-2i64, 4i64)];
         let bonus = eval_outside_pawn_structure(&pawns);
-        assert!(bonus >= OUTSIDE_CHAIN_BONUS, "Chain should give bonus: {}", bonus);
+        assert!(
+            bonus >= OUTSIDE_CHAIN_BONUS,
+            "Chain should give bonus: {}",
+            bonus
+        );
     }
 
     #[test]
@@ -867,7 +1003,12 @@ mod tests {
         // Knight d4 (center of 8x8) should score better than a1 (corner) in MG
         let center = psqt_value(PieceType::Knight, 4, 4, PlayerColor::White, base::MAX_PHASE);
         let corner = psqt_value(PieceType::Knight, 1, 1, PlayerColor::White, base::MAX_PHASE);
-        assert!(center > corner, "Knight center PSQT {} > corner {}", center, corner);
+        assert!(
+            center > corner,
+            "Knight center PSQT {} > corner {}",
+            center,
+            corner
+        );
     }
 
     #[test]
@@ -875,14 +1016,23 @@ mod tests {
         // King at y=6 (two-thirds up) should score better than at home y=1 in EG
         let advanced = psqt_value(PieceType::King, 1, 6, PlayerColor::White, 0);
         let home = psqt_value(PieceType::King, 5, 1, PlayerColor::White, 0);
-        assert!(advanced > home, "King EG advanced {} > home {}", advanced, home);
+        assert!(
+            advanced > home,
+            "King EG advanced {} > home {}",
+            advanced,
+            home
+        );
     }
 
     #[test]
     fn test_psqt_outside_lane_nonzero() {
         // Knight at x=0 (just outside core) in EG should get a positive PSQT
         let lane = psqt_value(PieceType::Knight, 0, 4, PlayerColor::White, 0);
-        assert!(lane > 0, "Knight in outside lane should get positive PSQT: {}", lane);
+        assert!(
+            lane > 0,
+            "Knight in outside lane should get positive PSQT: {}",
+            lane
+        );
         // Truly out-of-bounds returns 0
         let oob = psqt_value(PieceType::Knight, -7, 4, PlayerColor::White, 0);
         assert_eq!(oob, 0, "Out-of-bounds should return 0");
@@ -899,9 +1049,26 @@ mod tests {
     #[test]
     fn test_psqt_pawn_outside_better_than_center() {
         // Pawn in outside lane should score higher than center file
-        let outside = psqt_value(PieceType::Pawn, 0, 4, PlayerColor::White, base::MAX_PHASE / 2);
-        let center = psqt_value(PieceType::Pawn, 4, 4, PlayerColor::White, base::MAX_PHASE / 2);
-        assert!(outside > center, "Outside pawn PSQT {} > center {}", outside, center);
+        let outside = psqt_value(
+            PieceType::Pawn,
+            0,
+            4,
+            PlayerColor::White,
+            base::MAX_PHASE / 2,
+        );
+        let center = psqt_value(
+            PieceType::Pawn,
+            4,
+            4,
+            PlayerColor::White,
+            base::MAX_PHASE / 2,
+        );
+        assert!(
+            outside > center,
+            "Outside pawn PSQT {} > center {}",
+            outside,
+            center
+        );
     }
 
     #[test]
@@ -909,6 +1076,11 @@ mod tests {
         // Advanced pawn should score better in endgame
         let home = psqt_value(PieceType::Pawn, 0, 1, PlayerColor::White, 0);
         let advanced = psqt_value(PieceType::Pawn, 0, 5, PlayerColor::White, 0);
-        assert!(advanced > home, "Advanced pawn EG PSQT {} > home {}", advanced, home);
+        assert!(
+            advanced > home,
+            "Advanced pawn EG PSQT {} > home {}",
+            advanced,
+            home
+        );
     }
 }

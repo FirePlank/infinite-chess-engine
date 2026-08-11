@@ -8,10 +8,8 @@ use crate::moves::Move;
 pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     let mover_color = m.piece.color();
 
-    // Material won by the move before any recapture: the captured piece (0 for a
-    // quiet, non-capturing move; a pawn for en passant) plus the promotion gain
-    // if the move promotes. For a promotion the piece left standing on the square
-    // is the promoted piece, so that is what is at risk of recapture.
+    // Material won before any recapture: the captured piece plus any promotion gain.
+    // A promotion leaves the promoted piece on the square, so that is what is at risk.
     let captured_val = if game.is_en_passant(m) {
         game.get_piece_value(PieceType::Pawn, mover_color.opponent())
     } else {
@@ -23,7 +21,10 @@ pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     let (promo_gain, mover_val) = match m.promotion {
         Some(promo) => {
             let pv = game.get_piece_value(promo, mover_color);
-            (pv - game.get_piece_value(m.piece.piece_type(), mover_color), pv)
+            (
+                pv - game.get_piece_value(m.piece.piece_type(), mover_color),
+                pv,
+            )
         }
         None => (0, game.get_piece_value(m.piece.piece_type(), mover_color)),
     };
@@ -49,10 +50,8 @@ pub(crate) fn see_ge(game: &GameState, m: &Move, threshold: i32) -> bool {
     static_exchange_eval_impl(game, m) >= threshold
 }
 
-/// Static Exchange Evaluation implementation for a capture move on a single square.
-///
-/// Returns the net material gain (in centipawns) for the side to move if both
-/// sides optimally capture/recapture on the destination square of `m`.
+/// Net material gain in centipawns for the side to move if both sides capture
+/// optimally on `m`'s destination square.
 pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     let target_x = m.to.x;
     let target_y = m.to.y;
@@ -76,7 +75,10 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     let (promo_gain, mover_val) = match m.promotion {
         Some(promo) => {
             let pv = game.get_piece_value(promo, mover_color);
-            (pv - game.get_piece_value(m.piece.piece_type(), mover_color), pv)
+            (
+                pv - game.get_piece_value(m.piece.piece_type(), mover_color),
+                pv,
+            )
         }
         None => (0, game.get_piece_value(m.piece.piece_type(), mover_color)),
     };
@@ -97,7 +99,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             game.game_rules.white_win_condition
         };
         if !opponent_win_condition.requires_check_evasion() {
-            return true
+            return true;
         }
 
         // Is there a king of the same color on the board?
@@ -266,8 +268,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
     // B. Lazy Ray Discovery (Sliding Pieces + Distant Knights/Kings)
     // We only find the FIRST blocker on each ray.
-    for r in 0..16 {
-        let (dx, dy) = ray_dirs[r];
+    for (r, &(dx, dy)) in ray_dirs.iter().enumerate() {
         let mut found_pos: Option<(i64, i64, Piece)> = None;
 
         if r < 8 {
@@ -293,10 +294,9 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
 
         if let Some((vx, vy, p)) = found_pos {
-            // When the first blocker on this ray is the moving piece itself, the
-            // square it vacates can expose a piece lined up behind it (a battery /
-            // x-ray) that bears on the target once the mover leaves. Look past the
-            // mover for that attacker instead of discarding the ray.
+            // When the mover is itself the first blocker, a piece behind it x-rays the
+            // target once it leaves, so look past the mover rather than dropping the
+            // ray.
             let (vx, vy, p) = if Coordinate::new(vx, vy) == m.from {
                 let behind = if r < 8 {
                     game.spatial_indices
@@ -373,14 +373,10 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
 
         if let Some(mut i) = best_i {
-            // A royal piece cannot recapture into a square the opponent still
-            // defends (that would be moving into check). Since a royal's value is
-            // the highest, it is only ever picked as the last attacker for its
-            // side, so if any enemy attacker remains the recapture is illegal and
-            // the exchange ends here.
-            if attackers[i].is_royal
-                && attackers.iter().any(|a| a.color == side.opponent())
-            {
+            // A royal cannot recapture into a defended square. Being the most valuable,
+            // it is only ever picked last, so any remaining enemy attacker ends the
+            // exchange here.
+            if attackers[i].is_royal && attackers.iter().any(|a| a.color == side.opponent()) {
                 break;
             }
 
@@ -391,7 +387,8 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
                 for j in 0..attackers.len() {
                     let a = &attackers[j];
-                    if a.color == side && a.value < best_val
+                    if a.color == side
+                        && a.value < best_val
                         && can_piece_legally_attack(game, &a.pos, &m.to, a.color)
                     {
                         found_nothing = false;
@@ -600,7 +597,10 @@ mod tests {
             -rook,
             "Quiet move hanging the rook to a pawn should be -rook"
         );
-        assert!(!see_ge(&game, &m, 0), "Hanging quiet move must fail see_ge(>= 0)");
+        assert!(
+            !see_ge(&game, &m, 0),
+            "Hanging quiet move must fail see_ge(>= 0)"
+        );
         assert!(
             see_ge(&game, &m, -rook),
             "Hanging quiet move still meets a threshold equal to the loss"
@@ -667,7 +667,10 @@ mod tests {
             Piece::new(PieceType::Pawn, PlayerColor::White),
         );
 
-        assert!(game.is_en_passant(&m), "move should be detected as en passant");
+        assert!(
+            game.is_en_passant(&m),
+            "move should be detected as en passant"
+        );
         let p = game.get_piece_value(PieceType::Pawn, PlayerColor::White);
         assert_eq!(
             static_exchange_eval_impl(&game, &m),
@@ -680,10 +683,8 @@ mod tests {
 
     #[test]
     fn test_see_battery_xray_behind_mover() {
-        // Doubled white rooks on file 5 (5,4 behind 5,5) bear on a black rook at
-        // (5,8) that is defended by a black rook behind it at (5,9). The front
-        // rook captures, black recaptures, and the rear white rook x-rays through
-        // the square the mover vacated to win the exchange. Without battery
+        // Doubled white rooks take a defended black rook: the rear rook x-rays through
+        // the square the front one vacates to win the exchange. Without battery
         // discovery the rear rook is never seen and SEE collapses to 0.
         let mut game = create_test_game_from_icn("w (8;q|1;q) R5,5|R5,4|r5,8|r5,9");
         game.turn = PlayerColor::White;
@@ -705,12 +706,8 @@ mod tests {
 
     #[test]
     fn test_see_pinned_piece_cannot_recapture() {
-        // White has a bishop on (1,5) and a rook on (3,3) that are looking at the
-        // black bishop on (3,7), which is only defended by the black queen at
-        // (3,8). However, the black bishop at (6,6) pins the white rook to the
-        // white king at (1,1), preventing it from recapturing the bishop because
-        // it would expose the king to check. Without pin detection, the black
-        // queen is captured by the pinned rook, which is an illegal move.
+        // The white rook eyeing the black bishop is pinned to its king, so it cannot
+        // recapture. Without pin detection SEE plays that illegal rook capture.
         let mut game = create_test_game_from_icn("w (8;q|1;q) K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6");
         game.turn = PlayerColor::White;
 
@@ -731,7 +728,9 @@ mod tests {
     fn test_see_piece_is_not_pinned_in_all_pieces_captured() {
         // Same condition as the test above but this time, the rook is not pinned
         // since the king can be captured in AllRoyalsCaptured win condition.
-        let mut game = create_test_game_from_icn("w (8;q|1;q) allroyalscaptured K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6");
+        let mut game = create_test_game_from_icn(
+            "w (8;q|1;q) allroyalscaptured K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6",
+        );
         game.turn = PlayerColor::White;
 
         let m = Move::new(
@@ -749,11 +748,8 @@ mod tests {
 
     #[test]
     fn test_see_pinned_piece_can_recapture_on_same_line() {
-        // White has a bishop on (1,5) and a rook on (3,3) that are looking at the
-        // black bishop on (3,7), which is only defended by the black queen at
-        // (3,8). It is fine for the white rook to take the black bishop because
-        // if the black queen takes, the white bishop can take the queen even if
-        // it's "pinned" to the king at (0,4) in the same pin direction.
+        // The same shape, but the pin runs along the capture direction, so the pinned
+        // white bishop may still recapture and the exchange is sound.
         let mut game = create_test_game_from_icn("w 1 (8;q|1;q) K0,4|R3,3|B1,5|b3,7|q3,8|k1,10");
         game.turn = PlayerColor::White;
 
@@ -774,13 +770,9 @@ mod tests {
 
     #[test]
     fn test_see_king_cannot_recapture_into_defense() {
-        // White rook captures a black pawn at (5,5). Black's rook on (5,8)
-        // recaptures, backed by a second black rook at (5,9) that x-rays the
-        // square once (5,8) vacates. The white king on (4,5) is the only piece
-        // that could recapture but cannot, since the square stays defended
-        // (moving in would be moving into check). Net: rook for a pawn.
-        let mut game =
-            create_test_game_from_icn("w (8;q|1;q) R5,1|K4,5|p5,5|r5,8|r5,9");
+        // Doubled black rooks recapture, and the white king cannot take back into a
+        // still-defended square, so the exchange nets a rook for a pawn.
+        let mut game = create_test_game_from_icn("w (8;q|1;q) R5,1|K4,5|p5,5|r5,8|r5,9");
         game.turn = PlayerColor::White;
 
         let m = Move::new(

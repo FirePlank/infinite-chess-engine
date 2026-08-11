@@ -1,17 +1,12 @@
 use super::{INFINITY, MATE_SCORE, MATE_VALUE, MAX_PLY};
 use crate::moves::Move;
 
-// ============================================================================
 // Value Adjustment Constants & Helpers
-// ============================================================================
 
-/// Value adjustment for storage:
-/// Adjusts a mate score from "plies to mate from the root" to
-/// "plies to mate from the current position" for storage in TT.
-/// Standard scores are unchanged.
+/// Rebases a mate score from plies-to-mate-from-the-root to
+/// plies-to-mate-from-here for TT storage. Non-mate scores pass through.
 #[inline]
 pub fn value_to_tt(value: i32, ply: usize) -> i32 {
-    // is_win: value > MATE_SCORE (positive mate score)
     if value > MATE_SCORE {
         value + ply as i32
     }
@@ -50,14 +45,9 @@ pub fn eval_from_i16(s: i32) -> i32 {
     }
 }
 
-
-// The engine's decisive constants are large so that even huge evaluations on an unbounded
-// board cannot be mistaken for a mate. They do NOT fit in i16.
-//
-// Real mate scores always lie within MAX_PLY of MATE_VALUE, and `value_to_tt`
-// can shift them by up to another MAX_PLY, so they occupy a band of width
-// 2*MAX_PLY+1. We reserve that band at each end of the i16 range and map mate
-// scores into it losslessly; normal scores are clamped to the remaining range.
+// Decisive constants are too large for i16, so the 2*MAX_PLY+1 band mate scores can
+// occupy is reserved at each end of the i16 range and mapped losslessly. Normal
+// scores clamp to what is left.
 
 /// Number of distinct i16 slots reserved for mate scores at each end of the range.
 const TT_MATE_BAND: i32 = 2 * MAX_PLY as i32 + 1;
@@ -101,7 +91,17 @@ mod score_pack_tests {
 
     #[test]
     fn normal_scores_round_trip() {
-        for v in [0, 1, -1, 100, -100, 5000, -5000, TT_SCORE_NORMAL_MAX, -TT_SCORE_NORMAL_MAX] {
+        for v in [
+            0,
+            1,
+            -1,
+            100,
+            -100,
+            5000,
+            -5000,
+            TT_SCORE_NORMAL_MAX,
+            -TT_SCORE_NORMAL_MAX,
+        ] {
             assert_eq!(score_from_i16(score_to_i16(v) as i32), v, "v = {v}");
         }
     }
@@ -166,14 +166,25 @@ mod score_pack_tests {
     fn eval_real_values_never_collide_with_sentinel() {
         // Real evals (including ones that clamp to the i16 extremes) must never
         // pack to TT_NO_EVAL, and must round-trip to their clamped value.
-        for v in [0, 1, -1, 250, -250, 30000, -30000, 100_000, -100_000, i32::MAX, i32::MIN] {
+        for v in [
+            0,
+            1,
+            -1,
+            250,
+            -250,
+            30000,
+            -30000,
+            100_000,
+            -100_000,
+            i32::MAX,
+            i32::MIN,
+        ] {
             let packed = eval_to_i16(v);
             assert_ne!(packed, TT_NO_EVAL, "real eval {v} collided with NO_EVAL");
             let clamped = v.clamp(i16::MIN as i32 + 1, i16::MAX as i32);
             assert_eq!(eval_from_i16(packed as i32), clamped, "v = {v}");
         }
-        // Previously the sentinel clamped to +32767; verify a genuine +32767 eval
-        // is still distinguishable from "no eval".
+        // A genuine +32767 eval must stay distinguishable from the "no eval" sentinel.
         assert_ne!(eval_to_i16(32767), TT_NO_EVAL);
         assert_eq!(eval_from_i16(eval_to_i16(32767) as i32), 32767);
     }
@@ -228,9 +239,7 @@ pub fn value_from_tt(value: i32, ply: usize, rule50_count: u32, rule_limit: i32)
     value
 }
 
-// ============================================================================
 // TT Types
-// ============================================================================
 
 /// TT bound type (2 bits)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

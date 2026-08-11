@@ -93,7 +93,7 @@ fn no_exotic_pieces(m: &Mat) -> bool {
 // Decision tree for insufficient material detection.
 #[inline]
 fn is_insufficient(m: &Mat) -> bool {
-    // ===== INSUFFICIENT CASES (return true - cannot deliver mate) =====
+    // INSUFFICIENT CASES (return true - cannot deliver mate)
     // Only royals - no other pieces
     if no_exotic_pieces(m)
         && m.queens == 0
@@ -353,7 +353,7 @@ fn is_insufficient(m: &Mat) -> bool {
 /// Bordered variant (smaller map).
 #[inline]
 fn is_insufficient_bordered(m: &Mat) -> bool {
-    // ===== INSUFFICIENT CASES (return true) =====
+    // INSUFFICIENT CASES (return true)
     // Huygens 1-4 alone (less than 5 is insufficient)
     if m.huygens >= 1
         && m.huygens <= 4
@@ -418,17 +418,14 @@ fn is_insufficient_bordered(m: &Mat) -> bool {
 
 /// Count material for both colors in a single board pass.
 #[inline]
-fn count_both(
-    board: &Board,
-    rules: &crate::game::GameRules,
-) -> (Mat, Mat) {
+fn count_both(board: &Board, rules: &crate::game::GameRules) -> (Mat, Mat) {
     let mut w = Mat::default();
     let mut b = Mat::default();
     let mut w_lb: u8 = 0;
     let mut w_db: u8 = 0;
     let mut b_lb: u8 = 0;
     let mut b_db: u8 = 0;
-    
+
     let best_promo = get_best_promotion_piece(rules);
 
     for (x, y, piece) in board.iter() {
@@ -602,11 +599,8 @@ fn compute(game: &crate::game::GameState) -> bool {
     w_insuff && b_insuff
 }
 
-/// Returns true if the combination of (attacker, defender) material represents
-/// a helpmate-possible endgame that game handlers should NOT auto-declare as a draw.
-/// Both `a` and `b` are already "individually insufficient" at this point.
-/// Detects cross-board combinations where helpmate is theoretically possible
-/// despite both sides being individually insufficient.
+/// Whether two individually-insufficient sides still combine into a helpmate-possible
+/// endgame, which game handlers must not auto-declare a draw.
 #[inline]
 fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
     // R+B vs Q (either direction)
@@ -870,7 +864,7 @@ fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
             return true;
         }
 
-        // 2N vs 0 pieces (K+2N vs K — helpmate possible on bounded board)
+        // K+2N vs K: helpmate is possible on a bounded board.
         let two_n_vs_none = |x: &Mat, y: &Mat| {
             x.knights == 2
                 && x.queens == 0
@@ -1042,11 +1036,9 @@ fn compute_game_handler(game: &crate::game::GameState) -> bool {
     true
 }
 
-/// Returns true if the position is a draw by insufficient material for game
-/// handler purposes.  Unlike `evaluate_insufficient_material`, this function:
-///   - does NOT substitute pawns with their best promotion piece, and
-///   - does NOT classify helpmate-only endgames (R+B vs Q, R+N vs R,
-///     R+B vs unpromotable/non-queen-promotable P, R+N vs P) as draws.
+/// Whether the position is a draw by insufficient material for game handlers. Unlike
+/// `evaluate_insufficient_material` it neither substitutes pawns with their best
+/// promotion nor treats helpmate-only endgames as draws.
 #[inline]
 pub fn evaluate_insufficient_material_game_handler(game: &crate::game::GameState) -> bool {
     if (game.white_piece_count + game.black_piece_count) >= 6 {
@@ -1058,7 +1050,7 @@ pub fn evaluate_insufficient_material_game_handler(game: &crate::game::GameState
     {
         return false;
     }
-    
+
     compute_game_handler(game)
 }
 
@@ -1082,7 +1074,7 @@ mod tests {
         game
     }
 
-    // ======================== Insufficient Material (dead draw) ========================
+    // Insufficient Material (dead draw)
 
     #[test]
     fn test_king_vs_king() {
@@ -1242,7 +1234,7 @@ mod tests {
         assert!(compute(&game), "K+B+N vs K insufficient");
     }
 
-    // ======================== Sufficient Material ========================
+    // Sufficient Material
 
     #[test]
     fn test_king_amazon_vs_king_sufficient() {
@@ -1268,7 +1260,7 @@ mod tests {
         assert!(!compute(&game), "K+Q+Q vs K sufficient");
     }
 
-    // ======================== Both sides insufficient ========================
+    // Both sides insufficient
 
     #[test]
     fn test_kb_vs_kb_draw() {
@@ -1303,7 +1295,7 @@ mod tests {
         assert!(evaluate_insufficient_material(&game), "K+R vs K+R draw");
     }
 
-    // ======================== Fast exit / misc ========================
+    // Fast exit / misc
 
     #[test]
     fn test_complex_position_fast_exit() {
@@ -1344,10 +1336,12 @@ mod tests {
 
     #[test]
     fn test_can_pawn_promote_no_ranks() {
-        let mut rules = GameRules::default();
-        rules.promotion_ranks = PromotionRanks {
-            white: vec![],
-            black: vec![],
+        let rules = GameRules {
+            promotion_ranks: PromotionRanks {
+                white: vec![],
+                black: vec![],
+            },
+            ..Default::default()
         };
         assert!(!can_pawn_promote(5, PlayerColor::White, &rules));
     }

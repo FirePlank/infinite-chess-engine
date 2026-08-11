@@ -1,7 +1,5 @@
-//! Sparse Tiled Bitboards for Infinite Chess
-//!
-//! This module implements an 8×8 tile-based representation.
-//! Each tile contains u64 occupancy bitboards and packed piece arrays.
+//! Sparse 8x8 tiled bitboards. Each tile holds u64 occupancy bitboards alongside
+//! packed piece arrays.
 
 pub mod magic;
 pub mod masks;
@@ -103,7 +101,7 @@ pub struct Tile {
     /// Bitboard of orthogonal sliders (rooks + queens + chancellor)
     pub occ_ortho_sliders: u64,
 
-    // ===== TYPE MASKS for fast is_square_attacked early-exit =====
+    // TYPE MASKS for fast is_square_attacked early-exit
     /// Bitmask of piece types present for white (1 << PieceType as u8)
     pub type_mask_white: u32,
     /// Bitmask of piece types present for black (1 << PieceType as u8)
@@ -215,8 +213,8 @@ impl Tile {
         }
     }
 
-    /// Remove a piece at local index. Returns the old packed piece code.
-    /// Clears all per-piece-type bitboards for consistency.
+    /// Removes the piece at a local index and returns its old packed code, clearing
+    /// every per-piece-type bitboard.
     #[inline]
     pub fn remove_piece(&mut self, idx: usize) -> u8 {
         let bit = 1u64 << idx;
@@ -666,9 +664,7 @@ impl<'a> Iterator for TilePieceIter<'a> {
     }
 }
 
-// ============================================================================
 // TileTable Piece Iteration
-// ============================================================================
 
 impl TileTable {
     /// Iterate all pieces across all tiles.
@@ -821,10 +817,6 @@ impl<'a> Iterator for TileTableColorIter<'a> {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,7 +897,6 @@ mod tests {
         let mut table = TileTable::new();
         assert!(table.is_empty());
 
-        // Create a tile
         let tile = table.get_or_create(0, 0);
         tile.set_piece(0, Piece::new(PieceType::Pawn, PlayerColor::White));
 

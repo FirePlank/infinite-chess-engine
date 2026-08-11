@@ -1,10 +1,5 @@
-//! UCI protocol bridge for the infinite-chess engine, constrained to standard 8x8 chess.
-//!
-//! Coordinate mapping:
-//!   UCI file a-h  <->  internal x 1-8
-//!   UCI rank 1-8  <->  internal y 1-8
-//!
-//! The world border is fixed at (1, 8, 1, 8) and the Chess variant starting ICN is used.
+//! UCI bridge, constrained to standard 8x8 chess: UCI file a-h maps to internal x
+//! 1-8 and rank 1-8 to y 1-8, with the world border fixed at (1, 8, 1, 8).
 
 use apeiron::board::PieceType;
 use apeiron::game::GameState;
@@ -16,15 +11,12 @@ const ENGINE_NAME: &str = "Apeiron";
 const ENGINE_AUTHOR: &str = "FirePlank";
 
 /// The standard Chess variant ICN (8x8, bounded 1,8,1,8).
-const CHESS_START_ICN: &str =
-    "[Variant \"Chess\"] w 0/100 1 (8|1) 1,8,1,8 P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|\
+const CHESS_START_ICN: &str = "[Variant \"Chess\"] w 0/100 1 (8|1) 1,8,1,8 P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|\
      p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|\
      R1,1+|R8,1+|r1,8+|r8,8+|N2,1|N7,1|n2,8|n7,8|\
      B3,1|B6,1|b3,8|b6,8|Q4,1|q4,8|K5,1+|k5,8+";
 
-// ---------------------------------------------------------------------------
 // Coordinate conversion helpers
-// ---------------------------------------------------------------------------
 
 /// UCI square string (e.g. "e2") -> internal (x, y).
 /// Returns None on invalid input.
@@ -88,9 +80,7 @@ fn uci_promo_to_piece(c: char) -> Option<PieceType> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // FEN parsing -> ICN string
-// ---------------------------------------------------------------------------
 
 /// Convert a FEN string into our ICN format, ready for `setup_position_from_icn`.
 /// Returns a full ICN string on success, or an error message on failure.
@@ -107,30 +97,24 @@ fn fen_to_icn(fen: &str) -> Result<String, String> {
     let halfmove: u32 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
     let fullmove: u32 = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(1);
 
-    // --- Turn ---
     let turn = match active_color {
         "w" => "w",
         "b" => "b",
         _ => return Err(format!("Invalid active color: {}", active_color)),
     };
 
-    // --- Parse piece placement (rank 8 down to rank 1 in FEN) ---
+    // Parse piece placement (rank 8 down to rank 1 in FEN)
     // We'll collect pieces as ICN tokens.
     // FEN ranks are ordered 8..1 (top to bottom), files a..h (left to right).
     let mut piece_tokens: Vec<String> = Vec::new();
 
     let fen_ranks: Vec<&str> = piece_placement.split('/').collect();
     if fen_ranks.len() != 8 {
-        return Err(format!(
-            "Expected 8 ranks in FEN, got {}",
-            fen_ranks.len()
-        ));
+        return Err(format!("Expected 8 ranks in FEN, got {}", fen_ranks.len()));
     }
 
-    // Track which squares have pieces that have moved (to determine special rights).
-    // In chess, rooks and kings on their starting squares get special rights (castling)
-    // and pawns on their starting ranks get double-push rights.
-    // We approximate this from FEN castling availability.
+    // Castling and double-push rights are approximated from FEN castling
+    // availability, since FEN does not record which pieces have moved.
     let white_ks = castling.contains('K');
     let white_qs = castling.contains('Q');
     let black_ks = castling.contains('k');
@@ -159,15 +143,7 @@ fn fen_to_icn(fen: &str) -> Result<String, String> {
                 };
 
                 let (icn_code, has_special_right) = fen_char_to_icn(
-                    piece_char,
-                    is_white,
-                    x,
-                    y,
-                    white_ks,
-                    white_qs,
-                    black_ks,
-                    black_qs,
-                    ep_sq,
+                    piece_char, is_white, x, y, white_ks, white_qs, black_ks, black_qs, ep_sq,
                 );
 
                 let token = if has_special_right {
@@ -304,9 +280,7 @@ fn fen_char_to_icn(
     (code, has_special)
 }
 
-// ---------------------------------------------------------------------------
 // State
-// ---------------------------------------------------------------------------
 
 struct UciState {
     game: GameState,
@@ -366,20 +340,13 @@ impl UciState {
 
             let promo: Option<PieceType> = promo_char.and_then(uci_promo_to_piece);
             let promo_str: Option<String> = promo.map(|p| p.to_str().to_string());
-            self.game.make_move_coords(
-                from_x,
-                from_y,
-                to_x,
-                to_y,
-                promo_str.as_deref(),
-            );
+            self.game
+                .make_move_coords(from_x, from_y, to_x, to_y, promo_str.as_deref());
         }
     }
 }
 
-// ---------------------------------------------------------------------------
 // "go" command handling
-// ---------------------------------------------------------------------------
 
 struct GoParams {
     wtime: Option<u64>,
@@ -387,6 +354,7 @@ struct GoParams {
     winc: Option<u64>,
     binc: Option<u64>,
     movetime: Option<u64>,
+    movestogo: Option<u64>,
     depth: Option<usize>,
     infinite: bool,
 }
@@ -398,6 +366,7 @@ impl GoParams {
             btime: None,
             winc: None,
             binc: None,
+            movestogo: None,
             movetime: None,
             depth: None,
             infinite: false,
@@ -425,6 +394,10 @@ impl GoParams {
                     i += 1;
                     p.movetime = tokens.get(i).and_then(|s| s.parse().ok());
                 }
+                "movestogo" => {
+                    i += 1;
+                    p.movestogo = tokens.get(i).and_then(|s| s.parse().ok());
+                }
                 "depth" => {
                     i += 1;
                     p.depth = tokens.get(i).and_then(|s| s.parse().ok());
@@ -440,6 +413,26 @@ impl GoParams {
     }
 }
 
+/// `setoption name <id> [value <v>]`. Names may contain spaces, so take
+/// everything between `name` and `value` as the id.
+fn handle_setoption(tokens: &[&str]) {
+    let name_at = tokens.iter().position(|t| t.eq_ignore_ascii_case("name"));
+    let value_at = tokens.iter().position(|t| t.eq_ignore_ascii_case("value"));
+    let Some(name_at) = name_at else { return };
+    let name_end = value_at.unwrap_or(tokens.len());
+    if name_at + 1 >= name_end {
+        return;
+    }
+    let name = tokens[name_at + 1..name_end].join(" ");
+    let value = value_at.and_then(|i| tokens.get(i + 1)).copied();
+
+    if name.eq_ignore_ascii_case("Hash")
+        && let Some(mb) = value.and_then(|v| v.parse::<usize>().ok())
+    {
+        search::set_tt_size_mb(mb);
+    }
+}
+
 fn run_go(state: &mut UciState, params: GoParams) {
     use apeiron::board::PlayerColor;
 
@@ -451,22 +444,19 @@ fn run_go(state: &mut UciState, params: GoParams) {
     let (opt_ms, max_ms, is_soft): (u128, u128, bool) = if params.infinite {
         (u128::MAX, u128::MAX, true)
     } else if let Some(mt) = params.movetime {
+        // A fixed per-move budget is exactly the soft-limit case: there is no
+        // clock to flag, so spend it all. Passing false here made the proactive
+        // 50% and mid-iteration stops fire and left ~55% of movetime unused.
         let ms = mt as u128;
-        (ms, ms, false)
+        (ms, ms, true)
     } else if params.depth.is_some() && params.wtime.is_none() && params.btime.is_none() {
         // Fixed depth, no clock: treat as infinite time
         (u128::MAX, u128::MAX, true)
     } else {
         // Clock-based time allocation
         let (remaining_ms_raw, inc_ms_raw) = match state.game.turn {
-            PlayerColor::White => (
-                params.wtime.unwrap_or(0),
-                params.winc.unwrap_or(0),
-            ),
-            PlayerColor::Black => (
-                params.btime.unwrap_or(0),
-                params.binc.unwrap_or(0),
-            ),
+            PlayerColor::White => (params.wtime.unwrap_or(0), params.winc.unwrap_or(0)),
+            PlayerColor::Black => (params.btime.unwrap_or(0), params.binc.unwrap_or(0)),
             PlayerColor::Neutral => (0, 0),
         };
 
@@ -480,23 +470,42 @@ fn run_go(state: &mut UciState, params: GoParams) {
                 inc_ms_raw.max(500)
             };
             let scaled_time = remaining_ms.saturating_sub(move_overhead);
-            let centi_mtg: i64 = if scaled_time >= 1000 { 5051 } else { (scaled_time as f64 * 5.051) as i64 }.max(100);
+            let centi_mtg: i64 = match params.movestogo {
+                Some(mtg) if mtg > 0 => (mtg.min(50) as i64 * 100).max(100),
+                _ => if scaled_time >= 1000 {
+                    5051
+                } else {
+                    (scaled_time as f64 * 5.051) as i64
+                }
+                .max(100),
+            };
             let time_left = (remaining_ms as i64
-                + (inc_ms_raw as i64 * (centi_mtg - 100) - move_overhead as i64 * (200 + centi_mtg)) / 100)
+                + (inc_ms_raw as i64 * (centi_mtg - 100)
+                    - move_overhead as i64 * (200 + centi_mtg))
+                    / 100)
                 .max(1) as f64;
             let log_adj = (0.3128 * time_left.max(1.0).log10() - 0.4354).max(0.1);
             let log_time_sec = (scaled_time as f64 / 1000.0).max(0.001).log10();
             let opt_constant = (0.0032116 + 0.000321123 * log_time_sec).min(0.00508017);
             let max_constant = (3.3977 + 3.0395 * log_time_sec).max(2.94761);
-            let ply = state.game.fullmove_number.saturating_sub(1).saturating_mul(2) as f64
-                + if state.game.turn == PlayerColor::Black { 1.0 } else { 0.0 };
+            let ply = state
+                .game
+                .fullmove_number
+                .saturating_sub(1)
+                .saturating_mul(2) as f64
+                + if state.game.turn == PlayerColor::Black {
+                    1.0
+                } else {
+                    0.0
+                };
             let opt_scale = ((0.0121431 + (ply + 2.94693_f64).powf(0.461073) * opt_constant)
                 .min(0.213035 * remaining_ms as f64 / time_left))
                 * log_adj;
             let max_scale = max_constant.min(6.67704) + ply / 11.9847;
             let optimum = (opt_scale * time_left) as u64;
             let maximum = ((max_scale * optimum as f64)
-                .min(0.825179 * remaining_ms as f64 - move_overhead as f64) - 10.0)
+                .min(0.825179 * remaining_ms as f64 - move_overhead as f64)
+                - 10.0)
                 .max(0.0) as u64;
             let min_think: u64 = 10;
             let optimum = optimum.max(min_think);
@@ -545,11 +554,7 @@ fn run_go(state: &mut UciState, params: GoParams) {
 
             println!(
                 "info depth {} score {} nodes {} hashfull {} pv {}",
-                completed_depth,
-                score_str,
-                stats.nodes,
-                stats.tt_fill_permille,
-                bm_uci,
+                completed_depth, score_str, stats.nodes, stats.tt_fill_permille, bm_uci,
             );
             println!("bestmove {}", bm_uci);
         }
@@ -569,9 +574,7 @@ fn get_random_seed() -> u64 {
         .as_nanos() as u64
 }
 
-// ---------------------------------------------------------------------------
 // Main loop
-// ---------------------------------------------------------------------------
 
 fn main() {
     let stdin = io::stdin();
@@ -596,13 +599,16 @@ fn main() {
             "uci" => {
                 println!("id name {}", ENGINE_NAME);
                 println!("id author {}", ENGINE_AUTHOR);
-                println!("option name Hash type spin default 64 min 1 max 65536");
+                println!("option name Hash type spin default 16 min 1 max 4096");
                 println!("uciok");
                 let _ = io::stdout().flush();
             }
             "isready" => {
                 println!("readyok");
                 let _ = io::stdout().flush();
+            }
+            "setoption" => {
+                handle_setoption(&tokens[1..]);
             }
             "ucinewgame" => {
                 search::reset_search_state();
