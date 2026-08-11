@@ -96,6 +96,32 @@ enum Commands {
         #[arg(long, default_value = "games/eval_params_tuned.json")]
         input: String,
     },
+    /// Sweep one or more parameters and report the loss curve PER VARIANT.
+    ///
+    /// This is the high-power alternative to inferring a parameter's per-variant
+    /// optimum from match results: an SPRT resolves a single variant to about
+    /// +/-50 Elo at a few dozen games, which is the same size as the effects worth
+    /// chasing, whereas each variant here is measured over tens of thousands of
+    /// positions. Use it to find out whether a parameter genuinely wants different
+    /// values in different variants before building any gating for it.
+    Sweep {
+        #[arg(long, default_value = "games/texel_corpus.jsonl")]
+        corpus: String,
+        /// Comma-separated parameter names to sweep, each independently with the
+        /// others held at their current values.
+        #[arg(long)]
+        params: String,
+        /// Sweep points per parameter, spread across its declared range.
+        #[arg(long, default_value_t = 21)]
+        points: usize,
+        #[arg(long, default_value_t = DEFAULT_K_SCALE)]
+        k_scale: f64,
+        #[arg(long, default_value_t = true)]
+        quiet_only: bool,
+        /// Optional JSON output path for the raw curves.
+        #[arg(long)]
+        output: Option<String>,
+    },
     /// Print every tunable parameter with its current default and search range.
     List,
 }
@@ -145,6 +171,14 @@ fn run() -> Result<(), String> {
             run_tuner(&cfg)
         }
         Commands::Apply { input } => apply_tuned(&input),
+        Commands::Sweep {
+            corpus,
+            params,
+            points,
+            k_scale,
+            quiet_only,
+            output,
+        } => run_sweep(&corpus, &params, points, k_scale, quiet_only, output.as_deref()),
         Commands::List => {
             for spec in TUNABLE_EVAL_PARAM_SPECS {
                 println!(
@@ -1014,6 +1048,195 @@ fn run_tuner(cfg: &RunCfg) -> Result<(), String> {
         "[texel] loss is a proxy: eval-term changes in this engine are SPRT-fragile, so \
          confirm with an SPRT before trusting these values."
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// per-variant sweep
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SweepCurve {
+    param: String,
+    values: Vec<i64>,
+    /// variant -> loss at each swept value, aligned with `values`.
+    per_variant: BTreeMap<String, Vec<f64>>,
+    /// variant -> position count the curve was measured over.
+    counts: BTreeMap<String, usize>,
+    default: i64,
+}
+
+/// Measures, for each swept value of each parameter, the mean NLL PER VARIANT.
+///
+/// Positions are materialized once per chunk and every candidate value is scored
+/// against that same chunk, so the cost is one eval per (position, value) rather
+/// than a rebuild per value.
+fn run_sweep(
+    corpus: &str,
+    params: &str,
+    points: usize,
+    k_scale: f64,
+    quiet_only: bool,
+    output: Option<&str>,
+) -> Result<(), String> {
+    let wanted: Vec<&EvalParamSpec> = {
+        let names: Vec<String> = params.split(',').map(|s| s.trim().to_lowercase()).collect();
+        let mut v = Vec::new();
+        for n in &names {
+            match TUNABLE_EVAL_PARAM_SPECS.iter().find(|s| s.name.to_lowercase() == *n) {
+                Some(s) => v.push(s),
+                None => return Err(format!("unknown parameter '{}'", n)),
+            }
+        }
+        v
+    };
+
+    // Load and group games by variant.
+    let file = File::open(corpus).map_err(|e| format!("failed to open {}: {}", corpus, e))?;
+    let mut grouped: HashMap<String, Vec<GameRecord>> = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(r) = serde_json::from_str::<GameRecord>(line.trim()) {
+            grouped.entry(r.variant.clone()).or_default().push(r);
+        }
+    }
+    let mut by_variant: Vec<(String, Vec<GameRecord>)> = grouped.into_iter().collect();
+    by_variant.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let base = EvalParams::default();
+    let mut curves = Vec::new();
+
+    for spec in &wanted {
+        if STOP.load(Ordering::Relaxed) {
+            break;
+        }
+        // Candidate values spread across the parameter's declared range, with its
+        // current value forced in so the baseline is always on the curve.
+        let mut values: Vec<i64> = (0..points.max(2))
+            .map(|i| {
+                spec.min + (spec.max - spec.min) * i as i64 / (points.max(2) - 1) as i64
+            })
+            .collect();
+        let current = get_field(&base, spec.name);
+        if !values.contains(&current) {
+            values.push(current);
+        }
+        values.sort_unstable();
+        values.dedup();
+
+        let mut sums: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        let started = Instant::now();
+
+        for (variant_name, games) in &by_variant {
+            let Some(variant) = resolve_variant(variant_name) else { continue };
+            let b = variant.get_default_bounds();
+            apeiron::moves::set_world_bounds(b.0, b.1, b.2, b.3);
+
+            let acc = sums.entry(variant_name.clone()).or_insert_with(|| vec![0.0; values.len()]);
+            let cnt = counts.entry(variant_name.clone()).or_insert(0);
+
+            for chunk in games.chunks(24) {
+                if STOP.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut positions: Vec<(GameState, f32)> = chunk
+                    .par_iter()
+                    .flat_map(|g| replay_game(g, quiet_only))
+                    .collect();
+                if positions.is_empty() {
+                    continue;
+                }
+                *cnt += positions.len();
+
+                for (vi, &val) in values.iter().enumerate() {
+                    set_eval_params(set_field(&base, spec.name, val));
+                    let s: f64 = positions
+                        .par_iter_mut()
+                        .map(|(g, res)| {
+                            let e = static_eval(g) as f64;
+                            let p = (1.0 / (1.0 + (-e / k_scale).exp())).clamp(1e-12, 1.0 - 1e-12);
+                            let r = *res as f64;
+                            -(r * p.ln() + (1.0 - r) * (1.0 - p).ln())
+                        })
+                        .sum();
+                    acc[vi] += s;
+                }
+            }
+        }
+        set_eval_params(base.clone());
+
+        // Turn the accumulated sums into mean loss.
+        let mut per_variant: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for (v, s) in &sums {
+            let n = counts[v].max(1) as f64;
+            per_variant.insert(v.clone(), s.iter().map(|x| x / n).collect());
+        }
+
+        // Report: each variant's own optimum, and how far it sits from the current
+        // global value. A parameter whose optima cluster wants one global value; one
+        // whose optima split across variants is a gating candidate.
+        println!("\n=== {} (current {}, range [{}, {}]) ===",
+                 spec.name, current, spec.min, spec.max);
+        println!("{:<22} {:>8} {:>10} {:>12} {:>12}", "variant", "best", "positions", "loss@best", "loss@current");
+        let cur_idx = values.iter().position(|&v| v == current).unwrap_or(0);
+        let mut best_vals = Vec::new();
+        let mut rows: Vec<(String, i64, usize, f64, f64)> = Vec::new();
+        for (v, losses) in &per_variant {
+            let (bi, _) = losses
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap();
+            rows.push((v.clone(), values[bi], counts[v], losses[bi], losses[cur_idx]));
+            best_vals.push(values[bi]);
+        }
+        rows.sort_by_key(|r| r.1);
+        for (v, best, n, lb, lc) in &rows {
+            let gain = lc - lb;
+            println!(
+                "{:<22} {:>8} {:>10} {:>12.6} {:>12.6}  {}",
+                v, best, n, lb, lc,
+                if gain > 0.0005 { format!("(-{:.4} available)", gain) } else { String::new() }
+            );
+        }
+        best_vals.sort_unstable();
+        let spread = best_vals.last().unwrap_or(&0) - best_vals.first().unwrap_or(&0);
+        println!(
+            "per-variant optima span {} .. {} (spread {}) — {}",
+            best_vals.first().unwrap_or(&0),
+            best_vals.last().unwrap_or(&0),
+            spread,
+            if spread * 4 > (spec.max - spec.min) {
+                "SPLIT: variants disagree, a single global value cannot serve them"
+            } else {
+                "clustered: one global value is fine"
+            }
+        );
+        println!("  measured in {:.1}s", started.elapsed().as_secs_f64());
+
+        curves.push(SweepCurve {
+            param: spec.name.to_string(),
+            values,
+            per_variant,
+            counts,
+            default: current,
+        });
+    }
+
+    if let Some(path) = output {
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(path, serde_json::to_string_pretty(&curves).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        println!("\n[texel] wrote curves to {}", path);
+    }
     Ok(())
 }
 

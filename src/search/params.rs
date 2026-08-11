@@ -225,8 +225,8 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("pawn_past_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY as i64, 0, 250, 2.0, 0.002, "Penalty for a pawn that can never promote"),
     EvalParamSpec::new("pawn_far_from_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY as i64, 0, 150, 2.0, 0.002, "Flat penalty for a pawn far from promotion"),
     EvalParamSpec::new("minor_development_penalty_threshold", crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which the stronger undeveloped-minor penalty applies"),
-    EvalParamSpec::new("min_minor_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY as i64, 0, 40, 2.0, 0.002, "Undeveloped-minor penalty for low-value pieces"),
     EvalParamSpec::new("min_major_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY as i64, 0, 30, 2.0, 0.002, "Undeveloped-major penalty"),
+    EvalParamSpec::new("min_fairy_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY as i64, 0, 220, 2.0, 0.002, "Undeveloped-fairy-leaper penalty (leapers are worthless at home, knights and bishops are not)"),
     EvalParamSpec::new("king_defender_value_threshold", crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which a piece counts as a king defender"),
     EvalParamSpec::new("complexity_damp", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP as i64, 0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score"),
     EvalParamSpec::new("complexity_excess_max", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX as i64, 8, 100, 2.0, 0.002, "Cap on phase excess counted for complexity damping"),
@@ -361,8 +361,8 @@ pub struct EvalParams {
     pub pawn_past_promo_penalty: i32,
     pub pawn_far_from_promo_penalty: i32,
     pub minor_development_penalty_threshold: i32,
-    pub min_minor_development_penalty: i32,
     pub min_major_development_penalty: i32,
+    pub min_fairy_development_penalty: i32,
     pub king_defender_value_threshold: i32,
     pub complexity_damp: i32,
     pub complexity_excess_max: i32,
@@ -499,8 +499,8 @@ impl Default for EvalParams {
             pawn_past_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY,
             pawn_far_from_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY,
             minor_development_penalty_threshold: crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD,
-            min_minor_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY,
             min_major_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY,
+            min_fairy_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY,
             king_defender_value_threshold: crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD,
             complexity_damp: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP,
             complexity_excess_max: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX,
@@ -802,8 +802,8 @@ define_eval_accessor!(pawn_full_value_threshold, crate::evaluation::base::DEFAUL
 define_eval_accessor!(pawn_past_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY);
 define_eval_accessor!(pawn_far_from_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY);
 define_eval_accessor!(minor_development_penalty_threshold, crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD);
-define_eval_accessor!(min_minor_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY);
 define_eval_accessor!(min_major_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY);
+define_eval_accessor!(min_fairy_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY);
 define_eval_accessor!(king_defender_value_threshold, crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD);
 define_eval_accessor!(complexity_damp, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP);
 define_eval_accessor!(complexity_excess_max, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX);

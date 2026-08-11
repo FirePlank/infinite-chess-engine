@@ -14,7 +14,7 @@ use crate::search::params::{
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_value_threshold,
     king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
     mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
-    mg_outpost_bonus, min_major_development_penalty, min_minor_development_penalty,
+    mg_outpost_bonus, min_major_development_penalty,
     minor_development_penalty_threshold, passed_enemy_king_dist, passed_friendly_king_dist,
     passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_penalty,
     pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
@@ -22,6 +22,7 @@ use crate::search::params::{
     queen_open_file_bonus, queen_semi_open_file_bonus, queen_value, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     slider_threat_div, zebra,
+min_fairy_development_penalty,
 };
 
 // 2-Bucket LRU pawn structure cache
@@ -250,8 +251,8 @@ pub const DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD: i32 = 6;
 pub const DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY: i32 = 90;
 pub const DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY: i32 = 48;
 pub const DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD: i32 = 400;
-pub const DEFAULT_EVAL_MIN_MINOR_DEVELOPMENT_PENALTY: i32 = 22;
 pub const DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 16;
+pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
 pub const DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD: i32 = 400;
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
@@ -1834,11 +1835,22 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         if (pt.is_minor() || pt == PieceType::Archbishop)
             && game.starting_squares.contains(&Coordinate::new(x, y))
         {
+            // A fairy leaper is near-useless from its starting square -- an odd leap
+            // pattern only pays once it has room -- while a knight or bishop at home
+            // is far less urgent. One shared value has to compromise between the two,
+            // which suits neither, so they are priced apart.
             piece_score -= if pt.is_minor() {
-                if piece_val < minor_development_penalty_threshold() {
-                    min_minor_development_penalty()
+                if matches!(pt, PieceType::Knight | PieceType::Bishop) {
+                    // A knight or bishop below the threshold costs nothing for
+                    // sitting at home -- tuned to exactly 0, so the branch and its
+                    // threshold check are skipped rather than computed and discarded.
+                    if piece_val < minor_development_penalty_threshold() {
+                        0
+                    } else {
+                        min_major_development_penalty()
+                    }
                 } else {
-                    min_major_development_penalty()
+                    min_fairy_development_penalty()
                 }
             } else {
                 min_major_development_penalty()
