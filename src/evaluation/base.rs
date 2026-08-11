@@ -819,66 +819,66 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     }
                                 }
                                 {
+                                    // Tropism weights divided by Chebyshev distance 1..=7.
+                                    // Indexing replaces a per-piece-per-royal idiv.
+                                    const DEF_NEUTRAL: [i32; 8] = [0, 25, 12, 8, 6, 5, 4, 3];
+                                    const DEF_PAWN: [i32; 8] = [0, 33, 16, 11, 8, 6, 5, 4];
+                                    const DEF_PIECE: [i32; 8] = [0, 100, 50, 33, 25, 20, 16, 14];
+
                                     let (your_royals, enemy_royals) = if is_white {
                                         (&mut white_royal_tropisms, &mut black_royal_tropisms)
                                     } else {
                                         (&mut black_royal_tropisms, &mut white_royal_tropisms)
                                     };
-                                    for ek in enemy_royals {
-                                        let dx = (x - ek.x).abs();
-                                        let dy = (y - ek.y).abs();
-                                        if dx <= 20 && dy <= 20 {
-                                            let leaper_attack_units = if matches!(
-                                                pt,
-                                                PieceType::Hawk | PieceType::Rose
-                                            ) {
-                                                100
-                                            } else if matches!(
-                                                pt,
-                                                PieceType::Knight
-                                                    | PieceType::Centaur
-                                                    | PieceType::Camel
-                                                    | PieceType::Giraffe
-                                                    | PieceType::Zebra
-                                                    | PieceType::Huygen
-                                            ) {
-                                                50
-                                            } else {
-                                                0
-                                            };
-                                            ek.attacking_units += leaper_attack_units;
+                                    let leaper_attack_units =
+                                        if matches!(pt, PieceType::Hawk | PieceType::Rose) {
+                                            100
+                                        } else if matches!(
+                                            pt,
+                                            PieceType::Knight
+                                                | PieceType::Centaur
+                                                | PieceType::Camel
+                                                | PieceType::Giraffe
+                                                | PieceType::Zebra
+                                                | PieceType::Huygen
+                                        ) {
+                                            50
+                                        } else {
+                                            0
+                                        };
+                                    if leaper_attack_units != 0 {
+                                        for ek in enemy_royals {
+                                            let dx = (x - ek.x).abs();
+                                            let dy = (y - ek.y).abs();
+                                            if dx <= 20 && dy <= 20 {
+                                                ek.attacking_units += leaper_attack_units;
+                                            }
                                         }
                                     }
                                     if piece.color() == PlayerColor::Neutral {
-                                        for king in &mut white_royal_tropisms {
+                                        for king in white_royal_tropisms
+                                            .iter_mut()
+                                            .chain(black_royal_tropisms.iter_mut())
+                                        {
                                             let d = (x - king.x).abs().max((y - king.y).abs());
                                             if d <= 7 {
                                                 king.defender_units_in_distance[d as usize] +=
-                                                    25 / d as i32;
-                                            }
-                                        }
-                                        for king in &mut black_royal_tropisms {
-                                            let d = (x - king.x).abs().max((y - king.y).abs());
-                                            if d <= 7 {
-                                                king.defender_units_in_distance[d as usize] +=
-                                                    25 / d as i32;
+                                                    DEF_NEUTRAL[d as usize];
                                             }
                                         }
                                     } else {
+                                        let table = if matches!(pt, PieceType::Pawn) {
+                                            &DEF_PAWN
+                                        } else if !pt.is_royal() {
+                                            &DEF_PIECE
+                                        } else {
+                                            &[0i32; 8]
+                                        };
                                         for yk in your_royals {
                                             let d = (x - yk.x).abs().max((y - yk.y).abs());
                                             if d <= 7 {
-                                                let defender_units =
-                                                    if matches!(pt, PieceType::Pawn) {
-                                                        33 / d
-                                                    } else if !pt.is_royal() {
-                                                        100 / d
-                                                    } else {
-                                                        0
-                                                    }
-                                                        as i32;
                                                 yk.defender_units_in_distance[d as usize] +=
-                                                    defender_units;
+                                                    table[d as usize];
                                             }
                                         }
                                     }
