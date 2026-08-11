@@ -15,6 +15,9 @@ crate-type = ["cdylib", "rlib"]
 name = "spsa"
 required-features = ["param_tuning"]
 
+[[bin]]
+name = "texel_tuner"
+required-features = ["eval_tuning"]
 
 [[bin]]
 name = "helpmate_solver"
