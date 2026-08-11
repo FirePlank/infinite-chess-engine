@@ -2748,6 +2748,11 @@ pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
     game.recompute_piece_counts();
     game.recompute_correction_hashes();
 
+    // Pawn/material caches key on a hash with no rules component, so a pooled helper
+    // reused across a variant switch would keep serving stale-rules values otherwise.
+    crate::evaluation::base::clear_pawn_cache();
+    crate::evaluation::insufficient_material::clear_material_cache();
+
     GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();
         let searcher = opt.get_or_insert_with(|| Searcher::new(u128::MAX));
