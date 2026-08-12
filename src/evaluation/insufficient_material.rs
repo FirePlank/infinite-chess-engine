@@ -3,7 +3,9 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 
 thread_local! {
-    static MATERIAL_CACHE: RefCell<FxHashMap<u64, bool>> = RefCell::new(FxHashMap::default());
+    /// Keyed by (material_hash, bordered): the verdict depends on whether the
+    /// board is bounded, and this cache outlives a set_position variant switch.
+    static MATERIAL_CACHE: RefCell<FxHashMap<(u64, bool), bool>> = RefCell::new(FxHashMap::default());
 }
 
 pub fn clear_material_cache() {
@@ -496,7 +498,7 @@ pub fn evaluate_insufficient_material(game: &crate::game::GameState) -> bool {
         return false;
     }
 
-    let hash = game.material_hash;
+    let hash = (game.material_hash, crate::moves::get_world_size() <= 200);
     let has_pawns = game.white_pawn_count > 0 || game.black_pawn_count > 0;
 
     if !has_pawns {
