@@ -642,6 +642,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut b_ortho_count = 0;
     let mut w_additional_attack_units = 0;
     let mut b_additional_attack_units = 0;
+    // Wall-density gate below: Void+Obstacle choke sliders now, but only the
+    // uncapturable Void permanently confines a leaper's cell.
+    let mut wall_count: i64 = 0;
+    let mut void_count: i64 = 0;
 
     // Threat points for defense urgency
     let mut w_threat_points = 0;
@@ -900,6 +904,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     // Neutral pieces score no activity or attack;
                                     // they only help king safety defensively.
                                     piece_list.push((x, y, piece));
+                                } else if pt == PieceType::Void {
+                                    wall_count += 1;
+                                    void_count += 1;
+                                } else if pt == PieceType::Obstacle {
+                                    wall_count += 1;
                                 }
 
                                 // 3. Piece counts for scaling (Non-pawn, non-royal)
@@ -1429,6 +1438,36 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             PlayerColor::Black,
                         );
 
+                        // Sliders lose value only where rays are genuinely open;
+                        // leapers lose their jump immunity only to a permanent Void.
+                        let (slider_geometry_ctx, leaper_geometry_ctx) = {
+                            let (bmin_x, bmax_x, bmin_y, bmax_y) =
+                                crate::moves::get_coord_bounds();
+                            let world_size = (bmax_x.saturating_sub(bmin_x))
+                                .max(bmax_y.saturating_sub(bmin_y));
+                            // 100 on 8x8-class boards, 0 once the world exceeds 30.
+                            let size_ctx = ((30 - world_size) * 100 / 20).clamp(0, 100) as i32;
+                            let total_squares = (bmax_x - bmin_x + 1) * (bmax_y - bmin_y + 1);
+                            let real_pieces =
+                                (game.white_piece_count + game.black_piece_count) as i64;
+                            let non_piece = total_squares.saturating_sub(real_pieces);
+                            // Zero out past ~10% wall fill: below that a few scattered
+                            // walls don't meaningfully pre-block rays/cells.
+                            let openness_pct = |count: i64| -> i32 {
+                                if non_piece > 0 {
+                                    (100 - (count * 100 / non_piece) * 10).clamp(0, 100) as i32
+                                } else {
+                                    100
+                                }
+                            };
+                            let slider_openness = openness_pct(wall_count);
+                            let leaper_openness = openness_pct(void_count);
+                            (
+                                size_ctx * slider_openness / 100,
+                                size_ctx * leaper_openness / 100,
+                            )
+                        };
+
                         score += evaluate_pieces_processed(
                             game,
                             white_royals,
@@ -1445,6 +1484,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 black_bishop_colors,
                                 cloud_center,
                                 cloud_avg_spread,
+                                slider_geometry_ctx,
+                                leaper_geometry_ctx,
                             },
                             w_attack_ready,
                             b_attack_ready,
@@ -1583,6 +1624,36 @@ struct PieceMetrics {
     black_bishop_colors: (bool, bool),
     cloud_center: Option<Coordinate>,
     cloud_avg_spread: i32,
+    /// 0-100: how much a bounded world truncates slider rays. Always 0 on an
+    /// unbounded board, where a ray reaches regardless of how pieces clump.
+    slider_geometry_ctx: i32,
+    leaper_geometry_ctx: i32,
+}
+
+/// Peak context adjustment as % of base value. Uniform per class so it shifts
+/// rider vs leaper without re-ranking pieces within a class.
+fn geometry_ctx_pct(pt: PieceType) -> i32 {
+    match pt {
+        // Pure riders: every move is a blockable ray.
+        PieceType::Rook
+        | PieceType::Bishop
+        | PieceType::Queen
+        | PieceType::Knightrider
+        | PieceType::Huygen => -12,
+        // Compounds keep a jump component, so only the rider half pays.
+        PieceType::Chancellor | PieceType::Archbishop | PieceType::Amazon => -6,
+        // True leapers: jumps ignore the blockers that stop riders.
+        PieceType::Knight
+        | PieceType::Camel
+        | PieceType::Zebra
+        | PieceType::Giraffe
+        | PieceType::Guard
+        | PieceType::Hawk
+        | PieceType::Centaur => 10,
+        // Rose rides a curved path (neither cleanly), royals are priced by
+        // their life rather than their mobility.
+        _ => 0,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1894,6 +1965,21 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 black_attack_ready
             };
             piece_score = piece_score * scale / 100;
+        }
+
+        // Riders converge toward their confined worth and leapers are paid the
+        // difference. Both ctx are 0 on any unbounded board, so one test skips
+        // the piece-value lookup entirely there.
+        if (metrics.slider_geometry_ctx | metrics.leaper_geometry_ctx) != 0 && !pt.is_royal() {
+            let ctx_pct = geometry_ctx_pct(pt);
+            if ctx_pct != 0 {
+                let ctx = if ctx_pct < 0 {
+                    metrics.slider_geometry_ctx
+                } else {
+                    metrics.leaper_geometry_ctx
+                };
+                piece_score += get_piece_value_base(pt) * ctx_pct * ctx / 10000;
+            }
         }
 
         if piece.color() == PlayerColor::White {
