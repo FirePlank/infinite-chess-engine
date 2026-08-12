@@ -346,10 +346,7 @@ pub fn is_piece_attacking_square(
         }
 
         // Knight or slider + knight compound pieces
-        PieceType::Knight
-        | PieceType::Archbishop
-        | PieceType::Chancellor
-        | PieceType::Amazon => {
+        PieceType::Knight | PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon => {
             let dx = (to.x - from.x).abs();
             let dy = (to.y - from.y).abs();
             return (dx == 1 && dy == 2) || (dx == 2 && dy == 1);
@@ -2353,6 +2350,41 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     }
 }
 
+/// Distance past which a candidate square needs a reason beyond proximity to be
+/// generated. Cheap default filter; critical targets bypass it entirely.
+const BASE_INTERCEPTION_DIST: i64 = 16;
+
+/// Whether a target is worth reaching from any distance. Attacking a piece that
+/// cannot be defended wins material outright, and a heavy piece is worth the move
+/// slot regardless - in both cases proximity says nothing about the move's value.
+/// The `is_square_attacked` probe is the expensive half, so it is only reached for
+/// candidates the distance filter would otherwise drop, and the whole candidate
+/// list is cached per (square, direction).
+#[inline]
+fn is_critical_target(
+    board: &Board,
+    indices: &SpatialIndices,
+    target: &Piece,
+    tx: i64,
+    ty: i64,
+    undefended: &mut Option<bool>,
+) -> bool {
+    if matches!(
+        target.piece_type(),
+        PieceType::Rook
+            | PieceType::Queen
+            | PieceType::Chancellor
+            | PieceType::Archbishop
+            | PieceType::Amazon
+            | PieceType::RoyalQueen
+    ) {
+        return true;
+    }
+    *undefended.get_or_insert_with(|| {
+        !is_square_attacked(board, &Coordinate::new(tx, ty), target.color(), indices)
+    })
+}
+
 /// Find cross-ray attack targets for sliders - optimized for infinite chess.
 #[inline]
 fn find_cross_ray_targets_into(
@@ -2423,6 +2455,9 @@ fn find_cross_ray_targets_into(
             friend_wiggle
         };
         let is_royal = is_enemy && p.piece_type().is_royal();
+        // Probed at most once per piece, and only if some cross-ray distance
+        // actually exceeds BASE_INTERCEPTION_DIST.
+        let mut undefended: Option<bool> = None;
 
         // 1. Orthogonal Cross-Rays (if OUR piece can attack orthogonally)
         if our_attacks_ortho {
@@ -2464,16 +2499,29 @@ fn find_cross_ray_targets_into(
                                 }
                             }
 
-                            // Count this piece at distance d and wiggle distances
+                            // Count this piece at distance d and wiggle distances.
+                            // Exempt from the distance filter when the target is
+                            // royal or otherwise worth reaching from any distance.
+                            let exempt = is_royal
+                                || (is_enemy
+                                    && d > BASE_INTERCEPTION_DIST
+                                    && is_critical_target(
+                                        board,
+                                        indices,
+                                        &p,
+                                        px,
+                                        py,
+                                        &mut undefended,
+                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if is_royal {
+                            if exempt {
                                 royal_dists.insert(d);
                             }
 
                             for w in 1..=wiggle {
                                 add_dist(dist_counts, d + w, max_dist);
                                 add_dist(dist_counts, d - w, max_dist);
-                                if is_royal {
+                                if exempt {
                                     royal_dists.insert(d + w);
                                     royal_dists.insert(d - w);
                                 }
@@ -2521,15 +2569,26 @@ fn find_cross_ray_targets_into(
                                 }
                             }
 
+                            let exempt = is_royal
+                                || (is_enemy
+                                    && d > BASE_INTERCEPTION_DIST
+                                    && is_critical_target(
+                                        board,
+                                        indices,
+                                        &p,
+                                        px,
+                                        py,
+                                        &mut undefended,
+                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if is_royal {
+                            if exempt {
                                 royal_dists.insert(d);
                             }
 
                             for w in 1..=wiggle {
                                 add_dist(dist_counts, d + w, max_dist);
                                 add_dist(dist_counts, d - w, max_dist);
-                                if is_royal {
+                                if exempt {
                                     royal_dists.insert(d + w);
                                     royal_dists.insert(d - w);
                                 }
@@ -2561,8 +2620,19 @@ fn find_cross_ray_targets_into(
                                 .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
                                 .filter(|&(nx, _)| nx == px)
                         {
+                            let exempt = is_royal
+                                || (is_enemy
+                                    && d > BASE_INTERCEPTION_DIST
+                                    && is_critical_target(
+                                        board,
+                                        indices,
+                                        &p,
+                                        px,
+                                        py,
+                                        &mut undefended,
+                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if is_royal {
+                            if exempt {
                                 royal_dists.insert(d);
                             }
                         }
@@ -2589,8 +2659,19 @@ fn find_cross_ray_targets_into(
                                 .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
                                 .filter(|&(nx, _)| nx == px)
                         {
+                            let exempt = is_royal
+                                || (is_enemy
+                                    && d > BASE_INTERCEPTION_DIST
+                                    && is_critical_target(
+                                        board,
+                                        indices,
+                                        &p,
+                                        px,
+                                        py,
+                                        &mut undefended,
+                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if is_royal {
+                            if exempt {
                                 royal_dists.insert(d);
                             }
                         }
@@ -2674,8 +2755,6 @@ fn generate_sliding_moves_impl(
     // Original wiggle values - important for tactics
     const ENEMY_WIGGLE: i64 = 2;
     const FRIEND_WIGGLE: i64 = 1;
-    // Unified base limit for short range
-    const BASE_INTERCEPTION_DIST: i64 = 16;
 
     let our_color = piece.color();
 

@@ -62,3 +62,13 @@ A UCI-compliant chess engine interface for standard 8×8 chess. Accepts UCI comm
 cargo build --bin uci --release
 ./target/release/uci.exe
 ```
+
+### 9. Texel Tuner (texel.rs)
+
+A static-eval Texel tuner for `src/evaluation/base.rs` constants. Fits eval parameters to a `data_gen` corpus and applies the tuned values back to the source. Use one bounds-group corpus (the `data_gen` default `base_only` preset is the usual choice).
+
+```bash
+cargo run --release --bin data_gen --features data_gen -- --games 100000
+cargo run --release --bin texel --features eval_tuning -- run
+cargo run --release --bin texel --features eval_tuning -- apply
+```

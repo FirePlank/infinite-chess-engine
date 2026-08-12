@@ -22,7 +22,7 @@ const RULE50_DAMP_CAP: i32 = 700;
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use crate::search::params::{
     EVAL_PARAMS, EvalParamSpec, EvalParams, TUNABLE_EVAL_PARAM_SPECS, get_eval_params_as_json,
-    set_eval_params_from_json,
+    set_eval_params, set_eval_params_from_json,
 };
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 pub use base::{EVAL_FEATURES, EvalFeatures, reset_eval_features, snapshot_eval_features};
