@@ -758,8 +758,15 @@ impl StagedMoveGen {
             return false;
         }
 
-        use crate::attacks::{DIAG_MASK, KNIGHT_MASK, ORTHO_MASK};
+        use crate::attacks::{
+            CAMEL_MASK, DIAG_MASK, GIRAFFE_MASK, HAWK_MASK, KING_MASK, KNIGHT_MASK, ORTHO_MASK,
+            ZEBRA_MASK,
+        };
         let pt_bit = 1u32 << (pt as u8);
+        // One test keeps non-fairy variants off the per-royal offset checks below.
+        const FAIRY_LEAP_MASK: u32 =
+            KING_MASK | CAMEL_MASK | GIRAFFE_MASK | ZEBRA_MASK | HAWK_MASK;
+        let is_fairy_leaper = (pt_bit & FAIRY_LEAP_MASK) != 0;
 
         for king_pos in royals {
             let dx = tx - king_pos.x;
@@ -770,6 +777,27 @@ impl StagedMoveGen {
             // Knight-like check
             if (pt_bit & KNIGHT_MASK) != 0 && ((adx == 1 && ady == 2) || (adx == 2 && ady == 1)) {
                 return true;
+            }
+
+            // These all jump, so a matching offset IS the check -- no ray to clear.
+            // Missing them let real checks be futility/history-pruned and dropped from qsearch.
+            if is_fairy_leaper {
+                let hits = if (pt_bit & CAMEL_MASK) != 0 {
+                    (adx == 1 && ady == 3) || (adx == 3 && ady == 1)
+                } else if (pt_bit & GIRAFFE_MASK) != 0 {
+                    (adx == 1 && ady == 4) || (adx == 4 && ady == 1)
+                } else if (pt_bit & ZEBRA_MASK) != 0 {
+                    (adx == 2 && ady == 3) || (adx == 3 && ady == 2)
+                } else if (pt_bit & HAWK_MASK) != 0 {
+                    let step = adx.max(ady);
+                    (step == 2 || step == 3) && (adx == 0 || ady == 0 || adx == ady)
+                } else {
+                    // KING_MASK: King/Guard/Centaur/RoyalCentaur one-square step.
+                    adx <= 1 && ady <= 1 && (adx | ady) != 0
+                };
+                if hits {
+                    return true;
+                }
             }
 
             // A sliding check needs a clear ray from destination to royal; alignment
@@ -1213,6 +1241,31 @@ mod tests {
             &no_enemy_royal,
             &queen
         ));
+    }
+
+    #[test]
+    fn move_gives_check_fast_detects_fairy_leapers() {
+        // Each lands on its own leap offset from k5,8; a miss here means the check
+        // is scored as a quiet and can be futility/history-pruned or cut in qsearch.
+        let cases: [(&str, PieceType, (i64, i64), (i64, i64)); 5] = [
+            ("w 0/100 1 (8;q|1;q) K5,1|k5,8|CA1,1", PieceType::Camel, (1, 1), (6, 5)),
+            ("w 0/100 1 (8;q|1;q) K5,1|k5,8|GI1,1", PieceType::Giraffe, (1, 1), (6, 4)),
+            ("w 0/100 1 (8;q|1;q) K5,1|k5,8|ZE1,1", PieceType::Zebra, (1, 1), (7, 5)),
+            ("w 0/100 1 (8;q|1;q) K5,1|k5,8|HA1,1", PieceType::Hawk, (1, 1), (5, 5)),
+            ("w 0/100 1 (8;q|1;q) K5,1|k5,8|GU1,1", PieceType::Guard, (1, 1), (5, 7)),
+        ];
+        for (icn, pt, from, to) in cases {
+            let game = game_from_icn(icn);
+            let m = Move::new(
+                Coordinate::new(from.0, from.1),
+                Coordinate::new(to.0, to.1),
+                Piece::new(pt, PlayerColor::White),
+            );
+            assert!(
+                StagedMoveGen::move_gives_check_fast(&game, &m),
+                "{pt:?} moving to {to:?} attacks k5,8 but was not detected"
+            );
+        }
     }
 
     #[test]
