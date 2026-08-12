@@ -4690,8 +4690,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
-                // Ensure reduction stays in valid range [0, depth-2]
-                reduction = reduction.clamp(0, (depth as i32) - 2);
+                // Ensure reduction stays in valid range [0, depth-2]. The upper
+                // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
+                // and clamp panics when min > max.
+                reduction = reduction.clamp(0, ((depth as i32) - 2).max(0));
             }
 
             // Base child depth after LMR (with singular extension if applicable)
