@@ -1098,6 +1098,35 @@ impl GameState {
         !opponent_win_condition.requires_check_evasion()
     }
 
+    /// Castling relocates the partner, so hashes keyed on piece SQUARES must follow
+    /// it. Guard is a minor and is a legal CoaIP castling partner.
+    #[cold]
+    #[inline(never)]
+    fn castling_partner_aux_hashes(
+        &mut self,
+        partner: Piece,
+        from_x: i64,
+        from_y: i64,
+        to_x: i64,
+        to_y: i64,
+    ) {
+        use crate::search::zobrist::{material_key_at, piece_key};
+        let pt = partner.piece_type();
+        if pt.is_minor() {
+            self.minor_hash ^= piece_key(pt, partner.color(), from_x, from_y);
+            self.minor_hash ^= piece_key(pt, partner.color(), to_x, to_y);
+        }
+        // A bishop partner's material key is square-colour dependent.
+        if pt == PieceType::Bishop {
+            self.material_hash = self
+                .material_hash
+                .wrapping_sub(material_key_at(pt, partner.color(), from_x, from_y));
+            self.material_hash = self
+                .material_hash
+                .wrapping_add(material_key_at(pt, partner.color(), to_x, to_y));
+        }
+    }
+
     /// En passant takes whatever stands on the landing square, which a promoting
     /// double push makes a non-pawn. Both directions live here so they can't drift.
     #[cold]
@@ -3375,6 +3404,10 @@ impl GameState {
                 self.black_nonpawn_hash ^=
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             }
+
+            // Castling moves the PARTNER too, and CoaIP castles with a Guard --
+            // a minor -- so minor_hash must follow it like the other hashes do.
+            self.castling_partner_aux_hashes(rook, rook_coord.x, rook_coord.y, rook_to_x, m.from.y);
             self.board.set_piece(rook_to_x, m.from.y, rook);
             self.spatial_indices.remove(rook_coord.x, rook_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
@@ -3722,6 +3755,15 @@ impl GameState {
                                 rook_coord.y,
                             );
                         }
+                        // From/to swapped: XOR self-inverts either way, but the
+                        // material add/sub only reverses with the operands flipped.
+                        self.castling_partner_aux_hashes(
+                            rook,
+                            rook_to_x,
+                            m.from.y,
+                            rook_coord.x,
+                            rook_coord.y,
+                        );
                     }
                 }
             }
