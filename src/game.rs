@@ -1624,7 +1624,9 @@ impl GameState {
     }
 
     fn get_legal_moves_into_inner(&self, out: &mut MoveList) {
-        if self.is_in_check() {
+        // must_escape_check matters: under AllRoyalsCaptured a check need not be
+        // answered, so restricting to evasions would drop most legal moves.
+        if self.is_in_check() && self.must_escape_check() {
             self.get_evasion_moves_into(out);
             // Strict legality filtering (pins/leaving king in check)
             let mut i = 0;
