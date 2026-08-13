@@ -1109,17 +1109,21 @@ impl GameState {
             PlayerColor::Neutral => return false,
         };
 
-        // If we have no royals left, we have lost in any variant that has royals.
-        if current_count == 0 && initial_count > 0 {
-            return true;
-        }
-
         // The OPPONENT's win condition tells us how they beat us
         let opponent_win_condition = match self.turn {
             PlayerColor::White => self.game_rules.black_win_condition, // How Black beats White
             PlayerColor::Black => self.game_rules.white_win_condition, // How White beats Black
             PlayerColor::Neutral => return false,
         };
+
+        // Losing every royal ends it -- except under AllPiecesCaptured, where the
+        // opponent must take EVERY piece and a bare army fights on.
+        if current_count == 0
+            && initial_count > 0
+            && opponent_win_condition != WinCondition::AllPiecesCaptured
+        {
+            return true;
+        }
 
         // If they beat via specific royal capture count (like capture 1 out of 3)
         if opponent_win_condition == WinCondition::RoyalCapture && current_count < initial_count {
