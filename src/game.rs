@@ -1098,6 +1098,48 @@ impl GameState {
         !opponent_win_condition.requires_check_evasion()
     }
 
+    /// En passant takes whatever stands on the landing square, which a promoting
+    /// double push makes a non-pawn. Both directions live here so they can't drift.
+    #[cold]
+    #[inline(never)]
+    fn ep_victim_bookkeeping(&mut self, victim: Piece, sx: i64, sy: i64, capturing: bool) {
+        use crate::search::zobrist::{material_key_at, pawn_key};
+        let sign = if capturing { -1i32 } else { 1i32 };
+        let is_pawn = victim.piece_type() == PieceType::Pawn;
+
+        if is_pawn {
+            self.pawn_hash ^= pawn_key(victim.color(), sx, sy);
+        }
+        // Parity-aware: a promoted bishop's material key depends on square colour.
+        let mk = material_key_at(victim.piece_type(), victim.color(), sx, sy);
+        self.material_hash = if capturing {
+            self.material_hash.wrapping_sub(mk)
+        } else {
+            self.material_hash.wrapping_add(mk)
+        };
+        self.total_phase += sign * get_piece_phase(victim.piece_type());
+
+        let value = self.get_piece_value(victim.piece_type(), victim.color());
+        let (count, pawns, score_delta) = if victim.color() == PlayerColor::White {
+            (&mut self.white_piece_count, &mut self.white_pawn_count, -value)
+        } else {
+            (&mut self.black_piece_count, &mut self.black_pawn_count, value)
+        };
+        if capturing {
+            self.material_score += score_delta;
+            *count = count.saturating_sub(1);
+            if is_pawn {
+                *pawns = pawns.saturating_sub(1);
+            }
+        } else {
+            self.material_score -= score_delta;
+            *count = count.saturating_add(1);
+            if is_pawn {
+                *pawns = pawns.saturating_add(1);
+            }
+        }
+    }
+
     /// Whether the side-to-move has lost by royal capture, which only applies under
     /// the RoyalCapture and AllRoyalsCaptured win conditions. Decided by the
     /// opponent's win condition, since it is how we can lose.
@@ -3237,28 +3279,9 @@ impl GameState {
                 ep.pawn_square.x,
                 ep.pawn_square.y,
             );
-            self.pawn_hash ^= pawn_key(captured_pawn.color(), ep.pawn_square.x, ep.pawn_square.y);
             self.spatial_indices
                 .remove(ep.pawn_square.x, ep.pawn_square.y);
-
-            self.total_phase -= get_piece_phase(captured_pawn.piece_type());
-
-            // Update material hash (subtractive) for EP capture
-            self.material_hash = self.material_hash.wrapping_sub(material_key(
-                captured_pawn.piece_type(),
-                captured_pawn.color(),
-            ));
-
-            let value = self.get_piece_value(captured_pawn.piece_type(), captured_pawn.color());
-            if captured_pawn.color() == PlayerColor::White {
-                self.material_score -= value;
-                self.white_piece_count = self.white_piece_count.saturating_sub(1);
-                self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
-            } else {
-                self.material_score += value;
-                self.black_piece_count = self.black_piece_count.saturating_sub(1);
-                self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
-            }
+            self.ep_victim_bookkeeping(captured_pawn, ep.pawn_square.x, ep.pawn_square.y, true);
         }
 
         // Handle Promotion material update
@@ -3661,23 +3684,7 @@ impl GameState {
             self.spatial_indices
                 .add(ep.pawn_square.x, ep.pawn_square.y, captured_pawn.packed());
 
-            self.material_hash = self.material_hash.wrapping_add(material_key(
-                captured_pawn.piece_type(),
-                captured_pawn.color(),
-            ));
-            self.pawn_hash ^= pawn_key(captured_pawn.color(), ep.pawn_square.x, ep.pawn_square.y);
-
-            // Restore material value and piece counts
-            let value = self.get_piece_value(captured_pawn.piece_type(), captured_pawn.color());
-            if captured_pawn.color() == PlayerColor::White {
-                self.material_score += value;
-                self.white_piece_count = self.white_piece_count.saturating_add(1);
-                self.white_pawn_count = self.white_pawn_count.saturating_add(1);
-            } else {
-                self.material_score -= value;
-                self.black_piece_count = self.black_piece_count.saturating_add(1);
-                self.black_pawn_count = self.black_pawn_count.saturating_add(1);
-            }
+            self.ep_victim_bookkeeping(captured_pawn, ep.pawn_square.x, ep.pawn_square.y, false);
         }
 
         // Handle Castling Revert
@@ -4210,6 +4217,58 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::sync::OnceLock;
+
+    /// Asserts after make AND undo: an asymmetric pair poisons every later TT key,
+    /// which a plain round-trip check would miss.
+    fn assert_incremental_state_matches_scratch(game: &mut GameState, label: &str) {
+        let (ph, mh, wpc, bpc) = (
+            game.pawn_hash,
+            game.material_hash,
+            game.white_pawn_count,
+            game.black_pawn_count,
+        );
+        game.recompute_correction_hashes();
+        game.recompute_piece_counts();
+        assert_eq!(ph, game.pawn_hash, "{label}: pawn_hash drifted");
+        assert_eq!(mh, game.material_hash, "{label}: material_hash drifted");
+        assert_eq!(wpc, game.white_pawn_count, "{label}: white_pawn_count drifted");
+        assert_eq!(bpc, game.black_pawn_count, "{label}: black_pawn_count drifted");
+    }
+
+    #[test]
+    fn en_passant_on_promoted_double_push_keeps_hashes_consistent() {
+        // Palace geometry: y=2 double-pushes onto promo rank y=4, so the pawn
+        // promotes and en passant then captures a promoted piece.
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 (4|2) K5,1|k5,8|P3,2+|p4,4+");
+        assert_incremental_state_matches_scratch(&mut game, "setup");
+
+        let moves = game.get_legal_moves();
+        let Some(dp) = moves
+            .iter()
+            .find(|m| m.from == Coordinate::new(3, 2) && m.to == Coordinate::new(3, 4))
+            .copied()
+        else {
+            return; // geometry not generated here; nothing to assert
+        };
+        let undo = game.make_move(&dp);
+        assert_incremental_state_matches_scratch(&mut game, "after promoting double push");
+
+        // Black takes en passant onto the skipped square, removing the promoted piece.
+        if let Some(ep) = game
+            .get_legal_moves()
+            .iter()
+            .find(|m| m.from == Coordinate::new(4, 4) && m.to == Coordinate::new(3, 3))
+            .copied()
+        {
+            let undo2 = game.make_move(&ep);
+            assert_incremental_state_matches_scratch(&mut game, "after en passant on promoted");
+            game.undo_move(&ep, undo2);
+            assert_incremental_state_matches_scratch(&mut game, "after undo en passant");
+        }
+        game.undo_move(&dp, undo);
+        assert_incremental_state_matches_scratch(&mut game, "after undo double push");
+    }
 
     static BOUNDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
