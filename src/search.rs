@@ -2256,7 +2256,11 @@ fn search_with_searcher(
     game: &mut GameState,
     max_depth: usize,
 ) -> Option<(Move, i32)> {
-    let moves = game.get_legal_moves();
+    // Root must bypass the slider candidate cache: it is never invalidated, so a
+    // persistent GameState accumulates staleness and the root list both loses legal
+    // moves and gains impossible ones (measured 84% of positions after 120 plies).
+    let mut moves = MoveList::new();
+    game.get_legal_moves_into(&mut moves);
     if moves.is_empty() {
         return None;
     }
@@ -3023,8 +3027,9 @@ pub(crate) fn get_best_moves_multipv_impl(
     #[cfg(feature = "nnue")]
     searcher.nnue_init_root(game);
 
-    // Get all legal moves upfront
-    let moves = game.get_legal_moves();
+    // Get all legal moves upfront (exact: bypasses the stale slider cache)
+    let mut moves = MoveList::new();
+    game.get_legal_moves_into(&mut moves);
     if moves.is_empty() {
         let stats = build_search_stats(searcher);
         return MultiPVResult {
@@ -3471,8 +3476,9 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
     searcher.decay_history();
     searcher.tt.clear();
 
-    // Generate and filter legal moves
-    let moves = game.get_legal_moves();
+    // Generate and filter legal moves (exact: bypasses the stale slider cache)
+    let mut moves = MoveList::new();
+    game.get_legal_moves_into(&mut moves);
     let mut legal_moves: MoveList = MoveList::new();
     for m in moves {
         let undo = game.make_move(&m);
