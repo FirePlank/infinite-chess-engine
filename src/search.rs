@@ -1580,6 +1580,34 @@ impl Searcher {
         *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
     }
 
+    /// Continuation-history sum over the 1- and 2-ply-back contexts, weighted as
+    /// the move picker weights them so the scales stay comparable.
+    pub fn cont_hist_reduction_score(&self, ply: usize, m: &Move) -> i32 {
+        let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
+        let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
+        const CONT_WEIGHTS: [i32; 2] = [1024, 712];
+        let mut total = 0;
+        for (idx, plies_ago) in [1usize, 2].into_iter().enumerate() {
+            if ply < plies_ago {
+                break;
+            }
+            let Some(prev_move) = self.move_history[ply - plies_ago] else {
+                continue;
+            };
+            let prev_piece = self.moved_piece_history[ply - plies_ago] as usize;
+            if prev_piece >= 32 {
+                continue;
+            }
+            let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
+            let prev_ic = self.in_check_history[ply - plies_ago] as usize;
+            let prev_cap = self.capture_history_stack[ply - plies_ago] as usize;
+            let val = self.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_hash]
+                [cur_from_hash][cur_to_hash] as i32;
+            total += (val * CONT_WEIGHTS[idx]) / 1024;
+        }
+        total
+    }
+
     /// Update pawn history for moves that caused beta cutoff.
     #[inline]
     pub fn update_pawn_history(
@@ -4667,6 +4695,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_score = searcher.history[p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 reduction -= (hist_score + pawn_score) / 4096;
+
+                // "Was this good AFTER that move?" — a different signal class
+                // from main history, already trusted for ordering.
+                let cont_score = searcher.cont_hist_reduction_score(ply, &m);
+                reduction -= cont_score / 4096;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
