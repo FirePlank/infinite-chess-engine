@@ -2,7 +2,7 @@ use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{GameState, WinCondition};
 
 use smallvec::SmallVec;
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 
 use crate::search::params::{
     amazon_compound_bonus, amazon_queen_scale, amazon_rook_scale, archbishop,
@@ -64,6 +64,68 @@ thread_local! {
     pub(crate) static EVAL_BLACK_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
     pub(crate) static EVAL_WHITE_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
     pub(crate) static EVAL_BLACK_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
+}
+
+/// Per-level play-style weighting, in percent of the full-strength term.
+///
+/// Weak site levels used to differ from strong ones only in which move they picked
+/// out of a correctly ranked list, so they still found the same sharp, threatening
+/// moves and still answered every threat made against them. This scales the terms
+/// that recognize an attack instead, so a weak level does not know what a good move
+/// looks like in the first place: attacking terms are damped toward zero and the
+/// terms that keep pieces near their own king are amplified, which produces passive,
+/// goalless-looking play rather than accurate play with noise on top.
+///
+/// `NEUTRAL` is full strength. Only the generic evaluation honours this; the
+/// hand-written variant evaluations in `variants/` are unscaled.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvalStyle {
+    pub attack_scale: i32,
+    pub defense_scale: i32,
+}
+
+impl EvalStyle {
+    pub const NEUTRAL: Self = Self {
+        attack_scale: 100,
+        defense_scale: 100,
+    };
+
+    /// Scale a term that rewards generating pressure on the enemy king.
+    #[inline]
+    pub fn attack(&self, term: i32) -> i32 {
+        if self.attack_scale == 100 {
+            term
+        } else {
+            term * self.attack_scale / 100
+        }
+    }
+
+    /// Scale a term that rewards keeping material home and the king sheltered.
+    #[inline]
+    pub fn defense(&self, term: i32) -> i32 {
+        if self.defense_scale == 100 {
+            term
+        } else {
+            term * self.defense_scale / 100
+        }
+    }
+}
+
+thread_local! {
+    static EVAL_STYLE: Cell<EvalStyle> = const { Cell::new(EvalStyle::NEUTRAL) };
+}
+
+/// The style in force on this thread. Read once per evaluation, not per term.
+#[inline]
+pub fn eval_style() -> EvalStyle {
+    EVAL_STYLE.with(|style| style.get())
+}
+
+/// Install a style for this thread. The skill limiter owns this and restores
+/// `NEUTRAL` when its search ends; nothing else may leave it set.
+#[inline]
+pub fn set_eval_style(style: EvalStyle) {
+    EVAL_STYLE.with(|cell| cell.set(style));
 }
 
 /// Clear the pawn structure cache.
@@ -599,6 +661,8 @@ pub fn evaluate_inner(game: &GameState) -> i32 {
 
 /// Core evaluation logic with tracing support
 pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
+    // Read once per evaluation, then threaded to each term it weights.
+    let style = eval_style();
     let mut score = game.material_score;
     // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
     tracer.record("Material (net)", game.material_score, 0);
@@ -1512,6 +1576,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             &b_king_rays,
                             w_king_ring_covered,
                             b_king_ring_covered,
+                            style,
                         );
 
                         score += evaluate_pawn_structure_traced(
@@ -1538,27 +1603,37 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             );
                         }
 
-                        // Interaction Threats (Result from merged loop)
+                        // Interaction Threats (Result from merged loop). Seeing a
+                        // threat is the first thing a weak level gives up, so these
+                        // are scaled per-component and the trace rows follow.
+                        let w_pawn_threats = style.attack(w_pawn_threats);
+                        let b_pawn_threats = style.attack(b_pawn_threats);
+                        let w_minor_threats = style.attack(w_minor_threats);
+                        let b_minor_threats = style.attack(b_minor_threats);
+                        let w_slider_threats = style.attack(w_slider_threats);
+                        let b_slider_threats = style.attack(b_slider_threats);
                         tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
                         tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
                         tracer.record("Threats: Slider", w_slider_threats, b_slider_threats);
                         score += (w_pawn_threats + w_minor_threats + w_slider_threats)
                             - (b_pawn_threats + b_minor_threats + b_slider_threats);
 
-                        // Global Tropism
+                        // Global Tropism. The attack/defense split already has a
+                        // per-side percentage, so the style composes into it: weak
+                        // levels crowd their own king instead of the enemy's.
                         let gt_att_mult = taper(180, 360);
                         let gt_def_mult = taper(120, 60);
 
-                        let w_att_scale = match game.game_rules.white_win_condition {
+                        let w_att_scale = style.attack(match game.game_rules.white_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
-                        };
-                        let b_att_scale = match game.game_rules.black_win_condition {
+                        });
+                        let b_att_scale = style.attack(match game.game_rules.black_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
-                        };
-                        let w_def_scale = 100;
-                        let b_def_scale = 100;
+                        });
+                        let w_def_scale = style.defense(100);
+                        let b_def_scale = style.defense(100);
 
                         // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
                         let w_gt = (w_attacking_tropism * gt_att_mult * w_att_scale / 10000)
@@ -1579,14 +1654,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         if b_storm_count >= 2 {
                             b_storm = b_storm * (100 + (b_storm_count - 1) * 12) / 100;
                         }
-                        let w_storm_scale = match game.game_rules.white_win_condition {
-                            WinCondition::AllRoyalsCaptured => 55,
-                            _ => 100,
-                        };
-                        let b_storm_scale = match game.game_rules.black_win_condition {
-                            WinCondition::AllRoyalsCaptured => 55,
-                            _ => 100,
-                        };
+                        let w_storm_scale =
+                            style.attack(match game.game_rules.white_win_condition {
+                                WinCondition::AllRoyalsCaptured => 55,
+                                _ => 100,
+                            });
+                        let b_storm_scale =
+                            style.attack(match game.game_rules.black_win_condition {
+                                WinCondition::AllRoyalsCaptured => 55,
+                                _ => 100,
+                            });
                         let w_storm = taper(w_storm, w_storm * 40 / 100) * w_storm_scale / 100;
                         let b_storm = taper(b_storm, b_storm * 40 / 100) * b_storm_scale / 100;
 
@@ -2135,6 +2212,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     w_ring_covered: bool,
     b_ring_covered: bool,
+    style: EvalStyle,
 ) -> i32 {
     let mut w_safety: i32 = 0;
     let mut b_safety: i32 = 0;
@@ -2199,19 +2277,19 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
         _ => 100,
     };
 
-    let w_total = w_safety * black_rc_mult / 100 + w_attack * white_rc_mult / 100;
-    let b_total = b_safety * white_rc_mult / 100 + b_attack * black_rc_mult / 100;
+    // Shelter is the defensive half and the attack bonus the offensive half, so the
+    // style weights them apart: a weak level over-values sitting behind its own
+    // pawns and barely notices a king it could be attacking — or one being attacked.
+    let w_shelter = style.defense(w_safety * black_rc_mult / 100);
+    let b_shelter = style.defense(b_safety * white_rc_mult / 100);
+    let w_pressure = style.attack(w_attack * white_rc_mult / 100);
+    let b_pressure = style.attack(b_attack * black_rc_mult / 100);
 
-    tracer.record(
-        "King: Shelter",
-        w_safety * black_rc_mult / 100,
-        b_safety * white_rc_mult / 100,
-    );
-    tracer.record(
-        "King: Attack",
-        w_attack * white_rc_mult / 100,
-        b_attack * black_rc_mult / 100,
-    );
+    let w_total = w_shelter + w_pressure;
+    let b_total = b_shelter + b_pressure;
+
+    tracer.record("King: Shelter", w_shelter, b_shelter);
+    tracer.record("King: Attack", w_pressure, b_pressure);
 
     w_total - b_total
 }
