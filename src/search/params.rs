@@ -97,7 +97,7 @@ pub const DEFAULT_PROBCUT_DEPTH_SUB: usize = 4;
 pub const DEFAULT_PROBCUT_DIVISOR: i32 = 315;
 pub const DEFAULT_LOW_DEPTH_PROBCUT_MARGIN: i32 = 800;
 
-pub const DEFAULT_IIR_MIN_DEPTH: usize = 6;
+pub const DEFAULT_IIR_MIN_DEPTH: usize = 4;
 
 pub const DEFAULT_SEE_CAPTURE_LINEAR: i32 = 166;
 pub const DEFAULT_SEE_CAPTURE_HIST_DIV: i32 = 29;
