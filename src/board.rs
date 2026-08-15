@@ -605,12 +605,21 @@ impl Board {
         let idx = local_index(*x, *y);
 
         let mut removed = None;
+        let mut tile_emptied = false;
         if let Some(tile) = self.tiles.get_tile_mut(cx, cy) {
             removed = tile.get_piece(idx);
             if removed.is_some() {
                 tile.remove_piece(idx);
                 self.piece_count -= 1;
+                tile_emptied = tile.is_empty();
             }
+        }
+
+        // Drop the tile once its last piece leaves. Without this the table only ever
+        // grows: a search that walks pieces across open space permanently occupies a
+        // bucket per square it touches, and the fixed-capacity table fills up.
+        if tile_emptied {
+            self.tiles.remove(cx, cy);
         }
 
         if let (Some(active), Some(p)) = (self.active_coords.as_mut(), removed)

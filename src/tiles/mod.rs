@@ -459,11 +459,16 @@ impl TileTable {
     }
 
     /// Get or create a tile at the given coordinates.
+    ///
+    /// Panics if the table is full. Every bucket occupied and none matching would
+    /// otherwise spin this probe forever — below the search's stop-flag poll, so
+    /// nothing could interrupt it. A panic surfaces as a wasm throw the caller can
+    /// recover from, which is strictly better than an unkillable hang.
     #[inline]
     pub fn get_or_create(&mut self, cx: i64, cy: i64) -> &mut Tile {
         let mut idx = Self::hash(cx, cy);
 
-        loop {
+        for _ in 0..TILE_TABLE_CAPACITY {
             // Unsafe: idx is masked by TILE_TABLE_MASK
             let bucket = unsafe { self.buckets.get_unchecked(idx) };
             match bucket.state {
@@ -488,6 +493,11 @@ impl TileTable {
             }
             idx = (idx + 1) & TILE_TABLE_MASK;
         }
+
+        panic!(
+            "TileTable full: {} / {TILE_TABLE_CAPACITY} tiles occupied, cannot place ({cx}, {cy})",
+            self.count
+        );
     }
 
     /// Remove a tile at the given coordinates (marks as tombstone).
