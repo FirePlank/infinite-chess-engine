@@ -4676,6 +4676,22 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             // Late Move Reductions
             let mut reduction: i32 = 0;
+
+            // Captures were exempt from reduction entirely. A late capture whose
+            // capture history is negative is exactly the move to look at cheaply.
+            if depth >= lmr_min_depth()
+                && is_capture
+                && !in_check
+                && !gives_check
+                && !is_royal_capture_win
+                && legal_moves >= lmr_min_moves()
+                && let Some(cap_type) = captured_type
+                && searcher.capture_history[p_type as usize][cap_type as usize] < 0
+                && !see_ge(game, &m, 100)
+            {
+                reduction = 1;
+            }
+
             if depth >= lmr_min_depth()
                 && legal_moves >= lmr_min_moves()
                 && !in_check
