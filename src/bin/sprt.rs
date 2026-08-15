@@ -2286,6 +2286,8 @@ fn main() {
             let mut draws = 0;
             let mut penta = PentaCounts::default();
             let mut timeout_losses = 0;
+            let mut engine_failures = 0;
+            let mut illegal_moves = 0;
             let mut game_logs: Vec<String> = Vec::new();
             let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
             let mut last_status_len = 0;
@@ -2441,6 +2443,16 @@ fn main() {
                             );
                         }
                     }
+                    if outcome.termination_reason == "engine failure"
+                        && outcome.result == GameResult::Loss
+                    {
+                        engine_failures += 1;
+                    }
+                    if outcome.termination_reason == "illegal move"
+                        && outcome.result == GameResult::Loss
+                    {
+                        illegal_moves += 1;
+                    }
 
                     match outcome.result {
                         GameResult::Win => wins += 1,
@@ -2580,6 +2592,12 @@ fn main() {
 
             if timeout_losses > 0 {
                 println!("{red}  ALERT: {timeout_losses} games ended by timeout (NEW ENGINE ONLY) {reset}");
+            }
+            if engine_failures > 0 {
+                println!("{red}  ALERT: {engine_failures} games ended by engine failure (NEW ENGINE ONLY) {reset}");
+            }
+            if illegal_moves > 0 {
+                println!("{red}  ALERT: {illegal_moves} games ended by illegal move (NEW ENGINE ONLY) {reset}");
             }
             println!("\nPer-Variant Breakdown:");
             let mut variant_names: Vec<_> = per_variant_stats.keys().collect();
