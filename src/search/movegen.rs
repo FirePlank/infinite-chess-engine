@@ -509,6 +509,19 @@ impl StagedMoveGen {
             let history_score = searcher.history[pt_idx][hist_idx];
 
             10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8) + (history_score / 8)
+        } else if game.is_en_passant(m) {
+            // The victim sits beside m.to, not on it, so the branch above scores a
+            // real pawn capture as 0 and sorts it below every other capture.
+            let attacker_val = game.get_piece_value(PieceType::Pawn, m.piece.color());
+            let victim_val = game.get_piece_value(PieceType::Pawn, m.piece.color().opponent());
+            let pt_idx = m.piece.piece_type() as usize;
+            let cap_hist = searcher
+                .capture_history
+                .get(pt_idx)
+                .and_then(|row| row.get(PieceType::Pawn as usize))
+                .copied()
+                .unwrap_or(0);
+            10 * victim_val - attacker_val + (cap_hist / 8)
         } else {
             0
         }
