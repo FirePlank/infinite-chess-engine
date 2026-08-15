@@ -186,8 +186,6 @@ impl Variant {
             "double_king_chess" => Some(Variant::DoubleKingChess),
             "triple_king_maze" => Some(Variant::TripleKingMaze),
             "all_pieces_classical" => Some(Variant::AllPiecesClassical),
-            // Omega is a real, distinct variant with no Apeiron-side heuristics of its
-            // own; leave it unset rather than silently applying Classical tuning.
             "omega" => None,
             _ => Some(Variant::Classical), // Default fallback
         }
