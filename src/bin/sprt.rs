@@ -2505,6 +2505,9 @@ fn main() {
             }
 
             if let Some(path) = games_path {
+                if let Some(parent) = std::path::Path::new(&path).parent() {
+                    std::fs::create_dir_all(parent).expect("Failed to create games output directory");
+                }
                 let json_data = serde_json::to_string_pretty(&game_logs).unwrap();
                 std::fs::write(path, json_data).expect("Failed to write JSON output");
             }
@@ -2610,6 +2613,9 @@ fn main() {
                     total_games: wins + losses + draws,
                     per_variant: per_variant_stats,
                 };
+                if let Some(parent) = std::path::Path::new(&path).parent() {
+                    std::fs::create_dir_all(parent).expect("Failed to create results output directory");
+                }
                 let json_data = serde_json::to_string_pretty(&res).unwrap();
                 std::fs::write(path, json_data).expect("Failed to write results output");
             }
