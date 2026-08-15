@@ -1287,7 +1287,10 @@ fn main() {
                 tc_fixed_ms: None,
                 tc_max_depth: None,
                 concurrency,
-                variants: variants.split(',').map(Variant::parse).collect(),
+                variants: variants
+                    .split(',')
+                    .map(|s| Variant::parse(s).unwrap_or(Variant::Classical))
+                    .collect(),
                 adjudication_threshold: adjudication,
                 max_moves,
                 search_noise,
@@ -1334,7 +1337,7 @@ fn main() {
                 }
                 let mut engine = Engine::from_icn_native(icn.as_str(), None);
                 engine.set_clock(wtime, btime, winc, binc);
-                engine.game_mut().variant = Some(Variant::parse(&variant));
+                engine.game_mut().variant = Variant::parse(&variant);
                 if terminal_reason(engine.game_mut()).is_some() {
                     println!("bestmove none");
                     return;
