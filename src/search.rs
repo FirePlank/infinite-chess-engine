@@ -5492,7 +5492,7 @@ fn quiescence(
     }
 
     // Sort captures by MVV-LVA
-    sort_captures(game, &mut tactical_moves);
+    sort_captures(game, searcher, &mut tactical_moves);
 
     // Try the TT move first if it was generated here: it caused a cutoff or was
     // best at this position before, so it is a strong first try. Only hoisted when

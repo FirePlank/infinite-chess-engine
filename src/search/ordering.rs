@@ -187,7 +187,7 @@ pub fn sort_moves_root(
 /// MVV-LVA ordering key. Promotion gain is added to the victim value so
 /// promotions (including quiet ones) sort by their true material swing.
 #[inline]
-fn capture_sort_key(game: &GameState, m: &Move) -> i32 {
+fn capture_sort_key(game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
     let attacker_color = m.piece.color();
     let attacker_val = game.get_piece_value(m.piece.piece_type(), attacker_color);
     let victim_val = game
@@ -197,17 +197,25 @@ fn capture_sort_key(game: &GameState, m: &Move) -> i32 {
     let promo_gain = m.promotion.map_or(0, |pt| {
         game.get_piece_value(pt, attacker_color) - attacker_val
     });
-    (victim_val + promo_gain) * 10 - attacker_val
+    // Capture history is maintained for the main search but qsearch ordered on
+    // MVV-LVA alone; scaled to reorder within a victim class, not across them.
+    let capt_hist = game
+        .board
+        .get_piece(m.to.x, m.to.y)
+        .map_or(0, |t| {
+            searcher.capture_history[m.piece.piece_type() as usize][t.piece_type() as usize]
+        });
+    (victim_val + promo_gain) * 10 - attacker_val + capt_hist / 64
 }
 
 /// Fast capture sorting using MVV-LVA + promotion value (no SEE for qsearch).
 #[allow(clippy::needless_range_loop)]
-pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
+pub fn sort_captures(game: &GameState, searcher: &Searcher, moves: &mut MoveList) {
     // For captures, use selection sort since qsearch usually has few captures
     if moves.len() <= 16 {
         let mut scores = [0i32; 128];
         for (i, m) in moves.iter().enumerate() {
-            scores[i] = capture_sort_key(game, m);
+            scores[i] = capture_sort_key(game, searcher, m);
         }
 
         for i in 0..moves.len().saturating_sub(1) {
@@ -227,7 +235,7 @@ pub fn sort_captures(game: &GameState, moves: &mut MoveList) {
             }
         }
     } else {
-        moves.sort_by_cached_key(|m| -capture_sort_key(game, m));
+        moves.sort_by_cached_key(|m| -capture_sort_key(game, searcher, m));
     }
 }
 
@@ -333,7 +341,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        sort_captures(&game, &mut moves);
+        sort_captures(&game, &Searcher::new(0), &mut moves);
 
         assert_eq!(moves[0].to.x, 4);
         assert_eq!(moves[0].to.y, 4);
