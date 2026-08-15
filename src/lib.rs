@@ -155,33 +155,39 @@ impl Variant {
         }
     }
 
-    pub fn parse(s: &str) -> Self {
+    /// Returns `None` for variants that are recognized but intentionally have no
+    /// engine-side representation (e.g. Omega), and `Some(Variant::Classical)` as the
+    /// catch-all fallback for anything unrecognized.
+    pub fn parse(s: &str) -> Option<Self> {
         let normalized = s.to_lowercase().replace(' ', "_");
         match normalized.as_str() {
-            "classical" => Variant::Classical,
-            "confined_classical" => Variant::ConfinedClassical,
-            "classical_plus" | "classical+" => Variant::ClassicalPlus,
-            "coaip" | "chess_on_an_infinite_plane" => Variant::CoaIP,
-            "coaip_ho" | "chess_on_an_infinite_plane_-_huygens_option" => Variant::CoaIPHO,
-            "coaip_ro" | "chess_on_an_infinite_plane_-_roses_option" => Variant::CoaIPRO,
-            "coaip_no" | "chess_on_an_infinite_plane_-_knightriders_option" => Variant::CoaIPNO,
-            "palace" => Variant::Palace,
-            "pawndard" => Variant::Pawndard,
-            "core" => Variant::Core,
-            "standarch" => Variant::Standarch,
-            "space_classic" => Variant::SpaceClassic,
-            "space" => Variant::Space,
-            "abundance" => Variant::Abundance,
-            "pawn_horde" => Variant::PawnHorde,
-            "knightline" => Variant::Knightline,
-            "obstocean" => Variant::Obstocean,
-            "chess" => Variant::Chess,
-            "scattered_leapers" => Variant::ScatteredLeapers,
-            "double_king_classical" => Variant::DoubleKingClassical,
-            "double_king_chess" => Variant::DoubleKingChess,
-            "triple_king_maze" => Variant::TripleKingMaze,
-            "all_pieces_classical" => Variant::AllPiecesClassical,
-            _ => Variant::Classical, // Default fallback
+            "classical" => Some(Variant::Classical),
+            "confined_classical" => Some(Variant::ConfinedClassical),
+            "classical_plus" | "classical+" => Some(Variant::ClassicalPlus),
+            "coaip" | "chess_on_an_infinite_plane" => Some(Variant::CoaIP),
+            "coaip_ho" | "chess_on_an_infinite_plane_-_huygens_option" => Some(Variant::CoaIPHO),
+            "coaip_ro" | "chess_on_an_infinite_plane_-_roses_option" => Some(Variant::CoaIPRO),
+            "coaip_no" | "chess_on_an_infinite_plane_-_knightriders_option" => {
+                Some(Variant::CoaIPNO)
+            }
+            "palace" => Some(Variant::Palace),
+            "pawndard" => Some(Variant::Pawndard),
+            "core" => Some(Variant::Core),
+            "standarch" => Some(Variant::Standarch),
+            "space_classic" => Some(Variant::SpaceClassic),
+            "space" => Some(Variant::Space),
+            "abundance" => Some(Variant::Abundance),
+            "pawn_horde" => Some(Variant::PawnHorde),
+            "knightline" => Some(Variant::Knightline),
+            "obstocean" => Some(Variant::Obstocean),
+            "chess" => Some(Variant::Chess),
+            "scattered_leapers" => Some(Variant::ScatteredLeapers),
+            "double_king_classical" => Some(Variant::DoubleKingClassical),
+            "double_king_chess" => Some(Variant::DoubleKingChess),
+            "triple_king_maze" => Some(Variant::TripleKingMaze),
+            "all_pieces_classical" => Some(Variant::AllPiecesClassical),
+            "omega" => None,
+            _ => Some(Variant::Classical), // Default fallback
         }
     }
 
@@ -205,7 +211,7 @@ impl std::str::FromStr for Variant {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Variant::parse(s))
+        Variant::parse(s).ok_or(())
     }
 }
 
@@ -1099,7 +1105,7 @@ mod tests {
     fn variant_round_trips_and_starting_positions_exist() {
         for variant in all_variants() {
             let canonical = variant.to_str();
-            assert_eq!(Variant::parse(canonical), variant);
+            assert_eq!(Variant::parse(canonical), Some(variant));
             assert!(!variant.starting_icn().is_empty());
         }
     }
@@ -1108,23 +1114,30 @@ mod tests {
     fn variant_aliases_and_default_bounds_are_stable() {
         assert_eq!(
             Variant::parse("Confined Classical"),
-            Variant::ConfinedClassical
+            Some(Variant::ConfinedClassical)
         );
         assert_eq!(
             Variant::parse("Chess on an Infinite Plane - Huygens Option"),
-            Variant::CoaIPHO
+            Some(Variant::CoaIPHO)
         );
         assert_eq!(
             Variant::parse("Chess on an Infinite Plane - Roses Option"),
-            Variant::CoaIPRO
+            Some(Variant::CoaIPRO)
         );
         assert_eq!(
             Variant::parse("Chess on an Infinite Plane - Knightriders Option"),
-            Variant::CoaIPNO
+            Some(Variant::CoaIPNO)
         );
-        assert_eq!(Variant::parse("Chess on an Infinite Plane"), Variant::CoaIP);
-        assert_eq!(Variant::parse("Classical+"), Variant::ClassicalPlus);
-        assert_eq!(Variant::parse("not a real variant"), Variant::Classical);
+        assert_eq!(
+            Variant::parse("Chess on an Infinite Plane"),
+            Some(Variant::CoaIP)
+        );
+        assert_eq!(Variant::parse("Classical+"), Some(Variant::ClassicalPlus));
+        assert_eq!(
+            Variant::parse("not a real variant"),
+            Some(Variant::Classical)
+        );
+        assert_eq!(Variant::parse("Omega"), None);
 
         assert_eq!(Variant::Chess.get_default_bounds(), (1, 8, 1, 8));
         assert_eq!(Variant::Obstocean.get_default_bounds(), (-6, 15, -3, 12));

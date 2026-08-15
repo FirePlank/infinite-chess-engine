@@ -2141,7 +2141,7 @@ fn main() {
                             );
                             std::process::exit(1);
                         }
-                        parsed.push(Variant::parse(name_trimmed));
+                        parsed.push(Variant::parse(name_trimmed).unwrap_or(Variant::Classical));
                     }
                     parsed
                 }
@@ -2634,10 +2634,9 @@ fn main() {
             strength_level,
         }) => {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let v = Variant::parse(&variant);
                 let mut engine = Engine::from_icn_native(icn.as_str(), strength_level);
                 engine.set_clock(wtime, btime, winc, binc);
-                engine.game_mut().variant = Some(v);
+                engine.game_mut().variant = Variant::parse(&variant);
                 if let Some(terminal) = detect_terminal_state(engine.game_mut()) {
                     match terminal {
                         TerminalState::Checkmate { white_won } => {

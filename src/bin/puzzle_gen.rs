@@ -454,9 +454,10 @@ fn scan_game(
     if skip.contains(name) {
         return None;
     }
-    let variant = Variant::parse(name);
-    // Variant::parse falls back to a default on unknown input; a round-trip
-    // mismatch means we would silently mine the wrong ruleset.
+    // Variant::parse falls back to a default on unknown input (and to None for
+    // Omega, which has no engine-side representation); a round-trip mismatch means
+    // we would silently mine the wrong ruleset.
+    let variant = Variant::parse(name)?;
     if variant.to_str() != name || !ALLOWED_VARIANTS.iter().any(|v| v.to_str() == name) {
         return None;
     }
@@ -1987,7 +1988,7 @@ fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name);
+            let v = Variant::parse(name)?;
             (v.to_str() == *name).then(|| (v, idx.clone()))
         })
         .collect();
@@ -2115,7 +2116,7 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name);
+            let v = Variant::parse(name)?;
             (v.to_str() == *name).then(|| (v, idx.clone()))
         })
         .collect();
@@ -2235,7 +2236,7 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name);
+            let v = Variant::parse(name)?;
             (v.to_str() == *name).then(|| (v, idx.clone()))
         })
         .collect();
