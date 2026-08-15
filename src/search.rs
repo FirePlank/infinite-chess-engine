@@ -963,7 +963,7 @@ pub struct Searcher {
     // Continuation history, keyed by ply offset (1, 2 and 4 plies ago) then capture,
     // check, previous piece and the from/to hashes. The gravity update self-bounds to
     // 16384, so i16 is lossless and the search's hottest table stays at 25MB.
-    pub cont_history: Box<[[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3]>,
+    pub cont_history: Box<[[[[[[[i16; 8]; 8]; 8]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -1114,9 +1114,9 @@ impl Searcher {
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i16; 3 * 2 * 2 * 32 * 16 * 16 * 16].into_boxed_slice(),
+                    vec![0i16; 3 * 2 * 2 * 32 * 8 * 8 * 8].into_boxed_slice(),
                 )
-                    as *mut [[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3])
+                    as *mut [[[[[[[i16; 8]; 8]; 8]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(

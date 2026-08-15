@@ -266,7 +266,7 @@ pub fn hash_coord_32(x: i64, y: i64) -> usize {
 pub fn hash_coord_16(x: i64, y: i64) -> usize {
     let h = (x as u64).wrapping_mul(0x517cc1b727220a95)
         ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
-    ((h ^ (h >> 32)) & 0x0F) as usize
+    ((h ^ (h >> 32)) & 0x07) as usize
 }
 
 #[cfg(test)]
