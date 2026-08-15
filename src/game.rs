@@ -3850,7 +3850,7 @@ impl GameState {
                     && let Some(v_end) = tag[9..].find('"')
                 {
                     let v_name = &tag[9..9 + v_end];
-                    self.variant = Some(Variant::parse(v_name));
+                    self.variant = Variant::parse(v_name);
                     self.game_rules.variant = self.variant;
                 }
                 content = content[end + 1..].trim();

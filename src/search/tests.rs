@@ -609,6 +609,29 @@ fn test_set_corrhist_mode() {
 }
 
 #[test]
+fn test_omega_variant_tag_resolves_to_no_variant() {
+    let mut searcher = Box::new(Searcher::new(1000));
+
+    let mut omega_game = GameState::new();
+    omega_game.setup_position_from_icn("[Variant \"Omega\"] K5,1|k5,8");
+    assert_eq!(omega_game.variant, None);
+    searcher.set_corrhist_mode(&omega_game);
+    assert_eq!(searcher.corrhist_mode, CorrHistMode::NonPawnBased);
+
+    let mut classical_game = GameState::new();
+    classical_game.setup_position_from_icn("[Variant \"Classical\"] K5,1|k5,8");
+    assert_eq!(classical_game.variant, Some(crate::Variant::Classical));
+    searcher.set_corrhist_mode(&classical_game);
+    assert_eq!(searcher.corrhist_mode, CorrHistMode::PawnBased);
+
+    let mut unknown_game = GameState::new();
+    unknown_game.setup_position_from_icn("[Variant \"not a real variant\"] K5,1|k5,8");
+    assert_eq!(unknown_game.variant, Some(crate::Variant::Classical));
+    searcher.set_corrhist_mode(&unknown_game);
+    assert_eq!(searcher.corrhist_mode, CorrHistMode::PawnBased);
+}
+
+#[test]
 fn test_adjusted_eval() {
     let searcher = Box::new(Searcher::new(1000));
     let mut game = GameState::new();
