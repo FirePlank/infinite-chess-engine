@@ -304,7 +304,9 @@ impl StagedMoveGen {
 
     #[inline]
     fn is_capture(game: &GameState, m: &Move) -> bool {
-        game.board.is_occupied(m.to.x, m.to.y)
+        // En passant lands on an empty square, so an occupancy test alone files it
+        // as a quiet — wrong for evasion scoring and for ProbCut's TT move.
+        game.board.is_occupied(m.to.x, m.to.y) || game.is_en_passant(m)
     }
 
     /// Pseudo-legal check - verifies piece exists, correct color/type, and path validation
