@@ -2098,17 +2098,24 @@ fn compute_attack_readiness_optimized(
     }
 
     let total_open_rays = open_diag_rays + open_ortho_rays;
-    if total_open_rays <= 2 {
-        return 40;
-    }
 
     // Scoring logic (Simplified from calculate_attack_readiness_from_list)
-    if sliders_in_zone >= 2 {
-        100
-    } else if sliders_in_zone == 1 && total_open_rays >= 5 {
-        85
-    } else if sliders_in_zone == 1 {
-        55
+    if sliders_in_zone >= 3 {
+        if total_open_rays >= 3 {
+            100
+        } else {
+            40
+        }
+    } else if sliders_in_zone >= 1 {
+        if total_open_rays >= 5 {
+            85
+        } else if total_open_rays >= 3 {
+            55
+        } else {
+            40
+        }
+    } else if total_open_rays >= 3 {
+        40
     } else {
         30
     }
