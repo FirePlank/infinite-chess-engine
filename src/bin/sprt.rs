@@ -68,7 +68,7 @@ enum Commands {
         #[arg(long, default_value = "10+0.1")]
         tc: String,
 
-        /// Number of parallel games (defaults to logical CPU count)
+        /// Number of parallel games (defaults to physical core count)
         #[arg(long)]
         concurrency: Option<usize>,
 
@@ -149,6 +149,11 @@ enum Commands {
     /// Used internally by the run manager to identify which snapshot the old binary was built from.
     CommitInfo,
 
+    /// Internal interface for a persistent per-game engine: reads one JSON request
+    /// per line on stdin and answers on stdout, keeping the searcher (and its TT,
+    /// history and correction tables) warm for the whole game the way real play does.
+    Serve,
+
     /// Internal interface for subprocess move generation
     Search {
         /// ICN string of the position
@@ -195,6 +200,110 @@ enum Commands {
         #[arg(long)]
         strength_level: Option<u32>,
     },
+}
+
+/// A persistent engine process for one game. Reusing it across every move is what
+/// real play does: the TT, history and correction tables stay warm, and the ~50ms
+/// Windows process spawn is paid once per game instead of once per move.
+struct ServeEngine {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl ServeEngine {
+    fn spawn(bin: &str, verbose: bool) -> std::io::Result<ServeEngine> {
+        let mut child = Command::new(bin)
+            .env("RAYON_NUM_THREADS", "1")
+            .arg("serve")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Never piped without a reader: a full stderr pipe would deadlock the
+            // engine mid-search. Panics come back in the response instead.
+            .stderr(if verbose {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            })
+            .spawn()?;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+        Ok(ServeEngine {
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    fn request(&mut self, req: &ServeRequest) -> std::io::Result<ServeResponse> {
+        use std::io::{BufRead, Write};
+        let encoded = serde_json::to_string(req)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        writeln!(self.stdin, "{encoded}")?;
+        self.stdin.flush()?;
+
+        let mut line = String::new();
+        if self.stdout.read_line(&mut line)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "engine closed its output (crashed or exited)",
+            ));
+        }
+        serde_json::from_str(line.trim())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
+impl Drop for ServeEngine {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let _ = writeln!(self.stdin, "quit");
+        let _ = self.stdin.flush();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Whether a binary understands the persistent `serve` protocol. Baselines built
+/// before it exists still work through the per-move `search` path.
+fn binary_supports_serve(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--help")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("serve"))
+        .unwrap_or(false)
+}
+
+/// One move request to a persistent `serve` engine. JSON so the ICN, which contains
+/// spaces and most punctuation, needs no escaping scheme of its own.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ServeRequest {
+    icn: String,
+    variant: String,
+    wtime: u64,
+    btime: u64,
+    winc: u64,
+    binc: u64,
+    fixed_time: Option<u32>,
+    max_depth: Option<usize>,
+    noise_amp: Option<i32>,
+    seed: Option<u64>,
+    strength: Option<u32>,
+}
+
+/// A `serve` engine's answer. `bestmove` is None for a terminal position or a panic,
+/// which the caller treats exactly as the old `bestmove none` line.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ServeResponse {
+    bestmove: Option<String>,
+    score: Option<f64>,
+    /// Wall time spent inside the search itself. The clock is charged this rather
+    /// than the round trip, so process startup, ICN parse and move replay — none of
+    /// which a real engine pays per move — never eat into a side's time.
+    #[serde(default)]
+    elapsed_ms: u64,
+    #[serde(default)]
+    panic: Option<String>,
 }
 
 /// Commit identity: short SHA plus an optional date string (YYYY-MM-DD) and dirty flag.
@@ -335,6 +444,10 @@ struct Config {
     maxply_adjudication: f64,
     new_bin: String,
     old_bin: String,
+    /// Persistent-engine mode, used only when BOTH binaries speak it. Letting one
+    /// side keep a warm TT while the other respawns per move would hand it a large
+    /// unearned advantage, so a legacy baseline puts both sides on the old path.
+    use_serve: bool,
     max_moves: usize,
     search_noise: i32,
     new_strength: u32,
@@ -1189,6 +1302,10 @@ fn play_game(
     // White winning), for the max-ply adjudication when both engines agree.
     let mut last_wscore_new: Option<f64> = None;
     let mut last_wscore_old: Option<f64> = None;
+    // One persistent engine per side for the whole game; dropped (and killed) when
+    // this function returns by any path.
+    let mut new_engine: Option<ServeEngine> = None;
+    let mut old_engine: Option<ServeEngine> = None;
     let termination_reason;
 
     let get_eval = |g: &GameState| {
@@ -1362,67 +1479,110 @@ fn play_game(
             format!("{} {}", starting_board_setup, move_history_clean.join("|"))
         };
 
-        let mut cmd = Command::new(bin);
-        cmd.env("RAYON_NUM_THREADS", "1")
-            .arg("search")
-            .arg("--icn")
-            .arg(&subprocess_icn)
-            .arg("--wtime")
-            .arg(white_clock.to_string())
-            .arg("--btime")
-            .arg(black_clock.to_string())
-            .arg("--winc")
-            .arg(config.tc_inc_ms.to_string())
-            .arg("--binc")
-            .arg(config.tc_inc_ms.to_string())
-            .arg("--variant")
-            .arg(variant.to_str());
-
-        if let Some(d) = config.tc_max_depth {
-            cmd.arg("--max-depth").arg(d.to_string());
-        }
-        if let Some(ft) = config.tc_fixed_ms {
-            cmd.arg("--fixed-time").arg(ft.to_string());
-        }
-
-        if ply < 8 {
-            cmd.arg("--noise-amp").arg(config.search_noise.to_string());
-        }
-
-        cmd.arg("--seed").arg(seed_val.to_string());
-
         let strength = if is_new_turn {
             config.new_strength
         } else {
             config.old_strength
         };
-        if strength < apeiron::search::MAX_SITE_SKILL {
-            cmd.arg("--strength-level").arg(strength.to_string());
-        }
 
-        if config.verbose {
-            cmd.stderr(Stdio::inherit());
-        }
+        let (bestmove_raw, score, panic_detail, crash_detail, elapsed) = if config.use_serve {
+            // One process for the whole game: the engine keeps its TT, history and
+            // correction tables warm across moves, as it does in real play.
+            let slot = if is_new_turn {
+                &mut new_engine
+            } else {
+                &mut old_engine
+            };
+            if slot.is_none() {
+                match ServeEngine::spawn(bin, config.verbose) {
+                    Ok(e) => *slot = Some(e),
+                    Err(e) => abort_run(AbortReason::EngineFault {
+                        kind: "engine failed to start",
+                        engine: if is_new_turn { "NEW" } else { "OLD" },
+                        game_idx,
+                        variant: variant.to_str().to_string(),
+                        detail: format!("could not spawn {bin} in serve mode: {e}"),
+                    }),
+                }
+            }
+            let engine = slot.as_mut().expect("engine spawned above");
 
-        let start_time = Instant::now();
-        let output = cmd
-            .output()
-            .unwrap_or_else(|e| panic!("Failed to execute engine binary {}: {}", bin, e));
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // A crashed engine invalidates every remaining game, so stop the run and
-        // keep its stderr — that's where a panic in the engine binary lands.
-        // Once STOP is set the run is already winding down and in-flight engines
-        // are being torn down (Ctrl-C kills the whole process group), so a
-        // non-zero exit there is expected noise rather than a fault.
-        if !(output.status.success() || STOP.load(Ordering::SeqCst)) {
-            abort_run(AbortReason::EngineFault {
-                kind: "engine crashed",
-                engine: if is_new_turn { "NEW" } else { "OLD" },
-                game_idx,
+            let req = ServeRequest {
+                icn: subprocess_icn.clone(),
                 variant: variant.to_str().to_string(),
-                detail: format!(
+                wtime: white_clock,
+                btime: black_clock,
+                winc: config.tc_inc_ms,
+                binc: config.tc_inc_ms,
+                fixed_time: config.tc_fixed_ms,
+                max_depth: config.tc_max_depth,
+                noise_amp: (ply < 8).then_some(config.search_noise),
+                seed: Some(seed_val),
+                strength: (strength < apeiron::search::MAX_SITE_SKILL).then_some(strength),
+            };
+
+            let round_trip = Instant::now();
+            match engine.request(&req) {
+                // Charge everything the engine itself did (parse, replay, search),
+                // not the one-time process spawn that already happened before this.
+                Ok(resp) => (resp.bestmove, resp.score, resp.panic, None, resp.elapsed_ms),
+                Err(e) => (
+                    None,
+                    None,
+                    None,
+                    Some(e.to_string()),
+                    round_trip.elapsed().as_millis() as u64,
+                ),
+            }
+        } else {
+            // Legacy path for baselines built before `serve` existed: one process
+            // per move, which also pays a full process spawn against the clock.
+            let mut cmd = Command::new(bin);
+            cmd.env("RAYON_NUM_THREADS", "1")
+                .arg("search")
+                .arg("--icn")
+                .arg(&subprocess_icn)
+                .arg("--wtime")
+                .arg(white_clock.to_string())
+                .arg("--btime")
+                .arg(black_clock.to_string())
+                .arg("--winc")
+                .arg(config.tc_inc_ms.to_string())
+                .arg("--binc")
+                .arg(config.tc_inc_ms.to_string())
+                .arg("--variant")
+                .arg(variant.to_str());
+
+            if let Some(d) = config.tc_max_depth {
+                cmd.arg("--max-depth").arg(d.to_string());
+            }
+            if let Some(ft) = config.tc_fixed_ms {
+                cmd.arg("--fixed-time").arg(ft.to_string());
+            }
+
+            if ply < 8 {
+                cmd.arg("--noise-amp").arg(config.search_noise.to_string());
+            }
+
+            cmd.arg("--seed").arg(seed_val.to_string());
+
+            if strength < apeiron::search::MAX_SITE_SKILL {
+                cmd.arg("--strength-level").arg(strength.to_string());
+            }
+
+            if config.verbose {
+                cmd.stderr(Stdio::inherit());
+            }
+
+            let start_time = Instant::now();
+            let output = cmd
+                .output()
+                .unwrap_or_else(|e| panic!("Failed to execute engine binary {}: {}", bin, e));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            let crash = (!(output.status.success() || STOP.load(Ordering::SeqCst))).then(|| {
+                format!(
                     "exit code {:?}\n\nengine stderr:\n{}",
                     output.status.code(),
                     if stderr.trim().is_empty() {
@@ -1430,32 +1590,55 @@ fn play_game(
                     } else {
                         stderr.trim()
                     }
-                ),
+                )
+            });
+
+            let bestmove_raw = stdout
+                .lines()
+                .find(|l| l.starts_with("bestmove"))
+                .map(|l| l.trim_start_matches("bestmove").trim().to_string());
+
+            let mut score = None;
+            if !config.verbose
+                && let Some(line) = stderr.lines().find(|l| l.contains("score"))
+            {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                for i in 0..parts.len() {
+                    if parts[i] == "score" && i + 1 < parts.len() {
+                        score = parts[i + 1].parse::<f64>().ok();
+                    }
+                }
+            }
+
+            // No engine-reported time available on this path, so the round trip —
+            // process spawn included — is all the harness can bill.
+            (
+                bestmove_raw,
+                score,
+                None,
+                crash,
+                (start_time.elapsed().as_millis() as u64).saturating_sub(20),
+            )
+        };
+
+        // A crashed engine invalidates every remaining game, so stop the run.
+        // Once STOP is set the run is already winding down and in-flight engines
+        // are being torn down, so a fault there is expected noise.
+        if let Some(detail) = crash_detail.or(panic_detail)
+            && !STOP.load(Ordering::SeqCst)
+        {
+            abort_run(AbortReason::EngineFault {
+                kind: "engine crashed",
+                engine: if is_new_turn { "NEW" } else { "OLD" },
+                game_idx,
+                variant: variant.to_str().to_string(),
+                detail,
             });
         }
 
-        // Parse bestmove into ICN move format
-        let bestmove_icn = if let Some(line) = stdout.lines().find(|l| l.starts_with("bestmove")) {
-            let move_str = line.trim_start_matches("bestmove").trim();
-            parse_bestmove_to_icn(move_str, game.turn)
-        } else {
-            None
-        };
-
-        // Parse score/depth from stderr
-        let mut score = None;
-        if !config.verbose
-            && let Some(line) = stderr.lines().find(|l| l.contains("score"))
-        {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            for i in 0..parts.len() {
-                if parts[i] == "score" && i + 1 < parts.len() {
-                    score = parts[i + 1].parse::<f64>().ok();
-                }
-            }
-        }
-
-        let elapsed = (start_time.elapsed().as_millis() as u64).saturating_sub(20);
+        let bestmove_icn = bestmove_raw
+            .as_deref()
+            .and_then(|m| parse_bestmove_to_icn(m, game.turn));
 
         let current_clock = if game.turn == PlayerColor::White {
             white_clock
@@ -2713,9 +2896,18 @@ fn main() {
             save_interval,
         }) => {
             let concurrency = concurrency.unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4)
+                // Physical cores, not logical: each game is single-threaded
+                // (RAYON_NUM_THREADS=1), so SMT siblings just contend for the same
+                // execution units and inflate wall-clock time without adding real
+                // parallelism — exactly what caused the low-TC timeout regression.
+                let physical = num_cpus::get_physical();
+                if physical > 0 {
+                    physical
+                } else {
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                }
             });
             let actual_new_bin = if let Some(path) = new_bin {
                 path
@@ -2948,6 +3140,18 @@ fn main() {
                 variants: parsed_variants,
                 adjudication_threshold: adjudication,
                 maxply_adjudication,
+                use_serve: {
+                    let new_ok = binary_supports_serve(&actual_new_bin);
+                    let old_ok = binary_supports_serve(&old_bin);
+                    if new_ok != old_ok {
+                        eprintln!(
+                            "note: only the {} binary supports persistent engines, so both \
+                             sides use the per-move path to keep the match fair.",
+                            if new_ok { "NEW" } else { "OLD" }
+                        );
+                    }
+                    new_ok && old_ok
+                },
                 new_bin: actual_new_bin,
                 old_bin,
                 max_moves,
@@ -3482,6 +3686,83 @@ fn main() {
                 }
                 let json_data = serde_json::to_string_pretty(&res).unwrap();
                 std::fs::write(path, json_data).expect("Failed to write results output");
+            }
+        }
+        Some(Commands::Serve) => {
+            use std::io::{BufRead, Write};
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            for line in stdin.lock().lines() {
+                let Ok(line) = line else { break };
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if line == "quit" {
+                    break;
+                }
+                let Ok(req) = serde_json::from_str::<ServeRequest>(line) else {
+                    eprintln!("serve: unparseable request: {line}");
+                    break;
+                };
+
+                // Started right after the request line is read: this game's process
+                // was already spawned and warmed up before now, so everything from
+                // here — ICN parse, move replay, search — is work the engine itself
+                // controls and is billed exactly like real play would bill it.
+                let started = Instant::now();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // The searcher is a thread-local kept across requests, so the TT,
+                    // history and correction tables stay warm for the whole game.
+                    let mut engine = Engine::from_icn_native(req.icn.as_str(), req.strength);
+                    engine.set_clock(req.wtime, req.btime, req.winc, req.binc);
+                    engine.game_mut().variant = Variant::parse(&req.variant);
+                    if detect_terminal_state(engine.game_mut()).is_some() {
+                        return ServeResponse::default();
+                    }
+                    let search_res = engine.search_native(
+                        req.fixed_time.unwrap_or(0),
+                        req.max_depth,
+                        true,
+                        req.noise_amp,
+                        req.seed,
+                    );
+                    match search_res {
+                        Some((m, score, _stats)) => ServeResponse {
+                            bestmove: Some(move_to_string(&m)),
+                            score: Some(score as f64),
+                            elapsed_ms: 0, // filled in below, after the closure returns
+                            panic: None,
+                        },
+                        None => ServeResponse::default(),
+                    }
+                }));
+
+                let mut resp = result.unwrap_or_else(|e| {
+                    let msg = if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = e.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    ServeResponse {
+                        bestmove: None,
+                        score: None,
+                        elapsed_ms: 0,
+                        panic: Some(msg),
+                    }
+                });
+                // Covers every path above (terminal, no move found, or a panic) with
+                // one measurement taken right as the response is about to go out.
+                resp.elapsed_ms = started.elapsed().as_millis() as u64;
+
+                let encoded = serde_json::to_string(&resp).unwrap_or_else(|_| {
+                    "{\"bestmove\":null,\"score\":null,\"panic\":\"encode failed\"}".to_string()
+                });
+                if writeln!(stdout, "{encoded}").is_err() || stdout.flush().is_err() {
+                    break; // Parent went away.
+                }
             }
         }
         Some(Commands::Search {
