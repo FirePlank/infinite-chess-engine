@@ -4,7 +4,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use apeiron::Engine;
 use apeiron::Variant;
@@ -12,7 +12,7 @@ use apeiron::board::{Coordinate, PieceType, PlayerColor};
 use apeiron::game::GameState;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -122,6 +122,11 @@ enum Commands {
         /// Print verbose engine info
         #[arg(long, default_value_t = false)]
         verbose: bool,
+
+        /// Use the single-line status view instead of the live dashboard.
+        /// Forced on automatically when stdout is not a terminal.
+        #[arg(long, default_value_t = false)]
+        compact: bool,
 
         /// Git commit SHA for the new engine (overrides the build-time embedded value)
         #[arg(long)]
@@ -335,6 +340,7 @@ struct Config {
     new_strength: u32,
     old_strength: u32,
     verbose: bool,
+    compact: bool,
     new_commit_info: Option<CommitInfo>,
     old_commit_info: Option<CommitInfo>,
     resume_pair_offset: usize,
@@ -767,10 +773,6 @@ fn move_to_string(m: &apeiron::moves::Move) -> String {
         s.push_str(&format!(" {}", p.to_site_code().to_lowercase()));
     }
     s
-}
-
-fn is_ctrl_c_exit_code(code: Option<i32>) -> bool {
-    matches!(code, Some(130) | Some(-1073741510))
 }
 
 fn parse_icn_tag(icn: &str, tag: &str) -> Option<String> {
@@ -1409,16 +1411,27 @@ fn play_game(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Check for subprocess crash
-        if !(output.status.success()
-            || USER_STOP.load(Ordering::SeqCst) && is_ctrl_c_exit_code(output.status.code()))
-        {
-            eprintln!(
-                "[Game {}] Subprocess crashed! exit={:?}\n  stderr={}",
+        // A crashed engine invalidates every remaining game, so stop the run and
+        // keep its stderr — that's where a panic in the engine binary lands.
+        // Once STOP is set the run is already winding down and in-flight engines
+        // are being torn down (Ctrl-C kills the whole process group), so a
+        // non-zero exit there is expected noise rather than a fault.
+        if !(output.status.success() || STOP.load(Ordering::SeqCst)) {
+            abort_run(AbortReason::EngineFault {
+                kind: "engine crashed",
+                engine: if is_new_turn { "NEW" } else { "OLD" },
                 game_idx,
-                output.status.code(),
-                stderr.trim()
-            );
+                variant: variant.to_str().to_string(),
+                detail: format!(
+                    "exit code {:?}\n\nengine stderr:\n{}",
+                    output.status.code(),
+                    if stderr.trim().is_empty() {
+                        "(empty — rerun without --verbose to capture it)"
+                    } else {
+                        stderr.trim()
+                    }
+                ),
+            });
         }
 
         // Parse bestmove into ICN move format
@@ -1528,6 +1541,17 @@ fn play_game(
 
             // If the turn didn't change, the move wasn't applied (illegal or unparseable)
             if game.turn == old_turn {
+                abort_run(AbortReason::EngineFault {
+                    kind: "illegal move",
+                    engine: if is_new_turn { "NEW" } else { "OLD" },
+                    game_idx,
+                    variant: variant.to_str().to_string(),
+                    detail: format!(
+                        "move {} was rejected by the rules\n\nposition:\n{}",
+                        move_history_clean.last().map_or("(none)", |m| m.as_str()),
+                        new_icn
+                    ),
+                });
                 let result = if is_new_turn {
                     GameResult::Loss
                 } else {
@@ -1631,6 +1655,15 @@ fn play_game(
             }
 
             termination_reason = Some("engine failure");
+            abort_run(AbortReason::EngineFault {
+                kind: "engine failure",
+                engine: if is_new_turn { "NEW" } else { "OLD" },
+                game_idx,
+                variant: variant.to_str().to_string(),
+                detail: "no usable bestmove returned in a non-terminal position \
+                         (the engine exited cleanly without moving, or its output was unparseable)"
+                    .to_string(),
+            });
             let result = if is_new_turn {
                 GameResult::Loss
             } else {
@@ -1915,11 +1948,720 @@ fn generate_icn(
     icn
 }
 
-fn print_status_line(previous_len: &mut usize, line: &str) {
-    let clear_width = (*previous_len).max(line.len());
-    print!("\r{:<width$}", line, width = clear_width);
-    std::io::stdout().flush().unwrap();
-    *previous_len = line.len();
+// ─── Run abort ────────────────────────────────────────────────────────────────
+
+/// Why a run stopped early. Recorded once: the first cause wins, so a lock
+/// poisoned by an earlier panic can't overwrite the panic that poisoned it.
+enum AbortReason {
+    Panic {
+        message: String,
+        location: String,
+        backtrace: String,
+    },
+    /// The engine under test misbehaved. Always a bug worth stopping for — a
+    /// timeout is a legitimate loss, but a crash, a missing move or an illegal
+    /// move means the remaining games would measure a broken engine.
+    EngineFault {
+        kind: &'static str,
+        engine: &'static str,
+        game_idx: usize,
+        variant: String,
+        detail: String,
+    },
+}
+
+static ABORT: OnceLock<AbortReason> = OnceLock::new();
+/// Set while a redraw-in-place view owns the bottom of the screen, so the panic
+/// hook knows whether printing directly would corrupt it.
+static LIVE_VIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Record the first fatal cause and signal every worker to wind down.
+fn abort_run(reason: AbortReason) {
+    let _ = ABORT.set(reason);
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// Capture panics from every thread. Without this a panicking worker dies
+/// quietly, its channel closes, and the harness prints a normal-looking summary
+/// over partial data.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic payload".to_string()
+        };
+        let location = info
+            .location()
+            .map_or_else(|| "unknown location".to_string(), |l| l.to_string());
+        abort_run(AbortReason::Panic {
+            message,
+            location,
+            backtrace: std::backtrace::Backtrace::force_capture().to_string(),
+        });
+
+        // A worker panic is reported by main once the live view is torn down.
+        // A main-thread panic never reaches that path, so print it immediately.
+        if std::thread::current().name() == Some("main") {
+            if LIVE_VIEW_ACTIVE.load(Ordering::SeqCst) {
+                println!();
+            }
+            default_hook(info);
+        }
+    }));
+}
+
+// ─── Rendering ────────────────────────────────────────────────────────────────
+
+/// ANSI colour codes, empty when colour is disabled.
+#[derive(Clone, Copy)]
+struct Colors {
+    green: &'static str,
+    red: &'static str,
+    yellow: &'static str,
+    gray: &'static str,
+    reset: &'static str,
+}
+
+impl Colors {
+    fn new(enabled: bool) -> Self {
+        if enabled {
+            Self {
+                green: "\x1b[32m",
+                red: "\x1b[31m",
+                yellow: "\x1b[33m",
+                gray: "\x1b[90m",
+                reset: "\x1b[0m",
+            }
+        } else {
+            Self { green: "", red: "", yellow: "", gray: "", reset: "" }
+        }
+    }
+
+    /// Green above +1, red below -1, grey in between — the "is this a gain"
+    /// signal. Only ever applied to a point estimate, never to its error
+    /// margin: the margin is precision, not a verdict.
+    fn by_elo(&self, elo: f64) -> &'static str {
+        if elo > 1.0 {
+            self.green
+        } else if elo < -1.0 {
+            self.red
+        } else {
+            self.gray
+        }
+    }
+
+    fn by_llr(&self, llr: f64, lower: f64, upper: f64) -> &'static str {
+        if llr >= upper {
+            self.green
+        } else if llr <= lower {
+            self.red
+        } else {
+            self.yellow
+        }
+    }
+}
+
+/// Where the live status is drawn, decided once at startup.
+#[derive(Clone, Copy, PartialEq)]
+enum OutputMode {
+    /// Multi-line dashboard redrawn in place. Interactive terminals only.
+    Full,
+    /// One status line rewritten with `\r`. Interactive terminals only.
+    Compact,
+    /// Append-only lines, no cursor movement. Pipes, files, CI, `TERM=dumb`.
+    Plain,
+}
+
+impl OutputMode {
+    fn detect(compact_flag: bool) -> Self {
+        let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
+        if !std::io::stdout().is_terminal() || dumb {
+            // Redrawing needs a terminal: `\r` into a log file is garbage, and
+            // animations turn CI logs into christmas trees.
+            OutputMode::Plain
+        } else if compact_flag {
+            OutputMode::Compact
+        } else {
+            OutputMode::Full
+        }
+    }
+}
+
+/// Every number the run reports. The live view and the final summary both
+/// derive from this, so the two can never drift apart.
+struct SprtStats {
+    wins: usize,
+    losses: usize,
+    draws: usize,
+    penta: PentaCounts,
+    per_variant: HashMap<String, (usize, usize, usize)>,
+    /// Display order for `per_variant` rows: the order variants were selected
+    /// in, fixed for the run's lifetime. Sorting by live game count instead
+    /// would reshuffle rows every update as counts leapfrog each other.
+    variant_order: Vec<String>,
+    /// Timeout losses for either engine.
+    timeout_losses: usize,
+    /// The subset of `timeout_losses` where the new engine was the one that
+    /// ran out of time — the figure that actually matters for judging it.
+    new_engine_timeouts: usize,
+    /// Games already complete when a run resumed, excluded from throughput so
+    /// the rate reflects this session rather than the whole history.
+    resumed_games: usize,
+    started: Instant,
+    elo0: f64,
+    elo1: f64,
+    model: SprtModel,
+    lower: f64,
+    upper: f64,
+    max_games: Option<usize>,
+    /// Trailing (games played, LLR) samples, used to fit the ETA's trend line.
+    llr_history: VecDeque<(f64, f64)>,
+    /// The ETA is smoothed frame-to-frame (see [`Self::update_eta`]), so it is
+    /// stored rather than recomputed fresh — a raw per-update estimate swings
+    /// wildly early in a run.
+    smoothed_eta: Option<Duration>,
+}
+
+impl SprtStats {
+    fn total_games(&self) -> usize {
+        self.wins + self.losses + self.draws
+    }
+
+    fn elo(&self) -> PentaElo {
+        estimate_pentanomial_elo(&self.penta)
+    }
+
+    fn llr(&self) -> f64 {
+        calculate_pentanomial_llr(&self.penta, self.elo0, self.elo1, self.model)
+    }
+
+    fn los(&self) -> f64 {
+        let pairs = self.penta.total_pairs() as f64;
+        let los = calculate_los(self.penta.score(), self.penta.variance() / pairs);
+        if los.is_nan() { 0.5 } else { los }
+    }
+
+    fn record(&mut self, outcome: &GameOutcome) {
+        match outcome.result {
+            GameResult::Win => self.wins += 1,
+            GameResult::Loss => self.losses += 1,
+            GameResult::Draw => self.draws += 1,
+        }
+        let entry = self
+            .per_variant
+            .entry(outcome.variant_name.clone())
+            .or_insert((0, 0, 0));
+        match outcome.result {
+            GameResult::Win => entry.0 += 1,
+            GameResult::Loss => entry.1 += 1,
+            GameResult::Draw => entry.2 += 1,
+        }
+    }
+
+    fn games_per_min(&self) -> f64 {
+        let played = self.total_games().saturating_sub(self.resumed_games) as f64;
+        let mins = self.started.elapsed().as_secs_f64() / 60.0;
+        if mins > 0.0 { played / mins } else { 0.0 }
+    }
+
+    /// Last computed ETA. Call [`Self::update_eta`] once per status update to
+    /// refresh it; this just reads the stored value.
+    fn eta(&self) -> Option<Duration> {
+        self.smoothed_eta
+    }
+
+    /// Recompute the ETA and fold it into the smoothed value. Call exactly
+    /// once per status update (not from render code, which may run more than
+    /// once per update) — otherwise the smoothing window means nothing.
+    fn update_eta(&mut self) {
+        let played = self.total_games().saturating_sub(self.resumed_games) as f64;
+        let llr = self.llr();
+        self.llr_history.push_back((played, llr));
+        const HISTORY_CAP: usize = 60;
+        if self.llr_history.len() > HISTORY_CAP {
+            self.llr_history.pop_front();
+        }
+
+        let fresh = self.fresh_eta(played, llr);
+        self.smoothed_eta = match (self.smoothed_eta, fresh) {
+            // Blend in seconds so the displayed number drifts smoothly instead
+            // of jumping to whatever the latest noisy sample says.
+            (Some(prev), Some(new)) => {
+                const SMOOTHING: f64 = 0.15; // weight given to the new estimate
+                Some(Duration::from_secs_f64(
+                    prev.as_secs_f64() * (1.0 - SMOOTHING) + new.as_secs_f64() * SMOOTHING,
+                ))
+            }
+            // No prior estimate to blend with, or the trend just vanished
+            // (flat/reversed) — show the fresh read (possibly None) directly.
+            (_, fresh) => fresh,
+        };
+    }
+
+    /// One fresh ETA estimate, before smoothing. Prefers the hard `--max-games`
+    /// cap; otherwise fits a trend line through recent (games, LLR) samples and
+    /// projects it to whichever bound it's actually heading for. A regression
+    /// over a window is far steadier than extrapolating from a single current
+    /// LLR value, which swings wildly — and can divide by near-zero — early in
+    /// a run. Returns None rather than a number when the trend gives no honest
+    /// answer: too little history, a flat slope, or heading away from both bounds.
+    fn fresh_eta(&self, played: f64, llr: f64) -> Option<Duration> {
+        let rate = self.games_per_min();
+        if rate <= 0.0 {
+            return None;
+        }
+        if let Some(max) = self.max_games {
+            let remaining = max.saturating_sub(self.total_games()) as f64;
+            return Some(Duration::from_secs_f64((remaining / rate * 60.0).min(u32::MAX as f64)));
+        }
+
+        const MIN_SAMPLES: usize = 10;
+        if self.llr_history.len() < MIN_SAMPLES || played < 20.0 {
+            return None;
+        }
+
+        // Least-squares slope of LLR against games played.
+        let n = self.llr_history.len() as f64;
+        let mean_x = self.llr_history.iter().map(|(x, _)| x).sum::<f64>() / n;
+        let mean_y = self.llr_history.iter().map(|(_, y)| y).sum::<f64>() / n;
+        let (mut cov, mut var_x) = (0.0, 0.0);
+        for &(x, y) in &self.llr_history {
+            cov += (x - mean_x) * (y - mean_y);
+            var_x += (x - mean_x).powi(2);
+        }
+        if var_x <= 0.0 {
+            return None;
+        }
+        let slope = cov / var_x; // LLR gained per game, at the recent trend
+        if slope.abs() < 1e-6 {
+            return None; // flat trend: no meaningful ETA
+        }
+
+        let target = if slope > 0.0 { self.upper } else { self.lower };
+        let remaining_llr = target - llr;
+        // Matching signs means the trend is actually closing on that bound;
+        // opposite signs mean it has turned away from it.
+        if remaining_llr.signum() != slope.signum() {
+            return None;
+        }
+        let remaining_games = (remaining_llr / slope).max(0.0);
+        Some(Duration::from_secs_f64((remaining_games / rate * 60.0).min(u32::MAX as f64)))
+    }
+}
+
+fn fmt_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
+        format!("{m}m {s:02}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// The live status region. Owns nothing else — the final summary is printed by
+/// [`print_final_summary`] after this is torn down.
+enum LiveView {
+    Full(Box<FullView>),
+    Compact { previous_len: usize },
+    Plain { last_reported: usize },
+}
+
+/// Games between status lines in [`OutputMode::Plain`]. Sparse on purpose: this
+/// output ends up in log files and CI transcripts.
+const PLAIN_REPORT_INTERVAL: usize = 50;
+
+/// How often the live view redraws when no game has finished, keeping the clock,
+/// throughput and resize handling responsive without busy-looping.
+const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+
+impl LiveView {
+    fn new(mode: OutputMode, variant_count: usize, colors: Colors) -> Self {
+        match mode {
+            OutputMode::Full => match FullView::new(variant_count, colors) {
+                Ok(view) => {
+                    LIVE_VIEW_ACTIVE.store(true, Ordering::SeqCst);
+                    LiveView::Full(Box::new(view))
+                }
+                // A terminal that won't give us a viewport still gets a status line.
+                Err(_) => LiveView::Compact { previous_len: 0 },
+            },
+            OutputMode::Compact => {
+                LIVE_VIEW_ACTIVE.store(true, Ordering::SeqCst);
+                LiveView::Compact { previous_len: 0 }
+            }
+            OutputMode::Plain => LiveView::Plain { last_reported: 0 },
+        }
+    }
+
+    fn update(&mut self, stats: &SprtStats, colors: &Colors) {
+        match self {
+            LiveView::Full(view) => view.draw(stats),
+            LiveView::Compact { previous_len } => {
+                // Cap to the terminal width, or a `\r` overwrite only clears the
+                // final wrapped row — the overflow from earlier, wider lines
+                // strands itself above as permanent stuck fragments.
+                let max_width = ratatui::crossterm::terminal::size()
+                    .ok()
+                    .map(|(cols, _)| cols.saturating_sub(1) as usize);
+                let line = compact_status_line(stats, colors, max_width);
+                // Pad to the previous width so leftovers from a longer line are cleared.
+                let width = (*previous_len).max(line.len());
+                print!("\r{line:<width$}");
+                let _ = std::io::stdout().flush();
+                *previous_len = line.len();
+            }
+            LiveView::Plain { last_reported } => {
+                let total = stats.total_games();
+                if total.saturating_sub(*last_reported) >= PLAIN_REPORT_INTERVAL {
+                    *last_reported = total;
+                    // No width cap: this is a log line, not a display — it's
+                    // fine for it to wrap in whatever views the log later.
+                    println!("{}", compact_status_line(stats, &Colors::new(false), None));
+                }
+            }
+        }
+    }
+
+    /// Emit a line that scrolls above the live region into real scrollback.
+    fn log(&mut self, message: &str) {
+        match self {
+            LiveView::Full(view) => view.log(message),
+            LiveView::Compact { previous_len } => {
+                // Overwrite the status line so it isn't left half-erased above the message.
+                println!("\r{:<width$}", message, width = *previous_len);
+                *previous_len = 0;
+            }
+            LiveView::Plain { .. } => println!("{message}"),
+        }
+    }
+
+    /// Release the terminal. Must run before anything else prints, including a
+    /// panic report, or the output lands inside the viewport.
+    fn finish(self) {
+        LIVE_VIEW_ACTIVE.store(false, Ordering::SeqCst);
+        match self {
+            LiveView::Full(view) => view.finish(),
+            LiveView::Compact { .. } => println!(),
+            LiveView::Plain { .. } => {}
+        }
+    }
+}
+
+/// One-line status, used by both the compact and plain modes.
+/// One-line status. `max_width`, when given, drops trailing (less essential)
+/// fields — richest first — until the line's *visible* width fits: never
+/// mid-string truncation, which could slice through a color escape code and
+/// bleed that color onto the rest of the terminal.
+fn compact_status_line(stats: &SprtStats, colors: &Colors, max_width: Option<usize>) -> String {
+    let pe = stats.elo();
+    let color = colors.by_elo(pe.elo);
+    // The only ANSI bytes in this line, so the overhead is exactly this much —
+    // no need for a general-purpose escape-code scanner.
+    let color_overhead = if colors.reset.is_empty() { 0 } else { color.len() + colors.reset.len() };
+
+    let core = format!(
+        "Games: {} ({} pairs) | W: {} L: {} D: {} | Elo: {color}{:.2}{} +/- {:.2}",
+        stats.total_games(),
+        stats.penta.total_pairs(),
+        stats.wins,
+        stats.losses,
+        stats.draws,
+        pe.elo,
+        colors.reset,
+        pe.elo_err,
+    );
+    let los = format!(" | LOS: {:.1}%", stats.los() * 100.0);
+    let llr = format!(" | LLR: {:.2}", stats.llr());
+    let bounds = format!(" [{:.2}, {:.2}]", stats.lower, stats.upper);
+
+    let Some(max_width) = max_width else {
+        return format!("{core}{los}{llr}{bounds}");
+    };
+    [
+        format!("{core}{los}{llr}{bounds}"),
+        format!("{core}{los}{llr}"),
+        format!("{core}{llr}"), // LOS drops before LLR, the more decision-relevant figure
+        core.clone(),
+    ]
+    .into_iter()
+    .find(|line| line.len() - color_overhead <= max_width)
+    .unwrap_or(core)
+}
+
+/// Multi-line dashboard drawn in an inline viewport: a fixed block at the
+/// bottom of the terminal that is redrawn in place, leaving scrollback intact.
+/// Deliberately not an alternate-screen TUI — those erase themselves on exit,
+/// taking the run's output with them.
+struct FullView {
+    terminal: ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    /// Selected variant count, kept to re-derive the row budget on resize.
+    variant_count: usize,
+    /// Per-variant rows that fit; the remainder collapse into an "and N more" row.
+    variant_rows: usize,
+    colors: Colors,
+}
+
+/// Dashboard lines that are not per-variant rows (header, metrics, alerts, footer).
+const FULL_VIEW_CHROME: usize = 9;
+
+impl FullView {
+    /// How many variant rows fit, and the resulting viewport height, for the
+    /// terminal's *current* size — recomputed on every resize, not just at
+    /// startup.
+    fn layout_for(variant_count: usize) -> (usize, u16) {
+        let term_height = ratatui::crossterm::terminal::size().map_or(24, |(_, h)| h) as usize;
+        let budget = term_height.saturating_sub(4).max(6);
+        let variant_rows = variant_count.min(budget.saturating_sub(FULL_VIEW_CHROME));
+        let height = (FULL_VIEW_CHROME + variant_rows).min(budget) as u16;
+        (variant_rows, height)
+    }
+
+    fn new(variant_count: usize, colors: Colors) -> std::io::Result<Self> {
+        let (variant_rows, height) = Self::layout_for(variant_count);
+        let terminal = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions { viewport: ratatui::Viewport::Inline(height) },
+        )?;
+        Ok(Self { terminal, variant_count, variant_rows, colors })
+    }
+
+    /// Ratatui's inline viewport height is fixed at construction: `Terminal::resize`
+    /// only repositions it for the new terminal size, clamped to that *original*
+    /// height (see `compute_inline_size` upstream) — it never grows back or
+    /// shrinks further. So a real height change tears down and recreates the
+    /// viewport instead.
+    fn resize_if_needed(&mut self) {
+        let (variant_rows, height) = Self::layout_for(self.variant_count);
+        if variant_rows == self.variant_rows {
+            return;
+        }
+        // `clear` erases relative to ratatui's *stored* viewport position, which
+        // the window resize just invalidated. Sync it to the real terminal size
+        // first, or the clear wipes the wrong rows and strands the old frame in
+        // the scrollback above the new viewport.
+        let _ = self.terminal.autoresize();
+        // Erase the old viewport and park the cursor at its top, so the new one
+        // starts exactly there instead of duplicating space below it.
+        let _ = self.terminal.clear();
+        let _ = std::io::stdout().flush();
+        if let Ok(new_terminal) = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions { viewport: ratatui::Viewport::Inline(height) },
+        ) {
+            self.terminal = new_terminal;
+            self.variant_rows = variant_rows;
+        }
+    }
+
+    fn draw(&mut self, stats: &SprtStats) {
+        self.resize_if_needed();
+        let lines = self.compose(stats);
+        let _ = self.terminal.draw(|frame| {
+            frame.render_widget(ratatui::widgets::Paragraph::new(lines), frame.area());
+        });
+    }
+
+    fn log(&mut self, message: &str) {
+        use ratatui::widgets::Widget;
+        let owned = message.to_string();
+        let _ = self.terminal.insert_before(1, move |buf| {
+            ratatui::widgets::Paragraph::new(owned).render(buf.area, buf);
+        });
+    }
+
+    fn finish(mut self) {
+        // Collapse the viewport so the final summary is printed over it rather
+        // than below a stale dashboard.
+        let _ = self.terminal.clear();
+        let _ = std::io::stdout().flush();
+    }
+
+    fn compose(&self, stats: &SprtStats) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+
+        let dim = if self.colors.reset.is_empty() {
+            Style::default()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let styled = |color: Color| {
+            if self.colors.reset.is_empty() {
+                Style::default()
+            } else {
+                Style::default().fg(color)
+            }
+        };
+        let elo_color = |elo: f64| {
+            if elo > 1.0 {
+                Color::Green
+            } else if elo < -1.0 {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }
+        };
+
+        let pe = stats.elo();
+        let llr = stats.llr();
+        let total = stats.total_games();
+        let width = self.terminal.size().map_or(78, |s| s.width) as usize;
+        let rule = Line::from(Span::styled("─".repeat(width.min(78)), dim));
+
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "SPRT",
+                    if self.colors.reset.is_empty() {
+                        Style::default()
+                    } else {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    },
+                ),
+                Span::raw(format!(
+                    "  {} games  ·  {} pairs  ·  {:.1} games/min{}",
+                    total,
+                    stats.penta.total_pairs(),
+                    stats.games_per_min(),
+                    stats
+                        .eta()
+                        .map_or_else(String::new, |eta| format!("  ·  eta ~{}", fmt_duration(eta))),
+                )),
+            ]),
+            rule.clone(),
+            Line::from(format!(
+                "  W {}   L {}   D {}      elapsed {}",
+                stats.wins,
+                stats.losses,
+                stats.draws,
+                fmt_duration(stats.started.elapsed()),
+            )),
+            Line::from(vec![
+                Span::raw("  Elo   "),
+                Span::styled(format!("{:+.2}", pe.elo), styled(elo_color(pe.elo))),
+                Span::raw(format!(" ± {:.2}", pe.elo_err)),
+                Span::raw(format!("        LOS  {:.1}%", stats.los() * 100.0)),
+            ]),
+            Line::from(vec![
+                Span::raw("  nElo  "),
+                Span::styled(format!("{:+.2}", pe.nelo), styled(elo_color(pe.elo))),
+                Span::raw(format!(" ± {:.2}", pe.nelo_err)),
+            ]),
+            Line::from(vec![
+                Span::raw("  LLR   "),
+                Span::styled(
+                    format!("{llr:+.2}"),
+                    styled(if llr >= stats.upper {
+                        Color::Green
+                    } else if llr <= stats.lower {
+                        Color::Red
+                    } else {
+                        Color::Yellow
+                    }),
+                ),
+                Span::raw(format!("  [{:.2}, {:.2}]", stats.lower, stats.upper)),
+            ]),
+            rule.clone(),
+        ];
+
+        // Per-variant rows, in selection order — fixed for the run's lifetime, so
+        // a row's position never changes as its game count edges past another
+        // variant's. Not sorted by live count: variants are assigned round-robin
+        // (see play_game), so counts stay roughly even anyway, and re-sorting
+        // would only reshuffle rows for no real benefit.
+        let variants: Vec<_> = stats
+            .variant_order
+            .iter()
+            .map(|name| (name, stats.per_variant.get(name).copied().unwrap_or_default()))
+            .collect();
+        for (name, (w, l, d)) in variants.iter().take(self.variant_rows) {
+            let (velo, verr) = estimate_elo(*w, *l, *d);
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {:<22}{:>5}  ", truncate(name, 21), w + l + d)),
+                Span::styled(format!("{:>3}/{:>3}/{:>3}", w, l, d), dim),
+                Span::raw("  "),
+                Span::styled(format!("{velo:>+7.1}"), styled(elo_color(velo))),
+                Span::styled(format!(" ± {verr:.0}"), dim),
+            ]));
+        }
+        if variants.len() > self.variant_rows {
+            lines.push(Line::from(Span::styled(
+                format!("  …and {} more", variants.len() - self.variant_rows),
+                dim,
+            )));
+        }
+        for _ in variants.len()..self.variant_rows {
+            lines.push(Line::from(""));
+        }
+
+        lines.push(rule);
+        lines.push(if stats.timeout_losses > 0 {
+            Line::from(Span::styled(
+                // Two spaces after the glyph: it renders double-width, so a
+                // single space leaves it touching the count.
+                format!(
+                    "  ⚠  {} timeout losses ({} from new)",
+                    stats.timeout_losses, stats.new_engine_timeouts
+                ),
+                styled(Color::Red),
+            ))
+        } else {
+            Line::from(Span::styled("  no timeouts", dim))
+        });
+        lines
+    }
+}
+
+/// Report a fatal cause loudly, with enough context to reproduce it, and make
+/// clear the partial numbers are not a result.
+fn print_abort_report(reason: &AbortReason, stats: &SprtStats, colors: &Colors) {
+    let Colors { red, yellow, reset, .. } = *colors;
+    eprintln!("\n{red}════════════════════════ SPRT ABORTED ════════════════════════{reset}");
+    match reason {
+        AbortReason::Panic { message, location, backtrace } => {
+            eprintln!("{red}The harness panicked. This is a bug in sprt.rs, not in the engine.{reset}");
+            eprintln!("\n  panic: {message}");
+            eprintln!("  at:    {location}");
+            eprintln!("\nbacktrace:\n{backtrace}");
+        }
+        AbortReason::EngineFault { kind, engine, game_idx, variant, detail } => {
+            eprintln!("{red}The {engine} engine hit a fault: {kind}{reset}");
+            eprintln!("\n  game:    {game_idx}");
+            eprintln!("  variant: {variant}");
+            eprintln!("\n{detail}");
+        }
+    }
+    eprintln!(
+        "\n{yellow}Partial results after {} games ({} pairs) — NOT a valid measurement:{reset}",
+        stats.total_games(),
+        stats.penta.total_pairs()
+    );
+    let pe = stats.elo();
+    eprintln!(
+        "  W {} L {} D {} | Elo: {:.2} +/- {:.2} | LLR: {:.2}",
+        stats.wins,
+        stats.losses,
+        stats.draws,
+        pe.elo,
+        pe.elo_err,
+        stats.llr()
+    );
+    eprintln!("{red}══════════════════════════════════════════════════════════════{reset}");
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        text.chars().take(max.saturating_sub(1)).chain(['…']).collect()
+    }
 }
 
 fn account_move_time(
@@ -1964,6 +2706,7 @@ fn main() {
             old_strength,
             new_strength,
             verbose,
+            compact,
             new_commit,
             old_commit,
             resume,
@@ -2212,6 +2955,7 @@ fn main() {
                 new_strength: new_strength.clamp(1, apeiron::search::MAX_SITE_SKILL),
                 old_strength: old_strength.clamp(1, apeiron::search::MAX_SITE_SKILL),
                 verbose,
+                compact,
                 new_commit_info: None,
                 old_commit_info: None,
                 resume_pair_offset: resume_pair_offset_val,
@@ -2252,6 +2996,8 @@ fn main() {
             let games_path = games.or_else(|| resume.clone());
             let results_path = results;
 
+            install_panic_hook();
+
             ctrlc::set_handler(move || {
                 USER_STOP.store(true, Ordering::SeqCst);
                 STOP.store(true, Ordering::SeqCst);
@@ -2281,35 +3027,59 @@ fn main() {
                 (config.beta / (1.0 - config.alpha)).ln(),
                 ((1.0 - config.beta) / config.alpha).ln(),
             );
-            let mut wins = 0;
-            let mut losses = 0;
-            let mut draws = 0;
-            let mut penta = PentaCounts::default();
-            let mut timeout_losses = 0;
-            let mut engine_failures = 0;
-            let mut illegal_moves = 0;
             let mut game_logs: Vec<String> = Vec::new();
-            let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
-            let mut last_status_len = 0;
+            // Fixed display order, deduplicated, so a repeated preset entry
+            // doesn't produce a doubled-up row.
+            let mut variant_order = Vec::with_capacity(config.variants.len());
+            let mut seen_variants = HashSet::new();
+            for variant in &config.variants {
+                let name = variant.to_str().to_string();
+                if seen_variants.insert(name.clone()) {
+                    variant_order.push(name);
+                }
+            }
+            let mut stats = SprtStats {
+                wins: 0,
+                losses: 0,
+                draws: 0,
+                penta: PentaCounts::default(),
+                per_variant: variant_order.iter().map(|name| (name.clone(), (0, 0, 0))).collect(),
+                variant_order,
+                timeout_losses: 0,
+                new_engine_timeouts: 0,
+                resumed_games: 0,
+                started: Instant::now(),
+                elo0: config.elo0,
+                elo1: config.elo1,
+                model: config.model,
+                lower,
+                upper,
+                max_games: config.max_games,
+                llr_history: VecDeque::new(),
+                smoothed_eta: None,
+            };
 
             // Apply resume state: seed W/L/D, pentanomial pairs, per-variant stats, prior logs
             if let Some(rs) = resume_state_opt {
-                wins = rs.wins;
-                losses = rs.losses;
-                draws = rs.draws;
-                penta = rs.penta;
-                per_variant_stats = rs.per_variant_stats;
+                stats.wins = rs.wins;
+                stats.losses = rs.losses;
+                stats.draws = rs.draws;
+                stats.penta = rs.penta;
+                // Resumed variants merge into the pre-seeded map rather than
+                // replacing it, so the fixed row order still covers every variant.
+                for (name, counts) in rs.per_variant_stats {
+                    stats.per_variant.insert(name, counts);
+                }
+                stats.resumed_games = rs.wins + rs.losses + rs.draws;
                 game_logs = rs.games;
             }
 
             // No color when stdout isn't a terminal (piped/redirected) or NO_COLOR is
             // set (https://no-color.org), so raw escape codes never leak as garbage text.
             let use_color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-            let green = if use_color { "\x1b[32m" } else { "" };
-            let red = if use_color { "\x1b[31m" } else { "" };
-            let yellow = if use_color { "\x1b[33m" } else { "" };
-            let gray = if use_color { "\x1b[90m" } else { "" };
-            let reset = if use_color { "\x1b[0m" } else { "" };
+            let colors = Colors::new(use_color);
+            let Colors { green, red, yellow, reset, .. } = colors;
+            let output_mode = OutputMode::detect(config.compact);
 
             println!("\nStarting SPRT with Configuration:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
@@ -2317,14 +3087,16 @@ fn main() {
             if config.resume_pair_offset > 0 {
                 println!(
                     "  Resuming: {} games loaded ({}W / {}L / {}D), next pair = {}",
-                    wins + losses + draws,
-                    wins,
-                    losses,
-                    draws,
+                    stats.total_games(),
+                    stats.wins,
+                    stats.losses,
+                    stats.draws,
                     config.resume_pair_offset
                 );
             }
             println!();
+
+            let mut view = LiveView::new(output_mode, config.variants.len(), colors);
 
             let (tx, rx) = std::sync::mpsc::channel();
             let config_clone = config.clone();
@@ -2333,7 +3105,7 @@ fn main() {
                 .build()
                 .expect("Failed to build Rayon thread pool");
 
-            std::thread::spawn(move || {
+            let producer = std::thread::spawn(move || {
                 pool.install(|| {
                     rayon::scope(|scope| {
                         for worker_idx in 0..config_clone.concurrency.max(1) {
@@ -2425,7 +3197,30 @@ fn main() {
             // Track how many games were saved so we know when the next batch is due
             let mut last_save_len = game_logs.len();
 
-            for pair_outcomes in rx {
+            let mut verdict: Option<&str> = None;
+            loop {
+                // A fault recorded by a worker invalidates everything after it.
+                if ABORT.get().is_some() {
+                    break;
+                }
+
+                // Receive on a timer rather than blocking: the Full dashboard's
+                // clock, throughput, ETA and terminal-resize check all need to
+                // keep ticking between game completions, which at slow time
+                // controls are far apart. Compact and Plain only ever redraw on
+                // an actual result — a single status line has nothing to animate,
+                // and Plain's output is a log, not a display.
+                let pair_outcomes = match rx.recv_timeout(REFRESH_INTERVAL) {
+                    Ok(outcomes) => outcomes,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if output_mode == OutputMode::Full {
+                            view.update(&stats, &colors);
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+
                 // NEW-perspective results of this pair's completed games, for
                 // pentanomial bucketing (only full 2-game pairs count).
                 let mut pair_results: Vec<GameResult> = Vec::with_capacity(2);
@@ -2434,45 +3229,26 @@ fn main() {
                         continue;
                     }
 
-                    if outcome.termination_reason == "timeout" && outcome.new_engine_timed_out {
-                        timeout_losses += 1;
-                        if config.verbose {
-                            println!(
-                                "\nALERT: Game {} ended by timeout [{}] - NEW ENGINE TIMED OUT",
+                    if outcome.termination_reason == "timeout" {
+                        stats.timeout_losses += 1;
+                        if outcome.new_engine_timed_out {
+                            stats.new_engine_timeouts += 1;
+                        }
+                        if outcome.new_engine_timed_out && config.verbose {
+                            view.log(&format!(
+                                "ALERT: Game {} ended by timeout [{}] - NEW ENGINE TIMED OUT",
                                 outcome.game_idx, outcome.variant_name
-                            );
+                            ));
                         }
                     }
-                    if outcome.termination_reason == "engine failure"
-                        && outcome.result == GameResult::Loss
-                    {
-                        engine_failures += 1;
-                    }
-                    if outcome.termination_reason == "illegal move"
-                        && outcome.result == GameResult::Loss
-                    {
-                        illegal_moves += 1;
-                    }
 
-                    match outcome.result {
-                        GameResult::Win => wins += 1,
-                        GameResult::Loss => losses += 1,
-                        GameResult::Draw => draws += 1,
-                    }
+                    stats.record(&outcome);
                     pair_results.push(outcome.result);
                     game_logs.push(outcome.icn);
-                    let stats = per_variant_stats
-                        .entry(outcome.variant_name)
-                        .or_insert((0, 0, 0));
-                    match outcome.result {
-                        GameResult::Win => stats.0 += 1,
-                        GameResult::Loss => stats.1 += 1,
-                        GameResult::Draw => stats.2 += 1,
-                    }
                 }
 
                 if pair_results.len() == 2 {
-                    penta.add_pair(pair_results[0], pair_results[1]);
+                    stats.penta.add_pair(pair_results[0], pair_results[1]);
                 }
 
                 // Batch save: write the games file periodically so progress is not lost on crash
@@ -2483,57 +3259,49 @@ fn main() {
                     last_save_len = game_logs.len();
                 }
 
-                // Calculate SPRT metrics.
-                let total_games = wins + losses + draws;
-                let pairs = penta.total_pairs() as f64;
-                let score = penta.score();
-                let variance_per_pair = penta.variance() / pairs;
-                let mut los = calculate_los(score, variance_per_pair);
-                if los.is_nan() {
-                    los = 0.5; // 50%
-                }
+                stats.update_eta();
+                view.update(&stats, &colors);
 
-                // Pentanomial LLR drives the SPRT decision (Fishtest model).
-                let llr = calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
-                let pe = estimate_pentanomial_elo(&penta);
-
-                // Only the point estimate carries the pass/fail/neutral signal; the
-                // error margin is precision metadata, not itself good or bad.
-                let text_color = if pe.elo > 1.0 {
-                    green
-                } else if pe.elo < -1.0 {
-                    red
-                } else {
-                    gray
-                };
-
-                // Print text status line with current stats, overwriting the previous line.
-                let status_line = format!(
-                    "Games: {} ({} pairs) | W: {} L: {} D: {} | Elo: {text_color}{:.2}{reset} +/- {:.2} | LOS: {:.1}% | LLR: {:.2} [{:.2}, {:.2}]",
-                    total_games,
-                    pairs,
-                    wins,
-                    losses,
-                    draws,
-                    pe.elo,
-                    pe.elo_err,
-                    los * 100.0,
-                    llr,
-                    lower,
-                    upper
-                );
-                print_status_line(&mut last_status_len, &status_line);
-                if total_games >= config.min_games {
+                if stats.total_games() >= config.min_games {
+                    let llr = stats.llr();
                     if llr >= upper {
-                        println!("\n{green}SPRT: PASS {reset}");
-                        STOP.store(true, Ordering::SeqCst);
-                        break;
+                        verdict = Some("PASS");
                     } else if llr <= lower {
-                        println!("\n{red}SPRT: FAIL {reset}");
+                        verdict = Some("FAIL");
+                    }
+                    if verdict.is_some() {
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
+            }
+
+            // Release the terminal before anything else prints: a report written
+            // while the live view owns the bottom of the screen is unreadable.
+            view.finish();
+
+            // Surface a worker panic that the channel closing would otherwise hide.
+            let producer_panicked = producer.join().is_err();
+
+            if let Some(reason) = ABORT.get() {
+                // Persist whatever was played, so an abort doesn't cost the games.
+                if let Some(ref path) = games_path {
+                    save_games_file(path, &game_logs);
+                }
+                print_abort_report(reason, &stats, &colors);
+                std::process::exit(1);
+            }
+            if producer_panicked {
+                eprintln!(
+                    "{red}SPRT ABORTED: a worker thread panicked but no cause was recorded.{reset}"
+                );
+                std::process::exit(1);
+            }
+
+            match verdict {
+                Some("PASS") => println!("\n{green}SPRT: PASS {reset}"),
+                Some("FAIL") => println!("\n{red}SPRT: FAIL {reset}"),
+                _ => {}
             }
             if USER_STOP.load(Ordering::SeqCst) {
                 println!("\n{yellow}SPRT: INCONCLUSIVE {reset}");
@@ -2543,67 +3311,53 @@ fn main() {
             println!("\n\nFinal Summary:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
             print_settings_context(&config);
-            let pe = estimate_pentanomial_elo(&penta);
-            let final_penta_llr =
-                calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
+            let pe = stats.elo();
+            let final_penta_llr = stats.llr();
             let model_name = match config.model {
                 SprtModel::Normalized => "normalized",
                 SprtModel::Logistic => "logistic",
             };
 
-            let text_color = if pe.elo > 1.0 {
-                green
-            } else if pe.elo < -1.0 {
-                red
-            } else {
-                gray
-            };
+            let text_color = colors.by_elo(pe.elo);
             println!("  Elo: {text_color}{:.2}{reset} +/- {:.2}", pe.elo, pe.elo_err);
             println!("  nElo: {text_color}{:.2}{reset} +/- {:.2}", pe.nelo, pe.nelo_err);
 
             println!(
                 "  Games: {} | W: {} L: {} D: {}",
-                wins + losses + draws,
-                wins,
-                losses,
-                draws
+                stats.total_games(),
+                stats.wins,
+                stats.losses,
+                stats.draws
             );
             println!(
                 "  Pentanomial [{} pairs] (0-2): {}, {}, {}, {}, {}",
-                penta.total_pairs(),
-                penta.ll,
-                penta.ld,
-                penta.wl + penta.dd,
-                penta.wd,
-                penta.ww
+                stats.penta.total_pairs(),
+                stats.penta.ll,
+                stats.penta.ld,
+                stats.penta.wl + stats.penta.dd,
+                stats.penta.wd,
+                stats.penta.ww
             );
 
-            let text_color = if final_penta_llr >= upper {
-                green
-            } else if final_penta_llr <= lower {
-                red
-            } else {
-                yellow
-            };
+            let text_color = colors.by_llr(final_penta_llr, lower, upper);
             println!(
                 "  LLR: {text_color}{final_penta_llr:.3}{reset}  bounds [{lower:.2}, {upper:.2}] ({model_name} model, [{}, {}])",
                 config.elo0, config.elo1
             );
 
-            if timeout_losses > 0 {
-                println!("{red}  ALERT: {timeout_losses} games ended by timeout (NEW ENGINE ONLY) {reset}");
-            }
-            if engine_failures > 0 {
-                println!("{red}  ALERT: {engine_failures} games ended by engine failure (NEW ENGINE ONLY) {reset}");
-            }
-            if illegal_moves > 0 {
-                println!("{red}  ALERT: {illegal_moves} games ended by illegal move (NEW ENGINE ONLY) {reset}");
+            // Engine failures and illegal moves abort the run outright, so a run
+            // that reaches this point can only have accumulated timeout losses.
+            if stats.timeout_losses > 0 {
+                println!(
+                    "{red}  ALERT: {} games ended by timeout ({} from new) {reset}",
+                    stats.timeout_losses, stats.new_engine_timeouts
+                );
             }
             println!("\nPer-Variant Breakdown:");
-            let mut variant_names: Vec<_> = per_variant_stats.keys().collect();
+            let mut variant_names: Vec<_> = stats.per_variant.keys().collect();
             variant_names.sort();
             for name in variant_names {
-                let (vw, vl, vd) = per_variant_stats[name];
+                let (vw, vl, vd) = stats.per_variant[name];
                 let (velo, verr) = estimate_elo(vw, vl, vd);
                 println!(
                     "  [{}]: {}W - {}L - {}D, Elo: {:.1} +/- {:.1}",
@@ -2650,6 +3404,7 @@ fn main() {
                     losses: usize,
                     draws: usize,
                     timeout_losses: usize,
+                    new_engine_timeouts: usize,
                     // elo/elo_error/llr are the pentanomial (Fishtest-model) values;
                     // field names kept stable for existing consumers.
                     elo: f64,
@@ -2667,9 +3422,8 @@ fn main() {
                     total_games: usize,
                     per_variant: HashMap<String, (usize, usize, usize)>,
                 }
-                let final_llr =
-                    calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
-                let final_pe = estimate_pentanomial_elo(&penta);
+                let final_llr = stats.llr();
+                let final_pe = stats.elo();
                 let model_str = match config.model {
                     SprtModel::Normalized => "normalized",
                     SprtModel::Logistic => "logistic",
@@ -2703,24 +3457,25 @@ fn main() {
                         new_strength: config.new_strength,
                         old_strength: config.old_strength,
                     },
-                    wins,
-                    losses,
-                    draws,
-                    timeout_losses,
+                    wins: stats.wins,
+                    losses: stats.losses,
+                    draws: stats.draws,
+                    timeout_losses: stats.timeout_losses,
+                    new_engine_timeouts: stats.new_engine_timeouts,
                     elo: final_pe.elo,
                     elo_error: final_pe.elo_err,
                     nelo: final_pe.nelo,
                     nelo_error: final_pe.nelo_err,
                     llr: final_llr,
                     model: model_str,
-                    total_pairs: penta.total_pairs(),
-                    penta_ll: penta.ll,
-                    penta_ld: penta.ld,
-                    penta_wl_dd: penta.wl + penta.dd,
-                    penta_wd: penta.wd,
-                    penta_ww: penta.ww,
-                    total_games: wins + losses + draws,
-                    per_variant: per_variant_stats,
+                    total_pairs: stats.penta.total_pairs(),
+                    penta_ll: stats.penta.ll,
+                    penta_ld: stats.penta.ld,
+                    penta_wl_dd: stats.penta.wl + stats.penta.dd,
+                    penta_wd: stats.penta.wd,
+                    penta_ww: stats.penta.ww,
+                    total_games: stats.total_games(),
+                    per_variant: stats.per_variant,
                 };
                 if let Some(parent) = std::path::Path::new(&path).parent() {
                     std::fs::create_dir_all(parent).expect("Failed to create results output directory");

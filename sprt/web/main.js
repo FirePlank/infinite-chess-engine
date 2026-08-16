@@ -1385,7 +1385,7 @@ async function runSprt() {
             );
         }
         if (timeoutLosses > 0) {
-            sprtLog(`  ALERT: ${timeoutLosses} games ended by timeout (NEW ENGINE ONLY)`, 'error');
+            sprtLog(`  ALERT: ${timeoutLosses} games ended by timeout (new engine)`, 'error');
         }
         sprtLog('');
 
