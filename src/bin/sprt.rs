@@ -1,4 +1,8 @@
-use std::io::Write;
+// `erf` is stable for all our other targets but nightly-gated on f64; we already
+// pin nightly (rust-toolchain.toml), so use it directly instead of the libm crate.
+#![feature(float_erf)]
+
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -86,6 +90,10 @@ enum Commands {
         /// Material threshold for draws
         #[arg(long, default_value_t = 0)]
         adjudication: i32,
+
+        /// Max-ply adjudication threshold in White-ahead centipawns
+        #[arg(long, default_value_t = 1000.0)]
+        maxply_adjudication: f64,
 
         /// Path to output game ICNs
         #[arg(long)]
@@ -281,18 +289,24 @@ fn print_commit_context(new_info: &Option<CommitInfo>, old_info: &Option<CommitI
 /// Print the compact settings lines (shared by startup banner and final summary).
 fn print_settings_context(config: &Config) {
     let adjudication_str = if config.adjudication_threshold <= 0 {
-        "Disabled".to_string()
+        "Off".to_string()
     } else {
         format!("{} cp", config.adjudication_threshold)
     };
+    let maxply_adjudication_str = if config.maxply_adjudication <= 0.0 {
+        "Off".to_string()
+    } else {
+        format!("{} cp", config.maxply_adjudication)
+    };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {} | Adjudication: {}",
+        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {} | Adjudication: {} | Max-ply adjudication: {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
         config.new_strength,
         config.old_strength,
         adjudication_str,
+        maxply_adjudication_str,
     );
 }
 
@@ -313,6 +327,7 @@ struct Config {
     min_games: usize,
     variants: Vec<Variant>,
     adjudication_threshold: i32,
+    maxply_adjudication: f64,
     new_bin: String,
     old_bin: String,
     max_moves: usize,
@@ -358,6 +373,9 @@ enum TerminalState {
 fn elo_to_score(elo_diff: f64) -> f64 {
     1.0 / (1.0 + 10.0f64.powf(-elo_diff / 400.0))
 }
+fn score_to_elo(s: f64) -> f64 {
+    -400.0 * (1.0 / s.clamp(1e-9, 1.0 - 1e-9) - 1.0).log10()
+}
 
 fn estimate_elo(wins: usize, losses: usize, draws: usize) -> (f64, f64) {
     let total = wins + losses + draws;
@@ -395,6 +413,24 @@ struct PentaCounts {
 impl PentaCounts {
     fn total_pairs(&self) -> usize {
         self.ww + self.wd + self.wl + self.dd + self.ld + self.ll
+    }
+
+    fn score(&self) -> f64 {
+        (self.ww as f64
+            + 0.75 * self.wd as f64
+            + 0.5 * (self.wl as f64 + self.dd as f64)
+            + 0.25 * self.ld as f64
+        ) / self.total_pairs() as f64
+    }
+
+    fn variance(&self) -> f64 {
+        let score = self.score();
+        (self.ww as f64 * (1.0 - score).powi(2)
+            + self.wd as f64 * (0.75 - score).powi(2)
+            + (self.wl as f64 + self.dd as f64) * (0.5 - score).powi(2)
+            + self.ld as f64 * (0.25 - score).powi(2)
+            + self.ll as f64 * (0.0 - score).powi(2)
+        ) / self.total_pairs() as f64
     }
 
     /// Bucket a completed pair from the two NEW-perspective game results.
@@ -663,9 +699,15 @@ fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtM
     }
 }
 
-/// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the logistic
-/// and normalized point-estimates come from the same pair-score distribution, so
-/// neither depends on the SPRT model.
+/// Likelihood of superiority: probability that the new engine is better than the
+/// old. Matches fastchess implementation.
+fn calculate_los(score: f64, variance_per_pair: f64) -> f64 {
+    (1.0 - (-(score - 0.5) / (2.0 * variance_per_pair).sqrt()).erf()) / 2.0
+}
+
+/// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the
+/// logistic Elo (`elo`) and normalized Elo (`nelo`) point-estimates are computed
+/// from the same pair-score distribution — they do not depend on the SPRT model.
 #[derive(Clone, Copy, Debug, Default)]
 struct PentaElo {
     elo: f64,
@@ -679,23 +721,12 @@ fn estimate_pentanomial_elo(p: &PentaCounts) -> PentaElo {
     if pairs == 0.0 {
         return PentaElo::default();
     }
-    let ww = p.ww as f64 / pairs;
-    let wd = p.wd as f64 / pairs;
-    let wl = p.wl as f64 / pairs;
-    let dd = p.dd as f64 / pairs;
-    let ld = p.ld as f64 / pairs;
-    let ll = p.ll as f64 / pairs;
 
-    let score = ww + 0.75 * wd + 0.5 * (wl + dd) + 0.25 * ld;
-    let variance = ww * (1.0 - score).powi(2)
-        + wd * (0.75 - score).powi(2)
-        + (wl + dd) * (0.5 - score).powi(2)
-        + ld * (0.25 - score).powi(2)
-        + ll * (0.0 - score).powi(2);
+    let score = p.score();
+    let variance = p.variance();
     let variance_per_pair = variance / pairs;
 
     const CI95: f64 = 1.959963984540054;
-    let s2e = |s: f64| -400.0 * (1.0 / s.clamp(1e-9, 1.0 - 1e-9) - 1.0).log10();
     // Normalized Elo (fastchess scoreToNeloDiff): uses the per-pair variance.
     let s2n = |s: f64| (s - 0.5) / (2.0 * variance).sqrt() * (800.0 / 10.0f64.ln());
     let upper = score + CI95 * variance_per_pair.sqrt();
@@ -705,9 +736,9 @@ fn estimate_pentanomial_elo(p: &PentaCounts) -> PentaElo {
     } else if score >= 1.0 {
         999.0
     } else {
-        s2e(score)
+        score_to_elo(score)
     };
-    let elo_err = (s2e(upper) - s2e(lower)) / 2.0;
+    let elo_err = (score_to_elo(upper) - score_to_elo(lower)) / 2.0;
     let (nelo, nelo_err) = if variance <= 0.0 {
         (0.0, 0.0)
     } else {
@@ -1128,10 +1159,6 @@ fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
     apeiron::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
     f()
 }
-
-/// Max-ply adjudication threshold in White-ahead centipawns: both engines must
-/// agree the position is at least this decisive to break a move-cap draw.
-const MAXPLY_ADJUDICATION_CP: f64 = 1000.0;
 
 fn play_game(
     config: &Config,
@@ -1690,13 +1717,15 @@ fn play_game(
         return game_outcome!(GameResult::Draw, "threefold repetition", "1/2-1/2");
     }
 
-    // Max-ply adjudication: if both engines' last score agrees one side is ahead
-    // by >= +10 pawns, award that side the point instead of scoring a draw.
-    if let (Some(wn), Some(wo)) = (last_wscore_new, last_wscore_old) {
+    // Max-ply adjudication: if both engines' last score agrees one side is ahead,
+    // award that side the point instead of scoring a draw.
+    if config.maxply_adjudication > 0.0
+        && let (Some(wn), Some(wo)) = (last_wscore_new, last_wscore_old)
+    {
         let side = |w: f64| {
-            if w >= MAXPLY_ADJUDICATION_CP {
+            if w >= config.maxply_adjudication {
                 Some(true)
-            } else if w <= -MAXPLY_ADJUDICATION_CP {
+            } else if w <= -config.maxply_adjudication {
                 Some(false)
             } else {
                 None
@@ -1713,7 +1742,7 @@ fn play_game(
             };
             return game_outcome!(
                 result,
-                "adjudication",
+                "max-ply adjudication",
                 if white_won { "1-0" } else { "0-1" }
             );
         }
@@ -1854,6 +1883,12 @@ fn generate_icn(
                     config.adjudication_threshold
                 )
             }
+            "max-ply adjudication" => {
+                format!(
+                    "Max-ply adjudication (|eval| >= {} cp)",
+                    config.maxply_adjudication
+                )
+            }
             "checkmate" => "Checkmate".to_string(),
             "allpiecescaptured" => "All pieces captured".to_string(),
             "allroyalscaptured" => "All royals captured".to_string(),
@@ -1921,6 +1956,7 @@ fn main() {
             min_games,
             variants,
             adjudication,
+            maxply_adjudication,
             games,
             results,
             max_moves,
@@ -1984,9 +2020,14 @@ fn main() {
                 _ => variants,
             };
 
-            // Presets: "all" is every variant, "site" those live on the public site,
-            // "base_only" the plain base-eval ones (the default for base.rs changes),
-            // "base_full" those plus multi-king, "multi_king" and "coaip" one family.
+            // ── Variant presets ──────────────────────────────────────────────────────
+            // all        — every variant in the engine
+            // site       — variants live on the public site (image order), no Abundance/Showcase
+            // base_only  — base-eval standard variants; no multi-king, no AllPieces, no Abundance
+            //              Default for testing base.rs changes against typical positions.
+            // base_full  — all base-eval variants including multi-king and AllPiecesClassical
+            // multi_king — only the double/triple-king variants
+            // coaip_set  — only the Chess-on-an-Infinite-Plane family
 
             // Every variant in the engine
             const ALL_VARIANTS: &[Variant] = &[
@@ -2101,7 +2142,7 @@ fn main() {
                 "base_only" => BASE_ONLY_VARIANTS.to_vec(),
                 "base_full" => BASE_FULL_VARIANTS.to_vec(),
                 "multi_king" => MULTI_KING_VARIANTS.to_vec(),
-                "coaip" => COAIP_VARIANTS.to_vec(),
+                "coaip_set" => COAIP_VARIANTS.to_vec(),
                 _ => {
                     let mut parsed = Vec::new();
                     for name in variants.split(',') {
@@ -2136,7 +2177,7 @@ fn main() {
                         if !known {
                             eprintln!(
                                 "Error: Unknown variant or preset '{}'. \
-                                 Valid presets: all, site, base_only, base_full, multi_king, coaip",
+                                 Valid presets: all, site, base_only, base_full, multi_king, coaip_set",
                                 name_trimmed
                             );
                             std::process::exit(1);
@@ -2163,6 +2204,7 @@ fn main() {
                 min_games,
                 variants: parsed_variants,
                 adjudication_threshold: adjudication,
+                maxply_adjudication,
                 new_bin: actual_new_bin,
                 old_bin,
                 max_moves,
@@ -2257,6 +2299,15 @@ fn main() {
                 per_variant_stats = rs.per_variant_stats;
                 game_logs = rs.games;
             }
+
+            // No color when stdout isn't a terminal (piped/redirected) or NO_COLOR is
+            // set (https://no-color.org), so raw escape codes never leak as garbage text.
+            let use_color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+            let green = if use_color { "\x1b[32m" } else { "" };
+            let red = if use_color { "\x1b[31m" } else { "" };
+            let yellow = if use_color { "\x1b[33m" } else { "" };
+            let gray = if use_color { "\x1b[90m" } else { "" };
+            let reset = if use_color { "\x1b[0m" } else { "" };
 
             println!("\nStarting SPRT with Configuration:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
@@ -2420,37 +2471,60 @@ fn main() {
                     last_save_len = game_logs.len();
                 }
 
+                // Calculate SPRT metrics.
+                let total_games = wins + losses + draws;
+                let pairs = penta.total_pairs() as f64;
+                let score = penta.score();
+                let variance_per_pair = penta.variance() / pairs;
+                let mut los = calculate_los(score, variance_per_pair);
+                if los.is_nan() {
+                    los = 0.5; // 50%
+                }
+
                 // Pentanomial LLR drives the SPRT decision (Fishtest model).
                 let llr = calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
                 let pe = estimate_pentanomial_elo(&penta);
+
+                // Only the point estimate carries the pass/fail/neutral signal; the
+                // error margin is precision metadata, not itself good or bad.
+                let text_color = if pe.elo > 1.0 {
+                    green
+                } else if pe.elo < -1.0 {
+                    red
+                } else {
+                    gray
+                };
+
+                // Print text status line with current stats, overwriting the previous line.
                 let status_line = format!(
-                    "Games: {} ({} pairs) | W: {} L: {} D: {} | nElo: {:.2} +/- {:.2} | Elo: {:.1} | LLR: {:.2} [{:.2}, {:.2}]",
-                    wins + losses + draws,
-                    penta.total_pairs(),
+                    "Games: {} ({} pairs) | W: {} L: {} D: {} | Elo: {text_color}{:.2}{reset} +/- {:.2} | LOS: {:.1}% | LLR: {:.2} [{:.2}, {:.2}]",
+                    total_games,
+                    pairs,
                     wins,
                     losses,
                     draws,
-                    pe.nelo,
-                    pe.nelo_err,
                     pe.elo,
+                    pe.elo_err,
+                    los * 100.0,
                     llr,
                     lower,
                     upper
                 );
                 print_status_line(&mut last_status_len, &status_line);
-                if wins + losses + draws >= config.min_games {
+                if total_games >= config.min_games {
                     if llr >= upper {
-                        println!("\nSPRT: PASS");
+                        println!("\n{green}SPRT: PASS {reset}");
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     } else if llr <= lower {
-                        println!("\nSPRT: FAIL");
+                        println!("\n{red}SPRT: FAIL {reset}");
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
             }
             if USER_STOP.load(Ordering::SeqCst) {
+                println!("\n{yellow}SPRT: INCONCLUSIVE {reset}");
                 println!("\nRun stopped by user.");
             }
 
@@ -2464,17 +2538,26 @@ fn main() {
                 SprtModel::Normalized => "normalized",
                 SprtModel::Logistic => "logistic",
             };
-            println!("  nElo: {:.2} +/- {:.2}", pe.nelo, pe.nelo_err);
-            println!("  Elo: {:.1} +/- {:.1}", pe.elo, pe.elo_err);
+
+            let text_color = if pe.elo > 1.0 {
+                green
+            } else if pe.elo < -1.0 {
+                red
+            } else {
+                gray
+            };
+            println!("  Elo: {text_color}{:.2}{reset} +/- {:.2}", pe.elo, pe.elo_err);
+            println!("  nElo: {text_color}{:.2}{reset} +/- {:.2}", pe.nelo, pe.nelo_err);
+
             println!(
-                "  Record: {}W - {}L - {}D ({} total)",
+                "  Games: {} | W: {} L: {} D: {}",
+                wins + losses + draws,
                 wins,
                 losses,
-                draws,
-                wins + losses + draws
+                draws
             );
             println!(
-                "  Pentanomial [{} pairs]: LL:{} LD:{} WL/DD:{} WD:{} WW:{}",
+                "  Pentanomial [{} pairs] (0-2): {}, {}, {}, {}, {}",
                 penta.total_pairs(),
                 penta.ll,
                 penta.ld,
@@ -2482,15 +2565,21 @@ fn main() {
                 penta.wd,
                 penta.ww
             );
+
+            let text_color = if final_penta_llr >= upper {
+                green
+            } else if final_penta_llr <= lower {
+                red
+            } else {
+                yellow
+            };
             println!(
-                "  LLR: {:.3}  bounds [{:.2}, {:.2}] ({} model, [{}, {}])",
-                final_penta_llr, lower, upper, model_name, config.elo0, config.elo1
+                "  LLR: {text_color}{final_penta_llr:.3}{reset}  bounds [{lower:.2}, {upper:.2}] ({model_name} model, [{}, {}])",
+                config.elo0, config.elo1
             );
+
             if timeout_losses > 0 {
-                println!(
-                    "  ALERT: {} games ended by timeout (NEW ENGINE ONLY)",
-                    timeout_losses
-                );
+                println!("{red}  ALERT: {timeout_losses} games ended by timeout (NEW ENGINE ONLY) {reset}");
             }
             println!("\nPer-Variant Breakdown:");
             let mut variant_names: Vec<_> = per_variant_stats.keys().collect();
@@ -2522,6 +2611,7 @@ fn main() {
                     concurrency: usize,
                     variant_count: usize,
                     adjudication: i32,
+                    maxply_adjudication: f64,
                     min_games: usize,
                     max_games: Option<usize>,
                     new_strength: u32,
@@ -2589,6 +2679,7 @@ fn main() {
                         concurrency: config.concurrency,
                         variant_count: config.variants.len(),
                         adjudication: config.adjudication_threshold,
+                        maxply_adjudication: config.maxply_adjudication,
                         min_games: config.min_games,
                         max_games: config.max_games,
                         new_strength: config.new_strength,
