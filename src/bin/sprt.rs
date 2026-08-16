@@ -1,3 +1,7 @@
+// `erf` is stable for all our other targets but nightly-gated on f64; we already
+// pin nightly (rust-toolchain.toml), so use it directly instead of the libm crate.
+#![feature(float_erf)]
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -698,7 +702,7 @@ fn calculate_pentanomial_llr(p: &PentaCounts, elo0: f64, elo1: f64, model: SprtM
 /// Likelihood of superiority: probability that the new engine is better than the
 /// old. Matches fastchess implementation.
 fn calculate_los(score: f64, variance_per_pair: f64) -> f64 {
-    (1.0 - libm::erf(-(score - 0.5) / (2.0 * variance_per_pair).sqrt())) / 2.0
+    (1.0 - (-(score - 0.5) / (2.0 * variance_per_pair).sqrt()).erf()) / 2.0
 }
 
 /// Pentanomial Elo estimate, matching fastchess `EloPentanomial`. Both the
