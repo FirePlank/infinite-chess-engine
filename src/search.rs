@@ -5038,6 +5038,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
+
+                // BadCapture is staged after GoodQuiet, so a capture cutoff can have
+                // quiets tried before it; those were refuted and earn their malus too.
+                for quiet in &quiets_searched {
+                    let qidx = hash_move_dest(quiet);
+                    searcher.update_history(quiet.piece.piece_type(), qidx, -bonus);
+                    searcher.update_pawn_history(
+                        game.pawn_hash,
+                        quiet.piece.piece_type(),
+                        qidx,
+                        -bonus * pawn_history_malus_scale(),
+                    );
+                }
             }
             break;
         } else if let Some(cap_type) = captured_type {
