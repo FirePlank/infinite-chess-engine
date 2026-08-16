@@ -2453,12 +2453,8 @@ fn fmt_duration(d: Duration) -> String {
 enum LiveView {
     Full(Box<FullView>),
     Compact { previous_len: usize },
-    Plain { last_reported: usize },
+    Plain,
 }
-
-/// Games between status lines in [`OutputMode::Plain`]. Sparse on purpose: this
-/// output ends up in log files and CI transcripts.
-const PLAIN_REPORT_INTERVAL: usize = 50;
 
 /// How often the live view redraws when no game has finished, keeping the clock,
 /// throughput and resize handling responsive without busy-looping.
@@ -2479,7 +2475,7 @@ impl LiveView {
                 LIVE_VIEW_ACTIVE.store(true, Ordering::SeqCst);
                 LiveView::Compact { previous_len: 0 }
             }
-            OutputMode::Plain => LiveView::Plain { last_reported: 0 },
+            OutputMode::Plain => LiveView::Plain,
         }
     }
 
@@ -2500,14 +2496,13 @@ impl LiveView {
                 let _ = std::io::stdout().flush();
                 *previous_len = line.len();
             }
-            LiveView::Plain { last_reported } => {
-                let total = stats.total_games();
-                if total.saturating_sub(*last_reported) >= PLAIN_REPORT_INTERVAL {
-                    *last_reported = total;
-                    // No width cap: this is a log line, not a display — it's
-                    // fine for it to wrap in whatever views the log later.
-                    println!("{}", compact_status_line(stats, &Colors::new(false), None));
-                }
+            LiveView::Plain => {
+                // Every game, not throttled: a background/piped run has nothing
+                // else to poll for progress, so a sparse log reads as "stuck."
+                // No width cap: this is a log line, not a display — it's
+                // fine for it to wrap in whatever views the log later.
+                println!("{}", compact_status_line(stats, &Colors::new(false), None));
+                let _ = std::io::stdout().flush();
             }
         }
     }
@@ -2521,7 +2516,7 @@ impl LiveView {
                 println!("\r{:<width$}", message, width = *previous_len);
                 *previous_len = 0;
             }
-            LiveView::Plain { .. } => println!("{message}"),
+            LiveView::Plain => println!("{message}"),
         }
     }
 
@@ -2532,7 +2527,7 @@ impl LiveView {
         match self {
             LiveView::Full(view) => view.finish(),
             LiveView::Compact { .. } => println!(),
-            LiveView::Plain { .. } => {}
+            LiveView::Plain => {}
         }
     }
 }
