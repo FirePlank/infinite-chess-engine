@@ -64,7 +64,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.0325,
         attack_eval_scale: 26,
         defense_eval_scale: 157,
-        reply_blindness: 0.35,
+        reply_blindness: 0.30,
         shallow_rank_penalty: 6.125,
     },
     SkillConfig {
@@ -83,7 +83,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.07375,
         attack_eval_scale: 37,
         defense_eval_scale: 144,
-        reply_blindness: 0.2625,
+        reply_blindness: 0.2227,
         shallow_rank_penalty: 7.875,
     },
     SkillConfig {
@@ -102,7 +102,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.1475,
         attack_eval_scale: 50,
         defense_eval_scale: 134,
-        reply_blindness: 0.18375,
+        reply_blindness: 0.1531,
         shallow_rank_penalty: 9.625,
     },
     SkillConfig {
@@ -121,7 +121,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.27125,
         attack_eval_scale: 62,
         defense_eval_scale: 124,
-        reply_blindness: 0.1225,
+        reply_blindness: 0.0990,
         shallow_rank_penalty: 11.375,
     },
     SkillConfig {
@@ -140,7 +140,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.45375,
         attack_eval_scale: 74,
         defense_eval_scale: 116,
-        reply_blindness: 0.07,
+        reply_blindness: 0.0526,
         shallow_rank_penalty: 13.125,
     },
     SkillConfig {
@@ -159,7 +159,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.6625,
         attack_eval_scale: 85,
         defense_eval_scale: 109,
-        reply_blindness: 0.030625,
+        reply_blindness: 0.0178,
         shallow_rank_penalty: 14.0,
     },
     SkillConfig {
@@ -180,7 +180,7 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         deep_tactic_chance: 0.87375,
         attack_eval_scale: 93,
         defense_eval_scale: 104,
-        reply_blindness: 0.0105,
+        reply_blindness: 0.0,
         shallow_rank_penalty: 14.0,
     },
 ];
