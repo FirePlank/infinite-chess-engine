@@ -542,6 +542,18 @@ impl TileTable {
                         bucket_mut.tile.clear();
                         self.count -= 1;
                         self.occ_mask[idx / 64] &= !(1u64 << (idx % 64));
+                        // A tombstone run ending at an Empty can be freed: any probe crossing
+                        // it would have stopped at that Empty anyway. Else debris only grows.
+                        if self.buckets[(idx + 1) & TILE_TABLE_MASK].state == BucketState::Empty {
+                            let mut j = idx;
+                            while self.buckets[j].state == BucketState::Tombstone {
+                                self.buckets[j].state = BucketState::Empty;
+                                j = j.wrapping_sub(1) & TILE_TABLE_MASK;
+                                if j == idx {
+                                    break;
+                                }
+                            }
+                        }
                         return;
                     }
                 }
