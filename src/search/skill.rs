@@ -26,17 +26,15 @@ struct SkillConfig {
     /// (a forced combination invisible at depth 2), rather than avoiding it.
     deep_tactic_chance: f64,
     /// Weight, in percent, on the terms that recognize an attack (king pressure,
-    /// interaction threats, attacking tropism, pawn storms). Low values make the
-    /// level fail to see what a threatening move even is, so it plays passively
-    /// instead of playing full strength's sharp move with more error on top.
+    /// threats, attacking tropism, storms). Low values make the level play passively
+    /// rather than play full strength's sharp move with more error on top.
     attack_eval_scale: i32,
     /// Weight, in percent, on king shelter and defensive tropism. Above 100 the
     /// level over-values huddling, which is what makes weak play look goalless.
     defense_eval_scale: i32,
-    /// Chance that a decision is made without searching the opponent's reply at
-    /// all: candidates are judged by a static read of the position each one leaves
-    /// behind. This is what lets a weak level walk into, or fail to answer, a
-    /// threat rather than defending every one of them.
+    /// Chance a decision is made without searching the reply at all: candidates are
+    /// judged by a static read of the position each leaves behind. This is what lets
+    /// a weak level walk into a threat instead of answering every one.
     reply_blindness: f64,
     /// Weight on the penalty for choosing a move that ranked poorly in the shallow
     /// search. High values pin the level to moves that already looked good, which
@@ -45,27 +43,10 @@ struct SkillConfig {
 }
 
 /// Site levels 1..7; level 8 bypasses the limiter for the full parallel search.
-/// `mean_loss_permille` targets a loss in winning probability rather than centipawns,
-/// so weak levels keep giving ground instead of turning near-perfect once ahead.
-///
-/// Three families of knob, in the order they matter to someone playing against this:
-///
-/// 1. **Style** (`attack_eval_scale`, `defense_eval_scale`) — what the level thinks a
-///    good move is. This is the only family that changes how the play *reads*; the
-///    others only change how often it is wrong.
-/// 2. **Sight** (`depth_cap`, `reply_blindness`) — what it is able to see coming.
-///    `reply_blindness` is the one that stops weak levels answering every threat.
-/// 3. **Error** (`best_move_chance`, `mean/max_loss_permille`, `obvious_blunder_chance`,
-///    `shallow_rank_penalty`) — how far it strays once it has judged the position.
-///
-/// Mop-up is deliberately held fixed across every change here. `depth_cap` cuts are
-/// paid back move-for-move in `mop_up_depth_bonus`, so `depth_cap + mop_up_depth_bonus`
-/// still reads 5/6/7/10/11/13/17 up the ladder; `mean` and `max` loss are always scaled
-/// by the same factor, which leaves the conversion error distribution unchanged; and
-/// `conversion_odds_multiplier` absorbs each `best_move_chance` cut in odds space.
-/// `max_conversion_cp_loss`, `conversion_loss_multiplier` and
-/// `mate_distance_temperature` are untouched. Style and blindness are switched off
-/// outright once conversion is active.
+/// `mean_loss_permille` targets a loss in winning probability, not centipawns, so weak
+/// levels keep giving ground instead of turning near-perfect once ahead. Mop-up is held
+/// fixed across every knob here, pinned by `test_mop_up_depth_ladder_is_pinned` and
+/// `test_conversion_error_shape_is_preserved`.
 const SKILL_CONFIGS: [SkillConfig; 7] = [
     SkillConfig {
         depth_cap: Some(2),
@@ -185,10 +166,8 @@ const SKILL_CONFIGS: [SkillConfig; 7] = [
         depth_cap: Some(13),
         endgame_depth_bonus: 3,
         mop_up_depth_bonus: 4,
-        // `best_move_chance` and `conversion_odds_multiplier` are inert at this
-        // level: `picker_config` forces the chance to 0.0 below, and scaling odds
-        // of zero is still zero. Level 7's strength comes from the narrow candidate
-        // set, the tight loss corridor and LEVEL_7_CLEAN_SEARCH_CHANCE.
+        // `best_move_chance` and `conversion_odds_multiplier` are inert here:
+        // `picker_config` forces the chance to 0.0, and scaled zero odds are zero.
         candidates: 4,
         best_move_chance: 0.68,
         mean_loss_permille: 22.875,
@@ -480,11 +459,8 @@ fn static_position_eval(game: &GameState) -> i32 {
 }
 
 /// Re-scores every candidate by a static read of the position it leaves behind.
-///
-/// This is deliberately *not* a depth-1 search: a one-ply search still runs
-/// quiescence at the leaf, which resolves the recapture and so still sees the
-/// threat. Only a static evaluation of the position after our own move reproduces
-/// a player who moved without checking what the reply was.
+/// Deliberately not a depth-1 search: quiescence at the leaf would resolve the
+/// recapture and see the threat anyway, which is the whole thing being suppressed.
 fn reply_blind_result(game: &mut GameState, result: &MultiPVResult) -> MultiPVResult {
     let mut blind = result.clone();
     for line in &mut blind.lines {
@@ -526,11 +502,9 @@ fn pick_best(
 
     let conversion_position = active_conversion(game).is_some();
 
-    // Judge the candidates without looking at the reply. Suppressed while
-    // converting, so mop-up keeps its full sight, and never reached above when a
-    // mate or a forced loss is already proved. `obvious_blunder_chance` goes to 1
-    // because the hang filter runs a static exchange, which is exactly the reply
-    // this branch is pretending not to have seen.
+    // Judge the candidates without looking at the reply, off during conversion so
+    // mop-up keeps full sight. `obvious_blunder_chance` goes to 1 because the hang
+    // filter runs a static exchange — exactly the reply this pretends not to see.
     if !conversion_position && rng.next_f64() < config.reply_blindness {
         let blind = reply_blind_result(game, result);
         let blind_config = SkillConfig {
@@ -741,11 +715,9 @@ pub(crate) fn get_best_move_limited(
         let multi_pv = config.candidates.min(MAX_PV_COUNT);
         let effective_depth = effective_skill_depth(game, max_depth, config);
 
-        // Converting a won game is held at full strength, so the style is only
-        // installed outside mop-up. Like the depth bonus above, this is decided at
-        // the root rather than per node: the tree below a converting root is
-        // overwhelmingly still converting, and a per-node check would cost an
-        // extra mop-up probe on every evaluation.
+        // Conversion stays full strength. Decided at the root like the depth bonus:
+        // the tree below a converting root is overwhelmingly still converting, and a
+        // per-node check would cost a mop-up probe on every evaluation.
         let _style = EvalStyleGuard::install(if active_conversion(game).is_some() {
             crate::evaluation::EvalStyle::NEUTRAL
         } else {
@@ -812,10 +784,9 @@ mod tests {
     use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
 
-    /// The synthetic fixtures below carry fabricated moves that are not legal on the
-    /// board they are picked against, so the reply-blind branch — which really plays
-    /// each candidate to evaluate it — cannot run on them. Tests aimed at the regret
-    /// sampler switch it off; the blind branch has its own tests on a real position.
+    /// The synthetic fixtures carry fabricated moves that are illegal on the board
+    /// they are picked against, so the reply-blind branch — which really plays each
+    /// candidate — cannot run on them. It has its own tests on a real position.
     fn sampler_only(config: SkillConfig) -> SkillConfig {
         SkillConfig {
             reply_blindness: 0.0,
@@ -891,10 +862,9 @@ mod tests {
         }
     }
 
-    /// The mop-up depth ladder is a fixed contract: weakening a level costs
-    /// `depth_cap`, and every ply taken off the cap is paid back in
-    /// `mop_up_depth_bonus` so converting a won game searches exactly as deep as it
-    /// always has. These are the historical `depth_cap + mop_up_depth_bonus` sums.
+    /// Weakening a level costs `depth_cap`, and every ply is paid back in
+    /// `mop_up_depth_bonus` so conversion searches exactly as deep as it always has.
+    /// These are the historical `depth_cap + mop_up_depth_bonus` sums.
     #[test]
     fn test_mop_up_depth_ladder_is_pinned() {
         const MOP_UP_DEPTHS: [usize; 7] = [5, 6, 7, 10, 11, 13, 17];
@@ -907,10 +877,9 @@ mod tests {
         }
     }
 
-    /// The conversion error distribution is set by `mean / max`, because
-    /// `conversion_loss_permille` normalizes the sampled loss by the same
-    /// `max_loss_permille` it filters against. Widening the ordinary error corridor
-    /// therefore only leaks into mop-up if the two move by different factors.
+    /// Conversion sampling is set by `mean / max`, since `conversion_loss_permille`
+    /// normalizes by the same `max_loss_permille` it filters against — so a wider
+    /// error corridor only leaks into mop-up if the two move by different factors.
     #[test]
     fn test_conversion_error_shape_is_preserved() {
         // Ratios as they stood before the play-style retune.
@@ -966,10 +935,9 @@ mod tests {
     #[test]
     fn test_reply_blindness_lets_a_threat_go_unanswered() {
         let mut game = GameState::new();
-        // Black's rook on the fourth file attacks the white queen. Moving the king
-        // ignores the threat and drops the queen; stepping the queen off the file
-        // saves it. Enough material is left on that this is not a mop-up position,
-        // where blindness is suppressed outright.
+        // Black's rook attacks the white queen: the king move drops it, stepping the
+        // queen off the file saves it. Enough material left that this is no mop-up,
+        // where blindness would be suppressed outright.
         game.setup_position_from_icn("w K1,1|Q4,4|R1,2|P2,2|N3,1|k7,7|r4,7|b6,6|p6,7|n5,8");
         assert!(
             active_conversion(&game).is_none(),
@@ -1163,12 +1131,9 @@ mod tests {
         }
     }
 
-    /// The hard floor under every strength change: whatever a level gives up in
-    /// style, sight or accuracy, it still finishes a mate it can see.
-    ///
-    /// Ignored by default because it drives the global searcher, the shared TT and
-    /// the global seed, which the rest of the suite races with when tests run in
-    /// parallel. Run it with `cargo test --lib -- --ignored --test-threads=1`.
+    /// The hard floor: whatever a level gives up, it still finishes a mate it sees.
+    /// Ignored because it drives the global searcher, TT and seed, which the rest of
+    /// the suite races with. Run with `--ignored --test-threads=1`.
     #[test]
     #[ignore = "needs exclusive global search state; run with --test-threads=1"]
     fn test_limited_search_plays_mate_in_one_at_every_level() {

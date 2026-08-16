@@ -66,18 +66,10 @@ thread_local! {
     pub(crate) static EVAL_BLACK_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
 }
 
-/// Per-level play-style weighting, in percent of the full-strength term.
-///
-/// Weak site levels used to differ from strong ones only in which move they picked
-/// out of a correctly ranked list, so they still found the same sharp, threatening
-/// moves and still answered every threat made against them. This scales the terms
-/// that recognize an attack instead, so a weak level does not know what a good move
-/// looks like in the first place: attacking terms are damped toward zero and the
-/// terms that keep pieces near their own king are amplified, which produces passive,
-/// goalless-looking play rather than accurate play with noise on top.
-///
-/// `NEUTRAL` is full strength. Only the generic evaluation honours this; the
-/// hand-written variant evaluations in `variants/` are unscaled.
+/// Per-level play-style weighting, in percent of the full-strength term. Damping
+/// attack and amplifying defense makes a weak level misjudge the position instead
+/// of misplaying a correct ranking. `NEUTRAL` is full strength, and only the
+/// generic evaluation honours it — `variants/` evaluators are unscaled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EvalStyle {
     pub attack_scale: i32,
