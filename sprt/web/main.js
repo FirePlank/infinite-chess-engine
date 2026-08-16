@@ -946,7 +946,7 @@ async function runSprt() {
     sprtLossesEl.textContent = '0';
     sprtDrawsEl.textContent = '0';
     sprtLLREl.textContent = '0.00';
-    sprtLLRContainer.style.setProperty('--progress', '0%');
+    sprtLLRContainer.style.setProperty('--progress', '50%');
     sprtLOSEl.textContent = '-';
     sprtLOSContainer.style.setProperty('--progress', '0%');
     sprtEloEl.textContent = '-';
@@ -1235,11 +1235,9 @@ async function runSprt() {
                             sprtDrawsEl.textContent = String(draws);
 
                             sprtLLREl.textContent = String(llr.toFixed(2));
-                            if (llr > 0) {
-                                sprtLLRContainer.style.setProperty('--progress', Math.min(llr / bounds.upper, 1) * 100 + '%');
-                            } else {
-                                sprtLLRContainer.style.setProperty('--progress', Math.min(llr / bounds.lower, 1) * 100 + '%');
-                            }
+                            // 0% at the lower bound, 100% at the upper bound, so llr=0 sits at the midpoint.
+                            const llrProgress = (llr - bounds.lower) / (bounds.upper - bounds.lower) * 100;
+                            sprtLLRContainer.style.setProperty('--progress', Math.min(Math.max(llrProgress, 0), 100) + '%');
 
                             let los_percent = calculateLOS(pentaCounts.score, pentaCounts.variance / totalPairs) * 100;
                             if (isNaN(los_percent)) {
