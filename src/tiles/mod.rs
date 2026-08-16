@@ -459,35 +459,68 @@ impl TileTable {
     }
 
     /// Get or create a tile at the given coordinates.
+    ///
+    /// The probe must reach an `Empty` bucket before concluding the key is absent —
+    /// a `Tombstone` is a reusable slot, not the end of the chain. Inserting at the
+    /// first tombstone would duplicate a key that exists further along, hiding every
+    /// piece in the original tile.
+    ///
+    /// Panics if the table is full; the alternative is spinning here forever, below
+    /// the search's stop-flag poll where nothing can interrupt it.
     #[inline]
     pub fn get_or_create(&mut self, cx: i64, cy: i64) -> &mut Tile {
         let mut idx = Self::hash(cx, cy);
+        let mut first_tombstone: Option<usize> = None;
+        let mut found: Option<usize> = None;
+        let mut empty_at: Option<usize> = None;
 
-        loop {
+        for _ in 0..TILE_TABLE_CAPACITY {
             // Unsafe: idx is masked by TILE_TABLE_MASK
             let bucket = unsafe { self.buckets.get_unchecked(idx) };
             match bucket.state {
-                BucketState::Empty | BucketState::Tombstone => {
-                    // We found a slot, get mutable reference safely (or use unchecked_mut)
-                    let bucket_mut = unsafe { self.buckets.get_unchecked_mut(idx) };
-                    *bucket_mut = Bucket {
-                        cx,
-                        cy,
-                        state: BucketState::Occupied,
-                        tile: Tile::new(),
-                    };
-                    self.count += 1;
-                    self.occ_mask[idx / 64] |= 1u64 << (idx % 64);
-                    return &mut bucket_mut.tile;
+                // The chain ends here, so the key is definitely not in the table.
+                BucketState::Empty => {
+                    empty_at = Some(idx);
+                    break;
+                }
+                BucketState::Tombstone => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
                 }
                 BucketState::Occupied => {
                     if bucket.cx == cx && bucket.cy == cy {
-                        return unsafe { &mut self.buckets.get_unchecked_mut(idx).tile };
+                        found = Some(idx);
+                        break;
                     }
                 }
             }
             idx = (idx + 1) & TILE_TABLE_MASK;
         }
+
+        if let Some(i) = found {
+            return unsafe { &mut self.buckets.get_unchecked_mut(i).tile };
+        }
+
+        // Absent: reuse the earliest tombstone in the chain if there was one, so
+        // repeated create/remove churn doesn't lengthen the chain indefinitely.
+        let Some(slot) = first_tombstone.or(empty_at) else {
+            panic!(
+                "TileTable full: {} / {TILE_TABLE_CAPACITY} tiles occupied, cannot place ({cx}, {cy})",
+                self.count
+            );
+        };
+
+        self.count += 1;
+        self.occ_mask[slot / 64] |= 1u64 << (slot % 64);
+        let bucket_mut = unsafe { self.buckets.get_unchecked_mut(slot) };
+        *bucket_mut = Bucket {
+            cx,
+            cy,
+            state: BucketState::Occupied,
+            tile: Tile::new(),
+        };
+        &mut bucket_mut.tile
     }
 
     /// Remove a tile at the given coordinates (marks as tombstone).
@@ -509,6 +542,18 @@ impl TileTable {
                         bucket_mut.tile.clear();
                         self.count -= 1;
                         self.occ_mask[idx / 64] &= !(1u64 << (idx % 64));
+                        // A tombstone run ending at an Empty can be freed: any probe crossing
+                        // it would have stopped at that Empty anyway. Else debris only grows.
+                        if self.buckets[(idx + 1) & TILE_TABLE_MASK].state == BucketState::Empty {
+                            let mut j = idx;
+                            while self.buckets[j].state == BucketState::Tombstone {
+                                self.buckets[j].state = BucketState::Empty;
+                                j = j.wrapping_sub(1) & TILE_TABLE_MASK;
+                                if j == idx {
+                                    break;
+                                }
+                            }
+                        }
                         return;
                     }
                 }
