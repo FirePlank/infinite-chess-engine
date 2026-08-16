@@ -50,15 +50,7 @@ function updateMTUI() {
         sprtConcurrencyEl.value = String(cap);
         sprtConcurrencyEl.title = 'Auto-capped so (concurrent games) x (max threads/game) fits your ' + (navigator.hardwareConcurrency || '?') + ' cores.';
 
-        if (!document.getElementById('mtBadge')) {
-            const h1 = document.querySelector('header h1');
-            const badge = document.createElement('span');
-            badge.id = 'mtBadge';
-            badge.className = 'mt-badge';
-            badge.textContent = 'MT';
-            h1.appendChild(badge);
-            mtStatusEl.textContent = 'MT Enabled';
-        }
+        mtStatusEl.textContent = 'MT Enabled';
         log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
         // Default to a fast STC for MT experiments, once at load, not per thread edit.
