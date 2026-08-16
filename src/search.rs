@@ -5127,8 +5127,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if best_score <= alpha_orig && legal_moves > 0 && ply > 0 {
         let prior_capture = searcher.capture_history_stack[ply - 1];
 
-        // Only reward quiet moves for now
-        if !prior_capture && let Some(prev_move) = searcher.move_history[ply - 1] {
+        // Continuation history keys on a capture dimension, so it can learn from
+        // either kind; main and pawn history are quiet tables and stay gated below.
+        if let Some(prev_move) = searcher.move_history[ply - 1] {
             let prev_pt = searcher.moved_piece_history[ply - 1] as usize;
             if prev_pt < 32 {
                 let standard_bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
@@ -5172,18 +5173,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     }
                 }
 
-                // Update main history for opponent's previous move
-                let prev_idx = hash_move_dest(&prev_move);
-                let hist_adj = bonus.clamp(-max_h, max_h);
-                let entry = &mut searcher.history[prev_pt][prev_idx];
-                *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
+                if !prior_capture {
+                    // Update main history for opponent's previous move
+                    let prev_idx = hash_move_dest(&prev_move);
+                    let hist_adj = bonus.clamp(-max_h, max_h);
+                    let entry = &mut searcher.history[prev_pt][prev_idx];
+                    *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
 
-                // Update pawn history for non-pawn, non-promotion opponent moves
-                if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
-                    let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
-                    let pawn_adj =
-                        (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
-                    searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
+                    // Update pawn history for non-pawn, non-promotion opponent moves
+                    if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
+                        let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+                        let pawn_adj =
+                            (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
+                        searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
+                    }
                 }
             }
         }
