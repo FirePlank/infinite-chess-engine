@@ -25,116 +25,163 @@ struct SkillConfig {
     /// Chance to trust a move whose payoff only appears deep in the search
     /// (a forced combination invisible at depth 2), rather than avoiding it.
     deep_tactic_chance: f64,
+    /// Weight, in percent, on the terms that recognize an attack (king pressure,
+    /// threats, attacking tropism, storms). Low values make the level play passively
+    /// rather than play full strength's sharp move with more error on top.
+    attack_eval_scale: i32,
+    /// Weight, in percent, on king shelter and defensive tropism. Above 100 the
+    /// level over-values huddling, which is what makes weak play look goalless.
+    defense_eval_scale: i32,
+    /// Chance a decision is made without searching the reply at all: candidates are
+    /// judged by a static read of the position each leaves behind. This is what lets
+    /// a weak level walk into a threat instead of answering every one.
+    reply_blindness: f64,
+    /// Weight on the penalty for choosing a move that ranked poorly in the shallow
+    /// search. High values pin the level to moves that already looked good, which
+    /// at a low `depth_cap` silently re-imposes strength.
+    shallow_rank_penalty: f64,
 }
 
 /// Site levels 1..7; level 8 bypasses the limiter for the full parallel search.
-/// `mean_loss_permille` targets a loss in winning probability rather than centipawns,
-/// so weak levels keep giving ground instead of turning near-perfect once ahead.
+/// `mean_loss_permille` targets a loss in winning probability, not centipawns, so weak
+/// levels keep giving ground instead of turning near-perfect once ahead. Mop-up is held
+/// fixed across every knob here, pinned by `test_mop_up_depth_ladder_is_pinned` and
+/// `test_conversion_error_shape_is_preserved`.
 const SKILL_CONFIGS: [SkillConfig; 7] = [
+    SkillConfig {
+        depth_cap: Some(2),
+        endgame_depth_bonus: 0,
+        mop_up_depth_bonus: 3,
+        candidates: 59,
+        best_move_chance: 0.09,
+        mean_loss_permille: 158.125,
+        max_loss_permille: 504,
+        max_conversion_cp_loss: 600,
+        mate_distance_temperature: 8.0,
+        obvious_blunder_chance: 0.160625,
+        conversion_odds_multiplier: 5.9125,
+        conversion_loss_multiplier: 0.75,
+        deep_tactic_chance: 0.0325,
+        attack_eval_scale: 26,
+        defense_eval_scale: 157,
+        reply_blindness: 0.30,
+        shallow_rank_penalty: 6.125,
+    },
     SkillConfig {
         depth_cap: Some(3),
         endgame_depth_bonus: 0,
-        mop_up_depth_bonus: 2,
-        candidates: 24,
-        best_move_chance: 0.16,
-        mean_loss_permille: 110.0,
-        max_loss_permille: 350,
-        max_conversion_cp_loss: 600,
-        mate_distance_temperature: 8.0,
-        obvious_blunder_chance: 0.025,
-        conversion_odds_multiplier: 3.0,
-        conversion_loss_multiplier: 0.75,
-        deep_tactic_chance: 0.05,
+        mop_up_depth_bonus: 3,
+        candidates: 45,
+        best_move_chance: 0.15125,
+        mean_loss_permille: 111.5,
+        max_loss_permille: 391,
+        max_conversion_cp_loss: 475,
+        mate_distance_temperature: 6.0,
+        obvious_blunder_chance: 0.1075,
+        conversion_odds_multiplier: 5.75,
+        conversion_loss_multiplier: 0.70,
+        deep_tactic_chance: 0.07375,
+        attack_eval_scale: 37,
+        defense_eval_scale: 144,
+        reply_blindness: 0.2227,
+        shallow_rank_penalty: 7.875,
     },
     SkillConfig {
         depth_cap: Some(4),
-        endgame_depth_bonus: 0,
-        mop_up_depth_bonus: 2,
-        candidates: 20,
-        best_move_chance: 0.23,
-        mean_loss_permille: 80.0,
-        max_loss_permille: 280,
-        max_conversion_cp_loss: 475,
-        mate_distance_temperature: 6.0,
-        obvious_blunder_chance: 0.020,
-        conversion_odds_multiplier: 3.5,
-        conversion_loss_multiplier: 0.70,
-        deep_tactic_chance: 0.10,
+        endgame_depth_bonus: 1,
+        mop_up_depth_bonus: 3,
+        candidates: 30,
+        best_move_chance: 0.22375,
+        mean_loss_permille: 78.125,
+        max_loss_permille: 297,
+        max_conversion_cp_loss: 375,
+        mate_distance_temperature: 4.5,
+        obvious_blunder_chance: 0.0675,
+        conversion_odds_multiplier: 6.3875,
+        conversion_loss_multiplier: 0.65,
+        deep_tactic_chance: 0.1475,
+        attack_eval_scale: 50,
+        defense_eval_scale: 134,
+        reply_blindness: 0.1531,
+        shallow_rank_penalty: 9.625,
     },
     SkillConfig {
         depth_cap: Some(5),
-        endgame_depth_bonus: 1,
-        mop_up_depth_bonus: 2,
-        candidates: 16,
-        best_move_chance: 0.32,
-        mean_loss_permille: 58.0,
-        max_loss_permille: 220,
-        max_conversion_cp_loss: 375,
-        mate_distance_temperature: 4.5,
-        obvious_blunder_chance: 0.015,
-        conversion_odds_multiplier: 4.0,
-        conversion_loss_multiplier: 0.65,
-        deep_tactic_chance: 0.20,
+        endgame_depth_bonus: 2,
+        mop_up_depth_bonus: 5,
+        candidates: 23,
+        best_move_chance: 0.315,
+        mean_loss_permille: 53.375,
+        max_loss_permille: 202,
+        max_conversion_cp_loss: 285,
+        mate_distance_temperature: 3.0,
+        obvious_blunder_chance: 0.03625,
+        conversion_odds_multiplier: 7.6625,
+        conversion_loss_multiplier: 0.55,
+        deep_tactic_chance: 0.27125,
+        attack_eval_scale: 62,
+        defense_eval_scale: 124,
+        reply_blindness: 0.0990,
+        shallow_rank_penalty: 11.375,
     },
     SkillConfig {
         depth_cap: Some(7),
-        endgame_depth_bonus: 2,
-        mop_up_depth_bonus: 3,
-        candidates: 12,
-        best_move_chance: 0.42,
-        mean_loss_permille: 42.0,
-        max_loss_permille: 160,
-        max_conversion_cp_loss: 285,
-        mate_distance_temperature: 3.0,
-        obvious_blunder_chance: 0.010,
-        conversion_odds_multiplier: 5.0,
-        conversion_loss_multiplier: 0.55,
-        deep_tactic_chance: 0.35,
-    },
-    SkillConfig {
-        depth_cap: Some(8),
         endgame_depth_bonus: 3,
-        mop_up_depth_bonus: 3,
-        candidates: 8,
-        best_move_chance: 0.54,
-        mean_loss_permille: 29.0,
-        max_loss_permille: 110,
+        mop_up_depth_bonus: 4,
+        candidates: 15,
+        best_move_chance: 0.4175,
+        mean_loss_permille: 34.25,
+        max_loss_permille: 130,
         max_conversion_cp_loss: 210,
         mate_distance_temperature: 1.8,
-        obvious_blunder_chance: 0.006,
-        conversion_odds_multiplier: 7.0,
+        obvious_blunder_chance: 0.01825,
+        conversion_odds_multiplier: 11.1125,
         conversion_loss_multiplier: 0.45,
-        deep_tactic_chance: 0.55,
+        deep_tactic_chance: 0.45375,
+        attack_eval_scale: 74,
+        defense_eval_scale: 116,
+        reply_blindness: 0.0526,
+        shallow_rank_penalty: 13.125,
     },
     SkillConfig {
-        depth_cap: Some(10),
+        depth_cap: Some(9),
         endgame_depth_bonus: 3,
-        mop_up_depth_bonus: 3,
-        candidates: 6,
-        best_move_chance: 0.62,
-        mean_loss_permille: 22.0,
-        max_loss_permille: 80,
+        mop_up_depth_bonus: 4,
+        candidates: 10,
+        best_move_chance: 0.5325,
+        mean_loss_permille: 23.925,
+        max_loss_permille: 87,
         max_conversion_cp_loss: 145,
         mate_distance_temperature: 0.8,
-        obvious_blunder_chance: 0.003,
-        conversion_odds_multiplier: 9.0,
+        obvious_blunder_chance: 0.007375,
+        conversion_odds_multiplier: 12.4,
         conversion_loss_multiplier: 0.35,
-        deep_tactic_chance: 0.75,
+        deep_tactic_chance: 0.6625,
+        attack_eval_scale: 85,
+        defense_eval_scale: 109,
+        reply_blindness: 0.0178,
+        shallow_rank_penalty: 14.0,
     },
     SkillConfig {
-        depth_cap: Some(14),
+        depth_cap: Some(13),
         endgame_depth_bonus: 3,
-        mop_up_depth_bonus: 3,
-        candidates: 2,
+        mop_up_depth_bonus: 4,
+        // `best_move_chance` and `conversion_odds_multiplier` are inert here:
+        // `picker_config` forces the chance to 0.0, and scaled zero odds are zero.
+        candidates: 4,
         best_move_chance: 0.68,
-        mean_loss_permille: 22.0,
-        max_loss_permille: 70,
+        mean_loss_permille: 22.875,
+        max_loss_permille: 73,
         max_conversion_cp_loss: 90,
         mate_distance_temperature: 0.25,
-        obvious_blunder_chance: 0.001,
-        conversion_odds_multiplier: 12.0,
+        obvious_blunder_chance: 0.001875,
+        conversion_odds_multiplier: 11.25,
         conversion_loss_multiplier: 0.25,
-        deep_tactic_chance: 0.90,
+        deep_tactic_chance: 0.87375,
+        attack_eval_scale: 93,
+        defense_eval_scale: 104,
+        reply_blindness: 0.0,
+        shallow_rank_penalty: 14.0,
     },
 ];
 
@@ -145,8 +192,7 @@ const CLEAR_BEST_GAP_PERMILLE: i32 = 50;
 const CLEAR_BEST_ODDS_MULTIPLIER: f64 = 3.0;
 const UNSTABLE_ODDS_MULTIPLIER: f64 = 0.40;
 const MISSED_CLEAR_LOSS_MULTIPLIER: f64 = 1.25;
-const SHALLOW_RANK_LOG_PENALTY: f64 = 14.0;
-const LEVEL_7_CLEAN_SEARCH_CHANCE: f64 = 0.30;
+const LEVEL_7_CLEAN_SEARCH_CHANCE: f64 = 0.2475;
 const CLEAR_CONVERSION_WIN_CHANCE: i32 = 700;
 const CONVERSION_SCORE_FLOOR: i32 = 100;
 
@@ -399,11 +445,43 @@ fn is_deep_only_tactic(result: &MultiPVResult, mv: Move, final_score: i32) -> bo
     deep_tactic_surprise_permille(result, mv, final_score) >= DEEP_TACTIC_SURPRISE_PERMILLE
 }
 
+#[cfg(feature = "nnue")]
+#[inline]
+fn static_position_eval(game: &GameState) -> i32 {
+    // No accumulator: this is a one-off read outside the search's NNUE stack.
+    evaluate(game, None)
+}
+
+#[cfg(not(feature = "nnue"))]
+#[inline]
+fn static_position_eval(game: &GameState) -> i32 {
+    evaluate(game)
+}
+
+/// Re-scores every candidate by a static read of the position it leaves behind.
+/// Deliberately not a depth-1 search: quiescence at the leaf would resolve the
+/// recapture and see the threat anyway, which is the whole thing being suppressed.
+fn reply_blind_result(game: &mut GameState, result: &MultiPVResult) -> MultiPVResult {
+    let mut blind = result.clone();
+    for line in &mut blind.lines {
+        let undo = game.make_move(&line.mv);
+        // evaluate() is from the side to move's perspective, and after our move
+        // that is the opponent, so negate it back to ours.
+        line.score = -static_position_eval(game);
+        game.undo_move(&line.mv, undo);
+    }
+    blind.lines.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+    // Both signals describe the searched scores, which have just been discarded.
+    blind.deep_ref_scores.clear();
+    blind.shallow_best_changed = false;
+    blind
+}
+
 /// Selects a plausible move near a sampled loss in winning probability. A point mass
 /// at zero lets every level play good moves; errors draw an exponential regret, then
 /// pick softly among moves that already ranked well at depth 2.
 fn pick_best(
-    game: &GameState,
+    game: &mut GameState,
     result: &MultiPVResult,
     config: SkillConfig,
     rng: &mut Prng,
@@ -423,6 +501,27 @@ fn pick_best(
     }
 
     let conversion_position = active_conversion(game).is_some();
+
+    // Judge the candidates without looking at the reply, off during conversion so
+    // mop-up keeps full sight. `obvious_blunder_chance` goes to 1 because the hang
+    // filter runs a static exchange — exactly the reply this pretends not to see.
+    if !conversion_position && rng.next_f64() < config.reply_blindness {
+        let blind = reply_blind_result(game, result);
+        let blind_config = SkillConfig {
+            obvious_blunder_chance: 1.0,
+            reply_blindness: 0.0,
+            ..config
+        };
+        let (mv, _) = pick_best(game, &blind, blind_config, rng)?;
+        // Report what the move is really worth, not the blind read of it.
+        let true_score = result
+            .lines
+            .iter()
+            .find(|line| line.mv == mv)
+            .map_or(0, |line| line.score);
+        return Some((mv, true_score));
+    }
+
     let behavior = adjusted_skill_behavior(result, config, conversion_position);
     let top_chance = score_to_win_chance_permille(result.lines[0].score);
     let clear_conversion = conversion_position && top_chance >= CLEAR_CONVERSION_WIN_CHANCE;
@@ -481,7 +580,10 @@ fn pick_best(
         .round()
         .clamp(1.0, behavior.max_loss_permille as f64) as i32;
     let allow_obvious_hang = rng.next_f64() < config.obvious_blunder_chance;
-    let temperature = (behavior.mean_loss_permille * 0.22).clamp(4.0, 24.0);
+    // The upper clamp only binds once the mean is past ~180 permille, so raising it
+    // loosens how tightly the bottom levels hit their own error target without
+    // touching any level above them.
+    let temperature = (behavior.mean_loss_permille * 0.22).clamp(4.0, 38.0);
     let mut choices: Vec<(usize, f64)> = Vec::with_capacity(result.lines.len());
     let mut minimum_cost = f64::INFINITY;
 
@@ -516,7 +618,7 @@ fn pick_best(
             .iter()
             .position(|mv| *mv == line.mv)
             .unwrap_or(idx);
-        let plausibility_penalty = ((shallow_rank + 1) as f64).ln() * SHALLOW_RANK_LOG_PENALTY;
+        let plausibility_penalty = ((shallow_rank + 1) as f64).ln() * config.shallow_rank_penalty;
         let cost = (loss - target_loss).abs() as f64 + plausibility_penalty;
         minimum_cost = minimum_cost.min(cost);
         choices.push((idx, cost));
@@ -543,6 +645,24 @@ fn pick_best(
 
     let best = &result.lines[chosen_idx];
     Some((best.mv, best.score))
+}
+
+/// Installs a level's play style for the duration of one search and restores full
+/// strength on the way out, including on an early return. Nothing outside a limited
+/// search may ever observe a scaled evaluation.
+struct EvalStyleGuard;
+
+impl EvalStyleGuard {
+    fn install(style: crate::evaluation::EvalStyle) -> Self {
+        crate::evaluation::set_eval_style(style);
+        EvalStyleGuard
+    }
+}
+
+impl Drop for EvalStyleGuard {
+    fn drop(&mut self) {
+        crate::evaluation::set_eval_style(crate::evaluation::EvalStyle::NEUTRAL);
+    }
 }
 
 /// Entry point for searches with strength limiting.
@@ -594,6 +714,18 @@ pub(crate) fn get_best_move_limited(
         let config = SKILL_CONFIGS[(input_skill - 1) as usize];
         let multi_pv = config.candidates.min(MAX_PV_COUNT);
         let effective_depth = effective_skill_depth(game, max_depth, config);
+
+        // Conversion stays full strength. Decided at the root like the depth bonus:
+        // the tree below a converting root is overwhelmingly still converting, and a
+        // per-node check would cost a mop-up probe on every evaluation.
+        let _style = EvalStyleGuard::install(if active_conversion(game).is_some() {
+            crate::evaluation::EvalStyle::NEUTRAL
+        } else {
+            crate::evaluation::EvalStyle {
+                attack_scale: config.attack_eval_scale,
+                defense_scale: config.defense_eval_scale,
+            }
+        });
 
         // For MultiPV, we use the same optimum/maximum but disable dynamic extensions
         searcher
@@ -652,6 +784,16 @@ mod tests {
     use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
     use crate::game::GameState;
 
+    /// The synthetic fixtures carry fabricated moves that are illegal on the board
+    /// they are picked against, so the reply-blind branch — which really plays each
+    /// candidate — cannot run on them. It has its own tests on a real position.
+    fn sampler_only(config: SkillConfig) -> SkillConfig {
+        SkillConfig {
+            reply_blindness: 0.0,
+            ..config
+        }
+    }
+
     fn skill_test_result(scores: &[i32]) -> MultiPVResult {
         let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
         let lines: Vec<PVLine> = scores
@@ -698,6 +840,14 @@ mod tests {
             assert!(weaker.mate_distance_temperature >= stronger.mate_distance_temperature);
             assert!(weaker.obvious_blunder_chance >= stronger.obvious_blunder_chance);
             assert!(weaker.deep_tactic_chance <= stronger.deep_tactic_chance);
+            // Style converges on full strength from below on the attacking terms
+            // and from above on the defensive ones.
+            assert!(weaker.attack_eval_scale <= stronger.attack_eval_scale);
+            assert!(weaker.defense_eval_scale >= stronger.defense_eval_scale);
+            assert!(stronger.attack_eval_scale <= 100);
+            assert!(stronger.defense_eval_scale >= 100);
+            assert!(weaker.reply_blindness >= stronger.reply_blindness);
+            assert!(weaker.shallow_rank_penalty <= stronger.shallow_rank_penalty);
             if let (Some(weak_depth), Some(strong_depth)) = (weaker.depth_cap, stronger.depth_cap) {
                 assert!(weak_depth <= strong_depth);
                 assert!(
@@ -710,6 +860,205 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Weakening a level costs `depth_cap`, and every ply is paid back in
+    /// `mop_up_depth_bonus` so conversion searches exactly as deep as it always has.
+    /// These are the historical `depth_cap + mop_up_depth_bonus` sums.
+    #[test]
+    fn test_mop_up_depth_ladder_is_pinned() {
+        const MOP_UP_DEPTHS: [usize; 7] = [5, 6, 7, 10, 11, 13, 17];
+        for (config, expected) in SKILL_CONFIGS.iter().zip(MOP_UP_DEPTHS) {
+            assert_eq!(
+                config.depth_cap.unwrap() + config.mop_up_depth_bonus,
+                expected,
+                "a depth_cap change was not paid back in mop_up_depth_bonus"
+            );
+        }
+    }
+
+    /// Conversion sampling is set by `mean / max`, since `conversion_loss_permille`
+    /// normalizes by the same `max_loss_permille` it filters against — so a wider
+    /// error corridor only leaks into mop-up if the two move by different factors.
+    #[test]
+    fn test_conversion_error_shape_is_preserved() {
+        // Ratios as they stood before the play-style retune.
+        const HISTORICAL_RATIOS: [f64; 7] = [
+            110.0 / 350.0,
+            80.0 / 280.0,
+            58.0 / 220.0,
+            42.0 / 160.0,
+            29.0 / 110.0,
+            22.0 / 80.0,
+            22.0 / 70.0,
+        ];
+        for (config, expected) in SKILL_CONFIGS.iter().zip(HISTORICAL_RATIOS) {
+            let ratio = config.mean_loss_permille / config.max_loss_permille as f64;
+            assert!(
+                (ratio - expected).abs() < 0.01,
+                "mean/max drifted from {expected:.4} to {ratio:.4}: conversion sampling changed"
+            );
+        }
+    }
+
+    /// Weak levels stop recognizing an attack, and over-value sitting still. The
+    /// scaling has to move a real position's score, not just exist.
+    #[test]
+    fn test_eval_style_damps_attacking_terms() {
+        let mut game = GameState::new();
+        // White has both rooks and the queen bearing down on a bare black king.
+        game.setup_position_from_icn("w K1,1|Q6,6|R7,1|R7,2|k7,7|p6,7|p7,6");
+
+        let full_strength = evaluate(&game);
+
+        let weakest = SKILL_CONFIGS[0];
+        crate::evaluation::set_eval_style(crate::evaluation::EvalStyle {
+            attack_scale: weakest.attack_eval_scale,
+            defense_scale: weakest.defense_eval_scale,
+        });
+        let naive = evaluate(&game);
+        crate::evaluation::set_eval_style(crate::evaluation::EvalStyle::NEUTRAL);
+
+        assert!(
+            naive < full_strength,
+            "level 1 should not see the attack it has: {naive} vs {full_strength}"
+        );
+        assert_eq!(
+            evaluate(&game),
+            full_strength,
+            "the style must not survive past the search that installed it"
+        );
+    }
+
+    /// The behaviour this whole mechanism exists for: a threat the engine has to
+    /// answer, which a weak level sometimes just does not answer.
+    #[test]
+    fn test_reply_blindness_lets_a_threat_go_unanswered() {
+        let mut game = GameState::new();
+        // Black's rook attacks the white queen: the king move drops it, stepping the
+        // queen off the file saves it. Enough material left that this is no mop-up,
+        // where blindness would be suppressed outright.
+        game.setup_position_from_icn("w K1,1|Q4,4|R1,2|P2,2|N3,1|k7,7|r4,7|b6,6|p6,7|n5,8");
+        assert!(
+            active_conversion(&game).is_none(),
+            "fixture must not be a conversion"
+        );
+
+        let legal: Vec<Move> = game
+            .get_legal_moves()
+            .into_iter()
+            .filter(|m| {
+                let undo = game.make_move(m);
+                let ok = !game.is_move_illegal();
+                game.undo_move(m, undo);
+                ok
+            })
+            .collect();
+
+        let save = legal
+            .iter()
+            .find(|m| m.from == Coordinate::new(4, 4) && m.to == Coordinate::new(6, 4))
+            .copied()
+            .expect("the queen can step off the attacked file");
+        let ignore = legal
+            .iter()
+            .find(|m| m.from == Coordinate::new(1, 1) && m.to == Coordinate::new(0, 1))
+            .copied()
+            .expect("the king has a quiet move available");
+
+        // What a real search returns: ignoring the threat costs the queen.
+        let line = |mv: Move, score: i32| PVLine {
+            mv,
+            score,
+            depth: 4,
+            pv: vec![mv],
+        };
+        let result = MultiPVResult {
+            lines: vec![line(save, 0), line(ignore, -900)],
+            stats: SearchStats {
+                nodes: 0,
+                tt_capacity: 0,
+                tt_used: 0,
+                tt_fill_permille: 0,
+            },
+            shallow_best_changed: false,
+            shallow_order: vec![save, ignore],
+            deep_ref_scores: vec![(save, 0), (ignore, -900)],
+        };
+
+        // A corridor far too tight to ever sample a lost queen on purpose, so the
+        // only route to the losing move is not having looked at the reply.
+        let base = SkillConfig {
+            mean_loss_permille: 20.0,
+            max_loss_permille: 60,
+            ..SKILL_CONFIGS[0]
+        };
+
+        let mut count_ignored = |config: SkillConfig| {
+            (1..=400u64)
+                .filter(|seed| {
+                    let mut rng = Prng::new(*seed);
+                    pick_best(&mut game, &result, config, &mut rng).unwrap().0 == ignore
+                })
+                .count()
+        };
+
+        let sighted = count_ignored(SkillConfig {
+            reply_blindness: 0.0,
+            ..base
+        });
+        let blind = count_ignored(SkillConfig {
+            reply_blindness: 1.0,
+            ..base
+        });
+
+        assert_eq!(
+            sighted, 0,
+            "with the reply searched, the loss corridor must rule out dropping the queen"
+        );
+        assert!(
+            blind > 0,
+            "a reply-blind level must sometimes leave the threat unanswered"
+        );
+    }
+
+    /// Blindness returns the move's real worth, never the static misread that
+    /// selected it, so the eval the site displays stays honest.
+    #[test]
+    fn test_reply_blind_choice_reports_the_true_score() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w K1,1|Q4,4|R1,2|P2,2|N3,1|k7,7|r4,7|b6,6|p6,7|n5,8");
+        let legal: Vec<Move> = game.get_legal_moves().into_iter().collect();
+        let mv = legal[0];
+        let result = MultiPVResult {
+            lines: vec![PVLine {
+                mv,
+                score: -1234,
+                depth: 4,
+                pv: vec![mv],
+            }],
+            stats: SearchStats {
+                nodes: 0,
+                tt_capacity: 0,
+                tt_used: 0,
+                tt_fill_permille: 0,
+            },
+            shallow_best_changed: false,
+            shallow_order: vec![mv],
+            deep_ref_scores: vec![(mv, -1234)],
+        };
+        let mut rng = Prng::new(1);
+        let (_, score) = pick_best(
+            &mut game,
+            &result,
+            SkillConfig {
+                reply_blindness: 1.0,
+                ..SKILL_CONFIGS[0]
+            },
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(score, -1234);
     }
 
     #[test]
@@ -769,11 +1118,11 @@ mod tests {
             result.lines[0].score
         ));
 
-        let game = GameState::new();
+        let mut game = GameState::new();
         for config in SKILL_CONFIGS {
             for seed in 1..=500 {
                 let mut rng = Prng::new(seed);
-                let (_, score) = pick_best(&game, &result, config, &mut rng).unwrap();
+                let (_, score) = pick_best(&mut game, &result, config, &mut rng).unwrap();
                 assert!(
                     score > MATE_SCORE,
                     "a proved mate must stay in the mating outcome class"
@@ -782,37 +1131,41 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_limited_search_plays_mate_in_one_at_every_level() {
-    //     for level in 1..MAX_SITE_SKILL {
-    //         reset_search_state();
-    //         set_global_params(level as u64, None);
-    //         let mut game = GameState::new();
-    //         game.setup_position_from_icn(
-    //             "w K-5,-5|R5,5|k0,0|p-1,-1|p0,-1|p1,-1|p-1,0|p1,0|p-1,1|p1,1",
-    //         );
+    /// The hard floor: whatever a level gives up, it still finishes a mate it sees.
+    /// Ignored because it drives the global searcher, TT and seed, which the rest of
+    /// the suite races with. Run with `--ignored --test-threads=1`.
+    #[test]
+    #[ignore = "needs exclusive global search state; run with --test-threads=1"]
+    fn test_limited_search_plays_mate_in_one_at_every_level() {
+        for level in 1..MAX_SITE_SKILL {
+            reset_search_state();
+            set_global_params(level as u64, None);
+            let mut game = GameState::new();
+            game.setup_position_from_icn(
+                "w K-5,-5|R5,5|k0,0|p-1,-1|p0,-1|p1,-1|p-1,0|p1,0|p-1,1|p1,1",
+            );
 
-    //         let (mv, score, _) =
-    //             get_best_move_limited(&mut game, 3, 2000, 2000, Some(level), true, false)
-    //                 .expect("position has legal moves");
-    //         assert!(score > MATE_SCORE, "site level {level}: score={score}");
-    //         assert_eq!(
-    //             (mv.to.x, mv.to.y),
-    //             (0, 5),
-    //             "site level {level}: selected {mv:?} with mate score {score}"
-    //         );
-    //     }
-    // }
+            let (mv, score, _) =
+                get_best_move_limited(&mut game, 3, 2000, 2000, Some(level), true, false)
+                    .expect("position has legal moves");
+            assert!(score > MATE_SCORE, "site level {level}: score={score}");
+            assert_eq!(
+                (mv.to.x, mv.to.y),
+                (0, 5),
+                "site level {level}: selected {mv:?} with mate score {score}"
+            );
+        }
+    }
 
     #[test]
     fn test_mate_distance_preference_scales_by_level() {
         let result = skill_test_result(&[mate_in(3), mate_in(7)]);
-        let game = GameState::new();
-        let shortest_count = |config: SkillConfig| {
+        let mut game = GameState::new();
+        let mut shortest_count = |config: SkillConfig| {
             (1..=2000)
                 .filter(|seed| {
                     let mut rng = Prng::new(*seed);
-                    pick_best(&game, &result, config, &mut rng).unwrap().1 == mate_in(3)
+                    pick_best(&mut game, &result, config, &mut rng).unwrap().1 == mate_in(3)
                 })
                 .count()
         };
@@ -832,12 +1185,12 @@ mod tests {
     #[test]
     fn test_proven_loss_prefers_longer_resistance_by_level() {
         let result = skill_test_result(&[mated_in(10), mated_in(3)]);
-        let game = GameState::new();
-        let survival_count = |config: SkillConfig| {
+        let mut game = GameState::new();
+        let mut survival_count = |config: SkillConfig| {
             (1..=2000)
                 .filter(|seed| {
                     let mut rng = Prng::new(*seed);
-                    pick_best(&game, &result, config, &mut rng).unwrap().1 == mated_in(10)
+                    pick_best(&mut game, &result, config, &mut rng).unwrap().1 == mated_in(10)
                 })
                 .count()
         };
@@ -853,7 +1206,7 @@ mod tests {
         for config in SKILL_CONFIGS {
             for seed in 1..=500 {
                 let mut rng = Prng::new(seed);
-                let (_, score) = pick_best(&game, &result, config, &mut rng).unwrap();
+                let (_, score) = pick_best(&mut game, &result, config, &mut rng).unwrap();
                 assert!(
                     score >= CONVERSION_SCORE_FLOOR,
                     "conversion sampling must not cross into draw/loss"
@@ -931,14 +1284,16 @@ mod tests {
         assert!(is_deep_only_tactic(&result, deep_mv, 200));
         assert!(!is_deep_only_tactic(&result, plain_mv, 200));
 
-        let game = GameState::new();
+        let mut game = GameState::new();
         let mut config = SKILL_CONFIGS[0];
         config.best_move_chance = 1.0;
+
+        config.reply_blindness = 0.0;
 
         config.deep_tactic_chance = 0.0;
         let never_deep = (1..=200u64).all(|seed| {
             let mut rng = Prng::new(seed);
-            pick_best(&game, &result, config, &mut rng).unwrap().0 != deep_mv
+            pick_best(&mut game, &result, config, &mut rng).unwrap().0 != deep_mv
         });
         assert!(
             never_deep,
@@ -948,7 +1303,7 @@ mod tests {
         config.deep_tactic_chance = 1.0;
         let sometimes_deep = (1..=200u64).any(|seed| {
             let mut rng = Prng::new(seed);
-            pick_best(&game, &result, config, &mut rng).unwrap().0 == deep_mv
+            pick_best(&mut game, &result, config, &mut rng).unwrap().0 == deep_mv
         });
         assert!(
             sometimes_deep,
@@ -989,11 +1344,11 @@ mod tests {
         let scores: Vec<i32> = (0..64).map(|i| -(i * 10)).collect();
         let result = skill_test_result(&scores);
         let config = SKILL_CONFIGS[2]; // Site level 3
-        let game = GameState::new();
+        let mut game = GameState::new();
 
         let reached_beyond_stockfish_multipv = (1..=1000).any(|seed| {
             let mut rng = Prng::new(seed);
-            let (mv, _) = pick_best(&game, &result, config, &mut rng).unwrap();
+            let (mv, _) = pick_best(&mut game, &result, sampler_only(config), &mut rng).unwrap();
             mv.from.x >= 4
         });
 
@@ -1004,8 +1359,8 @@ mod tests {
     fn test_skill_picker_expected_loss_decreases_by_level() {
         let scores: Vec<i32> = (0..MAX_PV_COUNT).map(|i| -(i as i32 * 12)).collect();
         let result = skill_test_result(&scores);
-        let game = GameState::new();
-        let sample_average = |config: SkillConfig| -> f64 {
+        let mut game = GameState::new();
+        let mut sample_average = |config: SkillConfig| -> f64 {
             let mut total = 0u64;
             let candidates = MultiPVResult {
                 lines: result.lines[..config.candidates].to_vec(),
@@ -1016,7 +1371,8 @@ mod tests {
             };
             for seed in 1..=5000 {
                 let mut rng = Prng::new(seed);
-                let (_, score) = pick_best(&game, &candidates, config, &mut rng).unwrap();
+                let (_, score) =
+                    pick_best(&mut game, &candidates, sampler_only(config), &mut rng).unwrap();
                 total +=
                     (score_to_win_chance_permille(0) - score_to_win_chance_permille(score)) as u64;
             }
@@ -1049,12 +1405,16 @@ mod tests {
             conversion_odds_multiplier: 1.0,
             conversion_loss_multiplier: 1.0,
             deep_tactic_chance: 1.0,
+            attack_eval_scale: 100,
+            defense_eval_scale: 100,
+            reply_blindness: 0.0,
+            shallow_rank_penalty: 14.0,
         };
-        let game = GameState::new();
+        let mut game = GameState::new();
 
         for seed in 1..=100 {
             let mut rng = Prng::new(seed);
-            let (mv, _) = pick_best(&game, &result, config, &mut rng).unwrap();
+            let (mv, _) = pick_best(&mut game, &result, config, &mut rng).unwrap();
             assert_eq!(mv.from.x, 0);
         }
     }

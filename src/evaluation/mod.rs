@@ -12,7 +12,9 @@ use crate::board::PlayerColor;
 use crate::game::GameState;
 use eval_kind::EvalKind;
 
-pub use base::{calculate_initial_material, get_piece_phase, get_piece_value_base};
+pub use base::{
+    EvalStyle, calculate_initial_material, get_piece_phase, get_piece_value_base, set_eval_style,
+};
 
 /// Largest slice of the evaluation halfmove-clock damping may remove. Big enough to
 /// keep the winner pressing against the move-rule clock, small enough per tick that
