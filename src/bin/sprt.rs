@@ -2,7 +2,7 @@
 // pin nightly (rust-toolchain.toml), so use it directly instead of the libm crate.
 #![feature(float_erf)]
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -2300,10 +2300,14 @@ fn main() {
                 game_logs = rs.games;
             }
 
-            const GREEN_COLOR: &str = "\x1b[32m";
-            const RED_COLOR: &str = "\x1b[31m";
-            const YELLOW_COLOR: &str = "\x1b[33m";
-            const GRAY_COLOR: &str = "\x1b[90m";
+            // No color when stdout isn't a terminal (piped/redirected) or NO_COLOR is
+            // set (https://no-color.org), so raw escape codes never leak as garbage text.
+            let use_color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+            let green = if use_color { "\x1b[32m" } else { "" };
+            let red = if use_color { "\x1b[31m" } else { "" };
+            let yellow = if use_color { "\x1b[33m" } else { "" };
+            let gray = if use_color { "\x1b[90m" } else { "" };
+            let reset = if use_color { "\x1b[0m" } else { "" };
 
             println!("\nStarting SPRT with Configuration:");
             print_commit_context(&config.new_commit_info, &config.old_commit_info);
@@ -2481,24 +2485,24 @@ fn main() {
                 let llr = calculate_pentanomial_llr(&penta, config.elo0, config.elo1, config.model);
                 let pe = estimate_pentanomial_elo(&penta);
 
-                // Color formatting
+                // Only the point estimate carries the pass/fail/neutral signal; the
+                // error margin is precision metadata, not itself good or bad.
                 let text_color = if pe.elo > 1.0 {
-                    GREEN_COLOR
+                    green
                 } else if pe.elo < -1.0 {
-                    RED_COLOR
+                    red
                 } else {
-                    GRAY_COLOR
+                    gray
                 };
 
                 // Print text status line with current stats, overwriting the previous line.
                 let status_line = format!(
-                    "Games: {} ({} pairs) | W: {} L: {} D: {} | {}Elo: {:.2} +/- {:.2}\x1b[0m | LOS: {:.1}% | LLR: {:.2} [{:.2}, {:.2}]",
+                    "Games: {} ({} pairs) | W: {} L: {} D: {} | Elo: {text_color}{:.2}{reset} +/- {:.2} | LOS: {:.1}% | LLR: {:.2} [{:.2}, {:.2}]",
                     total_games,
                     pairs,
                     wins,
                     losses,
                     draws,
-                    text_color,
                     pe.elo,
                     pe.elo_err,
                     los * 100.0,
@@ -2509,18 +2513,18 @@ fn main() {
                 print_status_line(&mut last_status_len, &status_line);
                 if total_games >= config.min_games {
                     if llr >= upper {
-                        println!("\n\x1b[32mSPRT: PASS \x1b[0m"); // Green color
+                        println!("\n{green}SPRT: PASS {reset}");
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     } else if llr <= lower {
-                        println!("\n\x1b[31mSPRT: FAIL \x1b[0m"); // Red color
+                        println!("\n{red}SPRT: FAIL {reset}");
                         STOP.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
             }
             if USER_STOP.load(Ordering::SeqCst) {
-                println!("\n\x1b[33mSPRT: INCONCLUSIVE \x1b[0m"); // Yellow color
+                println!("\n{yellow}SPRT: INCONCLUSIVE {reset}");
                 println!("\nRun stopped by user.");
             }
 
@@ -2536,14 +2540,14 @@ fn main() {
             };
 
             let text_color = if pe.elo > 1.0 {
-                GREEN_COLOR
+                green
             } else if pe.elo < -1.0 {
-                RED_COLOR
+                red
             } else {
-                GRAY_COLOR
+                gray
             };
-            println!("{}  Elo: {:.2} +/- {:.2} \x1b[0m", text_color, pe.elo, pe.elo_err);
-            println!("{}  nElo: {:.2} +/- {:.2} \x1b[0m", text_color, pe.nelo, pe.nelo_err);
+            println!("  Elo: {text_color}{:.2}{reset} +/- {:.2}", pe.elo, pe.elo_err);
+            println!("  nElo: {text_color}{:.2}{reset} +/- {:.2}", pe.nelo, pe.nelo_err);
 
             println!(
                 "  Games: {} | W: {} L: {} D: {}",
@@ -2563,22 +2567,19 @@ fn main() {
             );
 
             let text_color = if final_penta_llr >= upper {
-                GREEN_COLOR
+                green
             } else if final_penta_llr <= lower {
-                RED_COLOR
+                red
             } else {
-                YELLOW_COLOR
+                yellow
             };
             println!(
-                "{}  LLR: {:.3}  bounds [{:.2}, {:.2}] ({} model, [{}, {}]) \x1b[0m",
-                text_color, final_penta_llr, lower, upper, model_name, config.elo0, config.elo1
+                "  LLR: {text_color}{final_penta_llr:.3}{reset}  bounds [{lower:.2}, {upper:.2}] ({model_name} model, [{}, {}])",
+                config.elo0, config.elo1
             );
 
             if timeout_losses > 0 {
-                println!(
-                    "\x1b[31m  ALERT: {} games ended by timeout (NEW ENGINE ONLY) \x1b[0m",
-                    timeout_losses
-                );
+                println!("{red}  ALERT: {timeout_losses} games ended by timeout (NEW ENGINE ONLY) {reset}");
             }
             println!("\nPer-Variant Breakdown:");
             let mut variant_names: Vec<_> = per_variant_stats.keys().collect();
