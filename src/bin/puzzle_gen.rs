@@ -1,17 +1,33 @@
-//! Puzzle generator: mines the self-play corpus for tactical puzzles.
+//! Puzzle generator: mines a self-play game corpus for tactical puzzles.
 //!
 //! Five stages, cheapest filter first. Stage 0 uses only the `[%eval]`/`[%mate]`
-//! annotations the SPRT harness already wrote, so 99.8% of plies are rejected
-//! before the engine is ever started.
+//! annotations the corpus already carries, so the overwhelming majority of plies
+//! are rejected before the engine is ever started.
 //!
 //!   0 scan   - annotation trace -> candidate plies (no engine)
 //!   1 replay - reconstruct only those positions, board filters + hash dedup
-//!   2 verify - shallow MultiPV: is there a single clearly-best winning move?
-//!   3 cook   - deep walk building the forced line, only-move checked every winner ply
-//!   4 rate   - difficulty features -> rank-normalised rating, plus theme tagging
+//!   2 verify - shallow MultiPV: is there a single clearly-best move?
+//!   3 cook   - deep walk building the forced line, only-move checked every solver ply
+//!   4 rate   - difficulty features -> an absolute rating, plus theme tagging
+//!
+//! Four candidate sources feed stage 0 (see `Source`): a game turning decisively
+//! (`turning_point`), a mate materialising out of nowhere (`mate_shot`), a holding
+//! position collapsing (`missed_save`), and a lost position that drew (`draw_save`,
+//! solved by `cook_draw` instead of `cook` -- there the win condition is reaching a
+//! proven repetition, not converting an advantage).
 //!
 //! World bounds are a process-global (`moves::set_world_bounds`), so variants are
 //! processed one at a time and parallelism lives inside a variant, never across.
+//!
+//! Maintenance passes, run against an existing output file instead of generating:
+//! `--refresh` recomputes search-free features and re-rates; `--recook` rebuilds
+//! each solution line with the current defence logic; `--deep-verify` re-checks
+//! every root at high depth and records the true mate distance. All three
+//! checkpoint their own progress (`<out>.recook.jsonl`, `<out>.deepverify.jsonl`),
+//! so a killed run resumes instead of restarting. `--auto-corpus` (with
+//! `--auto-corpus-root` or `PUZZLE_GEN_AUTO_CORPUS_ROOT`) and a persistent
+//! `--seen-manifest` mean a second invocation only ever mines corpus files it
+//! has not already fully processed.
 
 use apeiron::Variant;
 use apeiron::board::{Coordinate, PieceType, PlayerColor};
@@ -101,6 +117,14 @@ const LOST_CEIL: i32 = -700;
 /// Source C: the mover was no worse than this, then dropped below `DEF_LOST_CP`.
 const DEF_HOLD_CP: i32 = 400;
 const DEF_LOST_CP: i32 = 600;
+/// Source D: the mover must be underwater by at least this much for the "drew
+/// from a lost position" premise to mean anything.
+const DRAW_LOST_CP: i32 = 700;
+/// How much clearer the runner-up must be, in win-chance terms, for a draw-save
+/// ply's best defence to count as the only one. Not an absolute score band -- a
+/// real save often stays clearly bad for several moves before the repetition
+/// that actually closes it, so gating on "already near 0" rejects the premise.
+const DRAW_ONLY_GAP: f64 = 0.30;
 /// Screen threshold, a deliberately slack version of `HELD_CP` so a shallow
 /// search's noise cannot throw away a genuine puzzle.
 const SCREEN_SECOND_CEIL: i32 = 1200;
@@ -110,6 +134,12 @@ const MAX_REWIND: usize = 6;
 
 /// Variants worth building a puzzle set from: everything live on the public site,
 /// plus Scattered_Leapers for fairy-piece coverage. Custom test variants are out.
+///
+/// Obstocean is deliberately absent, not merely skipped by default: its eval is
+/// unreliable enough (real, observed swings) that its puzzles were regularly not
+/// sound only-moves. Structural exclusion here means no flag combination can bring
+/// it back in -- unlike `Cfg::skip`, which only Chess defaults into and which
+/// `--keep-all-variants` can override.
 const ALLOWED_VARIANTS: &[Variant] = &[
     Variant::Classical,
     Variant::ConfinedClassical,
@@ -126,7 +156,6 @@ const ALLOWED_VARIANTS: &[Variant] = &[
     Variant::Space,
     Variant::PawnHorde,
     Variant::Knightline,
-    Variant::Obstocean,
     Variant::Chess,
     Variant::ScatteredLeapers,
 ];
@@ -140,6 +169,9 @@ enum Source {
     /// The mover was holding and then lost the game outright, so the position
     /// before their move asks for the only defence.
     MissedSave,
+    /// The mover was clearly lost, yet the game drew. The puzzle is to find the
+    /// one line back to a proven draw, not to win.
+    DrawSave,
 }
 
 impl Source {
@@ -148,6 +180,7 @@ impl Source {
             Source::TurningPoint => "turning_point",
             Source::MateShot => "mate_shot",
             Source::MissedSave => "missed_save",
+            Source::DrawSave => "draw_save",
         }
     }
     fn idx(self) -> usize {
@@ -155,6 +188,7 @@ impl Source {
             Source::TurningPoint => 0,
             Source::MateShot => 1,
             Source::MissedSave => 2,
+            Source::DrawSave => 3,
         }
     }
 }
@@ -175,6 +209,10 @@ struct Scan {
     def_hold_cp: i32,
     def_lost_cp: i32,
     min_ply_gap: usize,
+    /// How far underwater the mover must be for a draw-save candidate. Much more
+    /// negative than `def_lost_cp`: this is not a blunder moment, it is an already
+    /// dead-lost position that the game nonetheless drew.
+    draw_lost_cp: i32,
 }
 
 impl Scan {
@@ -201,6 +239,7 @@ impl Default for Scan {
             def_hold_cp: DEF_HOLD_CP,
             def_lost_cp: DEF_LOST_CP,
             min_ply_gap: MIN_PLY_GAP,
+            draw_lost_cp: DRAW_LOST_CP,
         }
     }
 }
@@ -223,6 +262,7 @@ struct Cfg {
     defend_pv: usize,
     defence_window: f64,
     recook: bool,
+    explain: Option<String>,
     max_plies: usize,
     hash_mb: usize,
     threads: usize,
@@ -233,6 +273,26 @@ struct Cfg {
     deep_depth: usize,
     deep_cap_ms: u128,
     fresh: bool,
+    /// Scan every session's scratchpad for corpus files instead of requiring
+    /// `--corpus` for each new one by hand.
+    auto_corpus: bool,
+    /// Root to walk for `--auto-corpus`: every immediate subdirectory's own
+    /// `scratchpad` is searched. Set via `--auto-corpus-root` or the
+    /// `PUZZLE_GEN_AUTO_CORPUS_ROOT` env var -- there is no built-in default,
+    /// since this is specific to wherever the caller's game-generation tooling
+    /// happens to drop its output.
+    auto_corpus_root: Option<String>,
+    /// Unix timestamp (seconds): mark every discovered corpus file with mtime at
+    /// or before this as already scanned, without actually scanning it. For
+    /// backfilling the manifest against files a prior run (before the manifest
+    /// existed) already mined -- hashes still come from `hash_file_contents`, so
+    /// they dedup identically to a file the manifest recorded the normal way.
+    seed_before: Option<String>,
+    /// Persistent record of corpus files already scanned by ANY prior run,
+    /// independent of `--out` -- generation output changes across runs, but
+    /// "have I already mined this file" should not.
+    seen_manifest: PathBuf,
+    mark_seen: bool,
 }
 
 impl Default for Cfg {
@@ -256,6 +316,7 @@ impl Default for Cfg {
             defend_pv: 4,
             defence_window: 0.10,
             recook: false,
+            explain: None,
             max_plies: 15, // a mate in 8, the deepest the scanner accepts
             hash_mb: 32,
             threads: 0,
@@ -266,6 +327,11 @@ impl Default for Cfg {
             deep_depth: 20,
             deep_cap_ms: 20_000,
             fresh: false,
+            auto_corpus: false,
+            auto_corpus_root: std::env::var("PUZZLE_GEN_AUTO_CORPUS_ROOT").ok(),
+            seen_manifest: PathBuf::from("corpus_seen.jsonl"),
+            mark_seen: true,
+            seed_before: None,
         }
     }
 }
@@ -278,6 +344,10 @@ fn parse_args() -> Cfg {
         let mut val = || args.next().unwrap_or_default();
         match a.as_str() {
             "--corpus" => cfg.corpus.push(PathBuf::from(val())),
+            "--auto-corpus" => cfg.auto_corpus = true,
+            "--auto-corpus-root" => cfg.auto_corpus_root = Some(val()),
+            "--seen-manifest" => cfg.seen_manifest = PathBuf::from(val()),
+            "--no-mark-seen" => cfg.mark_seen = false,
             "--out" => cfg.out = PathBuf::from(val()),
             "--skip-variant" => {
                 if !skip_overridden {
@@ -311,6 +381,8 @@ fn parse_args() -> Cfg {
             "--threads" => cfg.threads = val().parse().unwrap_or(0),
             "--wide" => cfg.scan = cfg.scan.wide(),
             "--rate-only" => cfg.rate_only = true,
+            "--explain" => cfg.explain = Some(val()),
+            "--seed-manifest-before" => cfg.seed_before = Some(val()),
             "--refresh" => {
                 cfg.rate_only = true;
                 cfg.refresh = true;
@@ -342,6 +414,20 @@ fn print_help() {
         "puzzle_gen - mine tactical puzzles from annotated self-play games
 
   --corpus <dir>        directory holding games*.json (repeatable, default \".\")
+  --auto-corpus         also walk every immediate subdirectory's own \"scratchpad\"
+                        folder under --auto-corpus-root, so a new one needs no
+                        explicit --corpus
+  --auto-corpus-root <dir>
+                        root to search for --auto-corpus (or set
+                        PUZZLE_GEN_AUTO_CORPUS_ROOT); no built-in default
+  --seen-manifest <f>   corpus files already scanned in a prior run, so re-running
+                        never re-mines the same games*.json twice
+                        (default corpus_seen.jsonl)
+  --no-mark-seen        do not update the seen-manifest this run (e.g. --dry-run)
+  --seed-manifest-before <unix-ts>
+                        mark every discovered file with mtime at or before this
+                        as already scanned, WITHOUT scanning it -- for backfilling
+                        the manifest against a corpus mined before it existed
   --out <file>          output CSV (default puzzles.csv)
   --skip-variant <name> exclude a variant (default: Chess); repeat to add more
   --keep-all-variants   do not exclude anything
@@ -454,11 +540,17 @@ fn scan_game(
     if skip.contains(name) {
         return None;
     }
-    // Variant::parse falls back to a default on unknown input (and to None for
-    // Omega, which has no engine-side representation); a round-trip mismatch means
-    // we would silently mine the wrong ruleset.
+    // A real prior for "this position had a save in it": drawn games are rare
+    // (~16% of the corpus) next to decisive ones, so restricting the draw-save
+    // detector to games that actually drew is most of the filtering for free,
+    // before a single search runs. Everything found is still re-verified from
+    // scratch by `cook_draw` -- this only decides where to look.
+    let drawn_game = header(raw, "Result") == Some("1/2-1/2");
+    // `Variant::parse` returns `None` for anything it cannot resolve (fixed
+    // upstream so an unrecognized tag like "Omega" no longer silently falls back
+    // to Classical), so an early return here already means "not a real variant".
     let variant = Variant::parse(name)?;
-    if variant.to_str() != name || !ALLOWED_VARIANTS.iter().any(|v| v.to_str() == name) {
+    if !ALLOWED_VARIANTS.iter().any(|v| v.to_str() == name) {
         return None;
     }
 
@@ -570,6 +662,29 @@ fn scan_game(
         ));
     }
 
+    // Source D - the mover was already dead lost, in a game that drew. The
+    // position asks: what is the one line back to a proven draw? Sampled evenly
+    // rather than just once, since only a fraction survive the only-move test and
+    // the eval trace cannot tell us in advance which lost stretch held.
+    if drawn_game {
+        // `j` is stored as `ply`, not just used to index -- the iterator rewrite
+        // clippy suggests would need the same index kept alongside it anyway.
+        #[allow(clippy::needless_range_loop)]
+        for j in sc.quiet_window..last {
+            let sgn = if j % 2 == 1 { 1 } else { -1 };
+            if sgn * evals[j] <= -sc.draw_lost_cp {
+                scored.push((
+                    1_000 - (j as i32 / 4),
+                    Cand {
+                        ply: j,
+                        source: Source::DrawSave,
+                        ann_score: sgn * evals[j],
+                    },
+                ));
+            }
+        }
+    }
+
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     let mut cands: Vec<Cand> = Vec::new();
     for (_, c) in scored {
@@ -596,9 +711,49 @@ fn scan_game(
     })
 }
 
-fn collect_corpus_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+/// Every immediate subdirectory's `scratchpad`, for `--auto-corpus`. Matches a
+/// layout where each work session gets its own `<id>/scratchpad`, and SPRT runs
+/// drop `games*.json` wherever the active session happened to be -- e.g. Claude
+/// Code's per-session temp directories, but any tool using the same convention
+/// works.
+fn discover_session_scratchpads(root: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(root) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let sp = e.path().join("scratchpad");
+        if sp.is_dir() {
+            out.push(sp);
+        }
+    }
+    out
+}
+
+/// Cheap, non-cryptographic content hash. Good enough to catch an entire
+/// scratchpad folder that is a copy of another -- confirmed to happen across
+/// sessions -- without paying for a real digest over hundreds of MB of corpus.
+fn hash_file_contents(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// Every `games*.json` under `dirs`, deduped by file content (not just path) so a
+/// folder that is a copy of another never double-counts its games.
+fn collect_corpus_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen_hash = FxHashSet::default();
+    let mut out = Vec::new();
+    let mut seen_dirs = FxHashSet::default();
     for d in dirs {
+        let Ok(canon) = fs::canonicalize(d) else {
+            eprintln!("warning: cannot read {}", d.display());
+            continue;
+        };
+        if !seen_dirs.insert(canon) {
+            continue; // the same directory reached via two different --corpus paths
+        }
         let Ok(rd) = fs::read_dir(d) else {
             eprintln!("warning: cannot read {}", d.display());
             continue;
@@ -608,18 +763,136 @@ fn collect_corpus_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
             let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if name.starts_with("games") && name.ends_with(".json") {
+            if !(name.starts_with("games") && name.ends_with(".json")) {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&p) else { continue };
+            if seen_hash.insert(hash_file_contents(&bytes)) {
                 out.push(p);
             }
         }
     }
     out.sort();
-    out.dedup();
     out
 }
 
-fn scan(cfg: &Cfg) -> Vec<GameRec> {
-    let files = collect_corpus_files(&cfg.corpus);
+/// Content hashes already scanned by a prior run, regardless of which `--out`
+/// that run used -- one manifest per corpus, not per generated file.
+fn load_seen_manifest(path: &Path) -> FxHashSet<u64> {
+    let mut seen = FxHashSet::default();
+    if let Ok(txt) = fs::read_to_string(path) {
+        for line in txt.lines() {
+            if let Ok(h) = line.trim().parse::<u64>() {
+                seen.insert(h);
+            }
+        }
+    }
+    seen
+}
+
+fn append_seen_manifest(path: &Path, hashes: &[u64]) {
+    let Ok(f) = OpenOptions::new().create(true).append(true).open(path) else {
+        eprintln!("warning: could not update seen-manifest {}", path.display());
+        return;
+    };
+    let mut w = BufWriter::new(f);
+    for h in hashes {
+        let _ = writeln!(w, "{h}");
+    }
+}
+
+/// The directories `scan` and `--seed-manifest-before` both draw from: explicit
+/// `--corpus` plus, with `--auto-corpus`, every session's scratchpad.
+fn corpus_dirs(cfg: &Cfg) -> Vec<PathBuf> {
+    let mut dirs = cfg.corpus.clone();
+    if cfg.auto_corpus {
+        match &cfg.auto_corpus_root {
+            Some(root) => {
+                let discovered = discover_session_scratchpads(root);
+                println!("  auto-corpus: found {} session scratchpad(s) under {root}", discovered.len());
+                dirs.extend(discovered);
+            }
+            None => eprintln!(
+                "warning: --auto-corpus has no root to search -- set --auto-corpus-root <path> \
+                 or the PUZZLE_GEN_AUTO_CORPUS_ROOT env var; falling back to --corpus only"
+            ),
+        }
+    }
+    if dirs.is_empty() {
+        dirs.push(PathBuf::from("."));
+    }
+    dirs
+}
+
+/// Marks every discovered corpus file with mtime at or before `cutoff` (a Unix
+/// timestamp in seconds) as already scanned, without running a single search --
+/// for backfilling the manifest against a corpus a run before the manifest
+/// existed already mined. Anything newer is left alone for a real `scan()` to
+/// pick up. Hashing goes through the exact same `hash_file_contents` a real scan
+/// uses, so a file seeded this way dedups identically to one recorded normally.
+fn seed_manifest_before(cfg: &Cfg, cutoff_str: &str) {
+    let Ok(cutoff) = cutoff_str.parse::<u64>() else {
+        eprintln!("--seed-manifest-before wants a Unix timestamp in seconds, got {cutoff_str:?}");
+        return;
+    };
+    let cutoff_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(cutoff);
+
+    let dirs = corpus_dirs(cfg);
+    let all_files = collect_corpus_files(&dirs);
+    let already = load_seen_manifest(&cfg.seen_manifest);
+
+    let mut to_seed = Vec::new();
+    let mut still_new = Vec::new();
+    for p in &all_files {
+        let mtime = fs::metadata(p).and_then(|m| m.modified()).ok();
+        let Ok(bytes) = fs::read(p) else { continue };
+        let h = hash_file_contents(&bytes);
+        if already.contains(&h) {
+            continue; // already recorded, nothing to do
+        }
+        match mtime {
+            Some(t) if t <= cutoff_time => to_seed.push(h),
+            _ => still_new.push(p.clone()),
+        }
+    }
+
+    if !to_seed.is_empty() {
+        append_seen_manifest(&cfg.seen_manifest, &to_seed);
+    }
+    println!(
+        "seeded {} file(s) (mtime <= cutoff) into {}",
+        to_seed.len(),
+        cfg.seen_manifest.display()
+    );
+    println!("{} file(s) remain unmarked (newer than cutoff, or unreadable):", still_new.len());
+    for p in &still_new {
+        println!("  {}", p.display());
+    }
+}
+
+fn scan(cfg: &Cfg) -> (Vec<GameRec>, Vec<u64>) {
+    let dirs = corpus_dirs(cfg);
+    let all_files = collect_corpus_files(&dirs);
+    let already_seen = load_seen_manifest(&cfg.seen_manifest);
+    let mut file_hashes: Vec<(PathBuf, u64)> = Vec::with_capacity(all_files.len());
+    let mut files = Vec::with_capacity(all_files.len());
+    let mut skipped = 0usize;
+    for p in all_files {
+        let Ok(bytes) = fs::read(&p) else { continue };
+        let h = hash_file_contents(&bytes);
+        if already_seen.contains(&h) {
+            skipped += 1;
+            continue;
+        }
+        file_hashes.push((p.clone(), h));
+        files.push(p);
+    }
+    if skipped > 0 {
+        println!(
+            "  skipping {skipped} corpus file(s) already recorded in {}",
+            cfg.seen_manifest.display()
+        );
+    }
     println!("stage 0: scanning {} corpus files", files.len());
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
@@ -654,7 +927,14 @@ fn scan(cfg: &Cfg) -> Vec<GameRec> {
         })
         .collect();
     pb.finish_and_clear();
-    recs
+    // NOT marked here. Scanning a file is cheap; solving its candidates is the
+    // expensive part and can be killed mid-way through -- exactly what happened
+    // once already. Marking this early meant a killed run's un-solved candidates
+    // (for whichever variants the per-variant loop had not yet reached) silently
+    // vanished on resume, because the file that would have re-produced them was
+    // already "seen". The caller marks these hashes only after every variant's
+    // solve loop has actually finished.
+    (recs, file_hashes.into_iter().map(|(_, h)| h).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -869,8 +1149,8 @@ mod rej {
 
     /// Seen/accepted per source, so the pool can be rebalanced toward whichever
     /// one actually survives the only-move rule.
-    pub static SRC_SEEN: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
-    pub static SRC_OK: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+    pub static SRC_SEEN: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+    pub static SRC_OK: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
     pub fn hit(k: usize) {
         COUNTS[k].fetch_add(1, Ordering::Relaxed);
@@ -929,7 +1209,7 @@ mod rej {
             println!("  {:<26}{:>7}", NAMES[i], COUNTS[i].load(Ordering::Relaxed));
         }
         println!("  by source:");
-        for (i, n) in ["turning_point", "mate_shot", "missed_save"]
+        for (i, n) in ["turning_point", "mate_shot", "missed_save", "draw_save"]
             .iter()
             .enumerate()
         {
@@ -1108,6 +1388,103 @@ fn cook(
     })
 }
 
+/// The only-move rule for a defensive save, read relative to the position rather
+/// than against an absolute band: the move must not itself be a proven loss, and
+/// every alternative must be clearly worse -- either a proven loss outright, or a
+/// win-chance gap wide enough that it is not a real second try. Whether the
+/// position is *good* is not the question here; a save can stay ugly for a long
+/// time before the repetition that actually closes it.
+fn valid_defense(best: i32, second: Option<i32>) -> bool {
+    if search::is_loss(best) {
+        return false;
+    }
+    match second {
+        None => true,
+        Some(s) => search::is_loss(s) || win_chances(best) - win_chances(s) > DRAW_ONLY_GAP,
+    }
+}
+
+/// Mirrors `cook`, but the win condition is different in kind, not just degree: a
+/// move is validated by the same only-move rule (`valid_attack`'s "holds" branch --
+/// this move stays inside the draw band, every other move loses outright), and
+/// success is a position repeat, checked against the SAME hash rule `cook` uses to
+/// reject one. A line that never repeats and never escapes is not a proven draw,
+/// so it is discarded rather than shipped as a hopeful near-miss.
+fn cook_draw(st: &mut GameState, defender: PlayerColor, cfg: &Cfg) -> Option<Cooked> {
+    let mut line: Vec<Move> = Vec::new();
+    let mut defender_replies = Vec::new();
+    let mut shallow_rank = 0usize;
+    let mut root_margin = 1.0f64;
+    let mut final_score = 0i32;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cfg.budget_ms);
+    let mut seen: FxHashSet<u64> = FxHashSet::default();
+    seen.insert(st.hash);
+    let mut drew = false;
+
+    while line.len() < cfg.max_plies {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let legal = legal_moves(st);
+        if legal.is_empty() {
+            break; // mated or stalemated: not the draw this line was chasing
+        }
+        if st.turn == defender {
+            let r = mpv(st, cfg.cook_depth, cfg.cap_ms, 2);
+            let Some(best) = r.lines.first() else { break };
+            let second = r.lines.get(1).map(|l| l.score);
+            if search::is_win(best.score) {
+                break; // a real win is a different, already-covered puzzle
+            }
+            if !valid_defense(best.score, second) {
+                break;
+            }
+            if line.is_empty() {
+                shallow_rank = r
+                    .shallow_order
+                    .iter()
+                    .position(|m| *m == best.mv)
+                    .unwrap_or(0);
+                root_margin = match second {
+                    Some(s) => (win_chances(best.score) - win_chances(s)).clamp(0.0, 2.0),
+                    None => 2.0,
+                };
+            }
+            final_score = best.score;
+            line.push(best.mv);
+            st.make_move(&best.mv);
+            // Checked only here, on the defender's own move: an opponent move that
+            // happens to repeat a position was not the solver forcing anything, and
+            // trimming the line for parity would otherwise risk erasing the exact
+            // move that closed the repetition.
+            if !seen.insert(st.hash) {
+                drew = true;
+                break;
+            }
+        } else {
+            defender_replies.push(legal.len());
+            let r = mpv(st, cfg.defend_depth, cfg.cap_ms, 1);
+            let Some(best) = r.lines.first() else { break };
+            line.push(best.mv);
+            st.make_move(&best.mv);
+            seen.insert(st.hash);
+        }
+    }
+    if !drew || line.is_empty() {
+        return None;
+    }
+    debug_assert!(!line.len().is_multiple_of(2));
+    Some(Cooked {
+        line,
+        final_score,
+        ends_in_mate: false,
+        shallow_rank,
+        root_margin,
+        defender_replies,
+    })
+}
+
 /// Shallowest depth from which iterative deepening never leaves the solution move.
 fn depth_to_find(st: &mut GameState, solution: Move, cfg: &Cfg) -> usize {
     let mut last_wrong = 0usize;
@@ -1155,6 +1532,13 @@ struct Features {
     mate_plies: usize,
     root_moves: usize,
     root_forcing: usize,
+    mean_cand: f64,
+    mean_forcing_cand: f64,
+    /// Widest separation between squares the solution touches.
+    action_span: i64,
+    fork_peak: f64,
+    escape_narrow: f64,
+    mean_solver_choice: f64,
 }
 
 /// How unintuitive a piece is to calculate with, which is not the same as how
@@ -1220,6 +1604,27 @@ struct BoardFeats {
     /// Of those, the ones that check or capture -- the set actually scanned when
     /// the answer is known to be forcing.
     root_forcing: usize,
+    /// Legal / forcing counts averaged over every solver ply, not just the root.
+    mean_cand: f64,
+    mean_forcing_cand: f64,
+    /// How many separate pieces the solver has to bring into the combination.
+    distinct_pieces: usize,
+    /// Widest separation between any two squares the solution touches. A tactic
+    /// confined to one corner is a single visual pattern; one spanning the board
+    /// forces the solver to hold distant areas in mind at once.
+    action_span: i64,
+    /// Mean jump between consecutive solver destinations. High means the attack
+    /// keeps relocating rather than building in one place.
+    mean_hop: f64,
+    /// Strongest double attack anywhere in the line, weighted by distance and by
+    /// how far apart its targets sit.
+    fork_peak: f64,
+    /// How much genuine choice the solver faced, averaged over their moves. Near
+    /// zero means the "solution" was forced and nothing had to be found.
+    mean_solver_choice: f64,
+    /// How many tries the defender gets at each turn -- every one a branch the
+    /// solver has to see refuted before the line can be trusted.
+    escape_narrow: f64,
 }
 
 /// Replays a solution to derive its search-free features. `None` means the line
@@ -1253,6 +1658,24 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
     let mut fairy_used: f64 = 0.0;
     let mut calc_load: f64 = 0.0;
     let mut prev_capture: Option<Coordinate> = None;
+    // Squares currently holding a piece the solver has already moved, so following a
+    // piece through the line distinguishes one piece manoeuvring from a combination
+    // that hands off between several -- a far harder thing to spot.
+    let mut solver_pieces: FxHashSet<(i64, i64)> = FxHashSet::default();
+    let mut distinct_pieces = 0usize;
+    // Candidate load averaged over every solver ply, not just the root: what matters
+    // is how many moves have to be weighed at each decision, all the way down.
+    let mut cand_sum = 0.0f64;
+    let mut forcing_cand_sum = 0.0f64;
+    let mut solver_dests: Vec<Coordinate> = Vec::new();
+    let mut fork_by_move: Vec<f64> = Vec::new();
+    let mut solver_choice_sum = 0.0f64;
+    // How narrow the defender's survival is at each of their turns. A defender with
+    // one or two saving replies among many legal ones means the solver had to see
+    // past a pile of tries that all look like they hold -- exactly the work that
+    // makes a line hard to be sure of.
+    let mut escape_narrow_sum = 0.0f64;
+    let mut defender_plies = 0usize;
 
     for (k, mv) in solution.iter().enumerate() {
         let from = mv.split_once('>').and_then(|(f, _)| parse_coord(f));
@@ -1279,16 +1702,63 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         let legal_here = legal_moves(&mut st);
         let chosen = legal_here.iter().find(|m| move_to_icn(m) == *mv).copied()?;
         if solver {
-            calc_load += move_find_difficulty(&st, &chosen, prev_capture, legal_here.len());
+            // Nothing is "found" when there was nothing to choose between. The old
+            // cutoff only zeroed a single legal move, so a move picked from two --
+            // which is what a forced recapture after a desperado looks like -- scored
+            // the same as one picked from three hundred. Scale smoothly instead.
+            let choice = n01((legal_here.len().max(1) as f64).log2() / 6.0);
+            let choice_w = 0.25 + 0.75 * choice;
+            solver_choice_sum += choice;
+            calc_load += move_find_difficulty(&st, &chosen, prev_capture, legal_here.len())
+                * move_visibility_cost(&chosen)
+                * choice_w;
+            if !solver_pieces.remove(&(chosen.from.x, chosen.from.y)) {
+                distinct_pieces += 1;
+            }
+            solver_pieces.insert((chosen.to.x, chosen.to.y));
+
+            cand_sum += legal_here.len() as f64;
+            forcing_cand_sum += legal_here
+                .iter()
+                .filter(|m| {
+                    let cap = st.board.is_occupied(m.to.x, m.to.y);
+                    if cap {
+                        return true;
+                    }
+                    let undo = st.make_move(m);
+                    let chk = st.is_in_check();
+                    st.undo_move(m, undo);
+                    chk
+                })
+                .count() as f64;
         }
         let capture_sq = captured.then_some(chosen.to);
         let (to, _) = apply_icn_move(&mut st, mv)?;
         if !seen.insert(st.hash) {
             return None;
         }
+        if !solver {
+            // `legal_here` is the defender's full choice set at this ply; the line
+            // only survives because almost none of them work.
+            defender_plies += 1;
+            // Every legal defender reply is a branch the solver had to look at and
+            // dismiss before trusting the line. More tries to refute is more work,
+            // not less -- the earlier form had this inverted.
+            escape_narrow_sum += (legal_here.len() as f64 / 14.0).clamp(0.0, 1.0);
+        }
         prev_capture = capture_sq;
         if solver {
+            // Measured after the move lands, so it reads the threat the move
+            // actually creates rather than the one it left behind.
+            let winner_side = if k.is_multiple_of(2) { st.turn.opponent() } else { st.turn };
+            fork_by_move.push(fork_strength(
+                &st,
+                to,
+                winner_side,
+                chebyshev(chosen.from, chosen.to),
+            ));
             action.push(to);
+            solver_dests.push(to);
             solver_moves += 1;
             if captured || st.is_in_check() {
                 forcing_moves += 1;
@@ -1325,6 +1795,31 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         .map(|(_, _, p)| fairy_complexity(p.piece_type()))
         .sum();
 
+    // Handing the attack from one piece to another is a distinct act of vision each
+    // time; a single piece manoeuvring is one idea followed through.
+    calc_load += 0.30 * distinct_pieces.saturating_sub(1) as f64;
+
+    // Span of where the solution LANDS, not where its pieces set out from. One
+    // piece travelling in from a corner does not make a tactic spread out -- the
+    // action is still concentrated wherever the moves arrive, and the journey is
+    // already paid for in `move_visibility_cost`. Including origins here both
+    // double-counted travel and read a concentrated combination as a sprawling one.
+    let mut action_span = 0i64;
+    for (i, a) in solver_dests.iter().enumerate() {
+        for b in &solver_dests[i + 1..] {
+            action_span = action_span.max(chebyshev(*a, *b));
+        }
+    }
+    let mean_hop = if solver_dests.len() < 2 {
+        0.0
+    } else {
+        solver_dests
+            .windows(2)
+            .map(|w| chebyshev(w[0], w[1]) as f64)
+            .sum::<f64>()
+            / (solver_dests.len() - 1) as f64
+    };
+
     Some(BoardFeats {
         pieces,
         calc_load,
@@ -1335,6 +1830,33 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         ends_in_mate: legal_moves(&mut st).is_empty() && st.is_in_check(),
         root_moves,
         root_forcing,
+        mean_cand: cand_sum / solver_moves as f64,
+        mean_forcing_cand: forcing_cand_sum / solver_moves as f64,
+        distinct_pieces,
+        action_span,
+        mean_hop,
+        // A fork you only have to spot once you are already there is a different
+        // thing from one you must foresee from the very first move. Weight each by
+        // how deep in the line it lands, so the payoff at the end -- the case that
+        // has to be visualised from far back -- counts for most.
+        fork_peak: fork_by_move
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let depth = if fork_by_move.len() < 2 {
+                    1.0
+                } else {
+                    i as f64 / (fork_by_move.len() - 1) as f64
+                };
+                v * (0.55 + 0.45 * depth)
+            })
+            .fold(0.0, f64::max),
+        mean_solver_choice: solver_choice_sum / solver_moves as f64,
+        escape_narrow: if defender_plies == 0 {
+            0.0
+        } else {
+            escape_narrow_sum / defender_plies as f64
+        },
     })
 }
 
@@ -1352,93 +1874,169 @@ fn chebyshev(a: Coordinate, b: Coordinate) -> i64 {
     (a.x - b.x).abs().max((a.y - b.y).abs())
 }
 
-/// Weighted blend of the signals that make a tactic hard to see. Only the ordering
-/// matters: the rating itself comes from a rank transform below.
-///
-/// How much has to be calculated dominates -- solution length, then how crowded the
-/// board is and how many fairy pieces are on it, which is what actually separates a
-/// long forcing sequence from a one-move shot. The engine-derived signals
-/// (shallow_rank, depth-to-find) rank *within* that rather than over it.
-/// Absolute rating in Elo-like points, judged on the puzzle alone.
-///
-/// Deliberately NOT a rank transform. Mapping the set onto a fixed distribution
-/// guarantees something is rated 2800 every run whether or not anything that hard
-/// exists. Here every term is a fixed number of points, so 2800 has to be earned:
-/// reaching it needs a long quiet line, an invisible key move, a crowded board and
-/// an exotic piece all at once, which almost never co-occur.
-///
-/// Anchors it is tuned against: an obvious forced mate in 1 lands near 600; a
-/// forcing mate in 3 near 1000; a mid-length half-forcing tactic near 1500; a long
-/// quiet combination with an unnatural key move near 2400.
+/// Prints, for every stored puzzle whose solution contains `needle`, the per-move
+/// difficulty breakdown and how each rating term contributes. Tuning the model
+/// blind is how terms end up silently saturated or unused; this makes it checkable.
+fn explain(path: &Path, needle: &str) {
+    let Ok(mut rdr) = csv::Reader::from_path(path) else {
+        eprintln!("cannot read {}", path.display());
+        return;
+    };
+    let rows: Vec<PuzzleRecord> = rdr.deserialize().filter_map(Result::ok).collect();
+    for p in rows.iter().filter(|p| p.solution_moves.contains(needle)) {
+        let Some(v) = Variant::parse(&p.variant) else {
+            println!("\n!! unrecognized variant {:?}, skipping", p.variant);
+            continue;
+        };
+        let b = v.get_default_bounds();
+        apeiron::moves::set_world_bounds(b.0, b.1, b.2, b.3);
+
+        println!("\n=== {} | stored rating {} ===", p.variant, p.rating);
+        println!("solution: {}", p.solution_moves);
+
+        let sol: Vec<String> = p.solution_moves.split_whitespace().map(str::to_string).collect();
+        let mut st = GameState::new();
+        st.setup_position_from_icn(&p.position_icn);
+        forget_history(&mut st);
+        let mut prev_capture: Option<Coordinate> = None;
+        println!("  per solver move:");
+        for (k, mv) in sol.iter().enumerate() {
+            let legal_here = legal_moves(&mut st);
+            let Some(chosen) = legal_here.iter().find(|m| move_to_icn(m) == *mv).copied() else {
+                println!("    !! move {mv} not legal here");
+                break;
+            };
+            if k.is_multiple_of(2) {
+                let d = move_find_difficulty(&st, &chosen, prev_capture, legal_here.len());
+                let victim = st.board.get_piece(chosen.to.x, chosen.to.y);
+                let mut probe = st.clone();
+                probe.make_move(&chosen);
+                println!(
+                    "    {mv:<16} piece {:<12} dist {:>3}  cap {:<5} check {:<5} legal {:>4}  -> load {d:.2}",
+                    format!("{:?}", chosen.piece.piece_type()),
+                    chebyshev(chosen.from, chosen.to),
+                    victim.is_some(),
+                    probe.is_in_check(),
+                    legal_here.len(),
+                );
+            }
+            let cap_sq = st.board.is_occupied(chosen.to.x, chosen.to.y).then_some(chosen.to);
+            apply_icn_move(&mut st, mv);
+            prev_capture = cap_sq;
+        }
+
+        if let Some(bf) = board_features(&p.position_icn, &sol) {
+            println!(
+                "  distinct pieces used {} | mean cand/ply {:.0} (forcing {:.0}) | visibility-weighted load {:.2}",
+                bf.distinct_pieces, bf.mean_cand, bf.mean_forcing_cand, bf.calc_load,
+            );
+        }
+        println!(
+            "  calc_load {:.2} | plies {} | mate_in {} | forcing {}% | fairy_used {} | relevant {} | root {}/{} | srank {} | dtf {} | margin {:.3} | replies {:.1}",
+            p.calc_load, p.solution_plies, p.mate_in, p.forcing_pct, p.fairy_count,
+            p.relevant_pieces, p.root_forcing, p.root_moves, p.shallow_rank,
+            p.depth_to_find, p.only_move_margin, p.mean_defender_replies,
+        );
+    }
+}
+
+/// Absolute rating in Elo-like points, judged on the puzzle alone -- not a rank
+/// transform, which would rate something 2800 every run whether anything that
+/// hard exists or not. Every term below is a fixed number of points, so the top
+/// of the scale needs a long quiet line, an invisible move, a crowded board and
+/// an exotic piece together, which rarely co-occurs. Tuned anchors: an obvious
+/// mate in 1 lands near 600, a forcing mate in 3 near 1000, a mid-length
+/// half-forcing tactic near 1500, a long quiet combination near 2400.
 fn puzzle_rating(f: &Features) -> i32 {
     let n = |v: f64, hi: f64| (v / hi).clamp(0.0, 1.0);
     let forcing = f.forcing.clamp(0.0, 1.0);
     let fairy_used = f.fairy_used.clamp(0.0, 1.0);
 
-    // Forcing only makes a line cheap if you can see the moves at a glance. A
-    // sequence of huygen jumps has to be verified square by square, so an exotic
-    // key piece takes most of that discount back.
-    let eff_forcing = forcing * (1.0 - 0.50 * fairy_used);
+    // Forcing is only cheap when you can see the moves at a glance; a sequence of
+    // huygen jumps has to be verified square by square, so exotic pieces claw
+    // most of that discount back.
+    let eff_forcing = forcing * (1.0 - 0.65 * fairy_used);
 
-    // What actually has to be worked out. `calc_load` sums how hard each solver
-    // move is to FIND, so a line whose tail only collects material the first move
-    // already won counts as the one idea it is. Ply count is kept solely as a floor
-    // for deep-verified mates, whose recorded line can stop short of the mate.
-    // A deep-verified mate whose recorded line stops short still has to be seen
-    // through, but the tail of a forced mate is nearly all checks, so it is far
-    // cheaper per ply than a move that has to be found -- and the solver only plays
-    // the moves actually stored. Capped, or a mate-in-9 shown as a one-mover
-    // saturates the whole calc term on plies nobody is asked to play.
+    // `calc_load` sums how hard each solver move is to FIND, so a tail that only
+    // collects material the first move already won counts as one idea, not extra
+    // plies. `mate_tail` is a floor for deep-verified mates whose recorded line
+    // stops short: the solver still has to see the mate through, capped so a
+    // mate in 9 shown as a one-mover can't max out the whole term alone.
     let mate_tail = (f.mate_plies.saturating_sub(f.plies) as f64 * 0.20).min(2.0);
     let load = f.calc_load + mate_tail;
-    // 5.5, not 4: the longest genuinely hard lines run past four hard moves, and a
-    // lower ceiling flattened them all onto the same rating.
-    let calc = n(load, 5.5);
+    let calc = n(load, 5.5); // genuinely hard lines run past four hard moves
 
-    // How invisible the key move is. Engine-centric, and it can read zero on a
-    // position humans find hard, so it no longer dominates the scale. Damped by how
-    // much there is to find: an invisible move is still only one move, and paying
-    // this in full regardless of length put one-movers level with nine-ply
-    // combinations.
+    // How invisible the key move is, damped by how much there is to find --
+    // an invisible one-mover and an invisible move at the end of nine plies of
+    // calculation are not the same thing.
     let obscure = (0.60 * n(f.shallow_rank as f64, 10.0)
         + 0.40 * n(f.depth_to_find.saturating_sub(2) as f64, 12.0))
         * (0.50 + 0.50 * calc);
 
-    // How much board the solver has to hold in their head. Every normalizer here
-    // used to saturate on any crowded fairy board -- `relevant` past 45 and
-    // `fairy_present` past 2.0 are the norm, not the exception -- so the term paid
-    // out in full to almost everything and stopped separating anything. It also
-    // only counts once the solution is actually hard: an obvious move is obvious on
-    // a busy board too, which is what let mere fairy presence buy a 2000+ rating.
+    // How much board the solver has to hold in their head, counted only once the
+    // move is actually hard to find -- an obvious move stays obvious on a busy
+    // board, so raw crowding or fairy presence alone should not buy a high rating.
     let raw_complex =
         0.55 * n(f.relevant as f64, 110.0) + 0.25 * fairy_used + 0.20 * n(f.fairy_present, 4.0);
     let complex = raw_complex * (0.35 + 0.65 * calc);
 
     // How exactly it has to be played.
-    let precision = 0.50 * (1.0 - n(f.margin, 1.4)) + 0.50 * n(f.mean_replies, 30.0);
+    let precision = n((f.mean_replies.max(1.0)).log2() / 8.0, 1.0) * f.mean_solver_choice;
+    // Small on purpose: the only-move rule already guarantees the runner-up
+    // loses, so how much worse it is beyond that is a weak extra signal.
+    let margin_edge = 1.0 - n(f.margin, 1.4);
 
-    // Red herrings: how many moves actually have to be looked at. On an unbounded
-    // board the legal-move count is in the hundreds for every position, so a linear
-    // normalizer pinned this at maximum every time; it needs a log scale to say
-    // anything, and like `complex` it only matters when the moves have to be
-    // calculated rather than glanced at.
-    let candidates =
-        eff_forcing * f.root_forcing as f64 + (1.0 - eff_forcing) * f.root_moves as f64;
+    // How many candidate moves actually have to be weighed, log-scaled (legal
+    // counts run into the hundreds on an unbounded board) and, like `complex`,
+    // counted only when the moves have to be calculated rather than glanced at.
+    // Averaged over every solver ply rather than the root alone: a puzzle that opens
+    // narrow and fans out later is not a narrow puzzle.
+    let (cand_all, cand_forcing) = if f.mean_cand > 0.0 {
+        (f.mean_cand, f.mean_forcing_cand)
+    } else {
+        (f.root_moves as f64, f.root_forcing as f64)
+    };
+    let candidates = eff_forcing * cand_forcing + (1.0 - eff_forcing) * cand_all;
     let branching = n((candidates.max(1.0)).log2() / 9.0, 1.0) * calc;
 
+    // Forcing has to SCALE the calculation, not be subtracted from it. As a flat
+    // -120 against a term worth up to 1500 it was an 8% rebate at the top, which is
+    // how an all-check line came to outrank every quiet combination in the set.
+    // Every check narrows the tree at every ply, so its saving grows with length.
+    let calc_term = 1500.0 * calc * (1.0 - 0.45 * eff_forcing);
+
+    // How far apart the solution's squares lie. A tactic confined to one corner is
+    // a single pattern to see; one spanning the board asks the solver to hold
+    // distant areas in mind together. Measured to carry information the rest of the
+    // model does not (partial r 0.26 against calc_load), and log-scaled because
+    // 30 squares versus 60 is not twice as hard to span.
+    let spread = n((f.action_span.max(1) as f64).log2() / 5.0, 1.0) * calc;
+
     let r = 560.0
-        + 1500.0 * calc
+        + calc_term
         + 420.0 * obscure
         + 330.0 * complex
-        + 170.0 * branching
-        + 240.0 * precision
+        + 220.0 * spread
+        // A long double attack whose targets sit far apart is the move a human
+        // simply does not see coming; the old model only knew a fork happened.
+        + 300.0 * f.fork_peak
+        // Lines that survive only because the defender's every try fails narrowly
+        // have to be calculated much further before you can trust them.
+        + 200.0 * n01(f.escape_narrow) * f.mean_solver_choice
+        + 150.0 * precision
+        + 50.0 * margin_edge
         + 170.0 * if f.quiet_key { 1.0 } else { 0.0 }
         + 120.0 * n(f.sacrifice as f64, 900.0)
-        - 120.0 * eff_forcing
+        // Kept small: measured partial correlation of the candidate count against
+        // calc_load is 0.04, i.e. it is almost pure duplication of what calc says.
+        + 60.0 * branching
         - 100.0 * if f.ends_in_mate { 1.0 } else { 0.0 };
     ((r / 10.0).round() as i32 * 10).clamp(400, 3000)
 }
 
+/// A cruder, ordering-only cousin of `puzzle_rating` kept in the `difficulty_raw`
+/// column for auditing: how much there is to calculate dominates, and the
+/// engine-derived signals (shallow_rank, depth-to-find) rank within that.
 fn raw_difficulty(f: &Features) -> f64 {
     let n = |v: f64, hi: f64| (v / hi).clamp(0.0, 1.0);
     // Forcing shortens the line you actually have to calculate rather than shaving a
@@ -1523,13 +2121,22 @@ fn attackers_of(st: &GameState, sq: Coordinate, side: PlayerColor) -> usize {
         .count()
 }
 
+/// How hard a move is to even *notice*, independent of what it accomplishes. A
+/// piece arriving from far away is the classic "I never looked there" move, and
+/// distance was previously computed but never used. Log-scaled: 20 squares vs 40
+/// isn't twice the surprise, both are simply off the part of the board in view.
+fn move_visibility_cost(mv: &Move) -> f64 {
+    let dist = chebyshev(mv.from, mv.to).max(1) as f64;
+    let reach = (dist.log2() / 4.0).clamp(0.0, 1.0); // 1 sq -> 0, 16+ -> 1
+    let exotic = fairy_complexity(mv.piece.piece_type());
+    1.0 + 0.45 * reach + 0.35 * exotic
+}
+
 /// How hard one solver move is to FIND, from 0 (writes itself) to ~1.2 (has to be
-/// seen). Raw ply count treats every move alike, which is what lets a line rate as
-/// long when its tail is just collecting the material the first move already won --
-/// the skewer whose follow-up is "take the other one" is three plies but one idea.
-///
-/// `st` is the position before the move; `prev_capture` is where the opponent just
-/// captured, if they did.
+/// seen). Raw ply count treats every move alike, which is what lets a skewer
+/// whose follow-up is "take the other one" rate as long when it's one idea.
+/// `st` is the position before the move; `prev_capture` is the opponent's last
+/// capture square, if any.
 fn move_find_difficulty(
     st: &GameState,
     mv: &Move,
@@ -1574,19 +2181,91 @@ fn move_find_difficulty(
         }
         if vv + 100 < av {
             // Giving up material to take something smaller is a sacrifice, and those
-            // are exactly the moves that do not suggest themselves.
-            return 1.20;
+            // are exactly the moves that do not suggest themselves -- unless the
+            // sacrifice is itself a check, in which case it sits in the handful of
+            // forcing moves the solver scans first and is far easier to stumble on.
+            return if gives_check { 0.65 } else { 1.20 };
         }
         return 0.85;
     }
 
-    // Quiet moves carry the full load; a quiet move that also ignores the enemy's
-    // threats is the hardest thing in any puzzle.
-    if gives_check { 0.75 } else { 1.0 }
+    // Quiet moves carry the full load. A bare check is the cheapest thing to find
+    // in any position: it is the first list a solver enumerates.
+    if gives_check { 0.60 } else { 1.0 }
 }
 
 /// Counts enemy pieces the just-moved piece now hits that are worth hitting:
 /// royals, undefended pieces, or anything more valuable than the attacker.
+/// How hard a double attack is to see coming, rather than merely whether one
+/// exists. Three things compound: the piece arrives from a distance, it hits two
+/// or more pieces worth hitting, and those targets lie in different directions,
+/// so no single glance takes them both in. A huygen landing between a queen and a
+/// royal on opposite sides is the extreme case, and the plain `fork` theme flag
+/// says nothing about any of it.
+fn fork_strength(st: &GameState, at: Coordinate, winner: PlayerColor, move_dist: i64) -> f64 {
+    let Some(piece) = st.board.get_piece(at.x, at.y) else {
+        return 0.0;
+    };
+    let empty_pinned = FxHashMap::default();
+    let ctx = MoveGenContext {
+        special_rights: &st.special_rights,
+        en_passant: &st.en_passant,
+        game_rules: &st.game_rules,
+        indices: &st.spatial_indices,
+        enemy_king_pos: None,
+        pinned: &empty_pinned,
+    };
+    let mut list = MoveList::new();
+    apeiron::moves::get_pseudo_legal_moves_for_piece_into(&st.board, &piece, &at, &ctx, &mut list);
+
+    let mine = get_piece_value_base(piece.piece_type());
+    let mut seen = FxHashSet::default();
+    let mut targets: Vec<(Coordinate, i32)> = Vec::new();
+    for m in list.iter() {
+        let Some(target) = st.board.get_piece(m.to.x, m.to.y) else {
+            continue;
+        };
+        if target.color() != winner.opponent() || !seen.insert((m.to.x, m.to.y)) {
+            continue;
+        }
+        let defended = apeiron::moves::is_square_attacked(
+            &st.board,
+            &m.to,
+            winner.opponent(),
+            &st.spatial_indices,
+        );
+        let val = get_piece_value_base(target.piece_type());
+        if target.piece_type().is_royal() {
+            targets.push((m.to, 1000));
+        } else if !defended || val > mine {
+            targets.push((m.to, val));
+        }
+    }
+    if targets.len() < 2 {
+        return 0.0;
+    }
+
+    // Two biggest prizes; more than two rarely adds to the surprise.
+    targets.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+    let worth = n01((targets[0].1 + targets[1].1) as f64 / 1800.0);
+    // Targets on opposite sides of the forking piece are the hard case: the eye
+    // follows one ray and never looks back down the other.
+    let spread = targets
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| targets[i + 1..].iter().map(move |b| chebyshev(a.0, b.0)))
+        .max()
+        .unwrap_or(0);
+    let reach = n01((move_dist.max(1) as f64).log2() / 4.0);
+    let apart = n01(spread as f64 / 14.0);
+    worth * (0.40 + 0.30 * reach + 0.30 * apart)
+}
+
+#[inline]
+fn n01(v: f64) -> f64 {
+    v.clamp(0.0, 1.0)
+}
+
 fn fork_targets(st: &GameState, at: Coordinate, winner: PlayerColor) -> usize {
     let Some(piece) = st.board.get_piece(at.x, at.y) else {
         return 0;
@@ -1767,6 +2446,10 @@ fn detect_themes(
 // output
 // ---------------------------------------------------------------------------
 
+fn default_outcome() -> String {
+    "win".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct PuzzleRecord {
     variant: String,
@@ -1781,6 +2464,10 @@ struct PuzzleRecord {
     rating_deviation: i32,
     themes: String,
     source: String,
+    /// "win" or "draw". A draw_save puzzle's solution does not win the game --
+    /// it is the one line back to a proven draw from a lost position.
+    #[serde(default = "default_outcome")]
+    outcome: String,
     solution_plies: usize,
     ends_in_mate: bool,
     final_eval: i32,
@@ -1824,6 +2511,22 @@ struct PuzzleRecord {
     /// no longer read as long.
     #[serde(default)]
     calc_load: f64,
+    /// Internals exposed so the rating model can be audited against real data
+    /// rather than tuned by intuition.
+    #[serde(default)]
+    mean_cand: f64,
+    #[serde(default)]
+    mean_forcing_cand: f64,
+    #[serde(default)]
+    distinct_pieces: usize,
+    #[serde(default)]
+    action_span: i64,
+    #[serde(default)]
+    mean_hop: f64,
+    #[serde(default)]
+    fork_peak: f64,
+    #[serde(default)]
+    escape_narrow: f64,
     /// Which generation run this row came from, so puzzles from different runs stay
     /// distinguishable after merges.
     #[serde(default)]
@@ -1893,17 +2596,11 @@ fn spawn_writer(out: PathBuf, prog: PathBuf, rx: mpsc::Receiver<Emit>) -> thread
     })
 }
 
-/// Re-examines every stored puzzle at a much greater depth than generation used.
-/// Two things come out of it: the true score, including whether the position is a
-/// forced mate at all -- the cook truncates a line as soon as two moves both mate,
-/// so a mate in 4 can end up recorded as a quiet material win and miss the mate
-/// discount -- and a final check that the stored answer is still the unique one.
 /// Runs `f` on a fresh OS thread and waits up to `dur`. `check_time`'s hard-limit
-/// polling has not proven reliable on every position this engine's own movegen can
-/// produce -- a `--deep-verify` pass has stalled for hours on a single candidate
-/// with 15 of 16 cores idle. This is the backstop: past the deadline the candidate
-/// is abandoned (its thread keeps running until process exit, but no longer blocks
-/// its batch) and treated as a failure rather than holding up everything behind it.
+/// polling has not proven reliable on every position this engine's movegen can
+/// produce -- a `--deep-verify` pass has stalled for hours on one candidate with
+/// 15 of 16 cores idle. Past the deadline the candidate is abandoned (its thread
+/// keeps running, but no longer blocks the batch) rather than holding up the rest.
 fn with_hard_timeout<T: Send + 'static>(
     dur: Duration,
     f: impl FnOnce() -> T + Send + 'static,
@@ -1971,6 +2668,10 @@ struct DeepVerifyResult {
     verified: bool,
 }
 
+/// Re-examines every stored puzzle at a much greater depth than generation used:
+/// the true score, whether it's really a forced mate (the cook can truncate a
+/// line as soon as two moves both mate, mislabeling it a material win), and
+/// whether the stored answer is still the unique one.
 fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let ckpt: Checkpoint<DeepVerifyResult> =
         Checkpoint::open(checkpoint_path(&cfg.out, "deepverify"));
@@ -1988,8 +2689,7 @@ fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name)?;
-            (v.to_str() == *name).then(|| (v, idx.clone()))
+            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -2116,8 +2816,7 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name)?;
-            (v.to_str() == *name).then(|| (v, idx.clone()))
+            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -2236,8 +2935,7 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            let v = Variant::parse(name)?;
-            (v.to_str() == *name).then(|| (v, idx.clone()))
+            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -2269,6 +2967,13 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
             p.ends_in_mate = bf.ends_in_mate;
             p.forcing_pct = (bf.forcing * 100.0).round() as i32;
             p.calc_load = (bf.calc_load * 100.0).round() / 100.0;
+            p.mean_cand = (bf.mean_cand * 10.0).round() / 10.0;
+            p.mean_forcing_cand = (bf.mean_forcing_cand * 10.0).round() / 10.0;
+            p.distinct_pieces = bf.distinct_pieces;
+            p.action_span = bf.action_span;
+            p.mean_hop = (bf.mean_hop * 10.0).round() / 10.0;
+            p.fork_peak = (bf.fork_peak * 1000.0).round() / 1000.0;
+            p.escape_narrow = (bf.escape_narrow * 1000.0).round() / 1000.0;
 
             // A position deep-verified as a forced mate is a mate puzzle even when
             // the recorded line stops short, so the themes have to say so.
@@ -2317,6 +3022,12 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
                 },
                 root_moves: bf.root_moves,
                 root_forcing: bf.root_forcing,
+                mean_cand: bf.mean_cand,
+                mean_forcing_cand: bf.mean_forcing_cand,
+                action_span: bf.action_span,
+                fork_peak: bf.fork_peak,
+                escape_narrow: bf.escape_narrow,
+                mean_solver_choice: bf.mean_solver_choice,
             };
             p.difficulty_raw = raw_difficulty(&feats);
             p.rating = puzzle_rating(&feats);
@@ -2333,7 +3044,16 @@ fn finalize_ratings(path: &Path, cfg: &Cfg) -> Vec<PuzzleRecord> {
     let Ok(mut rdr) = csv::Reader::from_path(path) else {
         return Vec::new();
     };
-    let mut puzzles: Vec<PuzzleRecord> = rdr.deserialize().filter_map(Result::ok).collect();
+    let mut puzzles: Vec<PuzzleRecord> = rdr
+        .deserialize()
+        .filter_map(|r: Result<PuzzleRecord, _>| match r {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("  ! skipping unreadable row: {e}");
+                None
+            }
+        })
+        .collect();
     if puzzles.is_empty() {
         return puzzles;
     }
@@ -2541,6 +3261,9 @@ fn trivial_recapture(cand: &Candidate, ply: usize, key: &Move, solution_plies: u
 }
 
 fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> {
+    if cand.source == Source::DrawSave {
+        return solve_draw(cand, variant, cfg);
+    }
     let mut st = cand.game.state_at(cand.ply);
     let winner = st.turn;
 
@@ -2666,6 +3389,12 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
         mate_plies: 0, // --deep-verify supplies the true distance
         root_moves: bf.root_moves,
         root_forcing: bf.root_forcing,
+        mean_cand: bf.mean_cand,
+        mean_forcing_cand: bf.mean_forcing_cand,
+        action_span: bf.action_span,
+        fork_peak: bf.fork_peak,
+        escape_narrow: bf.escape_narrow,
+        mean_solver_choice: bf.mean_solver_choice,
     };
 
     let bounded = apeiron::moves::get_world_size() < 1_000_000;
@@ -2699,6 +3428,7 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
         rating_deviation: 500,
         themes: themes.into_iter().collect::<Vec<_>>().join(","),
         source: cand.source.as_str().to_string(),
+        outcome: default_outcome(),
         solution_plies: cooked.line.len(),
         ends_in_mate: cooked.ends_in_mate,
         final_eval: cooked.final_score,
@@ -2720,12 +3450,178 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
         verified: false,
         scan_eval: cand.ann_score,
         calc_load: bf.calc_load,
+        mean_cand: bf.mean_cand,
+        mean_forcing_cand: bf.mean_forcing_cand,
+        distinct_pieces: bf.distinct_pieces,
+        action_span: bf.action_span,
+        mean_hop: bf.mean_hop,
+        fork_peak: bf.fork_peak,
+        escape_narrow: bf.escape_narrow,
+        generated_date: String::new(),
+    })
+}
+
+/// Draw-save pipeline: the solver is not trying to win, they are trying to prove a
+/// draw from a position that is, right now, clearly lost. No rewind -- the scan
+/// already samples several lost stretches per game, so where exactly to start is
+/// covered by candidate density rather than by walking backward from one point.
+fn solve_draw(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> {
+    let mut st = cand.game.state_at(cand.ply);
+    let defender = st.turn;
+
+    let verify = mpv(&mut st, cfg.verify_depth, cfg.cap_ms, 2);
+    let Some(best) = verify.lines.first() else {
+        rej::hit(rej::NO_LINES);
+        return None;
+    };
+    let second = verify.lines.get(1).map(|l| l.score);
+    if search::is_win(best.score) {
+        rej::hit(rej::WEAK); // already winning outright: not this puzzle's premise
+        return None;
+    }
+    if !valid_defense(best.score, second) {
+        rej::hit(rej::NOT_ONLY);
+        return None;
+    }
+
+    let root_icn = cand.game.prefix(cand.ply);
+    let mut cook_state = cand.game.state_at(cand.ply);
+    let Some(cooked) = cook_draw(&mut cook_state, defender, cfg) else {
+        rej::hit(rej::COOK_FAILED);
+        return None;
+    };
+    if !line_is_sound(&root_icn, &cooked.line, false) {
+        rej::hit(rej::UNSOUND);
+        return None;
+    }
+    rej::hit(rej::OK);
+
+    let key = cooked.line[0];
+    let mut probe = cand.game.state_at(cand.ply);
+    let dtf = depth_to_find(&mut probe, key, cfg);
+
+    let mut fs = cand.game.state_at(cand.ply);
+    let standalone = position_to_icn(&fs, &cand.game.start_icn);
+    let sol: Vec<String> = cooked.line.iter().map(move_to_icn).collect();
+    let Some(bf) = board_features(&standalone, &sol) else {
+        rej::hit(rej::TRIVIAL);
+        return None;
+    };
+    let quiet_key = {
+        let cap = is_capture(&fs, &key);
+        let undo = fs.make_move(&key);
+        let gives_check = fs.is_in_check();
+        fs.undo_move(&key, undo);
+        !cap && !gives_check
+    };
+
+    let feats = Features {
+        calc_load: bf.calc_load,
+        shallow_rank: cooked.shallow_rank,
+        depth_to_find: dtf,
+        margin: cooked.root_margin,
+        plies: cooked.line.len(),
+        mean_replies: if cooked.defender_replies.is_empty() {
+            0.0
+        } else {
+            cooked.defender_replies.iter().sum::<usize>() as f64
+                / cooked.defender_replies.len() as f64
+        },
+        quiet_key,
+        sacrifice: 0,
+        travel: chebyshev(key.from, key.to),
+        remoteness: opposing_royal(&fs, defender)
+            .map(|r| chebyshev(key.to, r))
+            .unwrap_or(0),
+        pieces: bf.pieces,
+        relevant: bf.relevant,
+        fairy_used: bf.fairy_used,
+        fairy_present: bf.fairy_present,
+        forcing: bf.forcing,
+        ends_in_mate: false,
+        mate_plies: 0,
+        root_moves: bf.root_moves,
+        root_forcing: bf.root_forcing,
+        mean_cand: bf.mean_cand,
+        mean_forcing_cand: bf.mean_forcing_cand,
+        action_span: bf.action_span,
+        fork_peak: bf.fork_peak,
+        escape_narrow: bf.escape_narrow,
+        mean_solver_choice: 1.0,
+    };
+
+    let mut themes: BTreeSet<String> = BTreeSet::new();
+    themes.insert("forcedDraw".into());
+    themes.insert("onlyMove".into());
+    match cooked.line.len() {
+        1 | 3 => themes.insert("short".into()),
+        5 | 7 => themes.insert("long".into()),
+        _ => themes.insert("veryLong".into()),
+    };
+    if quiet_key {
+        themes.insert("quietMove".into());
+    }
+    if bf.fairy_used > 0.0 {
+        themes.insert("fairyPiece".into());
+    }
+
+    Some(PuzzleRecord {
+        variant: variant.to_str().to_string(),
+        position_icn: standalone,
+        game_icn: root_icn,
+        side_to_move: if defender == PlayerColor::White {
+            "White".into()
+        } else {
+            "Black".into()
+        },
+        solution_moves: cooked.line.iter().map(move_to_icn).collect::<Vec<_>>().join(" "),
+        rating: puzzle_rating(&feats),
+        rating_deviation: 500,
+        themes: themes.into_iter().collect::<Vec<_>>().join(","),
+        source: cand.source.as_str().to_string(),
+        outcome: "draw".to_string(),
+        solution_plies: cooked.line.len(),
+        ends_in_mate: false,
+        final_eval: cooked.final_score,
+        difficulty_raw: raw_difficulty(&feats),
+        shallow_rank: feats.shallow_rank,
+        depth_to_find: feats.depth_to_find,
+        only_move_margin: (feats.margin * 1000.0).round() / 1000.0,
+        mean_defender_replies: (feats.mean_replies * 10.0).round() / 10.0,
+        sacrifice_cp: 0,
+        key_move_travel: feats.travel,
+        piece_count: feats.pieces,
+        relevant_pieces: feats.relevant,
+        root_moves: feats.root_moves,
+        root_forcing: feats.root_forcing,
+        fairy_count: (feats.fairy_used * 100.0).round() as usize,
+        forcing_pct: (feats.forcing * 100.0).round() as i32,
+        mate_in: 0,
+        deep_eval: 0,
+        verified: false,
+        scan_eval: cand.ann_score,
+        calc_load: bf.calc_load,
+        mean_cand: bf.mean_cand,
+        mean_forcing_cand: bf.mean_forcing_cand,
+        distinct_pieces: bf.distinct_pieces,
+        action_span: bf.action_span,
+        mean_hop: bf.mean_hop,
+        fork_peak: bf.fork_peak,
+        escape_narrow: bf.escape_narrow,
         generated_date: String::new(),
     })
 }
 
 fn main() {
     let cfg = parse_args();
+    if let Some(needle) = &cfg.explain {
+        explain(&cfg.out, needle);
+        return;
+    }
+    if let Some(cutoff) = &cfg.seed_before {
+        seed_manifest_before(&cfg, cutoff);
+        return;
+    }
     if cfg.fresh {
         let _ = fs::remove_file(&cfg.out);
         let _ = fs::remove_file(progress_path(&cfg.out));
@@ -2749,7 +3645,7 @@ fn main() {
     }
     search::set_tt_size_mb(cfg.hash_mb);
 
-    let recs = scan(&cfg);
+    let (recs, scanned_hashes) = scan(&cfg);
     // Keyed by name because Variant is not Hash.
     let mut by_variant: FxHashMap<&'static str, (Variant, Vec<GameRec>)> = FxHashMap::default();
     let mut total_cands = 0;
@@ -2853,6 +3749,17 @@ fn main() {
     drop(tx); // closes the channel so the writer can finish
     if let Some(h) = writer {
         let _ = h.join();
+    }
+    // Only reached once every variant's solve loop has actually run to completion
+    // (a kill anywhere in the loop above exits the process first) -- the correct
+    // point to say "this corpus file need not be looked at again".
+    if cfg.mark_seen && !cfg.dry_run && !scanned_hashes.is_empty() {
+        append_seen_manifest(&cfg.seen_manifest, &scanned_hashes);
+        println!(
+            "  recorded {} fully processed corpus file(s) in {}",
+            scanned_hashes.len(),
+            cfg.seen_manifest.display()
+        );
     }
     rej::report();
     if cfg.dry_run {

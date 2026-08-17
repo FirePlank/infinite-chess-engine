@@ -49,11 +49,35 @@ cargo run --release --bin game_gen --features puzzle_gen,rand
 ```
 
 ### 7. Puzzle Generator (`puzzle_gen.rs`)
-Extracts tactical puzzles from a game database using win-chance metrics and theme detection.
+Mines a self-play game corpus (the `games*.json` files an SPRT run's `--pgn`/game
+logging produces) for sound tactical puzzles: a position where one move wins (or
+saves a lost game, or forces a draw) and every alternative provably does not.
+Every puzzle is deep-verified against the current engine, not just the shallow
+eval the games were originally annotated with, and is rated on an absolute scale
+based on how much there actually is to calculate -- not merely how many plies.
 
 ```bash
-cargo run --release --bin puzzle_gen --features puzzle_gen
+# Generate from every games*.json under one or more directories
+cargo run --release --bin puzzle_gen --features puzzle_gen -- \
+  --corpus path/to/games --out puzzles.csv
+
+# Re-search each stored puzzle at high depth and drop anything no longer sound
+cargo run --release --bin puzzle_gen --features puzzle_gen -- \
+  --deep-verify --out puzzles.csv
+
+# Point at every session/work directory under a shared root instead of listing
+# each --corpus by hand (root via --auto-corpus-root or PUZZLE_GEN_AUTO_CORPUS_ROOT)
+cargo run --release --bin puzzle_gen --features puzzle_gen -- \
+  --auto-corpus --auto-corpus-root /path/to/parent --out puzzles.csv
 ```
+
+Runs are resumable throughout: candidates already tried are checkpointed
+(`<out>.progress`), corpus files already fully mined are recorded in a persistent
+manifest (default `corpus_seen.jsonl`) so a second invocation only looks at what's
+new, and `--recook`/`--deep-verify` each keep their own checkpoint too. Pass
+`--explain "<move prefix>"` against an existing CSV to print the per-move
+difficulty breakdown behind a puzzle's rating. Run with `--help` for the full
+flag list.
 
 ### 8. UCI Protocol Bridge (`uci.rs`)
 A UCI-compliant chess engine interface for standard 8×8 chess. Accepts UCI commands on stdin and outputs moves/info to stdout. Compatible with any UCI GUI (Cutechess, Arena, Lichess, etc.).
