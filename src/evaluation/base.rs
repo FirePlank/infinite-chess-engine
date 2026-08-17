@@ -3990,6 +3990,76 @@ mod tests {
 
     use crate::game::GameState;
 
+    /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an
+    /// absolute board position rather than one derived from the pieces -- an 8x8
+    /// assumption that also fires arbitrarily once play drifts from the origin.
+    #[test]
+    fn mirror_symmetric_positions_evaluate_to_zero() {
+        use crate::board::PlayerColor;
+        use std::collections::BTreeMap;
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        // One variant at a time: setup_position_from_icn writes global world bounds.
+        let variants = [
+            crate::Variant::Classical,
+            crate::Variant::CoaIP,
+            crate::Variant::CoaIPHO,
+            crate::Variant::CoaIPRO,
+            crate::Variant::CoaIPNO,
+            crate::Variant::Palace,
+            crate::Variant::Standarch,
+            crate::Variant::Obstocean,
+            crate::Variant::Knightline,
+            crate::Variant::Core,
+            crate::Variant::ConfinedClassical,
+            crate::Variant::Chess,
+            crate::Variant::ScatteredLeapers,
+            crate::Variant::ClassicalPlus,
+            crate::Variant::DoubleKingClassical,
+        ];
+        for v in variants {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(v.starting_icn());
+
+            let mut white: BTreeMap<(i64, i64), u8> = BTreeMap::new();
+            let mut black: BTreeMap<(i64, i64), u8> = BTreeMap::new();
+            for (x, y, p) in game.board.iter_all_pieces() {
+                match p.color() {
+                    PlayerColor::White => white.insert((x, y), p.piece_type() as u8),
+                    PlayerColor::Black => black.insert((x, y), p.piece_type() as u8),
+                    PlayerColor::Neutral => continue,
+                };
+            }
+            if white.len() != black.len() || white.is_empty() {
+                continue;
+            }
+            let (Some(wmin), Some(bmax)) = (
+                white.keys().map(|k| k.1).min(),
+                black.keys().map(|k| k.1).max(),
+            ) else {
+                continue;
+            };
+            let axis = wmin + bmax;
+            if white
+                .iter()
+                .any(|((x, y), pt)| black.get(&(*x, axis - *y)) != Some(pt))
+            {
+                continue; // not a mirror; an imbalance here is legitimate
+            }
+
+            checked += 1;
+            let score = evaluate_inner(&game);
+            if score != 0 {
+                offenders.push(format!("{v:?} evaluates {score} in a colour mirror"));
+            }
+        }
+
+        assert!(checked >= 10, "expected several mirror variants, saw {checked}");
+        assert!(offenders.is_empty(), "{}", offenders.join("; "));
+    }
+
     /// The trace must be an accounting identity: summing the rows has to
     /// reproduce the base evaluation exactly, or every CP tuned against it is
     /// tuned against the wrong number.
