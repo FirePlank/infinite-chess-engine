@@ -4405,7 +4405,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Quiet move pruning
                 let hist_idx = hash_move_dest(&m);
                 let main_hist = searcher.history[p_type as usize][hist_idx];
-                let history = main_hist;
+                // The reduction path already reads continuation history; the pruning
+                // path saw only main history and so judged the same move on less.
+                let history = main_hist + searcher.cont_hist_reduction_score(ply, &m);
 
                 // History-based pruning: skip moves with very bad history
                 if history < -4083 * depth as i32 && !is_obstocean_breakout {
