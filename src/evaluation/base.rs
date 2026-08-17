@@ -681,13 +681,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut cloud_count: i64 = 0;
     let mut cloud_spread_sum: i64 = 0;
 
+    // Doubled units throughout the cloud: the kings' midpoint lands on a half
+    // square whenever they sit an odd distance apart, and truncating it biases
+    // every distance measured from it by colour.
     let (ref_x, ref_y) = match (white_king, black_king) {
-        (Some(wk), Some(bk)) => (
-            wk.x / 2 + bk.x / 2 + (wk.x % 2 + bk.x % 2) / 2,
-            wk.y / 2 + bk.y / 2 + (wk.y % 2 + bk.y % 2) / 2,
-        ),
-        (Some(wk), None) => (wk.x, wk.y),
-        (None, Some(bk)) => (bk.x, bk.y),
+        (Some(wk), Some(bk)) => (wk.x + bk.x, wk.y + bk.y),
+        (Some(wk), None) => (2 * wk.x, 2 * wk.y),
+        (None, Some(bk)) => (2 * bk.x, 2 * bk.y),
         (None, None) => (0, 0),
     };
 
@@ -980,16 +980,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 if !is_neutral && pt != PieceType::Pawn {
                                     let cw = get_centrality_weight(pt);
                                     if cw > 0 {
-                                        let dx = x - ref_x;
-                                        let dy = y - ref_y;
-                                        let cdx = dx.clamp(
-                                            -cloud_center_max_skew_dist() as i64,
-                                            cloud_center_max_skew_dist() as i64,
-                                        );
-                                        let cdy = dy.clamp(
-                                            -cloud_center_max_skew_dist() as i64,
-                                            cloud_center_max_skew_dist() as i64,
-                                        );
+                                        let dx = 2 * x - ref_x;
+                                        let dy = 2 * y - ref_y;
+                                        let skew2 = 2 * cloud_center_max_skew_dist() as i64;
+                                        let cdx = dx.clamp(-skew2, skew2);
+                                        let cdy = dy.clamp(-skew2, skew2);
                                         cloud_sum_dx += cw * cdx;
                                         cloud_sum_dy += cw * cdy;
                                         cloud_count += cw;
@@ -1441,8 +1436,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         // toward one side, biasing every cloud distance by colour.
                         let cloud_center = if cloud_count > 0 {
                             Some(Coordinate {
-                                x: 2 * ref_x + (2 * cloud_sum_dx) / cloud_count,
-                                y: 2 * ref_y + (2 * cloud_sum_dy) / cloud_count,
+                                x: ref_x + cloud_sum_dx / cloud_count,
+                                y: ref_y + cloud_sum_dy / cloud_count,
                             })
                         } else {
                             None
@@ -1450,7 +1445,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         // Weighted average Chebyshev distance of pieces from the kings' midpoint.
                         // Low = tight/closed position (leapers thrive), High = spread/open (sliders dominate).
                         let cloud_avg_spread = if cloud_count > 0 {
-                            (cloud_spread_sum / cloud_count) as i32
+                            (cloud_spread_sum / cloud_count / 2) as i32
                         } else {
                             8 // neutral fallback
                         };
@@ -2616,8 +2611,15 @@ pub fn evaluate_bishop(
         _ => 100,
     };
 
-    // Long diagonal control bonus: bishops near "main" diagonals get a small bonus.
-    if (x - y).abs() <= 1 || (x + y - 8).abs() <= 1 {
+    // Long diagonal control bonus. A diagonal at a fixed absolute position means
+    // nothing on an unbounded board and is not colour-symmetric, so anchor both to
+    // the kings' midpoint. Doubled units keep a half-square midpoint exact.
+    let (rx2, ry2) = match (white_royals.first(), black_royals.first()) {
+        (Some(wk), Some(bk)) => (wk.x + bk.x, wk.y + bk.y),
+        (Some(k), None) | (None, Some(k)) => (2 * k.x, 2 * k.y),
+        (None, None) => (0, 0),
+    };
+    if (2 * (x - y) - (rx2 - ry2)).abs() <= 2 || (2 * (x + y) - (rx2 + ry2)).abs() <= 2 {
         bonus += 8;
     }
 
