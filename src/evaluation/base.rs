@@ -1436,10 +1436,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Post-Pass processing
                         let final_phase = effective_phase(phase, game.initial_phase);
+                        // Doubled units: the centroid of a symmetric position lands on a
+                        // half square, and truncating it to an integer moves the centre
+                        // toward one side, biasing every cloud distance by colour.
                         let cloud_center = if cloud_count > 0 {
                             Some(Coordinate {
-                                x: ref_x + cloud_sum_dx / cloud_count,
-                                y: ref_y + cloud_sum_dy / cloud_count,
+                                x: 2 * ref_x + (2 * cloud_sum_dx) / cloud_count,
+                                y: 2 * ref_y + (2 * cloud_sum_dy) / cloud_count,
                             })
                         } else {
                             None
@@ -1926,8 +1929,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         let piece_val = get_piece_value_base(pt);
 
         if let Some(center) = &cloud_center {
-            let dx = (x - center.x).abs();
-            let dy = (y - center.y).abs();
+            let dx = (2 * x - center.x).abs() / 2;
+            let dy = (2 * y - center.y).abs() / 2;
             let cheb = dx.max(dy);
 
             if pt != PieceType::Pawn && !pt.is_royal() && cheb > piece_cloud_cheb_radius() as i64 {
@@ -1947,8 +1950,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                         lane_dist = lane_dist.min(dx.min(dy));
                     }
                     if is_diag || is_queen {
-                        let d1 = ((x - y) - (center.x - center.y)).abs();
-                        let d2 = ((x + y) - (center.x + center.y)).abs();
+                        let d1 = (2 * (x - y) - (center.x - center.y)).abs() / 2;
+                        let d2 = (2 * (x + y) - (center.x + center.y)).abs() / 2;
                         lane_dist = lane_dist.min(d1.min(d2));
                     }
 
@@ -2730,7 +2733,7 @@ fn evaluate_leaper_positioning(
     // 1. CLOUD PROXIMITY: reward being near the piece cloud center
     let scale = (piece_value / leaper_tropism_divisor()).max(1);
     if let Some(center) = cloud_center {
-        let dist = (x - center.x).abs().max((y - center.y).abs());
+        let dist = (2 * x - center.x).abs().max((2 * y - center.y).abs()) / 2;
         if dist <= 10 {
             bonus += (11 - dist as i32) * (scale / 3).max(1);
         }
