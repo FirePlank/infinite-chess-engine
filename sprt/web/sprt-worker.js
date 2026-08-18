@@ -500,7 +500,7 @@ async function ensureInit(mtThreadsOld, mtThreadsNew, hashOldMb, hashNewMb) {
     }
 }
 
-async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed, oldStrength) {
+async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed, oldStrength, maxplyAdjudication) {
     if (typeof wasmNew.reset_engine_state === 'function') {
         wasmNew.reset_engine_state();
     }
@@ -530,6 +530,10 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
     // simply never adjudicate.
     let lastEvalNew = null;
     let lastEvalOld = null;
+    // Live adjudication requires both engines to agree on the SAME side for 3
+    // consecutive plies in a row (matches src/bin/sprt.rs), not just once.
+    let adjudicationSide = null;
+    let adjudicationStreak = 0;
 
     const isRoyalPiece = (piece) => piece && ['k', 'y', 'd'].includes(piece.piece_type);
     const startingRoyalCounts = {
@@ -1036,7 +1040,8 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             }
 
             // winner, stop early and award the game. Only start checking after at
-            // least 20 plies, and only if both engines have provided evals.
+            // least 20 plies, and only if both engines have provided evals. Requires
+            // 3 consecutive plies of agreement, not just one (see adjudicationStreak).
             // Moved to the end of the loop so it only triggers if rule-based terminal states didn't match.
             if (moveHistory.length >= 20 && lastEvalNew !== null && lastEvalOld !== null) {
                 const threshold = typeof materialThreshold === 'number' ? materialThreshold : 0;
@@ -1051,10 +1056,19 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                     const newWinner = winnerFromWhiteEval(lastEvalNew);
                     const oldWinner = winnerFromWhiteEval(lastEvalOld);
 
-                    let winningColor = null;
+                    let agreedSide = null;
                     if (newWinner && oldWinner && newWinner === oldWinner) {
-                        winningColor = newWinner;
+                        agreedSide = newWinner;
                     }
+
+                    if (agreedSide && agreedSide === adjudicationSide) {
+                        adjudicationStreak++;
+                    } else {
+                        adjudicationSide = agreedSide;
+                        adjudicationStreak = agreedSide ? 1 : 0;
+                    }
+
+                    const winningColor = adjudicationStreak >= 3 ? adjudicationSide : null;
 
                     if (winningColor) {
                         const terminal = getTerminalResult(' (terminal state detected during adjudication)');
@@ -1086,6 +1100,31 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
     // Before declaring max_moves draw, check if the last move delivered checkmate/stalemate
     const terminal = getTerminalResult(' on final move');
     if (terminal) return terminal;
+
+    // Max-ply adjudication (matches src/bin/sprt.rs): if both engines' last-seen
+    // eval (White's POV) agree one side is ahead by the threshold, award that
+    // side the point instead of scoring a draw at the move cap.
+    const threshold = typeof maxplyAdjudication === 'number' ? maxplyAdjudication : 0;
+    if (threshold > 0 && lastEvalNew !== null && lastEvalOld !== null) {
+        const sideFor = (w) => {
+            if (w >= threshold) return true;
+            if (w <= -threshold) return false;
+            return null;
+        };
+        const sideNew = sideFor(lastEvalNew);
+        const sideOld = sideFor(lastEvalOld);
+        if (sideNew !== null && sideNew === sideOld) {
+            const whiteWon = sideNew;
+            const result = whiteWon === newPlaysWhite ? 'win' : 'loss';
+            const result_token = whiteWon ? '1-0' : '0-1';
+            for (const s of texelSamples) {
+                s.result_token = result_token;
+            }
+            moveLines.push('# Max-ply adjudication: ~' + (whiteWon ? Math.min(lastEvalNew, lastEvalOld) : Math.max(lastEvalNew, lastEvalOld)) +
+                ' cp for ' + (whiteWon ? 'White' : 'Black') + ' (threshold ' + threshold + ' cp, both engines agree, on move cap)');
+            return { result, log: moveLines.join('\n'), reason: 'maxply_adjudication', samples: texelSamples };
+        }
+    }
 
     for (const s of texelSamples) {
         s.result_token = '1/2-1/2';
@@ -1120,7 +1159,8 @@ self.onmessage = async (e) => {
                 msg.maxDepth,
                 msg.searchNoise,
                 msg.seed,
-                msg.oldStrength
+                msg.oldStrength,
+                msg.maxplyAdjudication
             );
 
             // Timeout wrapper - treat timeout as draw

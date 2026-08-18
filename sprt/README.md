@@ -59,10 +59,10 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--min-games <N>` | `250` | Minimum games before SPRT can terminate |
 | `--model <M>` | `normalized` | SPRT model: `normalized` (nElo bounds — draw-rate/TC independent, recommended) or `logistic` (classic Elo-point bounds) |
 | `--elo0 <F>` | `0.0` | H0 bound (no improvement), in the units of `--model` |
-| `--elo1 <F>` | `2.0` | H1 bound (improvement), in the units of `--model` |
+| `--elo1 <F>` | `5.0` | H1 bound (improvement), in the units of `--model` |
 | `--alpha <F>` | `0.05` | Type I error rate (false positive) |
 | `--beta <F>` | `0.05` | Type II error rate (false negative) |
-| `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate (0 = disabled) |
+| `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate; both engines must agree for 3 consecutive plies (0 = disabled) |
 | `--maxply-adjudication <N>` | `1000` | The threshold (cp) which awards a point instead of a draw when the move cap is reached (0 = disabled) |
 | `--max-moves <N>` | `300` | Max plies before forced draw |
 | `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |

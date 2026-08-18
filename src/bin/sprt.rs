@@ -48,7 +48,7 @@ enum Commands {
 
         /// SPRT bound H1 (Elo difference where new IS better).
         /// Interpreted in the units of --model (normalized nElo by default).
-        #[arg(long, default_value_t = 2.0)]
+        #[arg(long, default_value_t = 5.0)]
         elo1: f64,
 
         /// SPRT statistical model: "normalized" (nElo bounds, draw-rate/TC
@@ -87,7 +87,7 @@ enum Commands {
         )]
         variants: String,
 
-        /// Material threshold for draws
+        /// Material threshold for draws (both engines must agree for 3 consecutive plies)
         #[arg(long, default_value_t = 0)]
         adjudication: i32,
 
@@ -1298,6 +1298,11 @@ fn play_game(
     let mut repetition_counts: HashMap<String, usize> = HashMap::new();
     let mut last_eval_new: Option<i32> = None;
     let mut last_eval_old: Option<i32> = None;
+    // Live adjudication requires both engines to agree on the SAME side for 3
+    // consecutive plies in a row, not just once — a single-ply spike shouldn't
+    // end the game early.
+    let mut adjudication_side: Option<char> = None;
+    let mut adjudication_streak: u32 = 0;
     // Each engine's last search score in White-ahead centipawns (positive =
     // White winning), for the max-ply adjudication when both engines agree.
     let mut last_wscore_new: Option<f64> = None;
@@ -1448,19 +1453,35 @@ fn play_game(
                     None
                 };
 
-                // Only adjudicate if both engines agree on the same winner
+                // Only adjudicate if both engines agree on the same winner, and
+                // have agreed on that same side for 3 consecutive plies running.
                 if let (Some(new_w), Some(old_w)) = (new_winner, old_winner)
                     && new_w == old_w
                 {
-                    let white_winning = new_w == 'w';
-                    let result = if white_winning == new_plays_white {
-                        GameResult::Win
+                    if adjudication_side == Some(new_w) {
+                        adjudication_streak += 1;
                     } else {
-                        GameResult::Loss
-                    };
-                    let result_str = if white_winning { "1-0" } else { "0-1" };
-                    return game_outcome!(result, "material adjudication", result_str);
+                        adjudication_side = Some(new_w);
+                        adjudication_streak = 1;
+                    }
+
+                    if adjudication_streak >= 3 {
+                        let white_winning = new_w == 'w';
+                        let result = if white_winning == new_plays_white {
+                            GameResult::Win
+                        } else {
+                            GameResult::Loss
+                        };
+                        let result_str = if white_winning { "1-0" } else { "0-1" };
+                        return game_outcome!(result, "material adjudication", result_str);
+                    }
+                } else {
+                    adjudication_side = None;
+                    adjudication_streak = 0;
                 }
+            } else {
+                adjudication_side = None;
+                adjudication_streak = 0;
             }
         }
 

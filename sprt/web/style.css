@@ -52,7 +52,10 @@ h1 {
 }
 
 .status-bar {
-  display: flow-root;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .status-dot {
@@ -93,16 +96,13 @@ h1 {
   color: var(--warning);
 }
 
+/* Stacked, not side-by-side: Configuration gets the full container width (same
+   as the KPI bar above it) so its own grid can fit several settings per row;
+   Logs sits below with that same full width instead of being squeezed to half. */
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 1.5rem;
-}
-
-@media (max-width: 800px) {
-  .grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .card {
@@ -199,6 +199,23 @@ select:disabled {
   transition: opacity 0.3s;
 }
 
+.hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  line-height: 1;
+  cursor: help;
+  margin-left: 0.3rem;
+  user-select: none;
+}
+
 .btn-secondary {
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -223,7 +240,7 @@ select:disabled {
   font-family: "Consolas", "Monaco", monospace;
   font-size: 0.8rem;
   line-height: 1.6;
-  max-height: 400px;
+  max-height: 500px;
   overflow-y: auto;
   white-space: pre-wrap;
 }
@@ -318,16 +335,13 @@ select:disabled {
   font-size: 0.75rem;
 }
 
+/* auto-fit: as many ~200px columns as the (now full-width) card allows, down
+   to a single column on narrow viewports — no manual breakpoint needed. */
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 0.75rem 1rem;
-}
-
-@media (max-width: 800px) {
-  .config-grid {
-    grid-template-columns: 1fr;
-  }
+  align-items: start;
 }
 
 /* Skill level popup styles */

@@ -29,7 +29,7 @@
         &nbsp;|&nbsp;
         <span class="status-text" id="sprtStatus">SPRT status: -</span>
 
-        <div class="btn-group" style="display: inline-flex; float: right;">
+        <div class="btn-group" style="margin-left: auto;">
           <button class="btn" id="runSprt" disabled>
             Run SPRT
           </button>
@@ -90,17 +90,6 @@
 
         <div class="config-grid">
           <div class="form-group">
-            <label>Bounds Preset</label>
-            <select id="sprtBoundsPreset">
-              <option value="all" selected>All (0 to +10 Elo)</option>
-              <option value="stockfish_ltc">Stockfish LTC</option>
-              <option value="stockfish_stc">Stockfish STC</option>
-              <option value="top30">Top 30</option>
-              <option value="top200">Top 200</option>
-            </select>
-          </div>
-
-          <div class="form-group">
             <label>Bounds Mode</label>
             <select id="sprtBoundsMode">
               <option value="gainer">Gainer</option>
@@ -138,15 +127,18 @@
             <input type="text" id="sprtConcurrency" value="50" />
           </div>
 
-          <!-- Shown only for MT-capable builds (see updateMTUI). Default 1 = single-threaded. -->
-          <div class="form-group" style="display:none;">
-            <label>MT threads (old engine)</label>
-            <input type="number" id="sprtMtThreadsOld" value="1" min="1" max="16" step="1" />
-          </div>
-
-          <div class="form-group" style="display:none;">
-            <label>MT threads (new engine)</label>
-            <input type="number" id="sprtMtThreadsNew" value="1" min="1" max="16" step="1" />
+          <!-- Shown only for MT-capable builds (see updateMTUI). Default 1 = single-threaded.
+               Each side's input hides independently since old/new may differ in MT support. -->
+          <div class="form-group" id="sprtMtThreadsGroup" style="display:none;">
+            <label>MT threads (old / new)</label>
+            <div style="display:flex; gap:6px;">
+              <div id="sprtMtThreadsOldWrap" style="width:50%; display:none;">
+                <input type="number" id="sprtMtThreadsOld" value="1" min="1" max="16" step="1" style="width:100%;" />
+              </div>
+              <div id="sprtMtThreadsNewWrap" style="width:50%; display:none;">
+                <input type="number" id="sprtMtThreadsNew" value="1" min="1" max="16" step="1" style="width:100%;" />
+              </div>
+            </div>
           </div>
 
           <div class="form-group">
@@ -173,8 +165,13 @@
           </div>
 
           <div class="form-group">
-            <label for="sprtMaterialAdjudication">Adjudication (cp):</label>
-            <input type="number" id="sprtMaterialAdjudication" value="0" min="0" step="100" />
+            <label>Adjudication (cp): Live / Max-ply
+              <span class="hint" tabindex="0" title="Live: once both engines' eval agree the SAME side is ahead by this many cp for 3 consecutive plies in a row (after ply 20), the game ends early. Max-ply: only checked at the move cap — turns what would be a draw into a win if both engines still agree who's ahead. Either 0 disables that one.">?</span>
+            </label>
+            <div style="display:flex; gap:6px;">
+              <input type="number" id="sprtMaterialAdjudication" value="0" min="0" step="100" style="width:50%;" title="Live adjudication threshold" />
+              <input type="number" id="sprtMaxplyAdjudication" value="1000" min="0" step="100" style="width:50%;" title="Max-ply adjudication threshold" />
+            </div>
           </div>
           <div class="form-group">
             <label for="sprtSearchNoise">Search Noise (cp):</label>
@@ -205,7 +202,7 @@
       </div>
 
       <!-- SPRT Test -->
-      <div class="card" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+      <div class="card" style="display: flex; flex-direction: column; overflow: hidden;">
         <h2 class="card-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -214,20 +211,6 @@
             <line x1="16" y1="17" x2="8" y2="17" />
           </svg>
           SPRT Logs
-        </h2>
-
-        <div class="output" id="sprtOutput"></div>
-        <br />
-
-        <!-- Game Log -->
-        <h2 class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="16" y1="13" x2="8" y2="13" />
-            <line x1="16" y1="17" x2="8" y2="17" />
-          </svg>
-          Game Logs
           <button class="btn btn-secondary btn-sm" id="downloadLogs">
             Download Logs
           </button>
@@ -236,7 +219,7 @@
           </button>
         </h2>
 
-        <div class="output" id="gameLog"></div>
+        <div class="output" id="sprtOutput"></div>
 
         <div class="icn-output" id="icnOutput" style="display: none">
           <strong>ICN (paste into browser):</strong><br />

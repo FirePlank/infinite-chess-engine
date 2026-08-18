@@ -40,9 +40,11 @@ function recomputeConcurrencyCap() {
 /** One-time MT setup on load: reveals the per-engine thread inputs, seeds the concurrency cap,
  * adds the badge, and picks a fast default time control. Not called again on thread edits. */
 function updateMTUI() {
-    // Show/enable each engine's thread input only when that build supports threads.
-    sprtMtThreadsOldEl.closest('.form-group').style.display = isOldEngineMT ? '' : 'none';
-    sprtMtThreadsNewEl.closest('.form-group').style.display = isNewEngineMT ? '' : 'none';
+    // Show/enable each engine's thread input only when that build supports threads;
+    // the shared row itself only appears once at least one side has something to show.
+    document.getElementById('sprtMtThreadsOldWrap').style.display = isOldEngineMT ? '' : 'none';
+    document.getElementById('sprtMtThreadsNewWrap').style.display = isNewEngineMT ? '' : 'none';
+    document.getElementById('sprtMtThreadsGroup').style.display = (isOldEngineMT || isNewEngineMT) ? '' : 'none';
 
     if (isOldEngineMT || isNewEngineMT) {
         const { o, n } = currentThreadCounts();
@@ -53,9 +55,9 @@ function updateMTUI() {
         mtStatusEl.textContent = 'MT Enabled';
         log('MT-capable build(s) detected (old=' + (isOldEngineMT ? o : 'ST') + ', new=' + (isNewEngineMT ? n : 'ST') + '). Concurrency capped at ' + cap + ' games.', 'info');
 
-        // Default to a fast STC for MT experiments, once at load, not per thread edit.
+        // Default to a fixed TC for MT experiments, once at load, not per thread edit.
         sprtTcMode.value = 'standard';
-        sprtTimeControlEl.value = '3+0.03';
+        sprtTimeControlEl.value = '10+0.1';
         updateTcUi();
     }
 }
@@ -64,7 +66,6 @@ function updateMTUI() {
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const mtStatusEl = document.getElementById('mtStatus');
-const sprtBoundsPreset = document.getElementById('sprtBoundsPreset');
 const sprtBoundsMode = document.getElementById('sprtBoundsMode');
 const sprtAlphaEl = document.getElementById('sprtAlpha');
 const sprtBetaEl = document.getElementById('sprtBeta');
@@ -82,6 +83,7 @@ const sprtMinGames = document.getElementById('sprtMinGames');
 const sprtMaxGames = document.getElementById('sprtMaxGames');
 const sprtMaxMoves = document.getElementById('sprtMaxMoves');
 const sprtMaterialThresholdEl = document.getElementById('sprtMaterialAdjudication');
+const sprtMaxplyAdjudicationEl = document.getElementById('sprtMaxplyAdjudication');
 const sprtSearchNoiseEl = document.getElementById('sprtSearchNoise');
 const sprtVariantPresetsEl = document.getElementById('sprtVariantPresets');
 const sprtVariantsEl = document.getElementById('sprtVariants');
@@ -100,7 +102,6 @@ const sprtLLRBoundsEl = document.getElementById('sprtLLRBounds');
 const sprtLOSContainer = document.getElementById('sprtLOSContainer');
 const sprtLOSEl = document.getElementById('sprtLOS');
 const sprtOutput = document.getElementById('sprtOutput');
-const gameLogEl = document.getElementById('gameLog');
 const copyLogBtn = document.getElementById('copyLog');
 const downloadLogsBtn = document.getElementById('downloadLogs');
 const downloadGamesTxtBtn = document.getElementById('downloadGames-txt');
@@ -144,12 +145,11 @@ let activeWorkerResolvers = [];
 // SPRT configuration
 const CONFIG = {
     elo0: 0,
-    elo1: 2,
+    elo1: 5,
     // SPRT model: 'normalized' (nElo bounds, draw-rate/TC independent) or 'logistic'.
     model: 'normalized',
     alpha: 0.05,
     beta: 0.05,
-    boundsPreset: 'stockfish_stc',
     boundsMode: 'gainer',
     timeControl: '10+0.1',
     tcMode: 'smart_mix',
@@ -162,6 +162,7 @@ const CONFIG = {
     hashOldMb: 16,
     hashNewMb: 16,
     materialThreshold: 0,
+    maxplyAdjudication: 1000,
 
     searchNoise: 50,
 };
@@ -288,21 +289,34 @@ function loadVariants() {
     loadVariantSelection('Saved');
 }
 
+// preset name -> its button, so the highlight can be recomputed after any
+// selection change (preset click OR manual multi-select edit).
+const presetButtons = {};
+
 function populateVariantPresets() {
     Object.keys(VARIANT_PRESETS).forEach(preset => {
         const btn = document.createElement('button');
         btn.addEventListener('click', () => loadVariantSelection(preset));
 
-        // Fill in the content and styles
-        if (preset === 'Default') {
-            btn.textContent = 'Default (base only)';
-            btn.classList.add('btn', 'btn-sm');
-        } else {
-            btn.textContent = preset.replace(/_/g, ' ');
-            btn.classList.add('btn', 'btn-secondary', 'btn-sm');
-        }
+        // Base style only; syncPresetButtonHighlight() decides blue vs gray.
+        btn.textContent = preset === 'Default' ? 'Default (base only)' : preset.replace(/_/g, ' ');
+        btn.classList.add('btn', 'btn-secondary', 'btn-sm');
 
+        presetButtons[preset] = btn;
         sprtVariantPresetsEl.appendChild(btn);
+    });
+}
+
+// A preset is "active" (blue) only when the current selection is EXACTLY its
+// variant set — including via manually clicking the same variants by hand.
+// No match (a custom mix) leaves every preset button gray.
+function syncPresetButtonHighlight() {
+    const current = new Set(selectedVariants);
+    Object.entries(VARIANT_PRESETS).forEach(([preset, variants]) => {
+        const presetSet = variants === true ? new Set(availableVariants) : new Set(variants);
+        const matches = presetSet.size === current.size &&
+            [...presetSet].every(v => current.has(v));
+        presetButtons[preset]?.classList.toggle('btn-secondary', !matches);
     });
 }
 
@@ -385,6 +399,7 @@ function updateSelectedVariants() {
     selectedVariants = Array.from(sprtVariantsEl.selectedOptions).map(option => option.value);
     saveVariantSelection();
     buildVariantQueue();
+    syncPresetButtonHighlight();
 }
 
 function buildVariantQueue() {
@@ -433,27 +448,11 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-const BOUNDS_PRESETS = {
-    stockfish_ltc: {
-        gainer: [0.5, 2.5],
-        nonreg: [-1.75, 0.25],
-    },
-    stockfish_stc: {
-        gainer: [0, 2],
-        nonreg: [-1.75, 0.25],
-    },
-    top30: {
-        gainer: [0, 3],
-        nonreg: [-3, 1],
-    },
-    top200: {
-        gainer: [0, 5],
-        nonreg: [-5, 0],
-    },
-    all: {
-        gainer: [0, 10],
-        nonreg: [-10, 0],
-    },
+// Fixed bounds — the preset dropdown was removed; only Bounds Mode selects
+// between these two.
+const BOUNDS = {
+    gainer: [0, 5],
+    nonreg: [-2, 0],
 };
 
 function getStandardPosition() {
@@ -580,6 +579,8 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
         if (endReason === 'material_adjudication') {
             const th = typeof materialThreshold === 'number' && materialThreshold > 0 ? materialThreshold : 1500;
             termination = `Material adjudication (|eval| >= ${th} cp)`;
+        } else if (endReason === 'maxply_adjudication') {
+            termination = 'Max-ply adjudication (move cap, engines agree on eval)';
         } else if (endReason === 'illegal_move') {
             let detail = null;
             if (workerLog) {
@@ -684,25 +685,22 @@ function generateICNFromWorkerLog(workerLog, gameIndex, result, newPlaysWhite, e
     return `${headers} ${setupIcn}`;
 }
 
+// Single log sink (was split across a "SPRT Logs" and a duplicate "Game Logs"
+// panel that printed near-identical lines for every event; merged into one).
 function log(message, type) {
     const time = new Date().toLocaleTimeString();
     const entry = document.createElement('div');
-    entry.className = 'log-entry';
-    entry.innerHTML = '<span class="log-time">[' + time + ']</span> <span class="log-' + type + '">' + message + '</span>';
-    gameLogEl.appendChild(entry);
-    gameLogEl.scrollTop = gameLogEl.scrollHeight;
-}
-
-function sprtLog(message, type) {
-    const entry = document.createElement('div');
-    entry.textContent = message;
-    if (type) entry.className = 'log-' + type;
+    entry.className = 'log-entry' + (type ? ' log-' + type : '');
+    entry.innerHTML = '<span class="log-time">[' + time + ']</span> <span class="log-' + (type || 'info') + '">' + message + '</span>';
     sprtOutput.appendChild(entry);
     sprtOutput.scrollTop = sprtOutput.scrollHeight;
 }
 
+// Kept as an alias: most SPRT-progress call sites were written against this name.
+const sprtLog = log;
+
 function clearLog() {
-    gameLogEl.innerHTML = '';
+    sprtOutput.innerHTML = '';
 }
 
 function setStatus(status, text) {
@@ -784,13 +782,9 @@ function getTcParams(mode, valStr, pairIndex) {
     };
 }
 
-function applyBoundsPreset() {
-    const preset = BOUNDS_PRESETS[CONFIG.boundsPreset];
-    if (!preset) return;
+function applyBounds() {
     const mode = CONFIG.boundsMode === 'nonreg' ? 'nonreg' : 'gainer';
-    const pair = preset[mode];
-    if (!pair) return;
-    [CONFIG.elo0, CONFIG.elo1] = pair;
+    [CONFIG.elo0, CONFIG.elo1] = BOUNDS[mode];
 }
 
 async function initWasm() {
@@ -972,7 +966,6 @@ async function runSprt() {
     sprtRunning = true;
 
     // Read configuration from UI into global CONFIG first (to persist defaults)
-    CONFIG.boundsPreset = sprtBoundsPreset.value || 'stockfish_stc';
     CONFIG.boundsMode = sprtBoundsMode.value || 'gainer';
     CONFIG.alpha = parseFloat(sprtAlphaEl.value) || 0.05;
     CONFIG.beta = parseFloat(sprtBetaEl.value) || 0.05;
@@ -1010,6 +1003,9 @@ async function runSprt() {
         const mtVal = (sprtMaterialThresholdEl.value || '').trim();
         const mt = parseInt(mtVal, 10);
         CONFIG.materialThreshold = (mtVal !== "" && Number.isFinite(mt) && mt >= 0) ? mt : 0;
+        const mplyVal = (sprtMaxplyAdjudicationEl.value || '').trim();
+        const mply = parseFloat(mplyVal);
+        CONFIG.maxplyAdjudication = (mplyVal !== "" && Number.isFinite(mply) && mply >= 0) ? mply : 0;
         const noiseVal = (sprtSearchNoiseEl.value || '').trim();
         const noise = parseInt(noiseVal, 10);
         CONFIG.searchNoise = (noiseVal !== "" && Number.isFinite(noise) && noise >= 0) ? noise : 0;
@@ -1020,7 +1016,7 @@ async function runSprt() {
     if (CONFIG.minGames % 2 !== 0) CONFIG.minGames++;
     if (CONFIG.maxGames % 2 !== 0) CONFIG.maxGames++;
 
-    applyBoundsPreset(); // This updates CONFIG.elo0/elo1 based on preset
+    applyBounds(); // This updates CONFIG.elo0/elo1 based on boundsMode
 
     // --- SNAPSHOT CONFIGURATION ---
     // Create a local runConfig to isolate this run from future UI/global changes
@@ -1127,6 +1123,7 @@ async function runSprt() {
             maxMoves: (variantName === 'Abundance' && Number.isFinite(maxMovesPerGame) && isMultiVariantRun) ? Math.min(maxMovesPerGame * 1.5, 1000) : maxMovesPerGame,
             newPlaysWhite,
             materialThreshold: runConfig.materialThreshold,
+            maxplyAdjudication: runConfig.maxplyAdjudication,
             searchNoise: runConfig.searchNoise,
             seed: sprtBaseSeed + pairIndex,
             baseTimeMs: tcParams.baseTimeMs,
@@ -1204,79 +1201,80 @@ async function runSprt() {
                             const total = wins + losses + draws;
 
                             // Bucket the pentanomial pair once both games of (2k, 2k+1) are in.
+                            // Everything below — LLR/Elo, the display, and the termination check
+                            // — only refreshes on that pair boundary, matching src/bin/sprt.rs
+                            // (its worker channel batches a pair's two outcomes into one message,
+                            // so its status line/log only ever updates per pair, never per game).
                             pendingPairResults[msg.gameIndex] = result;
                             const partnerIndex = msg.gameIndex ^ 1;
-                            if (Object.prototype.hasOwnProperty.call(pendingPairResults, partnerIndex)) {
+                            const pairCompleted = Object.prototype.hasOwnProperty.call(pendingPairResults, partnerIndex);
+
+                            let reachedBounds = false;
+                            let reachedMax = false;
+
+                            if (pairCompleted) {
                                 pentaCounts.addPair(pendingPairResults[msg.gameIndex], pendingPairResults[partnerIndex]);
                                 delete pendingPairResults[msg.gameIndex];
                                 delete pendingPairResults[partnerIndex];
+
+                                // Pentanomial LLR/Elo drive the decision (matches src/bin/sprt.rs & Fishtest).
+                                llr = calculatePentanomialLLR(pentaCounts, runConfig.elo0, runConfig.elo1, runConfig.model);
+                                const { elo, error, nelo, neloError } = estimatePentanomialElo(pentaCounts);
+
+                                // update last stats snapshot so Stop can show partial results
+                                lastWins = wins;
+                                lastLosses = losses;
+                                lastDraws = draws;
+                                lastElo = elo;
+                                lastEloError = error;
+                                lastNelo = nelo;
+                                lastNeloError = neloError;
+                                lastLLR = llr;
+                                lastTimeoutLosses = timeoutLosses;
+
+                                const totalPairs = pentaCounts.totalPairs;
+                                sprtGamesEl.textContent = String(total);
+                                sprtPairsEl.textContent = String(totalPairs);
+                                sprtWinsEl.textContent = String(wins);
+                                sprtLossesEl.textContent = String(losses);
+                                sprtDrawsEl.textContent = String(draws);
+
+                                sprtLLREl.textContent = String(llr.toFixed(2));
+                                // 0% at the lower bound, 100% at the upper bound, so llr=0 sits at the midpoint.
+                                const llrProgress = (llr - bounds.lower) / (bounds.upper - bounds.lower) * 100;
+                                sprtLLRContainer.style.setProperty('--progress', Math.min(Math.max(llrProgress, 0), 100) + '%');
+
+                                let los_percent = calculateLOS(pentaCounts.score, pentaCounts.variance / totalPairs) * 100;
+                                if (isNaN(los_percent)) {
+                                    los_percent = 50;
+                                }
+                                sprtLOSEl.textContent = los_percent.toFixed(1) + '%';
+                                sprtLOSContainer.style.setProperty('--progress', los_percent + '%');
+
+                                sprtEloEl.textContent = String(elo.toFixed(1));
+                                if (elo >= 1) {
+                                    sprtEloEl.style.color = 'var(--success)';
+                                } else if (elo <= -1) {
+                                    sprtEloEl.style.color = 'var(--error)';
+                                } else {
+                                    sprtEloEl.style.color = 'var(--text-dim)';
+                                }
+                                sprtEloErrorEl.textContent = String(error.toFixed(1));
+
+                                log(
+                                    'Games: ' + total + (maxGames === Infinity ? '' : '/' + maxGames) +
+                                    ' (' + totalPairs + ' pairs)' +
+                                    '  W:' + wins + ' L:' + losses + ' D:' + draws +
+                                    '  Elo: ' + elo.toFixed(2) + ' ± ' + error.toFixed(2) +
+                                    '  nElo: ' + nelo.toFixed(1) +
+                                    '  LLR: ' + llr.toFixed(2) +
+                                    ' [' + bounds.lower.toFixed(2) + ', ' + bounds.upper.toFixed(2) + ']',
+                                    'info'
+                                );
+
+                                reachedBounds = total >= runConfig.minGames && (llr >= bounds.upper || llr <= bounds.lower);
+                                reachedMax = total >= runConfig.maxGames;
                             }
-
-                            // Pentanomial LLR/Elo drive the decision (matches src/bin/sprt.rs & Fishtest).
-                            llr = calculatePentanomialLLR(pentaCounts, runConfig.elo0, runConfig.elo1, runConfig.model);
-                            const { elo, error, nelo, neloError } = estimatePentanomialElo(pentaCounts);
-
-                            // update last stats snapshot so Stop can show partial results
-                            lastWins = wins;
-                            lastLosses = losses;
-                            lastDraws = draws;
-                            lastElo = elo;
-                            lastEloError = error;
-                            lastNelo = nelo;
-                            lastNeloError = neloError;
-                            lastLLR = llr;
-                            lastTimeoutLosses = timeoutLosses;
-
-                            let totalPairs = pentaCounts.totalPairs;
-                            sprtGamesEl.textContent = String(total);
-                            sprtPairsEl.textContent = String(totalPairs);
-                            sprtWinsEl.textContent = String(wins);
-                            sprtLossesEl.textContent = String(losses);
-                            sprtDrawsEl.textContent = String(draws);
-
-                            sprtLLREl.textContent = String(llr.toFixed(2));
-                            // 0% at the lower bound, 100% at the upper bound, so llr=0 sits at the midpoint.
-                            const llrProgress = (llr - bounds.lower) / (bounds.upper - bounds.lower) * 100;
-                            sprtLLRContainer.style.setProperty('--progress', Math.min(Math.max(llrProgress, 0), 100) + '%');
-
-                            let los_percent = calculateLOS(pentaCounts.score, pentaCounts.variance / totalPairs) * 100;
-                            if (isNaN(los_percent)) {
-                                los_percent = 50;
-                            }
-                            sprtLOSEl.textContent = los_percent.toFixed(1) + '%';
-                            sprtLOSContainer.style.setProperty('--progress', los_percent + '%');
-
-                            sprtEloEl.textContent = String(elo.toFixed(1));
-                            if (elo >= 1) {
-                                sprtEloEl.style.color = 'var(--success)';
-                            } else if (elo <= -1) {
-                                sprtEloEl.style.color = 'var(--error)';
-                            } else {
-                                sprtEloEl.style.color = 'var(--text-dim)';
-                            }
-                            sprtEloErrorEl.textContent = String(error.toFixed(1));
-
-                            sprtLog('Game ' + total + ': ' + result +
-                                ' | W: ' + wins + ' L: ' + losses + ' D: ' + draws +
-                                ' | Elo: ' + elo.toFixed(2) + ' ± ' + error.toFixed(2) +
-                                ' | LLR: ' + llr.toFixed(2)
-                            );
-
-                            log(
-                                'Games: ' + total + (maxGames === Infinity ? '' : '/' + maxGames) +
-                                '  W:' + wins + ' L:' + losses + ' D:' + draws +
-                                '  Elo: ' + elo.toFixed(2) + ' ± ' + error.toFixed(2) +
-                                '  nElo: ' + nelo.toFixed(1) +
-                                '  LLR: ' + llr.toFixed(2) +
-                                ' [' + bounds.lower.toFixed(2) + ', ' + bounds.upper.toFixed(2) + ']',
-                                'info'
-                            );
-
-                            // Only check SPRT termination after even number of games (completed pairs)
-                            const canTerminate = (total % 2 === 0);
-                            const reachedBounds = canTerminate &&
-                                total >= runConfig.minGames && (llr >= bounds.upper || llr <= bounds.lower);
-                            const reachedMax = canTerminate && total >= runConfig.maxGames;
 
                             activeWorkers--;
 
@@ -1474,7 +1472,7 @@ function stopSprt() {
 }
 
 function copyLog() {
-    const entries = gameLogEl.querySelectorAll('.log-entry');
+    const entries = sprtOutput.querySelectorAll('.log-entry');
     let text = '';
     for (let i = 0; i < entries.length; i++) {
         text += entries[i].textContent + '\n';
@@ -1484,7 +1482,7 @@ function copyLog() {
 }
 
 function downloadLogs() {
-    const entries = gameLogEl.querySelectorAll('.log-entry');
+    const entries = sprtOutput.querySelectorAll('.log-entry');
     if (!entries.length) {
         log('No log entries to download yet', 'warn');
         return;
@@ -1550,13 +1548,11 @@ downloadLogsBtn.addEventListener('click', downloadLogs);
 downloadGamesTxtBtn.addEventListener('click', downloadGames);
 downloadGamesJsonBtn.addEventListener('click', downloadGamesJson);
 sprtVariantsEl.addEventListener('change', updateSelectedVariants);
-sprtBoundsPreset.addEventListener('change', updateBoundsUi);
 sprtTcMode.addEventListener('change', updateTcUi);
 
 function updateBoundsUi() {
-    const preset = sprtBoundsPreset.value;
-    sprtBoundsMode.querySelector('[value="gainer"]').textContent = `Gainer [${BOUNDS_PRESETS[preset].gainer.join(', ')}]`;
-    sprtBoundsMode.querySelector('[value="nonreg"]').textContent = `Non-regression [${BOUNDS_PRESETS[preset].nonreg.join(', ')}]`;
+    sprtBoundsMode.querySelector('[value="gainer"]').textContent = `Gainer [${BOUNDS.gainer.join(', ')}]`;
+    sprtBoundsMode.querySelector('[value="nonreg"]').textContent = `Non-regression [${BOUNDS.nonreg.join(', ')}]`;
 }
 
 function updateTcUi() {
