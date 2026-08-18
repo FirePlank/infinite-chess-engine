@@ -963,7 +963,7 @@ pub struct Searcher {
     // Continuation history, keyed by ply offset (1, 2 and 4 plies ago) then capture,
     // check, previous piece and the from/to hashes. The gravity update self-bounds to
     // 16384, so i16 is lossless and the search's hottest table stays at 25MB.
-    pub cont_history: Box<[[[[[[[i16; 8]; 8]; 8]; 32]; 2]; 2]; 3]>,
+    pub cont_history: Box<[[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3]>,
 
     // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
     // Used for evaluation correction (32*32*32*32*4 = 4MB)
@@ -1114,9 +1114,9 @@ impl Searcher {
             moved_piece_history: vec![0; MAX_PLY],
             cont_history: unsafe {
                 Box::from_raw(Box::into_raw(
-                    vec![0i16; 3 * 2 * 2 * 32 * 8 * 8 * 8].into_boxed_slice(),
+                    vec![0i16; 3 * 2 * 2 * 32 * 16 * 16 * 16].into_boxed_slice(),
                 )
-                    as *mut [[[[[[[i16; 8]; 8]; 8]; 32]; 2]; 2]; 3])
+                    as *mut [[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3])
             },
             cont_corrhist: unsafe {
                 Box::from_raw(
@@ -1578,34 +1578,6 @@ impl Searcher {
         let entry = &mut self.pawn_history[ph_idx][pt_idx][to_idx];
         let cur = *entry as i32;
         *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
-    }
-
-    /// Continuation-history sum over the 1- and 2-ply-back contexts, weighted as
-    /// the move picker weights them so the scales stay comparable.
-    pub fn cont_hist_reduction_score(&self, ply: usize, m: &Move) -> i32 {
-        let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
-        let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
-        const CONT_WEIGHTS: [i32; 2] = [1024, 712];
-        let mut total = 0;
-        for (idx, plies_ago) in [1usize, 2].into_iter().enumerate() {
-            if ply < plies_ago {
-                break;
-            }
-            let Some(prev_move) = self.move_history[ply - plies_ago] else {
-                continue;
-            };
-            let prev_piece = self.moved_piece_history[ply - plies_ago] as usize;
-            if prev_piece >= 32 {
-                continue;
-            }
-            let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
-            let prev_ic = self.in_check_history[ply - plies_ago] as usize;
-            let prev_cap = self.capture_history_stack[ply - plies_ago] as usize;
-            let val = self.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_hash]
-                [cur_from_hash][cur_to_hash] as i32;
-            total += (val * CONT_WEIGHTS[idx]) / 1024;
-        }
-        total
     }
 
     /// Update pawn history for moves that caused beta cutoff.
@@ -4405,9 +4377,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Quiet move pruning
                 let hist_idx = hash_move_dest(&m);
                 let main_hist = searcher.history[p_type as usize][hist_idx];
-                // The reduction path already reads continuation history; the pruning
-                // path saw only main history and so judged the same move on less.
-                let history = main_hist + searcher.cont_hist_reduction_score(ply, &m);
+                let history = main_hist;
 
                 // History-based pruning: skip moves with very bad history
                 if history < -4083 * depth as i32 && !is_obstocean_breakout {
@@ -4678,22 +4648,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             // Late Move Reductions
             let mut reduction: i32 = 0;
-
-            // Captures were exempt from reduction entirely. A late capture whose
-            // capture history is negative is exactly the move to look at cheaply.
-            if depth >= lmr_min_depth()
-                && is_capture
-                && !in_check
-                && !gives_check
-                && !is_royal_capture_win
-                && legal_moves >= lmr_min_moves()
-                && let Some(cap_type) = captured_type
-                && searcher.capture_history[p_type as usize][cap_type as usize] < 0
-                && !see_ge(game, &m, 100)
-            {
-                reduction = 1;
-            }
-
             if depth >= lmr_min_depth()
                 && legal_moves >= lmr_min_moves()
                 && !in_check
@@ -4713,11 +4667,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_score = searcher.history[p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 reduction -= (hist_score + pawn_score) / 4096;
-
-                // "Was this good AFTER that move?" — a different signal class
-                // from main history, already trusted for ordering.
-                let cont_score = searcher.cont_hist_reduction_score(ply, &m);
-                reduction -= cont_score / 4096;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
@@ -5059,48 +5008,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
-
-                // Continuation history keys on a capture dimension, so credit the
-                // capture that cut off there as well, mirroring the quiet branch.
-                let cf_hash = hash_coord_16(m.from.x, m.from.y);
-                let ct_hash = hash_coord_16(m.to.x, m.to.y);
-                const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
-                for (idx, &plies_ago) in [1usize, 2, 4].iter().enumerate() {
-                    if in_check && plies_ago > 2 {
-                        break;
-                    }
-                    if ply >= plies_ago
-                        && let Some(ref prev_move) = searcher.move_history[ply - plies_ago]
-                    {
-                        let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
-                        if prev_piece < 32 {
-                            let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
-                            let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
-                            let prev_cap =
-                                searcher.capture_history_stack[ply - plies_ago] as usize;
-                            let entry = &mut searcher.cont_history[idx][prev_cap][prev_ic]
-                                [prev_piece][prev_to_hash][cf_hash][ct_hash];
-                            let weighted_adj =
-                                (bonus.min(history_bonus_cap()) * CONT_WEIGHTS[idx]) / 1024;
-                            let cur = *entry as i32;
-                            *entry =
-                                (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
-                        }
-                    }
-                }
-
-                // BadCapture is staged after GoodQuiet, so a capture cutoff can have
-                // quiets tried before it; those were refuted and earn their malus too.
-                for quiet in &quiets_searched {
-                    let qidx = hash_move_dest(quiet);
-                    searcher.update_history(quiet.piece.piece_type(), qidx, -bonus);
-                    searcher.update_pawn_history(
-                        game.pawn_hash,
-                        quiet.piece.piece_type(),
-                        qidx,
-                        -bonus * pawn_history_malus_scale(),
-                    );
-                }
             }
             break;
         } else if let Some(cap_type) = captured_type {
@@ -5190,9 +5097,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if best_score <= alpha_orig && legal_moves > 0 && ply > 0 {
         let prior_capture = searcher.capture_history_stack[ply - 1];
 
-        // Continuation history keys on a capture dimension, so it can learn from
-        // either kind; main and pawn history are quiet tables and stay gated below.
-        if let Some(prev_move) = searcher.move_history[ply - 1] {
+        // Only reward quiet moves for now
+        if !prior_capture && let Some(prev_move) = searcher.move_history[ply - 1] {
             let prev_pt = searcher.moved_piece_history[ply - 1] as usize;
             if prev_pt < 32 {
                 let standard_bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
@@ -5236,20 +5142,18 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     }
                 }
 
-                if !prior_capture {
-                    // Update main history for opponent's previous move
-                    let prev_idx = hash_move_dest(&prev_move);
-                    let hist_adj = bonus.clamp(-max_h, max_h);
-                    let entry = &mut searcher.history[prev_pt][prev_idx];
-                    *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
+                // Update main history for opponent's previous move
+                let prev_idx = hash_move_dest(&prev_move);
+                let hist_adj = bonus.clamp(-max_h, max_h);
+                let entry = &mut searcher.history[prev_pt][prev_idx];
+                *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
 
-                    // Update pawn history for non-pawn, non-promotion opponent moves
-                    if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
-                        let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
-                        let pawn_adj =
-                            (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
-                        searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
-                    }
+                // Update pawn history for non-pawn, non-promotion opponent moves
+                if prev_pt != PieceType::Pawn as usize && prev_move.promotion.is_none() {
+                    let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+                    let pawn_adj =
+                        (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
+                    searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
                 }
             }
         }
@@ -5558,7 +5462,7 @@ fn quiescence(
     }
 
     // Sort captures by MVV-LVA
-    sort_captures(game, searcher, &mut tactical_moves);
+    sort_captures(game, &mut tactical_moves);
 
     // Try the TT move first if it was generated here: it caused a cutoff or was
     // best at this position before, so it is a strong first try. Only hoisted when
