@@ -4807,24 +4807,43 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 NodeType::Cut
             };
 
-            // Null window search with possible reduction
             // Store reduction for hindsight depth adjustment in child nodes
             searcher.reduction_stack[ply] = reduction;
-            let mut s = -negamax(&mut NegamaxContext {
-                searcher,
-                game,
-                depth: search_depth,
-                ply: ply + 1,
-                alpha: -alpha - 1,
-                beta: -alpha,
-                allow_null: true,
-                node_type: child_type,
-                was_null_move: false,
-                excluded_move: None,
-            });
+
+            // The first move of a PV node establishes that node's score, so it takes
+            // the full window directly. Scouting it first only yields a bound when it
+            // fails low, and a PV node then reports an upper bound as if it were real.
+            let first_pv_move = is_pv && legal_moves == 1;
+            let mut s = if first_pv_move {
+                -negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: (depth as i32 - 1 + extension).max(0) as usize,
+                    ply: ply + 1,
+                    alpha: -beta,
+                    beta: -alpha,
+                    allow_null: true,
+                    node_type: NodeType::PV,
+                    was_null_move: false,
+                    excluded_move: None,
+                })
+            } else {
+                -negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: search_depth,
+                    ply: ply + 1,
+                    alpha: -alpha - 1,
+                    beta: -alpha,
+                    allow_null: true,
+                    node_type: child_type,
+                    was_null_move: false,
+                    excluded_move: None,
+                })
+            };
 
             // Re-search at full depth if it looks promising
-            if s > alpha && (reduction > 0 || s < beta) {
+            if !first_pv_move && s > alpha && (reduction > 0 || s < beta) {
                 // Re-search with PV-like search if we're in PV, otherwise same child type
                 let research_type = if is_pv { NodeType::PV } else { child_type };
 
