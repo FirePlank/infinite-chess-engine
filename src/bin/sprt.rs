@@ -141,7 +141,7 @@ enum Commands {
         resume: Option<String>,
 
         /// Save the --games file every N completed games when --games is set (0 = every game)
-        #[arg(long, default_value_t = 50)]
+        #[arg(long, default_value_t = 10)]
         save_interval: usize,
     },
 
