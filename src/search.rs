@@ -4612,6 +4612,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
+        // A check delivered right at the horizon would otherwise be resolved by
+        // the qsearch boundary instead of a real reply; give it one more ply.
+        // Gated on !in_check so a forced sequence of replying checks can't chain
+        // extensions indefinitely.
+        if extension == 0 && depth <= 1 && gives_check && !in_check {
+            extension = 1;
+        }
+
         // The child reads this for evaluation smoothing. Set for every move, not only
         // on a beta cutoff, or it reflects a prior sibling's subtree instead.
         searcher.stat_score_stack[ply] = searcher.history[p_type as usize][hash_move_dest(&m)];
