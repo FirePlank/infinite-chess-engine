@@ -83,6 +83,14 @@ const KILL_ZONE_BONUS: i32 = 500;
 // needs the king, so approach is steep; with an overwhelming battery it stays a
 // mild tiebreaker so the pieces do the work without wasted king marches.
 const KING_STEP_NEEDED: i32 = 28;
+/// Our king IS the army's second wall when it owns at most one: the net cannot
+/// close without him, so his march must outweigh piece fidgeting (measured: a
+/// knight reposition gains ~184 while a king step gained only 28, so the king
+/// never walked in and K+Q+N — insufficient without him — never mated).
+const KING_STEP_SOLO_WALL: i32 = 55;
+/// Extra royals need their own march: king distance is measured from
+/// royals[0], so a second king (2K+R) had no reason to ever join the net.
+const KING_STEP_EXTRA_ROYAL: i32 = 30;
 const KING_CAP_NEEDED: i64 = 48;
 const KING_NEAR2_NEEDED: i32 = 160;
 const KING_NEAR4_NEEDED: i32 = 80;
@@ -142,6 +150,11 @@ const TR_CONNECTED: i32 = 80;
 const TR_HANG: i32 = 800;
 
 const LEAPER_ENGAGE_STEP: i32 = 8;
+/// A lone queen cannot mate on the unbounded board (K+Q vs k is insufficient),
+/// so when the queen is the army's only slider the LEAPERS are the mating
+/// pieces and must come in; measured, they otherwise idle 8-12 squares out
+/// while the king and queen squeeze to mobility 1 and never finish.
+const LEAPER_ENGAGE_STEP_ESSENTIAL: i32 = 16;
 const LEAPER_ENGAGE_CAP: i64 = 24;
 const OPPOSITE_SIDE_BONUS: i32 = 10;
 const PROTECTED_PIECE_BONUS: i32 = 25;
@@ -1127,6 +1140,15 @@ fn evaluate_mating_net(
     let ey = enemy_king.y;
     let mut bonus: i32 = 0;
 
+    // Every friendly royal walls the squares it stands beside, not just the
+    // first: with two kings (2K+R) the second is half the mating force, and
+    // scoring only royals[0] made it invisible to confinement.
+    let our_royals: &[Coordinate] = if winning_color == PlayerColor::White {
+        &game.white_royals
+    } else {
+        &game.black_royals
+    };
+
     // Pure K+2R vs a bare king: the rolling lawnmower needs our king as the
     // near wall, so it has its own dedicated drive evaluation (the generic
     // tiers settle for a safe corridor the king runs up forever).
@@ -1155,6 +1177,15 @@ fn evaluate_mating_net(
     // pocket: king pushes from behind, leapers lead ahead of the runner.
     let pocket =
         bareish && material.queen_count + material.amazon_count == 0 && material.wall_count() <= 1;
+
+    // The queen is the only slider: every other piece is a leaper, and the
+    // queen alone cannot finish, so the leapers must join the net.
+    let leapers_are_essential = material.queen_count == 1
+        && material.ortho_count == 1
+        && material.amazon_count == 0
+        && material.chancellor_count == 0
+        && material.archbishops == 0
+        && material.diag_light + material.diag_dark == 0;
 
     // Directional terms ramp in smoothly as our king engages: a hard gate
     // would pay the defender a cliff of eval for stepping just past it.
@@ -1345,8 +1376,18 @@ fn evaluate_mating_net(
         if king_mostly_idle(material, bounded) {
             bonus += ((KING_CAP_IDLE - kr.king_dist.min(KING_CAP_IDLE)) as i32) * KING_STEP_IDLE;
         } else {
-            bonus +=
-                ((KING_CAP_NEEDED - kr.king_dist.min(KING_CAP_NEEDED)) as i32) * KING_STEP_NEEDED;
+            let step = if material.wall_count() <= 1 {
+                KING_STEP_SOLO_WALL
+            } else {
+                KING_STEP_NEEDED
+            };
+            bonus += ((KING_CAP_NEEDED - kr.king_dist.min(KING_CAP_NEEDED)) as i32) * step;
+            // Additional royals are mating material too, not spectators.
+            for r in our_royals.iter().skip(1) {
+                let d = (r.x - ex).abs().max((r.y - ey).abs());
+                bonus += ((KING_CAP_NEEDED - d.min(KING_CAP_NEEDED)) as i32)
+                    * KING_STEP_EXTRA_ROYAL;
+            }
             if kr.king_dist <= 2 {
                 bonus += KING_NEAR2_NEEDED;
             } else if kr.king_dist <= 4 {
@@ -1391,8 +1432,10 @@ fn evaluate_mating_net(
         let mut covered = pieces
             .iter()
             .any(|s| piece_attacks_geom(s.pt, winning_color, rx - s.x, ry - s.y));
-        if !covered && let Some(ok) = our_king {
-            covered = (rx - ok.x).abs() <= 1 && (ry - ok.y).abs() <= 1;
+        if !covered {
+            covered = our_royals
+                .iter()
+                .any(|r| (rx - r.x).abs() <= 1 && (ry - r.y).abs() <= 1);
         }
         if covered {
             n_covered += 1;
@@ -1429,8 +1472,10 @@ fn evaluate_mating_net(
             let mut covered = pieces
                 .iter()
                 .any(|s| piece_attacks_geom(s.pt, winning_color, rx - s.x, ry - s.y));
-            if !covered && let Some(ok) = our_king {
-                covered = (rx - ok.x).abs() <= 1 && (ry - ok.y).abs() <= 1;
+            if !covered {
+                covered = our_royals
+                    .iter()
+                    .any(|r| (rx - r.x).abs() <= 1 && (ry - r.y).abs() <= 1);
             }
             if covered {
                 bonus += RING_OUTER_COVER;
@@ -1477,8 +1522,12 @@ fn evaluate_mating_net(
             }
         } else {
             // Short-range pieces only matter in the net once they walk in.
-            bonus +=
-                ((LEAPER_ENGAGE_CAP - dist.min(2 * LEAPER_ENGAGE_CAP)) as i32) * LEAPER_ENGAGE_STEP;
+            let step = if leapers_are_essential {
+                LEAPER_ENGAGE_STEP_ESSENTIAL
+            } else {
+                LEAPER_ENGAGE_STEP
+            };
+            bonus += ((LEAPER_ENGAGE_CAP - dist.min(2 * LEAPER_ENGAGE_CAP)) as i32) * step;
         }
 
         if engaged {
