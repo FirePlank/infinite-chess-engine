@@ -404,7 +404,13 @@ impl LocalTranspositionTable {
                         if let Some(m) = &params.best_move {
                             e.encode_move(m, params.hash);
                         }
-                    } else if e.depth >= 5 && e.flag() != TTFlag::Exact {
+                    } else if e.depth >= 5
+                        && e.flag() != TTFlag::Exact
+                        && super::is_decisive(score_from_i16(e.score16 as i32))
+                    {
+                        // Only a decisive bound decays. Aging ordinary deep bounds
+                        // costs cutoffs table-wide; a stale mate bound is what has to
+                        // lose depth so a fresher search can replace it.
                         e.depth = e.depth.saturating_sub(1);
                     }
                     return;

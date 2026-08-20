@@ -431,6 +431,14 @@ impl SharedTranspositionTable {
                     e.score16.store(score_to_i16(adj_score), REL);
                     e.eval16.store(store_eval, REL);
                     e.key16.store(key16, REL);
+                } else if old_depth >= 5
+                    && TTEntry::flag(old_gb) != TTFlag::Exact
+                    && super::is_decisive(score_from_i16(e.score16.load(REL) as i32))
+                {
+                    // Only a decisive bound decays. Aging ordinary deep bounds costs
+                    // cutoffs table-wide; a stale mate bound is what has to lose depth
+                    // so a fresher search can replace it.
+                    e.depth8.store(old_depth - 1, REL);
                 }
                 return;
             }
@@ -645,6 +653,75 @@ mod tests {
         );
         assert_eq!(res.tt_score, 100);
         assert_eq!(res.flag, TTFlag::Exact);
+    }
+
+    /// Secondary aging is confined to decisive bounds. An ordinary deep bound must
+    /// keep its depth, or every deep entry decays and cutoffs are lost table-wide.
+    #[test]
+    fn secondary_aging_only_decays_decisive_bounds() {
+        // A depth-5 store against a stored depth 10 fails every overwrite condition
+        // (non-exact, 5 <= 10 - 4, same generation), so the aging branch runs.
+        fn probe_depth(tt: &SharedTranspositionTable, hash: u64) -> u8 {
+            tt.probe(&TTProbeParams {
+                hash,
+                alpha: -30_000,
+                beta: 30_000,
+                depth: 1,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+            .expect("entry present")
+            .depth
+        }
+        fn seed(tt: &SharedTranspositionTable, hash: u64, score: i32) {
+            tt.store(&TTStoreParams {
+                hash,
+                depth: 10,
+                flag: TTFlag::LowerBound,
+                score,
+                static_eval: 0,
+                is_pv: false,
+                best_move: None,
+                ply: 0,
+            });
+        }
+        fn shallow(tt: &SharedTranspositionTable, hash: u64) {
+            tt.store(&TTStoreParams {
+                hash,
+                depth: 5,
+                flag: TTFlag::LowerBound,
+                score: 0,
+                static_eval: 0,
+                is_pv: false,
+                best_move: None,
+                ply: 0,
+            });
+        }
+
+        let tt = SharedTranspositionTable::new(1);
+
+        // Ordinary score: must NOT decay.
+        let quiet = 0xABCD_0000_1111_2222u64;
+        seed(&tt, quiet, 120);
+        assert_eq!(probe_depth(&tt, quiet), 10);
+        shallow(&tt, quiet);
+        assert_eq!(
+            probe_depth(&tt, quiet),
+            10,
+            "an ordinary deep bound must keep its depth"
+        );
+
+        // Decisive score: must decay by one.
+        let mate = 0x1234_5555_6666_7777u64;
+        seed(&tt, mate, crate::search::MATE_VALUE - 10);
+        assert_eq!(probe_depth(&tt, mate), 10);
+        shallow(&tt, mate);
+        assert_eq!(
+            probe_depth(&tt, mate),
+            9,
+            "a stale mate bound must lose a ply so a fresher search can replace it"
+        );
     }
 
     /// The generation refresh on probe writes only its own byte. When it shared a
