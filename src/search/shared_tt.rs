@@ -17,38 +17,48 @@ const GENERATION_MASK: u8 = (0xFF << GENERATION_BITS) & 0xFF;
 
 const NO_MOVE: u64 = 0;
 
-use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU64, Ordering};
 
-// TT entry structure uses 16 bytes.
-// Metadata: key16 | depth8 | gen_bound8 | score16 | eval16 (64 bits)
-// Move: Packed pieces and 13-bit coordinates (64 bits)
+/// Relaxed, per-field access. Concurrent readers and writers can interleave, so a
+/// probe may return a self-inconsistent copy; every consumer must tolerate that.
+/// Fields are separate so refreshing the generation cannot disturb the payload.
+const REL: Ordering = Ordering::Relaxed;
+
+// TT entry structure uses 16 bytes: key16 | depth8 | gen_bound8 | score16 | eval16,
+// plus the packed 13-bit-coordinate move (64 bits).
 
 #[repr(C, align(8))]
 pub struct TTEntry {
-    metadata: UnsafeCell<u64>,
-    move_data: UnsafeCell<u64>,
+    key16: AtomicU16,
+    depth8: AtomicU8,
+    gen_bound8: AtomicU8,
+    score16: AtomicI16,
+    eval16: AtomicI16,
+    move_data: AtomicU64,
 }
-
-unsafe impl Sync for TTEntry {}
-unsafe impl Send for TTEntry {}
 
 use super::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
 
 impl TTEntry {
     #[inline]
     pub fn read(&self, key16: u16, params_hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
-        unsafe {
-            let meta = std::ptr::read_volatile(self.metadata.get());
-            if (meta & 0xFFFF) as u16 != key16 || meta == 0 {
+        {
+            if self.key16.load(REL) != key16 {
                 return None;
             }
 
-            let mdata = std::ptr::read_volatile(self.move_data.get());
+            let d = self.depth8.load(REL);
+            let gb = self.gen_bound8.load(REL);
+            let score = self.score16.load(REL) as i32;
+            let eval = self.eval16.load(REL) as i32;
 
-            let d = (meta >> 16) as u8;
-            let gb = (meta >> 24) as u8;
-            let score = (meta >> 32) as u16 as i16 as i32;
-            let eval = (meta >> 48) as u16 as i16 as i32;
+            // A never-written entry is all zeroes, which only survives the key check
+            // when the probing key is itself zero.
+            if key16 == 0 && d == 0 && gb == 0 && score == 0 && eval == 0 {
+                return None;
+            }
+
+            let mdata = self.move_data.load(REL);
 
             // XOR the probing key into move_data: a move stored by a colliding/other position
             // decodes to garbage and gets rejected by the guards below.
@@ -131,27 +141,28 @@ impl TTEntry {
             NO_MOVE
         };
 
-        let meta = (key16 as u64)
-            | ((depth as u64) << 16)
-            | ((gen_bound as u64) << 24)
-            | (((score as u16) as u64) << 32)
-            | (((eval as u16) as u64) << 48);
-
         // XOR the hash key into move_data for integrity
         let hash_key = hash >> 16;
         let protected_mdata = mdata ^ hash_key;
 
-        unsafe {
-            std::ptr::write_volatile(self.move_data.get(), protected_mdata);
-            std::ptr::write_volatile(self.metadata.get(), meta);
-        }
+        // Payload before key: a reader that matches the key then sees data for this
+        // position rather than the previous occupant's.
+        self.move_data.store(protected_mdata, REL);
+        self.depth8.store(depth, REL);
+        self.gen_bound8.store(gen_bound, REL);
+        self.score16.store(score, REL);
+        self.eval16.store(eval, REL);
+        self.key16.store(key16, REL);
     }
 
     #[inline]
     pub fn clear(&self) {
-        unsafe {
-            std::ptr::write_volatile(self.metadata.get(), 0);
-        }
+        self.key16.store(0, REL);
+        self.depth8.store(0, REL);
+        self.gen_bound8.store(0, REL);
+        self.score16.store(0, REL);
+        self.eval16.store(0, REL);
+        self.move_data.store(0, REL);
     }
     #[inline]
     pub fn flag(gen_bound: u8) -> TTFlag {
@@ -180,7 +191,7 @@ pub struct SharedTranspositionTable {
     buckets: Vec<TTBucket>,
     mask: usize,
     index_bits: u32,
-    generation: UnsafeCell<u8>,
+    generation: AtomicU8,
 }
 
 unsafe impl Sync for SharedTranspositionTable {}
@@ -216,7 +227,7 @@ impl SharedTranspositionTable {
             buckets,
             mask: cap - 1,
             index_bits: bits,
-            generation: UnsafeCell::new(1),
+            generation: AtomicU8::new(1),
         }
     }
 
@@ -241,16 +252,15 @@ impl SharedTranspositionTable {
     /// Samples a portion of the table for efficiency.
     pub fn hashfull(&self) -> u32 {
         let sample = self.buckets.len().min(1000);
-        let r#gen = unsafe { *self.generation.get() };
+        let r#gen = self.generation.load(REL);
         let mut occ = 0u32;
         for i in 0..sample {
             for e in &self.buckets[i].entries {
-                let meta = unsafe { std::ptr::read_volatile(e.metadata.get()) };
-                if meta != 0 {
-                    let gb = (meta >> 24) as u8;
-                    if TTEntry::generation(gb) == r#gen {
-                        occ += 1;
-                    }
+                let gb = e.gen_bound8.load(REL);
+                let occupied =
+                    e.key16.load(REL) != 0 || gb != 0 || e.depth8.load(REL) != 0;
+                if occupied && TTEntry::generation(gb) == r#gen {
+                    occ += 1;
                 }
             }
         }
@@ -296,17 +306,12 @@ impl SharedTranspositionTable {
         for e in &self.buckets[self.bucket_index(params.hash)].entries {
             if let Some((score, eval, depth, gen_bound, best_move)) = e.read(key16, params.hash) {
                 // Keeping used entries current-generation lets them win replacement
-                // fights while untouched ones age out. Racing a concurrent write at
-                // worst loses one refresh.
-                unsafe {
-                    let r#gen = *self.generation.get();
-                    let meta = std::ptr::read_volatile(e.metadata.get());
-                    let new_gb = ((r#gen & GENERATION_MASK) | (((meta >> 24) as u8) & 0x07)) as u64;
-                    std::ptr::write_volatile(
-                        e.metadata.get(),
-                        (meta & !(0xFFu64 << 24)) | (new_gb << 24),
-                    );
-                }
+                // fights while untouched ones age out. Only this byte is written, so a
+                // concurrent store's score and depth cannot be reverted by the refresh.
+                let r#gen = self.generation.load(REL);
+                let gb = e.gen_bound8.load(REL);
+                e.gen_bound8
+                    .store((r#gen & GENERATION_MASK) | (gb & 0x07), REL);
                 let score = value_from_tt(
                     score_from_i16(score),
                     params.ply,
@@ -345,24 +350,26 @@ impl SharedTranspositionTable {
     pub fn store(&self, params: &TTStoreParams) {
         let key16 = self.hash_key16(params.hash);
         let adj_score = value_to_tt(params.score, params.ply);
-        let r#gen = unsafe { *self.generation.get() };
+        let r#gen = self.generation.load(REL);
         let bucket = &self.buckets[self.bucket_index(params.hash)];
 
         let mut replace_idx = 0;
         let mut worst = i32::MAX;
 
         for (i, e) in bucket.entries.iter().enumerate() {
-            // Read metadata ONCE strictly for this iteration
-            let meta = unsafe { std::ptr::read_volatile(e.metadata.get()) };
+            let e_key = e.key16.load(REL);
+            let old_depth = e.depth8.load(REL);
+            let old_gb = e.gen_bound8.load(REL);
 
             // Check if key matches (and entry is not empty)
-            if (meta & 0xFFFF) as u16 == key16 && meta != 0 {
-                let mdata = unsafe { std::ptr::read_volatile(e.move_data.get()) };
-
-                // Verify consistency: re-read metadata and fail if changed.
-                let old_depth = (meta >> 16) as u8;
-                let old_gb = (meta >> 24) as u8;
-                let old_eval = (meta >> 48) as i16;
+            let empty = e_key == 0
+                && old_depth == 0
+                && old_gb == 0
+                && e.score16.load(REL) == 0
+                && e.eval16.load(REL) == 0;
+            if e_key == key16 && !empty {
+                let mdata = e.move_data.load(REL);
+                let old_eval = e.eval16.load(REL);
 
                 // Decode old move for preservation
                 let old_move_data = mdata ^ (params.hash >> 16);
@@ -414,33 +421,29 @@ impl SharedTranspositionTable {
                     || (params.depth as i32 + pv_bonus) > (old_depth as i32 - 4)
                     || rel_age != 0
                 {
-                    let new_meta = (key16 as u64)
-                        | ((params.depth as u64) << 16)
-                        | ((TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag) as u64)
-                            << 24)
-                        | (((score_to_i16(adj_score) as u16) as u64) << 32)
-                        | (((store_eval as u16) as u64) << 48);
-
-                    unsafe {
-                        std::ptr::write_volatile(
-                            e.move_data.get(),
-                            mdata_to_write ^ (params.hash >> 16),
-                        );
-                        std::ptr::write_volatile(e.metadata.get(), new_meta);
-                    }
+                    e.move_data
+                        .store(mdata_to_write ^ (params.hash >> 16), REL);
+                    e.depth8.store(params.depth as u8, REL);
+                    e.gen_bound8.store(
+                        TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
+                        REL,
+                    );
+                    e.score16.store(score_to_i16(adj_score), REL);
+                    e.eval16.store(store_eval, REL);
+                    e.key16.store(key16, REL);
                 }
                 return;
             }
 
             // Calculation for replacement strategy
-            let ed = (meta >> 16) as u8;
-            let egb = (meta >> 24) as u8;
+            let ed = old_depth;
+            let egb = old_gb;
             let rel_age = (r#gen.wrapping_sub(egb & GENERATION_MASK)) & GENERATION_MASK;
 
             // Age weighted by 1 (matches the local TT).
             let mut prio =
                 (ed as i32 + 3 + if TTEntry::is_pv(egb) { 2 } else { 0 }) - rel_age as i32;
-            if (meta & 0xFFFF) == 0 && egb == 0 {
+            if e_key == 0 && egb == 0 {
                 // Is empty check
                 prio = i32::MIN;
             }
@@ -462,9 +465,8 @@ impl SharedTranspositionTable {
     }
 
     pub fn increment_age(&self) {
-        unsafe {
-            *self.generation.get() = (*self.generation.get()).wrapping_add(GENERATION_DELTA);
-        }
+        self.generation
+            .store(self.generation.load(REL).wrapping_add(GENERATION_DELTA), REL);
     }
     pub fn clear(&self) {
         for b in &self.buckets {
@@ -472,9 +474,7 @@ impl SharedTranspositionTable {
                 e.clear();
             }
         }
-        unsafe {
-            *self.generation.get() = 1;
-        }
+        self.generation.store(1, REL);
     }
 }
 
@@ -646,4 +646,78 @@ mod tests {
         assert_eq!(res.tt_score, 100);
         assert_eq!(res.flag, TTFlag::Exact);
     }
+
+    /// The generation refresh on probe writes only its own byte. When it shared a
+    /// packed word with the score, a probe racing a store wrote the pre-store value
+    /// back, so a just-proven mate score could silently revert.
+    #[test]
+    fn concurrent_probe_does_not_revert_a_store() {
+        use std::sync::Arc;
+        const N: i32 = 20_000;
+        let hash = 0x9E3779B97F4A7C15u64;
+
+        fn store_n(tt: &SharedTranspositionTable, hash: u64, v: i32) {
+            tt.store(&TTStoreParams {
+                hash,
+                depth: 8,
+                flag: TTFlag::Exact,
+                score: v,
+                static_eval: v,
+                is_pv: false,
+                best_move: None,
+                ply: 0,
+            });
+        }
+        fn probe(tt: &SharedTranspositionTable, hash: u64) -> Option<TTProbeResult> {
+            tt.probe(&TTProbeParams {
+                hash,
+                alpha: -30_000,
+                beta: 30_000,
+                depth: 8,
+                ply: 0,
+                rule50_count: 0,
+                rule_limit: 100,
+            })
+        }
+
+        // Repeat: the interleaving that reverts a store is timing dependent.
+        for _round in 0..8 {
+            let tt = Arc::new(SharedTranspositionTable::new(1));
+            let writer = {
+                let tt = Arc::clone(&tt);
+                std::thread::spawn(move || {
+                    for i in 1..=N {
+                        store_n(&tt, hash, i);
+                    }
+                })
+            };
+            let reader = {
+                let tt = Arc::clone(&tt);
+                std::thread::spawn(move || {
+                    let mut seen_max = 0;
+                    for _ in 0..N * 2 {
+                        if let Some(r) = probe(&tt, hash) {
+                            // A score must never move backwards once observed.
+                            assert!(
+                                r.tt_score >= seen_max,
+                                "score went backwards: {} after {seen_max}",
+                                r.tt_score
+                            );
+                            seen_max = r.tt_score;
+                        }
+                    }
+                })
+            };
+            writer.join().expect("writer");
+            reader.join().expect("reader");
+
+            let final_score = probe(&tt, hash).expect("entry present").tt_score;
+            assert_eq!(
+                final_score, N,
+                "the last store must survive concurrent probe refreshes"
+            );
+        }
+    }
 }
+
+const _: () = assert!(std::mem::size_of::<TTEntry>() == 16);
