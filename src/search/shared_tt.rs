@@ -319,20 +319,7 @@ impl SharedTranspositionTable {
                     params.rule_limit,
                 );
                 let flag = TTEntry::flag(gen_bound);
-                let mut cutoff = INFINITY + 1;
-                if depth as usize >= params.depth {
-                    let usable = match flag {
-                        TTFlag::Exact => true,
-                        TTFlag::LowerBound if score >= params.beta => true,
-                        TTFlag::UpperBound if score <= params.alpha => true,
-                        _ => false,
-                    };
-                    if usable {
-                        cutoff = score;
-                    }
-                }
                 return Some(TTProbeResult {
-                    cutoff_score: cutoff,
                     tt_score: score,
                     eval: eval_from_i16(eval),
                     depth,
@@ -529,7 +516,6 @@ mod tests {
                 rule_limit: 100,
             })
             .unwrap();
-        assert_eq!(res.cutoff_score, 100);
     }
 
     #[test]

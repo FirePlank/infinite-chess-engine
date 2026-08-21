@@ -754,7 +754,6 @@ fn test_tt_integration_via_local() {
     });
     assert!(result.is_some());
     let res = result.unwrap();
-    assert_eq!(res.cutoff_score, score);
     assert!(res.best_move.is_some());
     assert_eq!(res.best_move.unwrap().from.x, 0);
 }

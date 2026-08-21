@@ -293,7 +293,6 @@ pub struct TTStoreParams {
 /// Result from a TT probe
 #[derive(Debug, Clone, Copy)]
 pub struct TTProbeResult {
-    pub cutoff_score: i32,
     pub tt_score: i32,
     pub eval: i32,
     pub depth: u8,

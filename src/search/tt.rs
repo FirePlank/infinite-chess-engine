@@ -327,23 +327,7 @@ impl LocalTranspositionTable {
                     params.rule_limit,
                 );
 
-                let mut cutoff = INFINITY + 1;
-
-                if e.depth as usize >= params.depth {
-                    let flag = e.flag();
-                    let usable = match flag {
-                        TTFlag::Exact => true,
-                        TTFlag::LowerBound if score >= params.beta => true,
-                        TTFlag::UpperBound if score <= params.alpha => true,
-                        _ => false,
-                    };
-                    if usable {
-                        cutoff = score;
-                    }
-                }
-
                 return Some(TTProbeResult {
-                    cutoff_score: cutoff,
                     tt_score: score,
                     eval: eval_from_i16(e.eval16 as i32),
                     depth: e.depth,
@@ -512,7 +496,6 @@ mod tests {
                 rule_limit: 100,
             })
             .unwrap();
-        assert_eq!(res.cutoff_score, 100);
         assert_eq!(res.eval, 90);
     }
 
