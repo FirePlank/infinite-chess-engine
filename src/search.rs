@@ -463,6 +463,16 @@ impl<'a> TranspositionTableRef<'a> {
     }
 
     #[inline]
+    pub fn penalize(&self, _hash: u64, _penalty: u8) {
+        match self {
+            #[cfg(feature = "multithreading")]
+            Self::Shared(tt) => tt.penalize(_hash, _penalty),
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
+    #[inline]
     pub fn store(&self, _params: &TTStoreParams) {
         match self {
             #[cfg(feature = "multithreading")]
@@ -560,6 +570,19 @@ pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<T
         rule50_count: ctx.rule50_count,
         rule_limit: ctx.rule_limit,
     })
+}
+
+/// Penalize a TT entry. Dispatch based on thread configuration.
+#[inline(always)]
+pub fn penalize_tt_with_shared(searcher: &Searcher, hash: u64, penalty: u8) {
+    #[cfg(feature = "multithreading")]
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        tt.penalize(hash, penalty);
+        return;
+    }
+    searcher.tt.penalize(hash, penalty);
 }
 
 /// Store to the TT. Dispatch based on thread configuration.
@@ -4012,6 +4035,17 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && !game.is_repetition(ply)
         {
             return tt_s;
+        }
+
+        // Deep enough and on the right side of the window, but holding the opposite
+        // bound, so it can never cut here. Shave a ply so a real search replaces it.
+        let opposite_bound = if fails_high {
+            (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+        } else {
+            (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+        };
+        if depth > 5 && tt_data_depth_ok && tt_data_bound != TTFlag::Exact && opposite_bound {
+            penalize_tt_with_shared(searcher, hash, 1);
         }
     }
 

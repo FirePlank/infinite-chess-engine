@@ -356,6 +356,24 @@ impl LocalTranspositionTable {
         None
     }
 
+    /// Shaves plies off an entry that was deep enough to cut but carried the wrong
+    /// bound, so a real search can replace it instead of it being re-probed for a
+    /// cutoff it can never give.
+    #[inline(always)]
+    pub fn penalize(&self, hash: u64, penalty: u8) {
+        let key16 = self.hash_key16(hash);
+        let idx = (hash as usize) & self.mask;
+        unsafe {
+            let entries = &mut (*self.buckets.add(idx)).entries;
+            for e in entries {
+                if e.key16 == key16 && !e.is_empty() {
+                    e.depth = e.depth.saturating_sub(penalty);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Stores results in the TT, replacing existing entries based on
     /// search depth and relative age (generation).
     #[inline(always)]

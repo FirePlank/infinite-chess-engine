@@ -345,6 +345,20 @@ impl SharedTranspositionTable {
         None
     }
 
+    /// Shaves plies off an entry that was deep enough to cut but carried the wrong
+    /// bound, so a real search can replace it instead of it being re-probed for a
+    /// cutoff it can never give.
+    pub fn penalize(&self, hash: u64, penalty: u8) {
+        let key16 = self.hash_key16(hash);
+        for e in &self.buckets[self.bucket_index(hash)].entries {
+            if e.key16.load(REL) == key16 {
+                let d = e.depth8.load(REL);
+                e.depth8.store(d.saturating_sub(penalty), REL);
+                return;
+            }
+        }
+    }
+
     /// Stores an entry in the multithreaded table.
     /// Priority is given to deeper searches and newer generation entries.
     pub fn store(&self, params: &TTStoreParams) {
