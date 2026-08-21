@@ -223,7 +223,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("centaur_guard_scale", crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE as i64, 10, 120, 2.0, 0.002, "Centaur guard/leaper-component scale (% of guard eval)"),
     EvalParamSpec::new("pawn_full_value_threshold", crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD as i64, 2, 16, 2.0, 0.002, "Ranks from promotion within which a pawn keeps full value"),
     EvalParamSpec::new("pawn_past_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY as i64, 0, 250, 2.0, 0.002, "Penalty for a pawn that can never promote"),
-    EvalParamSpec::new("pawn_far_from_promo_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY as i64, 0, 150, 2.0, 0.002, "Flat penalty for a pawn far from promotion"),
+    EvalParamSpec::new("pawn_far_from_promo_max_penalty", crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY as i64, 0, 150, 2.0, 0.002, "Max penalty for a pawn far from promotion"),
     EvalParamSpec::new("minor_development_penalty_threshold", crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which the stronger undeveloped-minor penalty applies"),
     EvalParamSpec::new("min_major_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY as i64, 0, 30, 2.0, 0.002, "Undeveloped-major penalty"),
     EvalParamSpec::new("min_fairy_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY as i64, 0, 220, 2.0, 0.002, "Undeveloped-fairy-leaper penalty (leapers are worthless at home, knights and bishops are not)"),
@@ -359,7 +359,7 @@ pub struct EvalParams {
     pub centaur_guard_scale: i32,
     pub pawn_full_value_threshold: i32,
     pub pawn_past_promo_penalty: i32,
-    pub pawn_far_from_promo_penalty: i32,
+    pub pawn_far_from_promo_max_penalty: i32,
     pub minor_development_penalty_threshold: i32,
     pub min_major_development_penalty: i32,
     pub min_fairy_development_penalty: i32,
@@ -497,7 +497,7 @@ impl Default for EvalParams {
             centaur_guard_scale: crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE,
             pawn_full_value_threshold: crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD,
             pawn_past_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY,
-            pawn_far_from_promo_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY,
+            pawn_far_from_promo_max_penalty: crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY,
             minor_development_penalty_threshold: crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD,
             min_major_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY,
             min_fairy_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY,
@@ -800,7 +800,7 @@ define_eval_accessor!(amazon_queen_scale, crate::evaluation::base::DEFAULT_EVAL_
 define_eval_accessor!(centaur_guard_scale, crate::evaluation::base::DEFAULT_EVAL_CENTAUR_GUARD_SCALE);
 define_eval_accessor!(pawn_full_value_threshold, crate::evaluation::base::DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD);
 define_eval_accessor!(pawn_past_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY);
-define_eval_accessor!(pawn_far_from_promo_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_PENALTY);
+define_eval_accessor!(pawn_far_from_promo_max_penalty, crate::evaluation::base::DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY);
 define_eval_accessor!(minor_development_penalty_threshold, crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD);
 define_eval_accessor!(min_major_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY);
 define_eval_accessor!(min_fairy_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY);
