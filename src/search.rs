@@ -4701,6 +4701,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction += 1;
                 }
 
+                // A cut node is expected to fail high on an early move, so the moves
+                // after it are far likelier to be refutations than real candidates.
+                if cut_node {
+                    reduction += 1;
+                }
+
                 // History-adjusted LMR
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
