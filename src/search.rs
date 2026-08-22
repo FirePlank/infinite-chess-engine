@@ -4701,6 +4701,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction += 1;
                 }
 
+                // This node sat on a principal variation at some point, so it is
+                // likelier to matter than its move number suggests: reduce it less.
+                if tt_pv {
+                    reduction -= 1;
+                }
+
                 // A cut node is expected to fail high on an early move, so the moves
                 // after it are far likelier to be refutations than real candidates.
                 if cut_node {
