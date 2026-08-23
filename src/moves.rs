@@ -184,7 +184,10 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         // 2. Generate moves along this ray.
         // Cap at 10 for performance - captures at distance handled separately
         const KR_STEP_LIMIT: i64 = 10;
-        const KR_OPEN_RAY_STEPS: i64 = 5;
+        // Open rays reach as far as blocked ones: the eval-gap audit's only
+        // measured win over the candidate filter was a 5-8 hop knightrider
+        // maneuver, i.e. destinations the old window of 5 cut off.
+        const KR_OPEN_RAY_STEPS: i64 = KR_STEP_LIMIT;
         let max_steps: i64 = if closest_k < i64::MAX {
             if closest_is_enemy {
                 closest_k.min(KR_STEP_LIMIT)
@@ -4098,6 +4101,42 @@ mod tests {
                     y
                 );
             }
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn test_knightrider_open_ray_reaches_step_limit() {
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            // Lone knightrider with every ray open; kings parked far off its rays.
+            // Piece codes here are the site's two-letter codes (from_site_code);
+            // an unknown code silently becomes a Void, so "Nr" not "S".
+            game.setup_position_from_icn("w Nr0,0|K0,-500|k500,501");
+            assert_eq!(
+                game.board.get_piece(0, 0).map(|p| p.piece_type()),
+                Some(PieceType::Knightrider),
+                "ICN placement precondition"
+            );
+
+            let mut moves = MoveList::new();
+            game.get_legal_moves_into(&mut moves);
+            let kr_to = |x: i64, y: i64| {
+                moves
+                    .iter()
+                    .any(|m| m.from.x == 0 && m.from.y == 0 && m.to.x == x && m.to.y == y)
+            };
+
+            // Every hop along an open (1,2) ray out to the step limit.
+            for k in 1..=10 {
+                assert!(
+                    kr_to(k, 2 * k),
+                    "open knightrider ray should reach hop {k} at ({k},{})",
+                    2 * k
+                );
+            }
+            assert!(!kr_to(11, 22), "and stop at the step limit");
             reset_world_bounds();
         });
     }
