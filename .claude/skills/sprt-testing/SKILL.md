@@ -131,6 +131,11 @@ Extend only when it pays off — decide from |LLR| at the end of a batch (§8). 
 - Run in the background (`run_in_background: true`). Do NOT append `&` and do NOT pipe through
   `head`/`tail` — either kills or truncates the streaming SPRT. (`nohup ... &` is the classic way
   to strand zombies: the wrapper returns, the match keeps running unsupervised.)
+- **NEVER set a watch/monitor/poll loop on a running SPRT, and never sleep waiting on one.** The
+  background task auto-notifies on completion — just END THE TURN after launching. Extra watchers
+  burn a core (the match is already sized to the physical cores), add nothing, and a polling loop
+  is the same oversubscription that fakes regressions. Same rule for the post-launch "is it really
+  running" check: one glance at the output file is fine, a loop is not.
 - **Let the run FINISH (or `--resume` it to completion) before quoting numbers** — the
   `Final Summary` block and the `--results` JSON are only written at the end. Killing early leaves
   you with no per-variant breakdown to paste into the commit (§9).
