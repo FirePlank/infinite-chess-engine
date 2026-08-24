@@ -3324,10 +3324,14 @@ pub fn generate_huygen_moves_into(
     // Limit for moves when no blocker is found (use cross-ray logic beyond this)
     const OPEN_RAY_LIMIT: i64 = 50;
 
-    for &(dir_x, dir_y) in &ORTHO_DIRECTIONS {
-        // Find the closest blocker at a prime distance in this direction
-        let (blocker_dist, blocker_color) =
-            find_huygen_blocker(board, from, dir_x, dir_y, indices, my_color);
+    // Per-direction first prime-distance blocker, reused by the sniper pass below.
+    let mut blockers = [(i64::MAX, None); 4];
+    for (i, &(dx, dy)) in ORTHO_DIRECTIONS.iter().enumerate() {
+        blockers[i] = find_huygen_blocker(board, from, dx, dy, indices, my_color);
+    }
+
+    for (di, &(dir_x, dir_y)) in ORTHO_DIRECTIONS.iter().enumerate() {
+        let (blocker_dist, blocker_color) = blockers[di];
 
         if blocker_dist < i64::MAX {
             // CASE 1: Blocker found at prime distance
@@ -3396,7 +3400,190 @@ pub fn generate_huygen_moves_into(
             }
         }
     }
+
+    // Sniper landings: a quiet hop onto an open ray placed so a chosen enemy on
+    // this line becomes the FIRST prime-distance piece, i.e. directly attacked
+    // next move with everything between at composite offsets. These are exactly
+    // the quiets the open-ray filter above prunes. Skipped under tight gen.
+    if gen_type != MoveGenType::Captures && QUIET_RAY_CAP.with(|c| c.get()) == 0 {
+        generate_huygen_snipes(from, piece, indices, &blockers, out);
+    }
 }
+
+/// See the caller: emits at most one landing per enemy on the huygen row and
+/// column. A landing must sit on an open side (every prime distance there is
+/// provably empty), and duplicates of the base generation are filtered out.
+fn generate_huygen_snipes(
+    from: &Coordinate,
+    piece: &Piece,
+    indices: &SpatialIndices,
+    blockers: &[(i64, Option<PlayerColor>); 4],
+    out: &mut MoveList,
+) {
+    const SNIPE_TRIES: usize = 24;
+    let my_color = piece.color();
+
+    let lines = [
+        (indices.rows.get(&from.y), from.x, blockers[0].0, blockers[1].0, true),
+        (indices.cols.get(&from.x), from.y, blockers[2].0, blockers[3].0, false),
+    ];
+
+    for (line, our, pos_block, neg_block, horizontal) in lines {
+        let Some(vec) = line else { continue };
+        let open_pos = pos_block == i64::MAX;
+        let open_neg = neg_block == i64::MAX;
+        if !open_pos && !open_neg {
+            continue;
+        }
+
+        // A landing is only emitted when the base pass could not have: it already
+        // generates every prime short of a blocker, and open-ray primes <= 3 or
+        // cross-ray-aligned ones under its cap.
+        let push_landing = |s_off: i64, out: &mut MoveList| {
+            let (tx, ty) = if horizontal {
+                (our + s_off, from.y)
+            } else {
+                (from.x, our + s_off)
+            };
+            if !in_bounds(tx, ty) {
+                return;
+            }
+            let d = s_off.abs();
+            if d <= 3 {
+                return;
+            }
+            if d <= 50 {
+                let aligned = if horizontal {
+                    indices.cols.get(&tx).is_some_and(|v| !v.is_empty())
+                } else {
+                    indices.rows.get(&ty).is_some_and(|v| !v.is_empty())
+                };
+                if aligned {
+                    return;
+                }
+            }
+            out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
+        };
+
+        // A landing offset is reachable exactly when its side is open and the
+        // distance is prime; every such square is provably empty.
+        let reachable_open = |s_off: i64| -> bool {
+            if s_off > 0 {
+                open_pos && is_prime_i64(s_off)
+            } else {
+                open_neg && is_prime_i64(-s_off)
+            }
+        };
+
+        let mut max_off = 0i64;
+        let mut min_off = 0i64;
+        for (c, _) in vec {
+            let off = c - our;
+            max_off = max_off.max(off);
+            min_off = min_off.min(off);
+        }
+
+        // Two targets four apart can share one landing; a duplicate move would
+        // corrupt perft, so landings are deduped per line.
+        let mut used: smallvec::SmallVec<[i64; 8]> = smallvec::SmallVec::new();
+
+        for (c, packed) in vec {
+            let t_off = c - our;
+            if t_off == 0 {
+                continue;
+            }
+            let target = Piece::from_packed(packed);
+            if target.color() == my_color
+                || target.color() == PlayerColor::Neutral
+                || target.piece_type() == PieceType::Void
+            {
+                continue;
+            }
+            // Already the direct capture on its side.
+            if (t_off > 0 && t_off == pos_block) || (t_off < 0 && -t_off == neg_block) {
+                continue;
+            }
+
+            // Universal close landing: two squares past or short of the target.
+            // Nothing can interpose at distance 1, so distance 2 always attacks.
+            let mut done = false;
+            for s_off in [t_off + 2, t_off - 2] {
+                if s_off != 0 && reachable_open(s_off) && !used.contains(&s_off) {
+                    used.push(s_off);
+                    push_landing(s_off, out);
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                continue;
+            }
+
+            // Far landing beyond every piece on an open side: the pieces between
+            // the landing and the target must then all sit at composite offsets
+            // from the landing while the target sits at a prime one.
+            for (open, sign, outer) in [(open_pos, 1i64, max_off), (open_neg, -1i64, min_off)] {
+                if !open || done {
+                    continue;
+                }
+                let base = outer * sign;
+                let mut tried = 0usize;
+                for &p in SNIPE_PRIMES.iter() {
+                    if p <= base {
+                        continue;
+                    }
+                    if tried >= SNIPE_TRIES {
+                        break;
+                    }
+                    tried += 1;
+                    let s_off = p * sign;
+                    let dist_t = (s_off - t_off).abs();
+                    if !is_prime_i64(dist_t) {
+                        continue;
+                    }
+                    let lo = t_off.min(s_off);
+                    let hi = t_off.max(s_off);
+                    let mut clean = true;
+                    for (c2, _) in vec {
+                        let o2 = c2 - our;
+                        if o2 <= lo || o2 >= hi || o2 == t_off || o2 == 0 {
+                            continue;
+                        }
+                        if is_prime_i64((s_off - o2).abs()) {
+                            clean = false;
+                            break;
+                        }
+                    }
+                    if clean && !used.contains(&s_off) {
+                        used.push(s_off);
+                        push_landing(s_off, out);
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Primes available to sniper landings; sieved once, far past the base table so
+/// a landing can clear every piece on a long line.
+static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| {
+    let n = 4096usize;
+    let mut sieve = vec![true; n];
+    let mut out = Vec::with_capacity(600);
+    for i in 2..n {
+        if sieve[i] {
+            out.push(i as i64);
+            let mut j = i * i;
+            while j < n {
+                sieve[j] = false;
+                j += i;
+            }
+        }
+    }
+    out
+});
 
 /// Find the closest blocker at a prime distance for Huygens using spatial indices.
 /// Returns (distance_to_blocker, blocker_color). If no blocker, returns (i64::MAX, None).
@@ -4794,6 +4981,82 @@ mod tests {
 
     mod border_handling_tests {
         use super::*;
+
+        #[test]
+        fn rider_generation_emits_no_duplicates() {
+            // Sniper landings and check rides add moves other passes could also
+            // produce, so a duplicate would silently double count in search.
+            use std::collections::HashSet;
+            for (rider, kx, ky) in [(PieceType::Huygen, 40i64, 0i64)] {
+                let mut board = Board::new();
+                board.set_piece(0, 0, Piece::new(rider, PlayerColor::White));
+                board.set_piece(kx, ky, Piece::new(PieceType::King, PlayerColor::Black));
+                board.set_piece(6, 0, Piece::new(PieceType::Pawn, PlayerColor::Black));
+                board.set_piece(12, 0, Piece::new(PieceType::Pawn, PlayerColor::Black));
+                board.set_piece(0, 9, Piece::new(PieceType::Pawn, PlayerColor::Black));
+
+                let indices = SpatialIndices::new(&board);
+                let from = Coordinate::new(0, 0);
+                let piece = Piece::new(rider, PlayerColor::White);
+                let mut out = MoveList::new();
+                match rider {
+                    PieceType::Huygen => generate_huygen_moves_into(
+                        &board,
+                        &from,
+                        &piece,
+                        &indices,
+                        MoveGenType::All,
+                        &mut out,
+                    ),
+                    _ => generate_knightrider_moves_into(
+                        &board,
+                        &from,
+                        &piece,
+                        MoveGenType::All,
+                        &mut out,
+                    ),
+                }
+
+                let mut seen = HashSet::new();
+                for m in out.iter() {
+                    assert!(
+                        seen.insert((m.to.x, m.to.y)),
+                        "{rider:?} generated {:?} twice",
+                        (m.to.x, m.to.y)
+                    );
+                }
+            }
+        }
+
+        /// A huygen hops over composite distances, so landing a prime step past a
+        /// target makes that target its first prime-distance piece: attacked next
+        /// move, with nothing able to interpose.
+        #[test]
+        fn huygen_generates_a_sniper_landing() {
+            let mut board = Board::new();
+            board.set_piece(0, 0, Piece::new(PieceType::Huygen, PlayerColor::White));
+            // Offset 9 is composite, so it never blocks and the ray stays open.
+            board.set_piece(9, 0, Piece::new(PieceType::Pawn, PlayerColor::Black));
+
+            let indices = SpatialIndices::new(&board);
+            let from = Coordinate::new(0, 0);
+            let piece = Piece::new(PieceType::Huygen, PlayerColor::White);
+            let mut out = MoveList::new();
+            generate_huygen_moves_into(
+                &board,
+                &from,
+                &piece,
+                &indices,
+                MoveGenType::All,
+                &mut out,
+            );
+
+            // 11 is prime so reachable, and sits 2 from the pawn: also prime.
+            assert!(
+                out.iter().any(|m| m.to.x == 11 && m.to.y == 0),
+                "expected the landing that attacks the pawn at 9"
+            );
+        }
 
         #[test]
         fn test_huygen_border_respect() {
