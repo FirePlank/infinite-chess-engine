@@ -317,6 +317,10 @@ pub const DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT: i32 = 100;
 pub const DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT: i32 = 44;
 /// Huygen reach scan: distances beyond this are ignored, keeping the prime test
 /// on the O(1) lookup path and the scan bounded on crowded lines.
+const KNIGHTRIDER_ROYAL_ALIGN: i32 = 20;
+const KNIGHTRIDER_DEFEND_BONUS: i32 = 4;
+const KNIGHTRIDER_OPEN_RAY_EG: i32 = 2;
+
 const HUYGEN_SCAN_MAX: i64 = 120;
 const HUYGEN_DEFEND_BONUS: i32 = 4;
 const HUYGEN_ROYAL_ALIGN: i32 = 22;
@@ -1839,7 +1843,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     white_pawns,
                     black_pawns,
                 );
-                (queen_eval * amazon_queen_scale() / 100) + (rook_eval * amazon_rook_scale() / 100)
+                (queen_eval * amazon_queen_scale() / 100)
+                    + (rook_eval * amazon_rook_scale() / 100)
             }
             PieceType::RoyalQueen => evaluate_queen(
                 game,
@@ -1911,15 +1916,17 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // A knightrider rides along knight rays; on an unbounded board its
             // reach is unbounded so mobility-counting is meaningless. Use the
             // board-aware cloud-proximity/density shaping like the other riders.
-            PieceType::Knightrider => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Knightrider,
-                cloud_avg_spread,
-                phase,
-            ),
+            PieceType::Knightrider => {
+                evaluate_leaper_positioning(
+                    x,
+                    y,
+                    piece.color(),
+                    cloud_center.as_ref(),
+                    PieceType::Knightrider,
+                    cloud_avg_spread,
+                    phase,
+                ) + evaluate_knightrider_reach(x, y, piece.color(), piece_list, phase)
+            }
             _ => 0,
         };
         let piece_val = get_piece_value_base(pt);
@@ -2798,6 +2805,95 @@ fn evaluate_huygen_reach(
 
     // Defence matters less as material leaves; the attacking half does not decay.
     attack + taper(defend, defend / 2)
+}
+
+#[inline]
+fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+/// Mirrors knightrider movegen: each ray stops at its closest occupant, and a
+/// capture is emitted at any distance while quiets cap out. One gcd places a
+/// piece on its ray, since k = gcd(|rx|, |ry|) for a reduced knight step.
+fn evaluate_knightrider_reach(
+    x: i64,
+    y: i64,
+    own: PlayerColor,
+    piece_list: &[(i64, i64, Piece)],
+    phase: i32,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+
+    let mut best_k = [i64::MAX; 8];
+    let mut best: [Option<Piece>; 8] = [None; 8];
+
+    for &(px, py, other) in piece_list {
+        let (rx, ry) = (px - x, py - y);
+        if rx == 0 && ry == 0 {
+            continue;
+        }
+        let g = gcd_i64(rx.abs(), ry.abs());
+        if g == 0 {
+            continue;
+        }
+        let (ux, uy) = (rx / g, ry / g);
+        let (au, av) = (ux.abs(), uy.abs());
+        if !((au == 1 && av == 2) || (au == 2 && av == 1)) {
+            continue;
+        }
+        let slot = match (ux, uy) {
+            (1, 2) => 0,
+            (1, -2) => 1,
+            (2, 1) => 2,
+            (2, -1) => 3,
+            (-1, 2) => 4,
+            (-1, -2) => 5,
+            (-2, 1) => 6,
+            (-2, -1) => 7,
+            _ => continue,
+        };
+        if g < best_k[slot] {
+            best_k[slot] = g;
+            best[slot] = Some(other);
+        }
+    }
+
+    let mut attack = 0i32;
+    let mut defend = 0i32;
+    let mut open_rays = 0i32;
+
+    for slot in best.iter() {
+        let Some(occupant) = slot else {
+            open_rays += 1;
+            continue;
+        };
+        let ot = occupant.piece_type();
+        if ot.is_neutral_type() {
+            continue;
+        }
+        if occupant.color() == own {
+            // The ray stops one leap short of it: cover, not a target.
+            defend += KNIGHTRIDER_DEFEND_BONUS;
+            continue;
+        }
+        if ot.is_royal() {
+            attack += KNIGHTRIDER_ROYAL_ALIGN;
+            continue;
+        }
+        let v = get_piece_value_base(ot);
+        let raw = (v - knightrider()).max(v / 4);
+        attack += (raw / slider_threat_div()).min(slider_threat_cap());
+    }
+
+    // Nearly every ray is empty on a sparse board, so an open one is priced as a
+    // token, and only in the endgame where the rider has room to use it.
+    attack + taper(defend, defend / 2) + taper(0, open_rays * KNIGHTRIDER_OPEN_RAY_EG)
 }
 
 fn evaluate_leaper_positioning(
