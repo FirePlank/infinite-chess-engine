@@ -317,6 +317,9 @@ pub const DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT: i32 = 100;
 pub const DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT: i32 = 44;
 /// Huygen reach scan: distances beyond this are ignored, keeping the prime test
 /// on the O(1) lookup path and the scan bounded on crowded lines.
+const COMPOUND_LEAP_DEFEND: i32 = 4;
+const COMPOUND_LEAP_ROYAL: i32 = 20;
+
 const KNIGHTRIDER_ROYAL_ALIGN: i32 = 20;
 const KNIGHTRIDER_DEFEND_BONUS: i32 = 4;
 const KNIGHTRIDER_OPEN_RAY_EG: i32 = 2;
@@ -1805,6 +1808,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     black_pawns,
                 );
                 rook_eval * chancellor_rook_scale() / 100
+                    + evaluate_compound_leap_threats(
+                        game,
+                        x,
+                        y,
+                        piece.color(),
+                        get_piece_value_base(pt),
+                        phase,
+                    )
             }
             PieceType::Archbishop => {
                 let bishop_eval = evaluate_bishop(
@@ -1819,6 +1830,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     black_pawns,
                 );
                 bishop_eval * archbishop_bishop_scale() / 100
+                    + evaluate_compound_leap_threats(
+                        game,
+                        x,
+                        y,
+                        piece.color(),
+                        get_piece_value_base(pt),
+                        phase,
+                    )
             }
             PieceType::Amazon => {
                 let queen_eval = evaluate_queen(
@@ -1845,6 +1864,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 );
                 (queen_eval * amazon_queen_scale() / 100)
                     + (rook_eval * amazon_rook_scale() / 100)
+                    + evaluate_compound_leap_threats(
+                        game,
+                        x,
+                        y,
+                        piece.color(),
+                        get_piece_value_base(pt),
+                        phase,
+                    )
             }
             PieceType::RoyalQueen => evaluate_queen(
                 game,
@@ -2804,6 +2831,47 @@ fn evaluate_huygen_reach(
     let _ = enemy_royals;
 
     // Defence matters less as material leaves; the attacking half does not decay.
+    attack + taper(defend, defend / 2)
+}
+
+/// A compound piece leaps like a knight as well as sliding, and no blocker can
+/// stop the leap. The slider threat scan only walks lines, so that half of its
+/// attacks is invisible: this prices the eight knight squares it really covers.
+fn evaluate_compound_leap_threats(
+    game: &GameState,
+    x: i64,
+    y: i64,
+    own: PlayerColor,
+    attacker_value: i32,
+    phase: i32,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut attack = 0i32;
+    let mut defend = 0i32;
+
+    for (ox, oy) in crate::attacks::KNIGHT_OFFSETS {
+        let Some(target) = game.board.get_piece(x + ox, y + oy) else {
+            continue;
+        };
+        let tt = target.piece_type();
+        if tt.is_neutral_type() {
+            continue;
+        }
+        if target.color() == own {
+            defend += COMPOUND_LEAP_DEFEND;
+            continue;
+        }
+        if tt.is_royal() {
+            attack += COMPOUND_LEAP_ROYAL;
+            continue;
+        }
+        let v = get_piece_value_base(tt);
+        // Unblockable, so even a lesser victim is a genuine threat and earns a floor.
+        let raw = (v - attacker_value).max(v / 4);
+        attack += (raw / slider_threat_div()).min(slider_threat_cap());
+    }
+
     attack + taper(defend, defend / 2)
 }
 
