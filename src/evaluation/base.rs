@@ -315,6 +315,12 @@ pub const DEFAULT_EVAL_MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
 pub const DEFAULT_EVAL_EG_KING_PAWN_AHEAD_PENALTY: i32 = 0;
 pub const DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT: i32 = 100;
 pub const DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT: i32 = 44;
+/// Huygen reach scan: distances beyond this are ignored, keeping the prime test
+/// on the O(1) lookup path and the scan bounded on crowded lines.
+const HUYGEN_SCAN_MAX: i64 = 120;
+const HUYGEN_DEFEND_BONUS: i32 = 4;
+const HUYGEN_ROYAL_ALIGN: i32 = 22;
+
 pub const DEFAULT_EVAL_SLIDER_THREAT_DIV: i32 = 12;
 pub const DEFAULT_EVAL_SLIDER_THREAT_CAP: i32 = 41;
 pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0: i32 = 2;
@@ -1881,13 +1887,16 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 );
                 leaper_eval * centaur_guard_scale() / 100
             }
-            PieceType::Huygen => evaluate_leaper_positioning(
+            PieceType::Huygen => evaluate_huygen_reach(
+                &game.spatial_indices,
                 x,
                 y,
                 piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Huygen,
-                cloud_avg_spread,
+                if piece.color() == PlayerColor::White {
+                    black_royals
+                } else {
+                    white_royals
+                },
                 phase,
             ),
             PieceType::Guard => evaluate_leaper_positioning(
@@ -2707,9 +2716,90 @@ fn evaluate_knight(
     bonus
 }
 
-/// Scores leapers on proximity to the piece cloud's center, on how tightly the
-/// position is clustered, and on a phase taper that lifts short-range leapers as the
-/// board empties.
+/// A huygen jumps to PRIME distances along its orthogonals, hopping over anything
+/// at a composite distance, but a piece sitting exactly at a prime distance stops
+/// it for the rest of that direction. So open lines say nothing about it -- what
+/// matters is the first prime-distance occupant of each of its four rays.
+fn evaluate_huygen_reach(
+    indices: &crate::moves::SpatialIndices,
+    x: i64,
+    y: i64,
+    own: PlayerColor,
+    enemy_royals: &[Coordinate],
+    phase: i32,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut attack = 0i32;
+    let mut defend = 0i32;
+
+    // First piece at a prime distance along one direction, or None if the ray
+    // reaches nothing within the scan bound.
+    let first_prime_hit = |line: Option<&crate::moves::SpatialLine>,
+                           self_coord: i64,
+                           forward: bool|
+     -> Option<Piece> {
+        let l = line?;
+        let n = l.coords.len();
+        let mut i = 0usize;
+        while i < n {
+            // Ascending for the forward ray, descending for the backward one, so
+            // the first prime-distance occupant found is the nearest.
+            let idx = if forward { i } else { n - 1 - i };
+            i += 1;
+            let c = l.coords[idx];
+            let d = if forward { c - self_coord } else { self_coord - c };
+            if d <= 0 {
+                continue;
+            }
+            if d > HUYGEN_SCAN_MAX {
+                break;
+            }
+            if crate::utils::is_prime_fast(d) {
+                return Some(Piece::from_packed(l.pieces[idx]));
+            }
+        }
+        None
+    };
+
+    let royal_at = |p: &Piece| -> bool { p.piece_type().is_royal() };
+
+    let mut score_hit = |hit: Option<Piece>| {
+        let Some(victim) = hit else { return };
+        let vt = victim.piece_type();
+        if vt.is_neutral_type() {
+            return;
+        }
+        if victim.color() == own {
+            defend += HUYGEN_DEFEND_BONUS;
+            return;
+        }
+        if royal_at(&victim) {
+            // Nothing can interpose at a composite distance, so this is a
+            // standing check threat rather than a merely aligned one.
+            attack += HUYGEN_ROYAL_ALIGN;
+            return;
+        }
+        let v = get_piece_value_base(vt);
+        // A cheap attacker still generates a real threat, so a lesser victim
+        // earns a floor rather than nothing.
+        let raw = (v - huygen()).max(v / 4);
+        attack += (raw / slider_threat_div()).min(slider_threat_cap());
+    };
+
+    let row = indices.rows.get(&y);
+    let col = indices.cols.get(&x);
+    score_hit(first_prime_hit(row, x, true));
+    score_hit(first_prime_hit(row, x, false));
+    score_hit(first_prime_hit(col, y, true));
+    score_hit(first_prime_hit(col, y, false));
+
+    let _ = enemy_royals;
+
+    // Defence matters less as material leaves; the attacking half does not decay.
+    attack + taper(defend, defend / 2)
+}
+
 fn evaluate_leaper_positioning(
     x: i64,
     y: i64,
