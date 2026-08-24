@@ -6,6 +6,7 @@ pub mod eval_kind;
 pub mod helpers;
 pub mod insufficient_material;
 pub mod mop_up;
+pub mod piece_reach;
 pub mod variants;
 
 use crate::board::PlayerColor;
