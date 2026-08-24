@@ -2,9 +2,12 @@
 //! what its distinctive movement actually attacks, covers, or is blocked by.
 use crate::board::{Coordinate, Piece, PlayerColor};
 use crate::game::GameState;
-use crate::search::params::{huygen, knightrider, slider_threat_cap, slider_threat_div};
+use crate::search::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
 
 use super::base::{MAX_PHASE, get_piece_value_base};
+
+const ROSE_DEFEND_BONUS: i32 = 4;
+const ROSE_ROYAL_REACH: i32 = 20;
 
 const COMPOUND_LEAP_DEFEND: i32 = 4;
 const COMPOUND_LEAP_ROYAL: i32 = 20;
@@ -139,6 +142,57 @@ pub(crate) fn evaluate_compound_leap_threats(
         // Unblockable, so even a lesser victim is a genuine threat and earns a floor.
         let raw = (v - attacker_value).max(v / 4);
         attack += (raw / slider_threat_div()).min(slider_threat_cap());
+    }
+
+    attack + taper(defend, defend / 2)
+}
+
+/// Mirrors rose movegen: sixteen spirals of up to seven hops, each stopping at
+/// its first occupant, and squares recur across spirals so a target is counted
+/// once. Bounded reach means a blocked spiral yields nothing past the blocker.
+pub(crate) fn evaluate_rose_reach(
+    game: &GameState,
+    x: i64,
+    y: i64,
+    own: PlayerColor,
+    phase: i32,
+) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut attack = 0i32;
+    let mut defend = 0i32;
+    // At most one target per spiral, so sixteen slots cover the dedup.
+    let mut seen: [(i64, i64); 16] = [(i64::MIN, i64::MIN); 16];
+    let mut seen_n = 0usize;
+
+    for spirals_for_dir in &crate::moves::ROSE_SPIRALS {
+        for spiral_path in spirals_for_dir {
+            for &(cum_dx, cum_dy) in spiral_path.iter() {
+                let (tx, ty) = (x + cum_dx, y + cum_dy);
+                let Some(occupant) = game.board.get_piece(tx, ty) else {
+                    continue;
+                };
+                if seen[..seen_n].contains(&(tx, ty)) {
+                    break;
+                }
+                seen[seen_n] = (tx, ty);
+                seen_n += 1;
+
+                let ot = occupant.piece_type();
+                if !ot.is_neutral_type() {
+                    if occupant.color() == own {
+                        defend += ROSE_DEFEND_BONUS;
+                    } else if ot.is_royal() {
+                        attack += ROSE_ROYAL_REACH;
+                    } else {
+                        let v = get_piece_value_base(ot);
+                        let raw = (v - rose()).max(v / 4);
+                        attack += (raw / slider_threat_div()).min(slider_threat_cap());
+                    }
+                }
+                break;
+            }
+        }
     }
 
     attack + taper(defend, defend / 2)

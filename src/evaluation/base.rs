@@ -6,6 +6,7 @@ use std::cell::{Cell, UnsafeCell};
 
 use super::piece_reach::{
     evaluate_compound_leap_threats, evaluate_huygen_reach, evaluate_knightrider_reach,
+    evaluate_rose_reach,
 };
 use crate::search::params::{
     amazon_compound_bonus, amazon_queen_scale, amazon_rook_scale, archbishop,
@@ -1884,8 +1885,18 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 white_pawns,
                 black_pawns,
             ),
+            PieceType::Rose => {
+                evaluate_leaper_positioning(
+                    x,
+                    y,
+                    piece.color(),
+                    cloud_center.as_ref(),
+                    PieceType::Rose,
+                    cloud_avg_spread,
+                    phase,
+                ) + evaluate_rose_reach(game, x, y, piece.color(), phase)
+            }
             PieceType::Hawk
-            | PieceType::Rose
             | PieceType::Camel
             | PieceType::Giraffe
             | PieceType::Zebra => evaluate_leaper_positioning(
