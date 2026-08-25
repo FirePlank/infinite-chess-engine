@@ -356,6 +356,31 @@ impl StagedMoveGen {
             }
         }
 
+        // Castling belongs to any royal with rights paired with any non-pawn that
+        // has them, not to the king alone.
+        if piece.piece_type().is_royal() {
+            let dx = m.to.x - m.from.x;
+            if m.to.y == m.from.y && dx.abs() > 1 {
+                let Some(partner) = &m.rook_coord else {
+                    return false;
+                };
+                if !game
+                    .board
+                    .is_occupied_by_color(partner.x, partner.y, game.turn)
+                {
+                    return false;
+                }
+                let dir = if dx > 0 { 1 } else { -1 };
+                if game.board.is_occupied(m.from.x + dir, m.from.y)
+                    || game.board.is_occupied(m.to.x, m.from.y)
+                    || (dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y))
+                {
+                    return false;
+                }
+                return true;
+            }
+        }
+
         // 4. Piece-Specific Logic
         match piece.piece_type() {
             PieceType::Pawn => {
@@ -419,26 +444,6 @@ impl StagedMoveGen {
             PieceType::King => {
                 let dx = (m.to.x - m.from.x).abs();
                 let dy = (m.to.y - m.from.y).abs();
-
-                if dx > 1 {
-                    if let Some(rook_coord) = &m.rook_coord {
-                        if !game
-                            .board
-                            .is_occupied_by_color(rook_coord.x, rook_coord.y, game.turn)
-                        {
-                            return false;
-                        }
-                        let dir = if m.to.x > m.from.x { 1 } else { -1 };
-                        if game.board.is_occupied(m.from.x + dir, m.from.y)
-                            || game.board.is_occupied(m.to.x, m.from.y)
-                            || (dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y))
-                        {
-                            return false;
-                        }
-                        return true;
-                    }
-                    return false;
-                }
                 dx <= 1 && dy <= 1
             }
             PieceType::Rook | PieceType::Bishop | PieceType::Queen => {

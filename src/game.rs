@@ -3088,7 +3088,9 @@ impl GameState {
         // Castling works with any non-pawn, non-royal piece that has special rights
         if piece.piece_type().is_royal() {
             let dx = to_x - from_x;
-            if dx.abs() == 2 {
+            // Same rank required: a royal that also leaps (centaur) has legal
+            // (2,1) moves, and matching on dx alone treated those as castling.
+            if dx.abs() == 2 && to_y == from_y {
                 // Use spatial indices to find castling partner
                 let partner_dir = if dx > 0 { 1i64 } else { -1i64 };
                 if let Some(row_pieces) = self.spatial_indices.rows.get(&from_y) {
@@ -3379,9 +3381,10 @@ impl GameState {
             }
         }
 
-        // Handle Castling Move (Royal moves exactly 2 squares)
+        // Handle Castling Move (royal moves exactly 2 squares along its rank)
         if piece.piece_type().is_royal()
             && (m.to.x - m.from.x).abs() == 2
+            && m.to.y == m.from.y
             && let Some(rook_coord) = &m.rook_coord
             && let Some(rook) = self.board.remove_piece(&rook_coord.x, &rook_coord.y)
         {
@@ -3725,7 +3728,9 @@ impl GameState {
         // Handle Castling Revert
         if piece.piece_type().is_royal() {
             let dx = m.to.x - m.from.x;
-            if dx.abs() == 2 {
+            // Must mirror make_move exactly, or undo restores a partner that
+            // never moved and the board silently diverges.
+            if dx.abs() == 2 && m.to.y == m.from.y {
                 // Castling was performed. Move rook back.
                 if let Some(rook_coord) = &m.rook_coord {
                     let direction = if dx > 0 { 1 } else { -1 };
@@ -4274,6 +4279,38 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::sync::OnceLock;
+
+    /// A royal that also leaps has legal (2,1) moves. Matching castling on dx
+    /// alone moved the rook on one, and undo then put it back somewhere else.
+    #[test]
+    fn royal_centaur_knight_leap_is_not_castling() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 (8|1) RC5,1+|R8,1+|k5,8");
+        game.recompute_piece_counts();
+        game.recompute_hash();
+
+        let before = game.board.get_piece(8, 1).expect("rook starts at 8,1");
+        // (2,1) from 5,1 -> 7,2: dx.abs() == 2, but a knight leap, not castling.
+        let m = game
+            .get_legal_moves()
+            .into_iter()
+            .find(|m| m.to.x == 7 && m.to.y == 2)
+            .expect("royal centaur can leap to 7,2");
+        assert!(m.rook_coord.is_none(), "a knight leap is not a castle");
+
+        let undo = game.make_move(&m);
+        assert_eq!(
+            game.board.get_piece(8, 1).map(|p| p.piece_type()),
+            Some(before.piece_type()),
+            "the rook must not move on a knight leap"
+        );
+        game.undo_move(&m, undo);
+        assert_eq!(
+            game.board.get_piece(8, 1).map(|p| p.piece_type()),
+            Some(before.piece_type())
+        );
+        assert!(game.board.get_piece(5, 1).is_some(), "royal is back home");
+    }
 
     /// Asserts after make AND undo: an asymmetric pair poisons every later TT key,
     /// which a plain round-trip check would miss.
