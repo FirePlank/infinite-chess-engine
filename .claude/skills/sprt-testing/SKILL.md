@@ -59,7 +59,14 @@ pre-built baseline via `--old-bin` (repo root, does not show the artifact).
 Never build or run an SPRT engine binary from Temp/scratchpad — per-move AV-scan latency
 causes timeout losses. Build into `target/release/`; keep baseline binaries in the REPO ROOT
 (e.g. `sprt_old.exe`). Pass `--old-bin`/`--new-bin` as ABSOLUTE paths (Rust `Command::new`
-won't find a bare relative name in cwd on Windows). Games/results JSON may live in scratchpad.
+won't find a bare relative name in cwd on Windows).
+
+**Games/results JSON go in `<REPO>/games/sprt/`, NEVER the repo root and never a
+session scratchpad.** `games/` is gitignored, so the corpus accumulates there and
+stays out of `git status`; a scratchpad copy dies with the session, and the root
+fills with stray `games_*.json` that later have to be swept up by hand. That
+corpus is reused by `puzzle_gen`/`texel` as training data, so keeping every run
+in one place is what makes it worth anything.
 
 `--concurrency` defaults to physical core count (`num_cpus::get_physical()`), not logical —
 each game is single-threaded, so SMT siblings only add contention, not real parallelism.
@@ -148,7 +155,7 @@ Extend only when it pays off — decide from |LLR| at the end of a batch (§8). 
     --old-commit <sha> --new-commit <label> \
     --variants "<scoped,list>" \
     --elo0 <lo> --elo1 <hi> \
-    --games "<SCR>/games_<tag>.json" --results "<SCR>/results_<tag>.json" \
+    --games "<REPO>/games/sprt/games_<tag>.json" --results "<REPO>/games/sprt/results_<tag>.json" \
     --max-games <N>
   ```
 
