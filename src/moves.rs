@@ -3418,7 +3418,7 @@ fn generate_huygen_snipes(
     blockers: &[(i64, Option<PlayerColor>); 4],
     out: &mut MoveList,
 ) {
-    const SNIPE_TRIES: usize = 24;
+    const SNIPE_TRIES: usize = 128;
     let my_color = piece.color();
 
     let lines = [
@@ -3502,10 +3502,10 @@ fn generate_huygen_snipes(
             }
         }
 
-        // Two targets four apart can share one landing; a duplicate move would
-        // corrupt perft, so landings are deduped per line.
-        let mut used: smallvec::SmallVec<[i64; 8]> = smallvec::SmallVec::new();
-
+        // Landings 2 short of or past a target always attack (nothing can
+        // interpose at distance 1), collected once per line like the far
+        // candidates above rather than re-derived per target.
+        let mut close: smallvec::SmallVec<[i64; 16]> = smallvec::SmallVec::new();
         for (c, packed) in vec {
             let t_off = c - our;
             if t_off == 0 {
@@ -3518,55 +3518,89 @@ fn generate_huygen_snipes(
             {
                 continue;
             }
-            // Already the direct capture on its side.
-            if (t_off > 0 && t_off == pos_block) || (t_off < 0 && -t_off == neg_block) {
-                continue;
-            }
-
-            // Universal close landing: two squares past or short of the target.
-            // Nothing can interpose at distance 1, so distance 2 always attacks.
-            let mut done = false;
             for s_off in [t_off + 2, t_off - 2] {
-                if s_off != 0 && reachable_open(s_off) && !used.contains(&s_off) {
-                    used.push(s_off);
-                    push_landing(s_off, out);
-                    done = true;
-                    break;
-                }
-            }
-            if done {
-                continue;
-            }
-
-            // Far landing beyond every piece on an open side: the pieces between
-            // the landing and the target must then all sit at composite offsets
-            // from the landing while the target sits at a prime one.
-            for &s_off in &cands {
-                let dist_t = (s_off - t_off).abs();
-                if !is_prime_fast(dist_t) {
-                    continue;
-                }
-                let lo = t_off.min(s_off);
-                let hi = t_off.max(s_off);
-                let mut clean = true;
-                for (c2, _) in vec {
-                    let o2 = c2 - our;
-                    if o2 <= lo || o2 >= hi || o2 == t_off || o2 == 0 {
-                        continue;
-                    }
-                    if is_prime_fast((s_off - o2).abs()) {
-                        clean = false;
-                        break;
-                    }
-                }
-                if clean && !used.contains(&s_off) {
-                    used.push(s_off);
-                    push_landing(s_off, out);
-                    break;
+                if s_off != 0 && !close.contains(&s_off) {
+                    close.push(s_off);
                 }
             }
         }
+
+        // A huygen only attacks the nearest prime-distance piece per side, so
+        // asking each landing that question covers every target in one pass.
+        // Keeps the single best landing per target: the widest gap to the next
+        // lower prime, the only stretch a piece could interpose in, so the
+        // wider the gap the harder the attack is to block.
+        let mut best: smallvec::SmallVec<[(i64, i64, i64); 16]> = smallvec::SmallVec::new();
+
+        for &s_off in close.iter().chain(cands.iter()) {
+            if !reachable_open(s_off) {
+                continue;
+            }
+            // Nearest prime-distance piece below and above the landing; a huygen
+            // there attacks those two and nothing else on the line.
+            let mut lo_hit: Option<(i64, i64, u8)> = None;
+            let mut hi_hit: Option<(i64, i64, u8)> = None;
+            for (c2, packed2) in vec {
+                let o2 = c2 - our;
+                // Offset 0 is the huygen's own origin, which it is vacating.
+                if o2 == s_off || o2 == 0 {
+                    continue;
+                }
+                let d = (s_off - o2).abs();
+                if !is_prime_fast(d) {
+                    continue;
+                }
+                let slot = if o2 < s_off { &mut lo_hit } else { &mut hi_hit };
+                if slot.is_none_or(|(bd, _, _)| d < bd) {
+                    *slot = Some((d, o2, packed2));
+                }
+            }
+
+            for (d, o2, packed2) in [lo_hit, hi_hit].into_iter().flatten() {
+                let t = Piece::from_packed(packed2);
+                if t.color() == my_color
+                    || t.color() == PlayerColor::Neutral
+                    || t.piece_type() == PieceType::Void
+                {
+                    continue;
+                }
+                let reach = block_free_span(d);
+                match best.iter_mut().find(|(target, _, _)| *target == o2) {
+                    Some(entry) => {
+                        if reach > entry.1 {
+                            entry.1 = reach;
+                            entry.2 = s_off;
+                        }
+                    }
+                    None => best.push((o2, reach, s_off)),
+                }
+            }
+        }
+
+        // Two targets can share one landing, and a duplicate move corrupts perft.
+        let mut used: smallvec::SmallVec<[i64; 16]> = smallvec::SmallVec::new();
+        for &(_, _, s_off) in &best {
+            if !used.contains(&s_off) {
+                used.push(s_off);
+                push_landing(s_off, out);
+            }
+        }
     }
+}
+
+/// Gap from the attacking prime down to the one before it, the only stretch a
+/// piece could interpose in. Distance 2 is handled separately and never reaches
+/// here, since nothing can block it at all.
+#[inline]
+fn block_free_span(d: i64) -> i64 {
+    let mut p = d - 1;
+    while p > 1 {
+        if is_prime_fast(p) {
+            return d - p;
+        }
+        p -= 1;
+    }
+    i64::MAX
 }
 
 /// Primes available to sniper landings; sieved once, far past the base table so
@@ -5140,6 +5174,66 @@ mod tests {
 
                 super::reset_world_bounds();
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod snipe_coverage_probe {
+    use super::*;
+    use crate::game::GameState;
+
+    #[test]
+    fn probe_huygen_snipe_coverage() {
+        let icn = "w 0/100 1 (4|-4;gu,r,hu,ha) 0,0,_,_ P0,-3+|P0,-4+|GU0,-6|R0,-7|K0,-8|HA0,-10|HA0,-11|HU0,-13|HU0,-14|p0,4+|p0,3+|gu0,6|r0,7|k0,8|ha0,10|ha0,11|hu0,14|hu0,13";
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        game.recompute_piece_counts();
+        game.recompute_hash();
+
+        let moves = game.get_pseudo_legal_moves();
+        let enemies: Vec<i64> = vec![4, 3, 6, 7, 8, 10, 11, 14, 13];
+        let mut covered = 0;
+        let mut per_target_count: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        for m in moves.iter().filter(|m| m.piece.piece_type() == PieceType::Huygen && m.from.x == 0) {
+            *per_target_count.entry(m.to.y).or_insert(0) += 1;
+        }
+        for &ey in &enemies {
+            let hit = moves.iter().any(|m| {
+                if m.piece.piece_type() != PieceType::Huygen || m.from.x != 0 {
+                    return false;
+                }
+                let mut best: Option<(i64, i64)> = None;
+                for (_, y, _) in game.board.iter().filter(|(x, _, _)| *x == 0) {
+                    if y == m.from.y {
+                        continue;
+                    }
+                    let d = (m.to.y - y).abs();
+                    if d > 0 && crate::utils::is_prime_fast(d) && best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, y));
+                    }
+                }
+                best.map(|(_, y)| y) == Some(ey)
+            });
+            if hit {
+                covered += 1;
+            } else {
+                println!("  NOT attacked: enemy at y={}", ey);
+            }
+        }
+        println!("HUYGEN SNIPE COVERAGE: {}/{} enemies attackable, total huygen moves = {}",
+            covered, enemies.len(),
+            moves.iter().filter(|m| m.piece.piece_type() == PieceType::Huygen).count());
+        for (y, m) in moves.iter()
+            .filter(|m| m.piece.piece_type() == PieceType::Huygen && m.from.x == 0)
+            .map(|m| m.to.y)
+            .fold(std::collections::HashMap::<i64, usize>::new(), |mut acc, y| {
+                *acc.entry(y).or_insert(0) += 1;
+                acc
+            })
+            .into_iter()
+        {
+            let _ = m;
         }
     }
 }
