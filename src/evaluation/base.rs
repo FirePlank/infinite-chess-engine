@@ -15,7 +15,7 @@ use crate::search::params::{
     cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
-    far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_value_threshold,
+    far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value,
     king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
     mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
     mg_outpost_bonus, min_major_development_penalty,
@@ -312,7 +312,7 @@ pub const DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY: i32 = 100;
 pub const DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD: i32 = 400;
 pub const DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 16;
 pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
-pub const DEFAULT_EVAL_KING_DEFENDER_VALUE_THRESHOLD: i32 = 400;
+pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
@@ -475,6 +475,15 @@ fn cloud_penalty(excess: i32, piece_val: i32, mult: i32) -> i32 {
     let p = excess as i64 * cloud_penalty_per_100_value() as i64 * piece_val as i64 * mult as i64;
     let cap = piece_val as i64 * cloud_penalty_max_pct() as i64 / 100;
     ((p / 10_000).min(cap)) as i32
+}
+
+/// A cheap piece shields a king; an expensive one standing there is tied down
+/// rather than defending. Scaled smoothly by value instead of cut off, so a
+/// mid-value piece still counts for part of it.
+#[inline]
+fn king_defender_bonus_for(bonus: i32, piece_val: i32) -> i32 {
+    let r = king_defender_ref_value();
+    (bonus as i64 * r as i64 / piece_val.max(r) as i64) as i32
 }
 
 pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
@@ -2046,12 +2055,13 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             for &ok in own_royals {
                 let dist = (x - ok.x).abs().max((y - ok.y).abs());
                 if dist <= 3 {
-                    if piece_val < king_defender_value_threshold() {
-                        piece_score += taper(
+                    piece_score += king_defender_bonus_for(
+                        taper(
                             crate::search::params::mg_king_defender_bonus(),
                             crate::search::params::eg_king_defender_bonus(),
-                        );
-                    }
+                        ),
+                        piece_val,
+                    );
                     break; // Count once
                 }
             }
