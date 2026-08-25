@@ -228,6 +228,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("minor_development_penalty_threshold", crate::evaluation::base::DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD as i64, 100, 800, 4.0, 0.002, "Piece value below which the stronger undeveloped-minor penalty applies"),
     EvalParamSpec::new("min_major_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY as i64, 0, 30, 2.0, 0.002, "Undeveloped-major penalty"),
     EvalParamSpec::new("min_fairy_development_penalty", crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY as i64, 0, 220, 2.0, 0.002, "Undeveloped-fairy-leaper penalty (leapers are worthless at home, knights and bishops are not)"),
+    EvalParamSpec::new("tied_defender_ref_value", crate::evaluation::base::DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE as i64, 150, 1600, 8.0, 0.002, "Reference value at which a king-tied piece pays the full penalty"),
     EvalParamSpec::new("king_defender_ref_value", crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_REF_VALUE as i64, 100, 800, 4.0, 0.002, "Piece value below which a piece counts as a king defender"),
     EvalParamSpec::new("complexity_damp", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP as i64, 0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score"),
     EvalParamSpec::new("complexity_excess_max", crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX as i64, 8, 100, 2.0, 0.002, "Cap on phase excess counted for complexity damping"),
@@ -366,6 +367,7 @@ pub struct EvalParams {
     pub min_major_development_penalty: i32,
     pub min_fairy_development_penalty: i32,
     pub king_defender_ref_value: i32,
+    pub tied_defender_ref_value: i32,
     pub complexity_damp: i32,
     pub complexity_excess_max: i32,
     pub king_shield_ahead_max_dist: i32,
@@ -505,6 +507,7 @@ impl Default for EvalParams {
             min_major_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY,
             min_fairy_development_penalty: crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY,
             king_defender_ref_value: crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_REF_VALUE,
+            tied_defender_ref_value: crate::evaluation::base::DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE,
             complexity_damp: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP,
             complexity_excess_max: crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX,
             king_shield_ahead_max_dist: crate::evaluation::base::DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST,
@@ -806,6 +809,10 @@ define_eval_accessor!(minor_development_penalty_threshold, crate::evaluation::ba
 define_eval_accessor!(min_major_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY);
 define_eval_accessor!(min_fairy_development_penalty, crate::evaluation::base::DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY);
 define_eval_accessor!(king_defender_ref_value, crate::evaluation::base::DEFAULT_EVAL_KING_DEFENDER_REF_VALUE);
+define_eval_accessor!(
+    tied_defender_ref_value,
+    crate::evaluation::base::DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE
+);
 define_eval_accessor!(complexity_damp, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_DAMP);
 define_eval_accessor!(complexity_excess_max, crate::evaluation::base::DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX);
 define_eval_accessor!(king_shield_ahead_max_dist, crate::evaluation::base::DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST);

@@ -15,7 +15,7 @@ use crate::search::params::{
     cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
-    far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value,
+    far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
     king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
     mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
     mg_outpost_bonus, min_major_development_penalty,
@@ -313,6 +313,7 @@ pub const DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD: i32 = 400;
 pub const DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 16;
 pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
 pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
+pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
@@ -2030,14 +2031,10 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // which suits neither, so they are priced apart.
             piece_score -= if pt.is_minor() {
                 if matches!(pt, PieceType::Knight | PieceType::Bishop) {
-                    // A knight or bishop below the threshold costs nothing for
-                    // sitting at home -- tuned to exactly 0, so the branch and its
-                    // threshold check are skipped rather than computed and discarded.
-                    if piece_val < minor_development_penalty_threshold() {
-                        0
-                    } else {
-                        min_major_development_penalty()
-                    }
+                    // Ramped in value rather than flipped at a threshold, which paid
+                    // a bishop the full penalty and a knight none at all.
+                    min_major_development_penalty() * piece_val
+                        / minor_development_penalty_threshold().max(1)
                 } else {
                     min_fairy_development_penalty()
                 }
@@ -2955,9 +2952,7 @@ fn evaluate_king_shelter(
                 blocker = Some((0, 1));
             } else if c == color {
                 blocker = Some((val, dist));
-                if val >= 600 {
-                    tied_defender_penalty += 10;
-                }
+                tied_defender_penalty += 10 * val / tied_defender_ref_value();
             } else if c == PlayerColor::Neutral {
                 // Neutral pieces (Void/Obstacle)
                 // Void -> Perfect blocker (dist 1) like world border
@@ -2999,9 +2994,7 @@ fn evaluate_king_shelter(
                 blocker = Some((0, 1));
             } else if c == color {
                 blocker = Some((val, dist));
-                if val >= 600 {
-                    tied_defender_penalty += 12;
-                }
+                tied_defender_penalty += 12 * val / tied_defender_ref_value();
             } else if c == PlayerColor::Neutral {
                 if pt == PieceType::Void {
                     blocker = Some((0, 1));
