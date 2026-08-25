@@ -3408,6 +3408,10 @@ pub fn generate_huygen_moves_into(
     }
 }
 
+/// Far-landing candidates tried per side; SNIPE_PRIMES sizes its sieve from
+/// this directly, so raising it does not need a matching manual bump there.
+const SNIPE_TRIES: usize = 128;
+
 /// See the caller: emits at most one landing per enemy on the huygen row and
 /// column. A landing must sit on an open side (every prime distance there is
 /// provably empty), and duplicates of the base generation are filtered out.
@@ -3418,7 +3422,6 @@ fn generate_huygen_snipes(
     blockers: &[(i64, Option<PlayerColor>); 4],
     out: &mut MoveList,
 ) {
-    const SNIPE_TRIES: usize = 128;
     let my_color = piece.color();
 
     let lines = [
@@ -3489,16 +3492,10 @@ fn generate_huygen_snipes(
                 continue;
             }
             let base = outer * sign;
-            let mut tried = 0usize;
             for &p in SNIPE_PRIMES.iter() {
-                if p <= base {
-                    continue;
+                if p > base {
+                    cands.push(p * sign);
                 }
-                if tried >= SNIPE_TRIES {
-                    break;
-                }
-                tried += 1;
-                cands.push(p * sign);
             }
         }
 
@@ -3603,15 +3600,21 @@ fn block_free_span(d: i64) -> i64 {
     i64::MAX
 }
 
-/// Primes available to sniper landings; sieved once, far past the base table so
-/// a landing can clear every piece on a long line.
+/// Exactly SNIPE_TRIES primes, sieved once. A sieve finds primes below a
+/// VALUE, not the first COUNT of them, so the bound has to be estimated: the
+/// k-th prime is below k*(ln k + ln ln k) (Rosser's theorem, k >= 6). Sized
+/// from SNIPE_TRIES directly, so raising that constant resizes this too.
 static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| {
-    let n = 4096usize;
+    let k = SNIPE_TRIES.max(6) as f64;
+    let n = ((k * (k.ln() + k.ln().ln())).ceil() as usize + 8).max(32);
     let mut sieve = vec![true; n];
-    let mut out = Vec::with_capacity(600);
+    let mut out = Vec::with_capacity(SNIPE_TRIES);
     for i in 2..n {
         if sieve[i] {
             out.push(i as i64);
+            if out.len() == SNIPE_TRIES {
+                break;
+            }
             let mut j = i * i;
             while j < n {
                 sieve[j] = false;
@@ -3619,6 +3622,7 @@ static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(||
             }
         }
     }
+    debug_assert_eq!(out.len(), SNIPE_TRIES, "sieve bound too small for SNIPE_TRIES");
     out
 });
 
