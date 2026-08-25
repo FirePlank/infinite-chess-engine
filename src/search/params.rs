@@ -212,6 +212,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("piece_cloud_cheb_radius", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS as i64, 4, 40, 2.0, 0.002, "Chebyshev radius of the piece-cloud cohesion zone"),
     EvalParamSpec::new("slider_axis_wiggle", crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE as i64, 1, 20, 2.0, 0.002, "Wiggle room for a slider ray to count as passing through center"),
     EvalParamSpec::new("piece_cloud_cheb_max_excess", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS as i64, 16, 160, 2.0, 0.002, "Max excess distance counted for the piece-cloud penalty"),
+    EvalParamSpec::new("cloud_penalty_max_pct", crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT as i64, 10, 130, 4.0, 0.002, "Cloud penalty ceiling, as a percent of the piece's value"),
     EvalParamSpec::new("cloud_penalty_per_100_value", crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE as i64, 0, 6, 2.0, 0.002, "Cloud-spread penalty per 100 value of piece worth"),
     EvalParamSpec::new("cloud_center_max_skew_dist", crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST as i64, 4, 40, 2.0, 0.002, "Max skew distance for the cloud-center reference point"),
     EvalParamSpec::new("queen_ideal_line_dist", crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST as i64, 1, 16, 2.0, 0.002, "Ideal file/rank distance for queen line pressure"),
@@ -349,6 +350,7 @@ pub struct EvalParams {
     pub slider_axis_wiggle: i32,
     pub piece_cloud_cheb_max_excess: i32,
     pub cloud_penalty_per_100_value: i32,
+    pub cloud_penalty_max_pct: i32,
     pub cloud_center_max_skew_dist: i32,
     pub queen_ideal_line_dist: i32,
     pub leaper_tropism_divisor: i32,
@@ -487,6 +489,7 @@ impl Default for EvalParams {
             slider_axis_wiggle: crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE,
             piece_cloud_cheb_max_excess: crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS,
             cloud_penalty_per_100_value: crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE,
+            cloud_penalty_max_pct: crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT,
             cloud_center_max_skew_dist: crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST,
             queen_ideal_line_dist: crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST,
             leaper_tropism_divisor: crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR,
@@ -784,6 +787,10 @@ define_eval_accessor!(piece_cloud_cheb_radius, crate::evaluation::base::DEFAULT_
 define_eval_accessor!(slider_axis_wiggle, crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE);
 define_eval_accessor!(piece_cloud_cheb_max_excess, crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS);
 define_eval_accessor!(cloud_penalty_per_100_value, crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE);
+define_eval_accessor!(
+    cloud_penalty_max_pct,
+    crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT
+);
 define_eval_accessor!(cloud_center_max_skew_dist, crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST);
 define_eval_accessor!(queen_ideal_line_dist, crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST);
 define_eval_accessor!(leaper_tropism_divisor, crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR);

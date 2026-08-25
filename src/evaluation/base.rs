@@ -12,7 +12,7 @@ use crate::search::params::{
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
     chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
-    cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
+    cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_value_threshold,
@@ -297,6 +297,7 @@ pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS: i32 = 16;
 pub const DEFAULT_EVAL_SLIDER_AXIS_WIGGLE: i32 = 5;
 pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS: i32 = 64;
 pub const DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE: i32 = 2;
+pub const DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT: i32 = 50;
 pub const DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST: i32 = 16;
 pub const DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST: i32 = 4;
 pub const DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR: i32 = 400;
@@ -464,6 +465,16 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
         PieceType::Rose => rose(),
         PieceType::Huygen => huygen(),
     }
+}
+
+/// Cloud-distance penalty, scaled by the piece's value and capped as a share of
+/// it. Uncapped this reached 128% of the piece, i.e. a far piece scored worse
+/// than no piece; truncating value to hundreds also made it step at boundaries.
+#[inline]
+fn cloud_penalty(excess: i32, piece_val: i32, mult: i32) -> i32 {
+    let p = excess as i64 * cloud_penalty_per_100_value() as i64 * piece_val as i64 * mult as i64;
+    let cap = piece_val as i64 * cloud_penalty_max_pct() as i64 / 100;
+    ((p / 10_000).min(cap)) as i32
 }
 
 pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
@@ -1969,7 +1980,6 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
                 let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
 
-                let value_factor = (piece_val / 100).max(1);
                 let mult = taper(mg_far_slider_penalty_mult(), eg_far_slider_penalty_mult());
 
                 if is_ortho || is_diag || is_queen {
@@ -1990,18 +2000,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                         let excess = (lane_dist - slider_axis_wiggle() as i64)
                             .min(piece_cloud_cheb_max_excess() as i64)
                             as i32;
-                        let penalty =
-                            excess * cloud_penalty_per_100_value() * value_factor * mult / 100;
-                        piece_score -= penalty;
+                        piece_score -= cloud_penalty(excess, piece_val, mult);
                     }
                 } else {
                     // Leapers/Others: penalized by distance (Chebyshev)
                     // We are only in this block if cheb > RADIUS, so dist_to_radius > 0
                     let dist_to_radius = cheb - piece_cloud_cheb_radius() as i64;
                     let excess = dist_to_radius.min(piece_cloud_cheb_max_excess() as i64) as i32;
-                    let penalty =
-                        excess * cloud_penalty_per_100_value() * value_factor * mult / 100;
-                    piece_score -= penalty;
+                    piece_score -= cloud_penalty(excess, piece_val, mult);
                 }
             }
         }
