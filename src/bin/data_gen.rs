@@ -408,13 +408,13 @@ fn with_hard_timeout<T: Send + 'static>(
     rx.recv_timeout(dur).ok()
 }
 
-/// Exact legality test. `get_legal_moves` is pseudo-legal and keeps the slider
+/// Exact legality test. `get_pseudo_legal_moves` is pseudo-legal and keeps the slider
 /// candidate cache, so a terminal check written on it silently never fires;
-/// `get_legal_moves_into` bypasses the cache, and each move still needs a
+/// `get_pseudo_legal_moves_into` bypasses the cache, and each move still needs a
 /// make/`is_move_illegal`/undo filter.
 fn has_any_legal_move(game: &GameState) -> bool {
     let mut moves = MoveList::new();
-    game.get_legal_moves_into(&mut moves);
+    game.get_pseudo_legal_moves_into(&mut moves);
     for m in moves.iter() {
         let mut probe = game.clone();
         probe.make_move(m);

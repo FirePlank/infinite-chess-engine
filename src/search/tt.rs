@@ -115,7 +115,7 @@ impl TTEntry {
             } else {
                 Some(PieceType::from_u8(pr))
             },
-            rook_coord: None,
+            partner_coord: None,
         })
     }
 
@@ -508,7 +508,7 @@ mod tests {
             to: Coordinate::new(4, 4),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
         tt.store(&TTStoreParams {
             hash,
@@ -545,7 +545,7 @@ mod tests {
             to: Coordinate::new(-4000, 4000),
             piece: Piece::new(PieceType::Rook, PlayerColor::Black),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
         assert!(e.encode_move(&m, 0));
         let decoded = e.best_move(0).unwrap();

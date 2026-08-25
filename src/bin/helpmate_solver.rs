@@ -889,7 +889,7 @@ impl HelpmateSolver {
 
                 if let Some((fx, fy, tx, ty)) = move_coords {
                     let mut moves = MoveList::new();
-                    current_state.get_legal_moves_into(&mut moves);
+                    current_state.get_pseudo_legal_moves_into(&mut moves);
 
                     let mut found_move = None;
                     for &m in moves.iter() {

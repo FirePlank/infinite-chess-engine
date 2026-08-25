@@ -1093,13 +1093,13 @@ fn mpv(st: &mut GameState, depth: usize, cap_ms: u128, lines: usize) -> search::
     )
 }
 
-/// Fully legal moves. `get_legal_moves` is pseudo-legal and keeps the slider
+/// Fully legal moves. `get_pseudo_legal_moves` is pseudo-legal and keeps the slider
 /// candidate cache, so an exact list needs the buffer form (which bypasses it)
 /// plus a legality filter -- the same two steps the search does at its root.
 /// Without this an empty list never appears and checkmate is never detected.
 fn legal_moves(st: &mut GameState) -> MoveList {
     let mut pseudo = MoveList::new();
-    st.get_legal_moves_into(&mut pseudo);
+    st.get_pseudo_legal_moves_into(&mut pseudo);
     let mut out = MoveList::new();
     for m in pseudo {
         let undo = st.make_move(&m);

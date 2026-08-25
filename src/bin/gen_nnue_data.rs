@@ -717,7 +717,7 @@ impl SampleRecord {
 
 /// Determine game result: +1 = White wins, 0 = Draw, -1 = Black wins
 fn determine_game_result(gs: &GameState) -> i8 {
-    let moves = gs.get_legal_moves();
+    let moves = gs.get_pseudo_legal_moves();
 
     // Filter for strictly legal moves (must not leave king in check)
     let mut has_moves = false;
@@ -752,7 +752,7 @@ fn determine_game_result(gs: &GameState) -> i8 {
 
 /// Check if there is any strictly legal move
 fn has_any_legal_move(gs: &GameState) -> bool {
-    let moves = gs.get_legal_moves();
+    let moves = gs.get_pseudo_legal_moves();
     for m in moves {
         let mut test_gs = gs.clone();
         test_gs.make_move(&m);
@@ -765,7 +765,7 @@ fn has_any_legal_move(gs: &GameState) -> bool {
 
 /// Get weighted random move (higher weight for longer distance moves)
 fn get_weighted_random_move(gs: &GameState, prng: &mut Prng) -> Option<Move> {
-    let moves = gs.get_legal_moves();
+    let moves = gs.get_pseudo_legal_moves();
 
     if moves.is_empty() {
         return None;
@@ -844,7 +844,7 @@ fn play_game(
             match get_best_move(&mut gs, selfplay_depth, u128::MAX, true, false) {
                 Some((m, _, _)) => m,
                 None => {
-                    let fallback = gs.get_legal_moves().into_iter().next();
+                    let fallback = gs.get_pseudo_legal_moves().into_iter().next();
                     fallback.expect("has_any_legal_move was true but no legal move found")
                 }
             }
@@ -854,14 +854,14 @@ fn play_game(
                 match get_best_move(&mut gs, selfplay_depth, u128::MAX, true, false) {
                     Some((m, _, _)) => m,
                     None => gs
-                        .get_legal_moves()
+                        .get_pseudo_legal_moves()
                         .into_iter()
                         .next()
                         .expect("has_any_legal_move was true but no legal move found"),
                 }
             } else {
                 get_weighted_random_move(&gs, &mut prng).unwrap_or_else(|| {
-                    gs.get_legal_moves()
+                    gs.get_pseudo_legal_moves()
                         .into_iter()
                         .next()
                         .expect("has_any_legal_move was true but no legal move found")

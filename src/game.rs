@@ -3,7 +3,7 @@ use crate::Variant;
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::evaluation::get_piece_phase;
 use crate::moves::{
-    Move, MoveList, SpatialIndices, get_legal_moves, get_legal_moves_into,
+    Move, MoveList, SpatialIndices, get_pseudo_legal_moves, get_pseudo_legal_moves_into,
     get_pseudo_legal_moves_for_piece_into, is_square_attacked,
 };
 use crate::utils::{PRIMES_UNDER_128, is_prime_fast, is_prime_i64};
@@ -1579,7 +1579,7 @@ impl GameState {
     /// Returns pseudo-legal moves. Legality (not leaving king in check)
     /// is checked in the search after making each move.
     /// When in check and must escape, uses the optimized evasion generator.
-    pub fn get_legal_moves(&self) -> MoveList {
+    pub fn get_pseudo_legal_moves(&self) -> MoveList {
         // Check if we're in check and need to use the optimized evasion generator
         if self.is_in_check() && self.must_escape_check() {
             let mut out = MoveList::new();
@@ -1608,22 +1608,22 @@ impl GameState {
             enemy_king_pos: self.enemy_king_pos(),
         };
 
-        get_legal_moves(&self.board, self.turn, &ctx)
+        get_pseudo_legal_moves(&self.board, self.turn, &ctx)
     }
 
     /// Fill a pre-allocated buffer with pseudo-legal moves for the current side.
     /// When in check and must escape (checkmate win condition), uses the optimized
     /// evasion generator that handles long-range blocking moves correctly.
-    pub fn get_legal_moves_into(&self, out: &mut MoveList) {
+    pub fn get_pseudo_legal_moves_into(&self, out: &mut MoveList) {
         // The slider candidate cache can go stale and omit legal moves, so an exact
         // list must bypass it. The interior search keeps it, where its speed matters
         // more than the occasional miss.
         crate::moves::set_slider_cache_bypass(true);
-        self.get_legal_moves_into_inner(out);
+        self.get_pseudo_legal_moves_into_inner(out);
         crate::moves::set_slider_cache_bypass(false);
     }
 
-    fn get_legal_moves_into_inner(&self, out: &mut MoveList) {
+    fn get_pseudo_legal_moves_into_inner(&self, out: &mut MoveList) {
         // must_escape_check matters: under AllRoyalsCaptured a check need not be
         // answered, so restricting to evasions would drop most legal moves.
         if self.is_in_check() && self.must_escape_check() {
@@ -1662,7 +1662,7 @@ impl GameState {
                 indices: &self.spatial_indices,
                 enemy_king_pos: self.enemy_king_pos(),
             };
-            get_legal_moves_into(&self.board, self.turn, &ctx, out);
+            get_pseudo_legal_moves_into(&self.board, self.turn, &ctx, out);
 
             let mut i = 0;
             let mut s_mut = self.clone();
@@ -1697,7 +1697,7 @@ impl GameState {
             enemy_king_pos: self.enemy_king_pos(),
         };
 
-        get_legal_moves_into(&self.board, self.turn, &ctx, out);
+        get_pseudo_legal_moves_into(&self.board, self.turn, &ctx, out);
 
         // Riders pin outside the queen rays, so the pin map cannot clear a move and
         // every non-royal move needs a strict check. Rose spiral pins are rare enough
@@ -1834,7 +1834,7 @@ impl GameState {
                 enemy_king_pos: self.enemy_king_pos(),
                 pinned: &empty_pinned,
             };
-            crate::moves::get_legal_moves_into(&self.board, self.turn, &ctx, out);
+            crate::moves::get_pseudo_legal_moves_into(&self.board, self.turn, &ctx, out);
             return;
         }
 
@@ -3081,10 +3081,10 @@ impl GameState {
             to: Coordinate::new(to_x, to_y),
             piece,
             promotion: promotion.and_then(PieceType::parse_promotion_code),
-            rook_coord: None,
+            partner_coord: None,
         };
 
-        // Detect if this is a castling move to populate rook_coord (partner_coord)
+        // Detect if this is a castling move to populate partner_coord
         // Castling works with any non-pawn, non-royal piece that has special rights
         if piece.piece_type().is_royal() {
             let dx = to_x - from_x;
@@ -3104,7 +3104,7 @@ impl GameState {
                             && !partner.piece_type().is_royal()
                             && self.special_rights.contains(&partner_coord)
                         {
-                            m.rook_coord = Some(partner_coord);
+                            m.partner_coord = Some(partner_coord);
                         }
                     }
                 }
@@ -3385,40 +3385,40 @@ impl GameState {
         if piece.piece_type().is_royal()
             && (m.to.x - m.from.x).abs() == 2
             && m.to.y == m.from.y
-            && let Some(rook_coord) = &m.rook_coord
-            && let Some(rook) = self.board.remove_piece(&rook_coord.x, &rook_coord.y)
+            && let Some(partner_coord) = &m.partner_coord
+            && let Some(rook) = self.board.remove_piece(&partner_coord.x, &partner_coord.y)
         {
             let dx = m.to.x - m.from.x;
             let direction = if dx > 0 { 1 } else { -1 };
             let rook_to_x = m.to.x - direction;
             // Move rook in castling
-            self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+            self.hash ^= piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
             self.rep_hash ^=
-                rep_piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+                rep_piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             self.rep_hash ^= rep_piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
 
             if rook.color() == PlayerColor::White {
                 self.white_nonpawn_hash ^=
-                    piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+                    piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
                 self.white_nonpawn_hash ^=
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             } else {
                 self.black_nonpawn_hash ^=
-                    piece_key(rook.piece_type(), rook.color(), rook_coord.x, rook_coord.y);
+                    piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
                 self.black_nonpawn_hash ^=
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             }
 
             // Castling moves the PARTNER too, and CoaIP castles with a Guard --
             // a minor -- so minor_hash must follow it like the other hashes do.
-            self.castling_partner_aux_hashes(rook, rook_coord.x, rook_coord.y, rook_to_x, m.from.y);
+            self.castling_partner_aux_hashes(rook, partner_coord.x, partner_coord.y, rook_to_x, m.from.y);
             self.board.set_piece(rook_to_x, m.from.y, rook);
-            self.spatial_indices.remove(rook_coord.x, rook_coord.y);
+            self.spatial_indices.remove(partner_coord.x, partner_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
 
-            if self.special_rights.remove(rook_coord) {
-                undo_info.special_rights_removed.push(*rook_coord);
+            if self.special_rights.remove(partner_coord) {
+                undo_info.special_rights_removed.push(*partner_coord);
                 castling_state_dirty = true;
             }
         }
@@ -3732,15 +3732,15 @@ impl GameState {
             // never moved and the board silently diverges.
             if dx.abs() == 2 && m.to.y == m.from.y {
                 // Castling was performed. Move rook back.
-                if let Some(rook_coord) = &m.rook_coord {
+                if let Some(partner_coord) = &m.partner_coord {
                     let direction = if dx > 0 { 1 } else { -1 };
                     let rook_to_x = m.to.x - direction;
                     if let Some(rook) = self.board.remove_piece(&rook_to_x, &m.from.y) {
-                        self.board.set_piece(rook_coord.x, rook_coord.y, rook);
+                        self.board.set_piece(partner_coord.x, partner_coord.y, rook);
                         // Update spatial indices for rook moved back
                         self.spatial_indices.remove(rook_to_x, m.from.y);
                         self.spatial_indices
-                            .add(rook_coord.x, rook_coord.y, rook.packed());
+                            .add(partner_coord.x, partner_coord.y, rook.packed());
 
                         // Revert non-pawn hash for rook
                         if rook.color() == PlayerColor::White {
@@ -3749,8 +3749,8 @@ impl GameState {
                             self.white_nonpawn_hash ^= piece_key(
                                 rook.piece_type(),
                                 rook.color(),
-                                rook_coord.x,
-                                rook_coord.y,
+                                partner_coord.x,
+                                partner_coord.y,
                             );
                         } else {
                             self.black_nonpawn_hash ^=
@@ -3758,8 +3758,8 @@ impl GameState {
                             self.black_nonpawn_hash ^= piece_key(
                                 rook.piece_type(),
                                 rook.color(),
-                                rook_coord.x,
-                                rook_coord.y,
+                                partner_coord.x,
+                                partner_coord.y,
                             );
                         }
                         // From/to swapped: XOR self-inverts either way, but the
@@ -3768,8 +3768,8 @@ impl GameState {
                             rook,
                             rook_to_x,
                             m.from.y,
-                            rook_coord.x,
-                            rook_coord.y,
+                            partner_coord.x,
+                            partner_coord.y,
                         );
                     }
                 }
@@ -3818,7 +3818,7 @@ impl GameState {
         }
 
         bufs[ply].clear();
-        self.get_legal_moves_into(&mut bufs[ply]);
+        self.get_pseudo_legal_moves_into(&mut bufs[ply]);
 
         let move_count = bufs[ply].len();
         let mut nodes = 0u64;
@@ -4292,11 +4292,11 @@ mod tests {
         let before = game.board.get_piece(8, 1).expect("rook starts at 8,1");
         // (2,1) from 5,1 -> 7,2: dx.abs() == 2, but a knight leap, not castling.
         let m = game
-            .get_legal_moves()
+            .get_pseudo_legal_moves()
             .into_iter()
             .find(|m| m.to.x == 7 && m.to.y == 2)
             .expect("royal centaur can leap to 7,2");
-        assert!(m.rook_coord.is_none(), "a knight leap is not a castle");
+        assert!(m.partner_coord.is_none(), "a knight leap is not a castle");
 
         let undo = game.make_move(&m);
         assert_eq!(
@@ -4337,7 +4337,7 @@ mod tests {
         game.setup_position_from_icn("w 0/100 1 (4|2) K5,1|k5,8|P3,2+|p4,4+");
         assert_incremental_state_matches_scratch(&mut game, "setup");
 
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         let Some(dp) = moves
             .iter()
             .find(|m| m.from == Coordinate::new(3, 2) && m.to == Coordinate::new(3, 4))
@@ -4350,7 +4350,7 @@ mod tests {
 
         // Black takes en passant onto the skipped square, removing the promoted piece.
         if let Some(ep) = game
-            .get_legal_moves()
+            .get_pseudo_legal_moves()
             .iter()
             .find(|m| m.from == Coordinate::new(4, 4) && m.to == Coordinate::new(3, 3))
             .copied()
@@ -4531,7 +4531,7 @@ mod tests {
 
         // And test that non-king moves are illegal (must respond to check)
         let mut all_moves = MoveList::new();
-        game.get_legal_moves_into(&mut all_moves);
+        game.get_pseudo_legal_moves_into(&mut all_moves);
 
         // All legal moves should either move the king or block/capture the rose
         for m in all_moves.iter() {
@@ -4555,7 +4555,7 @@ mod tests {
         assert!(game.is_in_check(), "White king should be in check");
 
         let mut moves = MoveList::new();
-        game.get_legal_moves_into(&mut moves);
+        game.get_pseudo_legal_moves_into(&mut moves);
 
         // Rook at (7, 2) should be able to move to (7, -13) to block
         let can_block = moves
@@ -4770,7 +4770,7 @@ mod tests {
         let initial_hash = game.hash;
 
         // Make a simple pawn move
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         if let Some(m) = moves.first() {
             let _undo = game.make_move(m);
             assert_ne!(game.hash, initial_hash, "Hash should change after move");
@@ -4783,7 +4783,7 @@ mod tests {
         game.setup_standard_chess();
         let initial_hash = game.hash;
 
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         if let Some(m) = moves.first() {
             let undo = game.make_move(m);
             game.undo_move(m, undo);
@@ -4801,7 +4801,7 @@ mod tests {
 
         // Make several moves
         for _ in 0..5 {
-            let moves = game.get_legal_moves();
+            let moves = game.get_pseudo_legal_moves();
             let legal_moves: Vec<_> = moves
                 .iter()
                 .filter(|m| {
@@ -4838,7 +4838,7 @@ mod tests {
         game.setup_standard_chess();
         let initial_rep_hash = game.rep_hash;
 
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         if let Some(m) = moves.first() {
             let undo = game.make_move(m);
             game.undo_move(m, undo);
@@ -4860,7 +4860,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
 
         game.halfmove_clock = 10;
@@ -4878,7 +4878,7 @@ mod tests {
             to: Coordinate::new(4, 3),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
 
         game.halfmove_clock = 50;
@@ -4896,7 +4896,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
 
         game.halfmove_clock = 50;
@@ -4914,7 +4914,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
 
         game.halfmove_clock = 42;
@@ -5044,7 +5044,7 @@ mod tests {
         let mut game = GameState::new();
         game.setup_standard_chess();
 
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         // In infinite chess, sliders can have many more moves than classical chess
         // Just verify we have some moves available
         assert!(!moves.is_empty(), "Should have legal moves at start");
@@ -5235,7 +5235,7 @@ mod tests {
             to: Coordinate::new(6, 4),
             piece: rook,
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         };
         // (5,4) is off every ray from the first royal (1,1).
         assert_eq!(

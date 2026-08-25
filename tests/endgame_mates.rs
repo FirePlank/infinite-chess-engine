@@ -61,7 +61,7 @@ fn verify_can_mate(mut game: GameState, max_ply: u32, description: &str) {
 
     while ply < max_ply {
         // Check if already checkmate or stalemate
-        let moves = game.get_legal_moves();
+        let moves = game.get_pseudo_legal_moves();
         let legal_count = moves
             .iter()
             .filter(|m| {

@@ -954,7 +954,7 @@ mod tests {
         );
 
         let legal: Vec<Move> = game
-            .get_legal_moves()
+            .get_pseudo_legal_moves()
             .into_iter()
             .filter(|m| {
                 let undo = game.make_move(m);
@@ -1037,7 +1037,7 @@ mod tests {
     fn test_reply_blind_choice_reports_the_true_score() {
         let mut game = GameState::new();
         game.setup_position_from_icn("w K1,1|Q4,4|R1,2|P2,2|N3,1|k7,7|r4,7|b6,6|p6,7|n5,8");
-        let legal: Vec<Move> = game.get_legal_moves().into_iter().collect();
+        let legal: Vec<Move> = game.get_pseudo_legal_moves().into_iter().collect();
         let mv = legal[0];
         let result = MultiPVResult {
             lines: vec![PVLine {

@@ -845,7 +845,7 @@ pub struct Move {
     pub to: Coordinate,
     pub piece: Piece,
     pub promotion: Option<PieceType>,
-    pub rook_coord: Option<Coordinate>, // For castling: stores the rook's coordinate
+    pub partner_coord: Option<Coordinate>, // For castling: stores the rook's coordinate
 }
 
 impl Move {
@@ -855,7 +855,7 @@ impl Move {
             to,
             piece,
             promotion: None,
-            rook_coord: None,
+            partner_coord: None,
         }
     }
 }
@@ -865,7 +865,7 @@ pub fn is_enemy_piece(piece: &Piece, our_color: PlayerColor) -> bool {
     piece.color() != our_color && piece.piece_type() != PieceType::Void
 }
 
-pub fn get_legal_moves_into(
+pub fn get_pseudo_legal_moves_into(
     board: &Board,
     turn: PlayerColor,
     ctx: &MoveGenContext,
@@ -915,9 +915,9 @@ pub fn get_legal_moves_into(
     }
 }
 
-pub fn get_legal_moves(board: &Board, turn: PlayerColor, ctx: &MoveGenContext) -> MoveList {
+pub fn get_pseudo_legal_moves(board: &Board, turn: PlayerColor, ctx: &MoveGenContext) -> MoveList {
     let mut moves = MoveList::new();
-    get_legal_moves_into(board, turn, ctx, &mut moves);
+    get_pseudo_legal_moves_into(board, turn, ctx, &mut moves);
     moves
 }
 
@@ -1823,7 +1823,7 @@ fn generate_castling_moves(
                         let to_x = from.x + (dir * 2);
                         let mut castling_move =
                             Move::new(*from, Coordinate::new(to_x, from.y), *piece);
-                        castling_move.rook_coord = Some(*coord);
+                        castling_move.partner_coord = Some(*coord);
                         moves.push(castling_move);
                     }
                 }
@@ -3978,7 +3978,7 @@ fn generate_castling_moves_into(
                 {
                     let mut castling_move =
                         Move::new(*from, Coordinate::new(from.x + dir * 2, from.y), *piece);
-                    castling_move.rook_coord = Some(*coord);
+                    castling_move.partner_coord = Some(*coord);
                     out.push(castling_move);
                 }
             }
@@ -4209,7 +4209,7 @@ mod tests {
         assert_eq!(m.to.x, 3);
         assert_eq!(m.to.y, 4);
         assert!(m.promotion.is_none());
-        assert!(m.rook_coord.is_none());
+        assert!(m.partner_coord.is_none());
     }
 
     #[test]
@@ -4311,7 +4311,7 @@ mod tests {
             );
 
             let mut moves = MoveList::new();
-            game.get_legal_moves_into(&mut moves);
+            game.get_pseudo_legal_moves_into(&mut moves);
             let kr_to = |x: i64, y: i64| {
                 moves
                     .iter()
@@ -4829,7 +4829,7 @@ mod tests {
                 pinned: &FxHashMap::default(),
             };
 
-            let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
+            let moves = get_pseudo_legal_moves(&game.board, PlayerColor::White, &ctx);
 
             assert!(!moves.is_empty(), "White should have legal moves");
             reset_world_bounds();
@@ -4932,7 +4932,7 @@ mod tests {
                 pinned: &FxHashMap::default(),
             };
 
-            let moves = get_legal_moves(&game.board, PlayerColor::White, &ctx);
+            let moves = get_pseudo_legal_moves(&game.board, PlayerColor::White, &ctx);
 
             let target_from = Coordinate::new(10, -30);
             let target_to = Coordinate::new(77, -30);

@@ -2283,7 +2283,7 @@ fn search_with_searcher(
     // persistent GameState accumulates staleness and the root list both loses legal
     // moves and gains impossible ones (measured 84% of positions after 120 plies).
     let mut moves = MoveList::new();
-    game.get_legal_moves_into(&mut moves);
+    game.get_pseudo_legal_moves_into(&mut moves);
     if moves.is_empty() {
         return None;
     }
@@ -3052,7 +3052,7 @@ pub(crate) fn get_best_moves_multipv_impl(
 
     // Get all legal moves upfront (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
-    game.get_legal_moves_into(&mut moves);
+    game.get_pseudo_legal_moves_into(&mut moves);
     if moves.is_empty() {
         let stats = build_search_stats(searcher);
         return MultiPVResult {
@@ -3501,7 +3501,7 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
 
     // Generate and filter legal moves (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
-    game.get_legal_moves_into(&mut moves);
+    game.get_pseudo_legal_moves_into(&mut moves);
     let mut legal_moves: MoveList = MoveList::new();
     for m in moves {
         let undo = game.make_move(&m);

@@ -1066,7 +1066,7 @@ fn parse_bestmove_to_icn(bestmove_str: &str, turn: PlayerColor) -> Option<String
 }
 
 fn has_any_fully_legal_move(game: &GameState) -> bool {
-    let moves = game.get_legal_moves();
+    let moves = game.get_pseudo_legal_moves();
     for m in moves {
         let mut game_copy = game.clone();
         game_copy.make_move(&m);

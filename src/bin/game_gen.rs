@@ -129,7 +129,7 @@ fn main() {
                 // MultiPV = 1 for speed after opening
                 if rng.random_bool(0.08) {
                     // 8% random legal move
-                    let legal_moves = state.get_legal_moves();
+                    let legal_moves = state.get_pseudo_legal_moves();
                     if legal_moves.is_empty() {
                         break;
                     }
@@ -172,7 +172,7 @@ fn main() {
             state.make_move(&chosen_move);
             ply += 1;
 
-            if state.get_legal_moves().is_empty() {
+            if state.get_pseudo_legal_moves().is_empty() {
                 break;
             }
         }
@@ -198,7 +198,7 @@ fn main() {
                     };
                 }
             }
-            if state.get_legal_moves().is_empty() && state.is_in_check() {
+            if state.get_pseudo_legal_moves().is_empty() && state.is_in_check() {
                 result = if state.turn == PlayerColor::White {
                     -1
                 } else {

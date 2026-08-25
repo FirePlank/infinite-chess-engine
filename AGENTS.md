@@ -43,12 +43,11 @@ huge — don't assume a bounded board or a fixed edge to scan to.
 
 ## Architecture gotchas (read before touching related code)
 
-- `GameState::get_legal_moves()` is a misnomer: it returns PSEUDO-legal moves
-  and keeps the slider candidate cache. An exact list needs
-  `get_legal_moves_into` (which bypasses the cache) plus a make/`is_move_illegal`
-  /undo filter — what `search_with_searcher` does at its root. So
-  `get_legal_moves().is_empty()` is NOT a checkmate test and never fires; any
-  mate/stalemate detection written that way silently finds nothing.
+- `get_pseudo_legal_moves()` keeps the slider candidate cache;
+  `get_pseudo_legal_moves_into()` bypasses it for an exact list. NEITHER filters
+  legality — both still need a make/`is_move_illegal`/undo pass, which is what
+  `search_with_searcher` does at its root. So `.is_empty()` on either is NOT a
+  checkmate test; mate/stalemate detection written that way finds nothing.
 - `moves::set_world_bounds` writes process-global atomics (not thread-local), and
   `setup_position_from_icn` calls it whenever the ICN carries a bounds token.
   Tools that process several variants must do so one variant at a time and keep
