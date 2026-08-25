@@ -87,6 +87,15 @@ enum Commands {
         )]
         variants: String,
 
+        /// Play a one-off custom position instead of the variants' own openings.
+        /// Bounds come from the ICN if it carries them.
+        #[arg(long)]
+        icn: Option<String>,
+
+        /// Label for --icn in the per-variant breakdown.
+        #[arg(long, default_value = "Custom")]
+        icn_name: String,
+
         /// Material threshold for draws (both engines must agree for 3 consecutive plies)
         #[arg(long, default_value_t = 0)]
         adjudication: i32,
@@ -440,6 +449,8 @@ struct Config {
     max_games: Option<usize>,
     min_games: usize,
     variants: Vec<Variant>,
+    custom_icn: Option<String>,
+    custom_label: String,
     adjudication_threshold: i32,
     maxply_adjudication: f64,
     new_bin: String,
@@ -1275,6 +1286,17 @@ fn with_variant_bounds<T>(variant: Variant, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+impl Config {
+    /// A custom position has no variant of its own, so it borrows one for bounds
+    /// and reports under its own label instead.
+    fn variant_label(&self, v: Variant) -> String {
+        match &self.custom_icn {
+            Some(_) => self.custom_label.clone(),
+            None => v.to_str().to_string(),
+        }
+    }
+}
+
 fn play_game(
     config: &Config,
     variant: Variant,
@@ -1284,8 +1306,18 @@ fn play_game(
 ) -> GameOutcome {
     let mut game = with_variant_bounds(variant, || {
         let mut game = GameState::new();
-        game.setup_position_from_icn(variant.starting_icn());
-        game.variant = Some(variant);
+        match &config.custom_icn {
+            // Left untagged so the generic evaluator runs: a custom position is
+            // not the variant whose bounds it borrowed.
+            Some(icn) => {
+                game.setup_position_from_icn(icn);
+                game.variant = None;
+            }
+            None => {
+                game.setup_position_from_icn(variant.starting_icn());
+                game.variant = Some(variant);
+            }
+        }
         game
     });
 
@@ -1335,7 +1367,7 @@ fn play_game(
                     $result_str,
                     &starting_board_setup,
                 ),
-                variant_name: variant.to_str().to_string(),
+                variant_name: config.variant_label(variant),
                 game_idx,
                 termination_reason: $reason.to_string(),
                 new_engine_timed_out: false,
@@ -1346,7 +1378,7 @@ fn play_game(
     let interrupted = || GameOutcome {
         result: GameResult::Draw,
         icn: String::new(),
-        variant_name: variant.to_str().to_string(),
+        variant_name: config.variant_label(variant),
         game_idx,
         termination_reason: "interrupted".to_string(),
         new_engine_timed_out: false,
@@ -1706,7 +1738,7 @@ fn play_game(
                     result_str,
                     &starting_board_setup,
                 ),
-                variant_name: variant.to_str().to_string(),
+                variant_name: config.variant_label(variant),
                 game_idx,
                 termination_reason: "timeout".to_string(),
                 new_engine_timed_out: is_new_turn,
@@ -1892,7 +1924,7 @@ fn play_game(
                     if white_won { "1-0" } else { "0-1" },
                     &starting_board_setup,
                 ),
-                variant_name: variant.to_str().to_string(),
+                variant_name: config.variant_label(variant),
                 game_idx,
                 termination_reason: termination_reason.unwrap_or("engine failure").to_string(),
                 new_engine_timed_out: false,
@@ -3005,6 +3037,8 @@ fn main() {
             max_games,
             min_games,
             variants,
+            icn,
+            icn_name,
             adjudication,
             maxply_adjudication,
             games,
@@ -3262,7 +3296,14 @@ fn main() {
                 concurrency,
                 max_games,
                 min_games,
-                variants: parsed_variants,
+                variants: match &icn {
+                    // One carrier variant: the position supplies itself, and any
+                    // bounds token in the ICN overrides the borrowed default.
+                    Some(_) => vec![Variant::Classical],
+                    None => parsed_variants,
+                },
+                custom_icn: icn.clone(),
+                custom_label: icn_name.clone(),
                 adjudication_threshold: adjudication,
                 maxply_adjudication,
                 use_serve: {

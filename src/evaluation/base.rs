@@ -12,7 +12,7 @@ use crate::search::params::{
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
     chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
-    cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
+    centrality_value_scale, cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
@@ -314,6 +314,7 @@ pub const DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 16;
 pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
 pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
 pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
+pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
@@ -489,18 +490,12 @@ fn king_defender_bonus_for(bonus: i32, piece_val: i32) -> i32 {
 
 pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
     match piece_type {
+        // A king anchors where the action is; its material value does not say so.
         PieceType::King => 2000,
-        PieceType::Queen | PieceType::RoyalQueen | PieceType::Amazon => 1000,
-        PieceType::Rook | PieceType::Chancellor => 500,
-        PieceType::Bishop | PieceType::Archbishop => 300,
-        PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => 300,
-        PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => 300,
-        PieceType::Knightrider => 400,
-        PieceType::Hawk => 350,
-        PieceType::Rose => 350,
-        PieceType::Guard | PieceType::Huygen => 250,
-        // Pawns and others have 0 weight for "Piece Cloud" centrality
-        _ => 0,
+        PieceType::Pawn | PieceType::Void | PieceType::Obstacle => 0,
+        // Everything else pulls the cloud centre in proportion to what it is worth,
+        // so a compound outweighs the slider it contains.
+        _ => get_piece_value_base(piece_type) as i64 * centrality_value_scale() as i64 / 100,
     }
 }
 
