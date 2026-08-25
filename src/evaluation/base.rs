@@ -266,9 +266,9 @@ pub const DEFAULT_EVAL_ROOK: i32 = 618;
 pub const DEFAULT_EVAL_GUARD: i32 = 232;
 pub const DEFAULT_EVAL_CENTAUR: i32 = 640;
 pub const DEFAULT_EVAL_QUEEN: i32 = 1380;
-pub const DEFAULT_EVAL_CAMEL: i32 = 270;
-pub const DEFAULT_EVAL_GIRAFFE: i32 = 268;
-pub const DEFAULT_EVAL_ZEBRA: i32 = 272;
+pub const DEFAULT_EVAL_CAMEL: i32 = 245;
+pub const DEFAULT_EVAL_GIRAFFE: i32 = 235;
+pub const DEFAULT_EVAL_ZEBRA: i32 = 240;
 pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 800;
 pub const DEFAULT_EVAL_HAWK: i32 = 540;
 pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
@@ -4600,3 +4600,4 @@ mod tests {
         );
     }
 }
+
