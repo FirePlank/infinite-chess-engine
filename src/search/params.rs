@@ -167,7 +167,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("rook", crate::evaluation::base::DEFAULT_EVAL_ROOK as i64, 450, 850, 6.0, 0.002, "Rook value"),
     EvalParamSpec::new("guard", crate::evaluation::base::DEFAULT_EVAL_GUARD as i64, 120, 420, 4.0, 0.002, "Guard value"),
     EvalParamSpec::new("centaur", crate::evaluation::base::DEFAULT_EVAL_CENTAUR as i64, 350, 750, 6.0, 0.002, "Centaur value"),
-    EvalParamSpec::new("compound_bonus", crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS as i64, 0, 250, 4.0, 0.002, "Compound piece bonus"),
+    EvalParamSpec::new("queen", crate::evaluation::base::DEFAULT_EVAL_QUEEN as i64, 700, 2100, 4.0, 0.002, "Queen value"),
     EvalParamSpec::new("camel", crate::evaluation::base::DEFAULT_EVAL_CAMEL as i64, 120, 470, 4.0, 0.002, "Camel value"),
     EvalParamSpec::new("giraffe", crate::evaluation::base::DEFAULT_EVAL_GIRAFFE as i64, 120, 460, 4.0, 0.002, "Giraffe value"),
     EvalParamSpec::new("zebra", crate::evaluation::base::DEFAULT_EVAL_ZEBRA as i64, 120, 460, 4.0, 0.002, "Zebra value"),
@@ -176,7 +176,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("archbishop", crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP as i64, 700, 1100, 8.0, 0.002, "Archbishop value"),
     EvalParamSpec::new("rose", crate::evaluation::base::DEFAULT_EVAL_ROSE as i64, 700, 1250, 6.0, 0.002, "Rose value"),
     EvalParamSpec::new("huygen", crate::evaluation::base::DEFAULT_EVAL_HUYGEN as i64, 155, 555, 4.0, 0.002, "Huygen value"),
-    EvalParamSpec::new("chancellor_bonus", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS as i64, 0, 300, 4.0, 0.002, "Chancellor extra value bonus"),
+    EvalParamSpec::new("chancellor", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR as i64, 600, 1900, 4.0, 0.002, "Chancellor value"),
     EvalParamSpec::new("mg_doubled_pawn_penalty", crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY as i64, 0, 208, 2.0, 0.002, "Middlegame doubled pawn penalty"),
     EvalParamSpec::new("eg_doubled_pawn_penalty", crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY as i64, 0, 212, 2.0, 0.002, "Endgame doubled pawn penalty"),
     EvalParamSpec::new("mg_bishop_pair_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS as i64, 0, 260, 2.0, 0.002, "Middlegame bishop pair bonus"),
@@ -203,7 +203,7 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("eg_king_defender_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS as i64, 0, 50, 2.0, 0.002, "Endgame king defender bonus"),
     EvalParamSpec::new("mg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS as i64, 0, 220, 2.0, 0.002, "Middlegame outpost bonus"),
     EvalParamSpec::new("eg_outpost_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS as i64, 0, 250, 2.0, 0.002, "Endgame outpost bonus"),
-    EvalParamSpec::new("amazon_compound_bonus", crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS as i64, 0, 500, 4.0, 0.002, "Amazon compound-piece bonus"),
+    EvalParamSpec::new("amazon", crate::evaluation::base::DEFAULT_EVAL_AMAZON as i64, 900, 2800, 4.0, 0.002, "Amazon value"),
     EvalParamSpec::new("slider_net_bonus", crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS as i64, 0, 80, 2.0, 0.002, "Slider net-control bonus"),
     EvalParamSpec::new("far_slider_cheb_radius", crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS as i64, 6, 40, 2.0, 0.002, "Chebyshev radius beyond which a slider is far from the action"),
     EvalParamSpec::new("far_slider_cheb_max_excess", crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS as i64, 10, 100, 2.0, 0.002, "Max excess distance counted for the far-slider penalty"),
@@ -303,7 +303,7 @@ pub struct EvalParams {
     pub rook: i32,
     pub guard: i32,
     pub centaur: i32,
-    pub compound_bonus: i32,
+    pub queen: i32,
     pub camel: i32,
     pub giraffe: i32,
     pub zebra: i32,
@@ -312,7 +312,7 @@ pub struct EvalParams {
     pub archbishop: i32,
     pub rose: i32,
     pub huygen: i32,
-    pub chancellor_bonus: i32,
+    pub chancellor: i32,
     pub mg_doubled_pawn_penalty: i32,
     pub eg_doubled_pawn_penalty: i32,
     pub mg_bishop_pair_bonus: i32,
@@ -339,7 +339,7 @@ pub struct EvalParams {
     pub eg_king_defender_bonus: i32,
     pub mg_outpost_bonus: i32,
     pub eg_outpost_bonus: i32,
-    pub amazon_compound_bonus: i32,
+    pub amazon: i32,
     pub slider_net_bonus: i32,
     pub far_slider_cheb_radius: i32,
     pub far_slider_cheb_max_excess: i32,
@@ -439,7 +439,7 @@ impl Default for EvalParams {
             rook: crate::evaluation::base::DEFAULT_EVAL_ROOK,
             guard: crate::evaluation::base::DEFAULT_EVAL_GUARD,
             centaur: crate::evaluation::base::DEFAULT_EVAL_CENTAUR,
-            compound_bonus: crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS,
+            queen: crate::evaluation::base::DEFAULT_EVAL_QUEEN,
             camel: crate::evaluation::base::DEFAULT_EVAL_CAMEL,
             giraffe: crate::evaluation::base::DEFAULT_EVAL_GIRAFFE,
             zebra: crate::evaluation::base::DEFAULT_EVAL_ZEBRA,
@@ -448,7 +448,7 @@ impl Default for EvalParams {
             archbishop: crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP,
             rose: crate::evaluation::base::DEFAULT_EVAL_ROSE,
             huygen: crate::evaluation::base::DEFAULT_EVAL_HUYGEN,
-            chancellor_bonus: crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS,
+            chancellor: crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR,
             mg_doubled_pawn_penalty: crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY,
             eg_doubled_pawn_penalty: crate::evaluation::base::DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY,
             mg_bishop_pair_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS,
@@ -477,7 +477,7 @@ impl Default for EvalParams {
             eg_king_defender_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_DEFENDER_BONUS,
             mg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_OUTPOST_BONUS,
             eg_outpost_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS,
-            amazon_compound_bonus: crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS,
+            amazon: crate::evaluation::base::DEFAULT_EVAL_AMAZON,
             slider_net_bonus: crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS,
             far_slider_cheb_radius: crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS,
             far_slider_cheb_max_excess: crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS,
@@ -657,10 +657,7 @@ define_eval_accessor!(bishop, crate::evaluation::base::DEFAULT_EVAL_BISHOP);
 define_eval_accessor!(rook, crate::evaluation::base::DEFAULT_EVAL_ROOK);
 define_eval_accessor!(guard, crate::evaluation::base::DEFAULT_EVAL_GUARD);
 define_eval_accessor!(centaur, crate::evaluation::base::DEFAULT_EVAL_CENTAUR);
-define_eval_accessor!(
-    compound_bonus,
-    crate::evaluation::base::DEFAULT_EVAL_COMPOUND_BONUS
-);
+define_eval_accessor!(queen, crate::evaluation::base::DEFAULT_EVAL_QUEEN);
 define_eval_accessor!(camel, crate::evaluation::base::DEFAULT_EVAL_CAMEL);
 define_eval_accessor!(giraffe, crate::evaluation::base::DEFAULT_EVAL_GIRAFFE);
 define_eval_accessor!(zebra, crate::evaluation::base::DEFAULT_EVAL_ZEBRA);
@@ -672,10 +669,7 @@ define_eval_accessor!(hawk, crate::evaluation::base::DEFAULT_EVAL_HAWK);
 define_eval_accessor!(archbishop, crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP);
 define_eval_accessor!(rose, crate::evaluation::base::DEFAULT_EVAL_ROSE);
 define_eval_accessor!(huygen, crate::evaluation::base::DEFAULT_EVAL_HUYGEN);
-define_eval_accessor!(
-    chancellor_bonus,
-    crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_BONUS
-);
+define_eval_accessor!(chancellor, crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR);
 define_eval_accessor!(
     mg_doubled_pawn_penalty,
     crate::evaluation::base::DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY
@@ -780,7 +774,7 @@ define_eval_accessor!(
     eg_outpost_bonus,
     crate::evaluation::base::DEFAULT_EVAL_EG_OUTPOST_BONUS
 );
-define_eval_accessor!(amazon_compound_bonus, crate::evaluation::base::DEFAULT_EVAL_AMAZON_COMPOUND_BONUS);
+define_eval_accessor!(amazon, crate::evaluation::base::DEFAULT_EVAL_AMAZON);
 define_eval_accessor!(slider_net_bonus, crate::evaluation::base::DEFAULT_EVAL_SLIDER_NET_BONUS);
 define_eval_accessor!(far_slider_cheb_radius, crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS);
 define_eval_accessor!(far_slider_cheb_max_excess, crate::evaluation::base::DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS);
@@ -906,11 +900,6 @@ pub fn passed_pawn_adv_bonus() -> [[[i32; 6]; 2]; 2] {
         [passed_pawn_adv_bonus_1_1_0(), passed_pawn_adv_bonus_1_1_1(), passed_pawn_adv_bonus_1_1_2(), passed_pawn_adv_bonus_1_1_3(), passed_pawn_adv_bonus_1_1_4(), passed_pawn_adv_bonus_1_1_5()],
     ],
     ]
-}
-
-#[inline]
-pub fn queen_value() -> i32 {
-    rook() * 2 + compound_bonus()
 }
 
 #[rustfmt::skip]
@@ -1239,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_param_specs_have_valid_ranges_and_queen_value_matches_formula() {
+    fn eval_param_specs_have_valid_ranges() {
         for spec in TUNABLE_EVAL_PARAM_SPECS {
             assert!(spec.min <= spec.max);
             assert_eq!(spec.clamp_value(spec.min - 1000), spec.min);
@@ -1247,6 +1236,5 @@ mod tests {
             assert!((spec.min..=spec.max).contains(&spec.clamp_value(spec.default)));
         }
 
-        assert_eq!(queen_value(), rook() * 2 + compound_bonus());
     }
 }

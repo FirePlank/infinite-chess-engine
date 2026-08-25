@@ -293,7 +293,7 @@ fn piece_value_names() -> &'static [&'static str] {
         "rook",
         "guard",
         "centaur",
-        "compound_bonus",
+        "queen",
         "camel",
         "giraffe",
         "zebra",
@@ -302,7 +302,8 @@ fn piece_value_names() -> &'static [&'static str] {
         "archbishop",
         "rose",
         "huygen",
-        "chancellor_bonus",
+        "chancellor",
+        "amazon",
     ]
 }
 

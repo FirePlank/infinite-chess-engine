@@ -9,9 +9,9 @@ use super::piece_reach::{
     evaluate_rose_reach,
 };
 use crate::search::params::{
-    amazon_compound_bonus, amazon_queen_scale, amazon_rook_scale, archbishop,
+    amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
-    chancellor_bonus, chancellor_rook_scale, cloud_center_max_skew_dist,
+    chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
     cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
@@ -23,7 +23,7 @@ use crate::search::params::{
     passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
     pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
     piece_cloud_cheb_max_excess, piece_cloud_cheb_radius, queen_ideal_line_dist,
-    queen_open_file_bonus, queen_semi_open_file_bonus, queen_value, rook, rook_open_file_bonus,
+    queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     slider_threat_div, zebra,
 min_fairy_development_penalty,
@@ -260,21 +260,21 @@ macro_rules! bump_feat {
 }
 
 pub const DEFAULT_EVAL_PAWN: i32 = 100;
-pub const DEFAULT_EVAL_KNIGHT: i32 = 255;
-pub const DEFAULT_EVAL_BISHOP: i32 = 434;
-pub const DEFAULT_EVAL_ROOK: i32 = 646;
-pub const DEFAULT_EVAL_GUARD: i32 = 180;
-pub const DEFAULT_EVAL_CENTAUR: i32 = 566;
-pub const DEFAULT_EVAL_COMPOUND_BONUS: i32 = 46;
+pub const DEFAULT_EVAL_KNIGHT: i32 = 315;
+pub const DEFAULT_EVAL_BISHOP: i32 = 450;
+pub const DEFAULT_EVAL_ROOK: i32 = 618;
+pub const DEFAULT_EVAL_GUARD: i32 = 232;
+pub const DEFAULT_EVAL_CENTAUR: i32 = 640;
+pub const DEFAULT_EVAL_QUEEN: i32 = 1380;
 pub const DEFAULT_EVAL_CAMEL: i32 = 270;
 pub const DEFAULT_EVAL_GIRAFFE: i32 = 268;
 pub const DEFAULT_EVAL_ZEBRA: i32 = 272;
 pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 720;
 pub const DEFAULT_EVAL_HAWK: i32 = 540;
-pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1060;
+pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
 pub const DEFAULT_EVAL_ROSE: i32 = 997;
 pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
-pub const DEFAULT_EVAL_CHANCELLOR_BONUS: i32 = 245;
+pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1125;
 /// Amazon was the only compound priced at the bare sum of its parts, while the
 /// chancellor carries +245 over rook+knight and the archbishop +371.
 pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 10;
@@ -287,7 +287,7 @@ pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 19;
 pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 56;
-pub const DEFAULT_EVAL_AMAZON_COMPOUND_BONUS: i32 = 200;
+pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
 pub const DEFAULT_EVAL_SLIDER_NET_BONUS: i32 = 21;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS: i32 = 18;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS: i32 = 40;
@@ -440,7 +440,7 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
         PieceType::Knight => knight(),     // Weak in infinite chess
         PieceType::Bishop => bishop(),     // Strong slider
         PieceType::Rook => rook(),         // Very strong in infinite chess
-        PieceType::Queen => queen_value(), // > 2 rooks
+        PieceType::Queen => queen(),
         PieceType::Guard => guard(),
 
         // short / medium range
@@ -450,14 +450,14 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
 
         // riders / compounds
         PieceType::Knightrider => knightrider(),
-        PieceType::Amazon => queen_value() + knight() + amazon_compound_bonus(),
+        PieceType::Amazon => amazon(),
         PieceType::Hawk => hawk(),
-        PieceType::Chancellor => rook() + knight() + chancellor_bonus(),
+        PieceType::Chancellor => chancellor(),
         PieceType::Archbishop => archbishop(),
         PieceType::Centaur => centaur(),
 
         PieceType::King => guard(),
-        PieceType::RoyalQueen => queen_value(),
+        PieceType::RoyalQueen => queen(),
         PieceType::RoyalCentaur => centaur(),
 
         // special infinite-board pieces
