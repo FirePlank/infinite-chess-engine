@@ -1,6 +1,6 @@
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{EnPassantState, GameRules};
-use crate::utils::{PRIMES_UNDER_128, is_prime_fast, is_prime_i64};
+use crate::utils::{PRIMES_UNDER_128, is_prime_fast};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
@@ -1501,8 +1501,7 @@ pub fn is_square_attacked(
                     let abs_dist_to_target = dist_to_target.abs();
 
                     // Target must be at a prime distance from the Huygens
-                    // Use is_prime_i64 for arbitrary distances (handles extreme coordinates)
-                    if !is_prime_i64(abs_dist_to_target) {
+                    if !is_prime_fast(abs_dist_to_target) {
                         continue;
                     }
 
@@ -1534,8 +1533,7 @@ pub fn is_square_attacked(
 
                         let abs_dist_from_huygen = dist_from_huygen.abs();
                         // If this piece is at a prime distance from the Huygens, it blocks!
-                        // Use is_prime_i64 for arbitrary distances
-                        if is_prime_i64(abs_dist_from_huygen) {
+                        if is_prime_fast(abs_dist_from_huygen) {
                             blocked = true;
                             break;
                         }
@@ -3469,9 +3467,9 @@ fn generate_huygen_snipes(
         // distance is prime; every such square is provably empty.
         let reachable_open = |s_off: i64| -> bool {
             if s_off > 0 {
-                open_pos && is_prime_i64(s_off)
+                open_pos && is_prime_fast(s_off)
             } else {
-                open_neg && is_prime_i64(-s_off)
+                open_neg && is_prime_fast(-s_off)
             }
         };
 
@@ -3481,6 +3479,27 @@ fn generate_huygen_snipes(
             let off = c - our;
             max_off = max_off.max(off);
             min_off = min_off.min(off);
+        }
+
+        // Candidate far landings depend only on the line's outermost piece, not on
+        // which target is being checked, so they are built once instead of per target.
+        let mut cands: smallvec::SmallVec<[i64; 64]> = smallvec::SmallVec::new();
+        for (open, sign, outer) in [(open_pos, 1i64, max_off), (open_neg, -1i64, min_off)] {
+            if !open {
+                continue;
+            }
+            let base = outer * sign;
+            let mut tried = 0usize;
+            for &p in SNIPE_PRIMES.iter() {
+                if p <= base {
+                    continue;
+                }
+                if tried >= SNIPE_TRIES {
+                    break;
+                }
+                tried += 1;
+                cands.push(p * sign);
+            }
         }
 
         // Two targets four apart can share one landing; a duplicate move would
@@ -3522,44 +3541,28 @@ fn generate_huygen_snipes(
             // Far landing beyond every piece on an open side: the pieces between
             // the landing and the target must then all sit at composite offsets
             // from the landing while the target sits at a prime one.
-            for (open, sign, outer) in [(open_pos, 1i64, max_off), (open_neg, -1i64, min_off)] {
-                if !open || done {
+            for &s_off in &cands {
+                let dist_t = (s_off - t_off).abs();
+                if !is_prime_fast(dist_t) {
                     continue;
                 }
-                let base = outer * sign;
-                let mut tried = 0usize;
-                for &p in SNIPE_PRIMES.iter() {
-                    if p <= base {
+                let lo = t_off.min(s_off);
+                let hi = t_off.max(s_off);
+                let mut clean = true;
+                for (c2, _) in vec {
+                    let o2 = c2 - our;
+                    if o2 <= lo || o2 >= hi || o2 == t_off || o2 == 0 {
                         continue;
                     }
-                    if tried >= SNIPE_TRIES {
+                    if is_prime_fast((s_off - o2).abs()) {
+                        clean = false;
                         break;
                     }
-                    tried += 1;
-                    let s_off = p * sign;
-                    let dist_t = (s_off - t_off).abs();
-                    if !is_prime_i64(dist_t) {
-                        continue;
-                    }
-                    let lo = t_off.min(s_off);
-                    let hi = t_off.max(s_off);
-                    let mut clean = true;
-                    for (c2, _) in vec {
-                        let o2 = c2 - our;
-                        if o2 <= lo || o2 >= hi || o2 == t_off || o2 == 0 {
-                            continue;
-                        }
-                        if is_prime_i64((s_off - o2).abs()) {
-                            clean = false;
-                            break;
-                        }
-                    }
-                    if clean && !used.contains(&s_off) {
-                        used.push(s_off);
-                        push_landing(s_off, out);
-                        done = true;
-                        break;
-                    }
+                }
+                if clean && !used.contains(&s_off) {
+                    used.push(s_off);
+                    push_landing(s_off, out);
+                    break;
                 }
             }
         }

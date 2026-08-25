@@ -6,49 +6,33 @@ pub static PRIMES_UNDER_128: [i64; 31] = [
     101, 103, 107, 109, 113, 127,
 ];
 
-/// O(1) prime lookup for values 0-127. Index with distance to check primality instantly.
-pub static IS_PRIME_LOOKUP: [bool; 128] = {
-    let mut table = [false; 128];
-    table[2] = true;
-    table[3] = true;
-    table[5] = true;
-    table[7] = true;
-    table[11] = true;
-    table[13] = true;
-    table[17] = true;
-    table[19] = true;
-    table[23] = true;
-    table[29] = true;
-    table[31] = true;
-    table[37] = true;
-    table[41] = true;
-    table[43] = true;
-    table[47] = true;
-    table[53] = true;
-    table[59] = true;
-    table[61] = true;
-    table[67] = true;
-    table[71] = true;
-    table[73] = true;
-    table[79] = true;
-    table[83] = true;
-    table[89] = true;
-    table[97] = true;
-    table[101] = true;
-    table[103] = true;
-    table[107] = true;
-    table[109] = true;
-    table[113] = true;
-    table[127] = true;
+/// O(1) prime lookup, sieved at compile time. Sized to cover the huygen sniper's
+/// landing range so those checks never reach Miller-Rabin.
+pub static IS_PRIME_LOOKUP: [bool; 4096] = {
+    let mut table = [true; 4096];
+    table[0] = false;
+    table[1] = false;
+    let mut i = 2usize;
+    while i * i < 4096 {
+        if table[i] {
+            let mut j = i * i;
+            while j < 4096 {
+                table[j] = false;
+                j += i;
+            }
+        }
+        i += 1;
+    }
     table
 };
 
-/// Fast O(1) prime check for distances under 128, falls back to O(log^3 n) for larger values.
+/// Fast O(1) prime check for distances inside the table, falls back to O(log^3 n) beyond it.
 /// This is the hot path for Huygens piece logic where distances are typically < 100.
 #[inline(always)]
 pub fn is_prime_fast(n: i64) -> bool {
-    let abs_n = n.abs();
-    if abs_n < 128 {
+    // unsigned_abs, not abs: i64::MIN negates to itself and would index wildly.
+    let abs_n = n.unsigned_abs();
+    if abs_n < IS_PRIME_LOOKUP.len() as u64 {
         IS_PRIME_LOOKUP[abs_n as usize]
     } else {
         is_prime_i64(n)
@@ -145,6 +129,16 @@ fn is_prime_miller_rabin(n: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_table_agrees_with_miller_rabin_over_its_whole_range() {
+        // The sieve is only a valid substitute if it matches everywhere it is
+        // consulted; a single disagreement would silently change movegen.
+        for n in 0..IS_PRIME_LOOKUP.len() as i64 {
+            assert_eq!(is_prime_fast(n), is_prime_i64(n), "disagreement at {}", n);
+            assert_eq!(is_prime_fast(-n), is_prime_i64(-n), "disagreement at {}", -n);
+        }
+    }
 
     #[test]
     fn test_small_primes() {
