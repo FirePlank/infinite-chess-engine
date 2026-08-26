@@ -1915,11 +1915,12 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // The odd leapers had no threat term at all, while a knight on the
             // same square earned one: a camel forking two pieces scored nothing.
             // The hawk keeps its old scoring; its variants regressed when changed.
-            PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => {
+            PieceType::Camel | PieceType::Giraffe | PieceType::Zebra | PieceType::Hawk => {
                 let offsets: &[(i64, i64)] = match pt {
                     PieceType::Camel => &crate::attacks::CAMEL_OFFSETS,
                     PieceType::Giraffe => &crate::attacks::GIRAFFE_OFFSETS,
-                    _ => &crate::attacks::ZEBRA_OFFSETS,
+                    PieceType::Zebra => &crate::attacks::ZEBRA_OFFSETS,
+                    _ => &crate::attacks::HAWK_OFFSETS,
                 };
                 evaluate_leaper_positioning(
                     x,
@@ -1929,25 +1930,24 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     pt,
                     cloud_avg_spread,
                     phase,
-                ) + crate::evaluation::piece_reach::evaluate_leap_threats(
-                    game,
-                    x,
-                    y,
-                    piece.color(),
-                    get_piece_value_base(pt),
-                    phase,
-                    offsets,
-                )
+                ) + {
+                    // Guarding material is a cheap piece's job; a flat defend credit
+                    // rooted hawks to their dense home cluster (-114 Elo in CoaIP),
+                    // the same inverse-value frame as king_defender_bonus_for.
+                    let v = get_piece_value_base(pt);
+                    let r = crate::search::params::king_defender_ref_value();
+                    crate::evaluation::piece_reach::evaluate_leap_threats(
+                        game,
+                        x,
+                        y,
+                        piece.color(),
+                        v,
+                        phase,
+                        offsets,
+                        4 * r / v.max(r),
+                    )
+                }
             }
-            PieceType::Hawk => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                pt,
-                cloud_avg_spread,
-                phase,
-            ),
             PieceType::Centaur | PieceType::RoyalCentaur => {
                 let leaper_eval = evaluate_leaper_positioning(
                     x,

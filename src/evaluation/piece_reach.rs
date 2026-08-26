@@ -117,6 +117,7 @@ pub(crate) fn evaluate_leap_threats(
     attacker_value: i32,
     phase: i32,
     offsets: &[(i64, i64)],
+    defend_unit: i32,
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -132,7 +133,7 @@ pub(crate) fn evaluate_leap_threats(
             continue;
         }
         if target.color() == own {
-            defend += COMPOUND_LEAP_DEFEND;
+            defend += defend_unit;
             continue;
         }
         if tt.is_royal() {
@@ -286,5 +287,6 @@ pub(crate) fn evaluate_compound_leap_threats(
         attacker_value,
         phase,
         &crate::attacks::KNIGHT_OFFSETS,
+        COMPOUND_LEAP_DEFEND,
     )
 }
