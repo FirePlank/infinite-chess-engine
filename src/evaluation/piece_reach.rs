@@ -198,16 +198,6 @@ pub(crate) fn evaluate_rose_reach(
     attack + taper(defend, defend / 2)
 }
 
-#[inline]
-fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a
-}
-
 /// Mirrors knightrider movegen: each ray stops at its closest occupant, and a
 /// capture is emitted at any distance while quiets cap out. One gcd places a
 /// piece on its ray, since k = gcd(|rx|, |ry|) for a reduced knight step.
@@ -226,31 +216,21 @@ pub(crate) fn evaluate_knightrider_reach(
 
     for &(px, py, other) in piece_list {
         let (rx, ry) = (px - x, py - y);
-        if rx == 0 && ry == 0 {
+        let (dx, dy) = (rx.abs(), ry.abs());
+
+        // Only check pieces that are on knightrider's rays.
+        if dx == 0 || (dx * 2 != dy && dx != dy * 2) {
             continue;
         }
-        let g = gcd_i64(rx.abs(), ry.abs());
-        if g == 0 {
-            continue;
-        }
-        let (ux, uy) = (rx / g, ry / g);
-        let (au, av) = (ux.abs(), uy.abs());
-        if !((au == 1 && av == 2) || (au == 2 && av == 1)) {
-            continue;
-        }
-        let slot = match (ux, uy) {
-            (1, 2) => 0,
-            (1, -2) => 1,
-            (2, 1) => 2,
-            (2, -1) => 3,
-            (-1, 2) => 4,
-            (-1, -2) => 5,
-            (-2, 1) => 6,
-            (-2, -1) => 7,
-            _ => continue,
-        };
-        if g < best_k[slot] {
-            best_k[slot] = g;
+
+        let slot = 4 * (rx > 0) as usize
+            + 2 * (ry > 0) as usize
+            + (dx > dy) as usize;
+
+        // It only needs to check the minimum dx since it's always a multiple of
+        // either 1 or 2 depending on the slot.
+        if dx < best_k[slot] {
+            best_k[slot] = dx;
             best[slot] = Some(other);
         }
     }
