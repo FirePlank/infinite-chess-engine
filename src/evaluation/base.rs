@@ -2809,10 +2809,7 @@ fn evaluate_leaper_positioning(
     // Spread runs 0..=cloud_center_max_skew_dist() as i64 and is neutral at 8, so a positive
     // density_adj means a clustered position and a leaper bonus.
     let density_sensitivity: i32 = match piece_type {
-        PieceType::Knight => 35,
-        PieceType::Camel => 30,
-        PieceType::Zebra => 25,
-        PieceType::Giraffe => 20,
+        PieceType::Knight | PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => 35,
         PieceType::Guard => 25,
         PieceType::Hawk => 15,
         PieceType::Centaur | PieceType::RoyalCentaur => 22,
@@ -2825,10 +2822,7 @@ fn evaluate_leaper_positioning(
 
     // 3. PHASE TAPER
     let (mg_bonus, eg_bonus): (i32, i32) = match piece_type {
-        PieceType::Knight => (0, 30),
-        PieceType::Camel => (0, 23),
-        PieceType::Zebra => (0, 20),
-        PieceType::Giraffe => (0, 15),
+        PieceType::Knight | PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => (0, 30),
         PieceType::Guard => (0, 20),
         PieceType::Hawk => (0, 10),
         PieceType::Centaur | PieceType::RoyalCentaur => (0, 20),
