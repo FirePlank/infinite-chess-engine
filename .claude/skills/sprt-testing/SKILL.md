@@ -61,6 +61,10 @@ causes timeout losses. Build into `target/release/`; keep baseline binaries in t
 (e.g. `sprt_old.exe`). Pass `--old-bin`/`--new-bin` as ABSOLUTE paths (Rust `Command::new`
 won't find a bare relative name in cwd on Windows).
 
+**Reuse one baseline name (`sprt_old.exe`, `nps_old.exe`/`nps_new.exe`) and delete it once
+the run reports** — untracked exes named per-commit accumulate invisibly (one session left
+33 stray exes, 52 MB). Kill engine processes first or the delete fails ("Access is denied").
+
 **Games/results JSON go in `<REPO>/games/sprt/`, NEVER the repo root and never a
 session scratchpad.** `games/` is gitignored, so the corpus accumulates there and
 stays out of `git status`; a scratchpad copy dies with the session, and the root
