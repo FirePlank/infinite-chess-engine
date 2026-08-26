@@ -422,12 +422,15 @@ fn print_settings_context(config: &Config) {
         format!("{} cp", config.maxply_adjudication)
     };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {} | Adjudication: {} | Max-ply adjudication: {}",
+        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
         config.new_strength,
         config.old_strength,
+    );
+    println!(
+        "  Material adjudication: {} | Max-ply adjudication: {}",
         adjudication_str,
         maxply_adjudication_str,
     );
