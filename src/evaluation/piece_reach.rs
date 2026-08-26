@@ -109,20 +109,21 @@ pub(crate) fn evaluate_huygen_reach(
 /// A compound piece leaps like a knight as well as sliding, and no blocker can
 /// stop the leap. The slider threat scan only walks lines, so that half of its
 /// attacks is invisible: this prices the eight knight squares it really covers.
-pub(crate) fn evaluate_compound_leap_threats(
+pub(crate) fn evaluate_leap_threats(
     game: &GameState,
     x: i64,
     y: i64,
     own: PlayerColor,
     attacker_value: i32,
     phase: i32,
+    offsets: &[(i64, i64)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut attack = 0i32;
     let mut defend = 0i32;
 
-    for (ox, oy) in crate::attacks::KNIGHT_OFFSETS {
+    for (ox, oy) in offsets.iter().copied() {
         let Some(target) = game.board.get_piece(x + ox, y + oy) else {
             continue;
         };
@@ -267,3 +268,23 @@ pub(crate) fn evaluate_knightrider_reach(
     attack + taper(defend, defend / 2) + taper(0, open_rays * KNIGHTRIDER_OPEN_RAY_EG)
 }
 
+
+/// Compound pieces threaten along the knight offsets they carry.
+pub(crate) fn evaluate_compound_leap_threats(
+    game: &GameState,
+    x: i64,
+    y: i64,
+    own: PlayerColor,
+    attacker_value: i32,
+    phase: i32,
+) -> i32 {
+    evaluate_leap_threats(
+        game,
+        x,
+        y,
+        own,
+        attacker_value,
+        phase,
+        &crate::attacks::KNIGHT_OFFSETS,
+    )
+}

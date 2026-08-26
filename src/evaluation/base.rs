@@ -1912,10 +1912,34 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                 ) + evaluate_rose_reach(game, x, y, piece.color(), phase)
             }
-            PieceType::Hawk
-            | PieceType::Camel
-            | PieceType::Giraffe
-            | PieceType::Zebra => evaluate_leaper_positioning(
+            // The odd leapers had no threat term at all, while a knight on the
+            // same square earned one: a camel forking two pieces scored nothing.
+            // The hawk keeps its old scoring; its variants regressed when changed.
+            PieceType::Camel | PieceType::Giraffe | PieceType::Zebra => {
+                let offsets: &[(i64, i64)] = match pt {
+                    PieceType::Camel => &crate::attacks::CAMEL_OFFSETS,
+                    PieceType::Giraffe => &crate::attacks::GIRAFFE_OFFSETS,
+                    _ => &crate::attacks::ZEBRA_OFFSETS,
+                };
+                evaluate_leaper_positioning(
+                    x,
+                    y,
+                    piece.color(),
+                    cloud_center.as_ref(),
+                    pt,
+                    cloud_avg_spread,
+                    phase,
+                ) + crate::evaluation::piece_reach::evaluate_leap_threats(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    get_piece_value_base(pt),
+                    phase,
+                    offsets,
+                )
+            }
+            PieceType::Hawk => evaluate_leaper_positioning(
                 x,
                 y,
                 piece.color(),
