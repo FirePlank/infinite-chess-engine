@@ -3484,20 +3484,20 @@ fn generate_huygen_snipes(
             min_off = min_off.min(off);
         }
 
-        // Candidate far landings depend only on the line's outermost piece, not on
-        // which target is being checked, so they are built once instead of per target.
-        let mut cands: smallvec::SmallVec<[i64; 64]> = smallvec::SmallVec::new();
-        for (open, sign, outer) in [(open_pos, 1i64, max_off), (open_neg, -1i64, min_off)] {
+        // SNIPE_TRIES candidates BEYOND the line's outermost piece on each open
+        // side, so the count never depends on where the pieces happen to sit.
+        // Borrowed as slices rather than collected: 2 x SNIPE_TRIES overflowed
+        // the inline SmallVec and heap-allocated on every call.
+        let side_slice = |open: bool, base: i64| -> &[i64] {
             if !open {
-                continue;
+                return &[];
             }
-            let base = outer * sign;
-            for &p in SNIPE_PRIMES.iter() {
-                if p > base {
-                    cands.push(p * sign);
-                }
-            }
-        }
+            let start = SNIPE_PRIMES.partition_point(|&p| p <= base);
+            let end = (start + SNIPE_TRIES).min(SNIPE_PRIMES.len());
+            &SNIPE_PRIMES[start..end]
+        };
+        let pos_cands = side_slice(open_pos, max_off);
+        let neg_cands = side_slice(open_neg, -min_off);
 
         // Landings 2 short of or past a target always attack (nothing can
         // interpose at distance 1), collected once per line like the far
@@ -3529,27 +3529,40 @@ fn generate_huygen_snipes(
         // wider the gap the harder the attack is to block.
         let mut best: smallvec::SmallVec<[(i64, i64, i64); 16]> = smallvec::SmallVec::new();
 
-        for &s_off in close.iter().chain(cands.iter()) {
+        let far = pos_cands
+            .iter()
+            .map(|&p| p)
+            .chain(neg_cands.iter().map(|&p| -p));
+        for s_off in close.iter().copied().chain(far) {
             if !reachable_open(s_off) {
                 continue;
             }
             // Nearest prime-distance piece below and above the landing; a huygen
             // there attacks those two and nothing else on the line.
-            let mut lo_hit: Option<(i64, i64, u8)> = None;
-            let mut hi_hit: Option<(i64, i64, u8)> = None;
-            for (c2, packed2) in vec {
-                let o2 = c2 - our;
-                // Offset 0 is the huygen's own origin, which it is vacating.
+            // coords are sorted, so the nearest prime-distance piece per side is
+            // found by walking outward from the landing and stopping at the first
+            // hit, instead of scanning the whole line and taking a minimum.
+            let landing = our + s_off;
+            let split = vec.coords.partition_point(|&c| c < landing);
+            let probe = |o2: i64, packed2: u8| -> Option<(i64, i64, u8)> {
                 if o2 == s_off || o2 == 0 {
-                    continue;
+                    return None;
                 }
                 let d = (s_off - o2).abs();
-                if !is_prime_fast(d) {
-                    continue;
+                is_prime_fast(d).then_some((d, o2, packed2))
+            };
+            let mut lo_hit: Option<(i64, i64, u8)> = None;
+            for i in (0..split).rev() {
+                if let Some(h) = probe(vec.coords[i] - our, vec.pieces[i]) {
+                    lo_hit = Some(h);
+                    break;
                 }
-                let slot = if o2 < s_off { &mut lo_hit } else { &mut hi_hit };
-                if slot.is_none_or(|(bd, _, _)| d < bd) {
-                    *slot = Some((d, o2, packed2));
+            }
+            let mut hi_hit: Option<(i64, i64, u8)> = None;
+            for i in split..vec.coords.len() {
+                if let Some(h) = probe(vec.coords[i] - our, vec.pieces[i]) {
+                    hi_hit = Some(h);
+                    break;
                 }
             }
 
@@ -3600,21 +3613,16 @@ fn block_free_span(d: i64) -> i64 {
     i64::MAX
 }
 
-/// Exactly SNIPE_TRIES primes, sieved once. A sieve finds primes below a
-/// VALUE, not the first COUNT of them, so the bound has to be estimated: the
-/// k-th prime is below k*(ln k + ln ln k) (Rosser's theorem, k >= 6). Sized
-/// from SNIPE_TRIES directly, so raising that constant resizes this too.
+/// Primes available to sniper landings, sieved once. Must reach well past
+/// SNIPE_TRIES primes: the candidates start beyond the line's outermost piece,
+/// so the usable window slides upward as pieces spread out.
 static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| {
-    let k = SNIPE_TRIES.max(6) as f64;
-    let n = ((k * (k.ln() + k.ln().ln())).ceil() as usize + 8).max(32);
+    let n = 4096usize;
     let mut sieve = vec![true; n];
-    let mut out = Vec::with_capacity(SNIPE_TRIES);
+    let mut out = Vec::with_capacity(600);
     for i in 2..n {
         if sieve[i] {
             out.push(i as i64);
-            if out.len() == SNIPE_TRIES {
-                break;
-            }
             let mut j = i * i;
             while j < n {
                 sieve[j] = false;
@@ -3622,7 +3630,6 @@ static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(||
             }
         }
     }
-    debug_assert_eq!(out.len(), SNIPE_TRIES, "sieve bound too small for SNIPE_TRIES");
     out
 });
 
