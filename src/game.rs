@@ -1719,14 +1719,16 @@ impl GameState {
             let pt = m.piece.piece_type();
 
             if pt.is_royal() {
-                // King moves: destination must not be attacked
+                // King moves: destination must not be attacked, or the mover's win
+                // condition must allow its king to be captured
                 use crate::moves::is_square_attacked;
                 if is_square_attacked(
                     &self.board,
                     &m.to,
                     self.turn.opponent(),
                     &self.spatial_indices,
-                ) {
+                ) && !self.king_capturable(self.turn.opponent())
+                {
                     illegal = true;
                 }
             } else if rider_pins_possible {
