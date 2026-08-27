@@ -802,8 +802,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // Sliders are graded by value gap rather than bucketed: on an unbounded
     // board they are the pieces that can threaten from anywhere, and a fixed
     // tier would have to be re-cut every time the piece values are refitted.
-    const MINOR_THREATENS_ROOK: i32 = 20;
-    const MINOR_THREATENS_QUEEN: i32 = 35;
+    const MINOR_THREATENS_ROYAL: i32 = 20;
 
     const KNIGHT_OFFSETS: [(i64, i64); 8] = [
         (2, 1),
@@ -1119,20 +1118,22 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             dy,
                                         ) && target.color() == enemy
                                         {
-                                            let tv = get_piece_value_base(target.piece_type());
-                                            let mv = piece_val;
-                                            if tv >= 600 && mv < 600 {
-                                                if is_white {
-                                                    w_minor_threats += MINOR_THREATENS_QUEEN;
-                                                } else {
-                                                    b_minor_threats += MINOR_THREATENS_QUEEN;
-                                                }
-                                            } else if tv >= 400 && mv < 400 {
-                                                if is_white {
-                                                    w_minor_threats += MINOR_THREATENS_ROOK;
-                                                } else {
-                                                    b_minor_threats += MINOR_THREATENS_ROOK;
-                                                }
+                                            let tt = target.piece_type();
+                                            let tv = get_piece_value_base(tt);
+                                            // The old value gates excluded the
+                                            // centaur from its own branch, since
+                                            // both required a cheap attacker.
+                                            let add = if tt.is_royal() {
+                                                MINOR_THREATENS_ROYAL
+                                            } else {
+                                                let raw = (tv - piece_val).max(tv / 4);
+                                                (raw / slider_threat_div())
+                                                    .min(slider_threat_cap())
+                                            };
+                                            if is_white {
+                                                w_minor_threats += add;
+                                            } else {
+                                                b_minor_threats += add;
                                             }
                                         }
                                     }
