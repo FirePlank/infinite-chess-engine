@@ -1972,15 +1972,32 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 },
                 phase,
             ),
-            PieceType::Guard => evaluate_leaper_positioning(
-                x,
-                y,
-                piece.color(),
-                cloud_center.as_ref(),
-                PieceType::Guard,
-                cloud_avg_spread,
-                phase,
-            ),
+            // A guard had no threat term at all: it is not in the knight bucket
+            // branch, not a slider, and was not in the leaper arm, so a guard
+            // attacking a rook scored nothing.
+            PieceType::Guard => {
+                let v = get_piece_value_base(pt);
+                let r = crate::search::params::king_defender_ref_value();
+                crate::evaluation::piece_reach::evaluate_leap_threats(
+                    game,
+                    x,
+                    y,
+                    piece.color(),
+                    v,
+                    phase,
+                    &crate::attacks::KING_OFFSETS,
+                    4 * r / v.max(r),
+                )
+                    + evaluate_leaper_positioning(
+                        x,
+                        y,
+                        piece.color(),
+                        cloud_center.as_ref(),
+                        PieceType::Guard,
+                        cloud_avg_spread,
+                        phase,
+                    )
+            }
             // A knightrider rides along knight rays; on an unbounded board its
             // reach is unbounded so mobility-counting is meaningless. Use the
             // board-aware cloud-proximity/density shaping like the other riders.
