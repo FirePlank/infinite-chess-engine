@@ -555,6 +555,13 @@ impl StagedMoveGen {
             return sort_killer2();
         }
 
+        // A run to the far shell is a last resort, so it belongs behind every other
+        // quiet: full-width searching it costs ~20% nodes, and returning here also
+        // skips the attack scan below for a move that almost never attacks anything.
+        if crate::moves::is_far_escape_move(m) {
+            return GOOD_QUIET_THRESHOLD - 1;
+        }
+
         // Countermove bonus
         if self.ply > 0 && self.prev_from_hash < 256 && self.prev_to_hash < 256 {
             let entry = unsafe {

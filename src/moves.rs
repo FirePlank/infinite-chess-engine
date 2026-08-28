@@ -2351,6 +2351,70 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     }
 }
 
+/// Clear room a ray needs before a slider gets its one far escape move. Bounded
+/// variants never reach it, so they pay nothing for this.
+const FAR_ESCAPE_MIN_ROOM: i64 = 50;
+
+/// The escape lands on a shell inset from the TT move-encoding box, not on its
+/// edge: the wiggle candidates other pieces generate around the landed piece are
+/// `dist +- 2`, and those must still encode.
+const FAR_SHELL_INSET: i64 = 32;
+const FAR_SHELL_MAX: i64 = crate::search::tt_defs::MAX_TT_COORD - FAR_SHELL_INSET;
+const FAR_SHELL_MIN: i64 = crate::search::tt_defs::MIN_TT_COORD + FAR_SHELL_INSET;
+
+/// Steps along a ray to the far-escape shell, 0 once the mover is on or past it.
+/// The shell is an absolute anchor, which is what bounds the branching: after the
+/// escape this returns 0, so no second, farther escape is ever generated.
+#[inline]
+fn ray_far_escape_steps(from: &Coordinate, dir_x: i64, dir_y: i64) -> i64 {
+    #[inline(always)]
+    fn axis_steps(pos: i64, dir: i64, world_min: i64, world_max: i64) -> i64 {
+        if dir == 0 {
+            return i64::MAX;
+        }
+        let room = if dir > 0 {
+            world_max.min(FAR_SHELL_MAX).saturating_sub(pos)
+        } else {
+            pos.saturating_sub(world_min.max(FAR_SHELL_MIN))
+        };
+        room.max(0) / dir.abs()
+    }
+
+    let sx = axis_steps(
+        from.x,
+        dir_x,
+        COORD_MIN_X.load(Ordering::Relaxed),
+        COORD_MAX_X.load(Ordering::Relaxed),
+    );
+    let sy = axis_steps(
+        from.y,
+        dir_y,
+        COORD_MIN_Y.load(Ordering::Relaxed),
+        COORD_MAX_Y.load(Ordering::Relaxed),
+    );
+    sx.min(sy)
+}
+
+/// Whether a move is one of the far escapes above, i.e. its destination is the
+/// shell square of its own ray. Recomputed rather than flagged on [`Move`], which
+/// would cost 8 bytes in every move list for a move that is generated once a node.
+#[inline]
+pub fn is_far_escape_move(m: &Move) -> bool {
+    let dx = m.to.x - m.from.x;
+    let dy = m.to.y - m.from.y;
+    if dx.abs().max(dy.abs()) < FAR_ESCAPE_MIN_ROOM {
+        return false;
+    }
+    let steps = if dx == 0 {
+        dy.abs()
+    } else if dy == 0 || dx.abs() == dy.abs() {
+        dx.abs()
+    } else {
+        return false;
+    };
+    ray_far_escape_steps(&m.from, dx / steps, dy / steps) == steps
+}
+
 /// Distance past which a candidate square needs a reason beyond proximity to be
 /// generated. Cheap default filter; critical targets bypass it entirely.
 const BASE_INTERCEPTION_DIST: i64 = 16;
@@ -3252,6 +3316,21 @@ fn generate_sliding_moves_impl(
 
                 if in_bounds(sq_x, sq_y) {
                     out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                }
+            }
+
+            // A fully open ray is provably empty to the border, but the candidate
+            // window tops out at 256, so a slider can never just run away. One
+            // escape to the far shell fixes that; it is deliberately outside the
+            // cached candidate list, which is never invalidated.
+            if gen_type != MoveGenType::Captures
+                && closest_dist == i64::MAX
+                && ray_cap == 0
+            {
+                let far = ray_far_escape_steps(from, dir_x, dir_y);
+                if far >= FAR_ESCAPE_MIN_ROOM && target_dists.binary_search(&far).is_err() {
+                    let sq = Coordinate::new(from.x + dir_x * far, from.y + dir_y * far);
+                    out.push(Move::new(*from, sq, *piece));
                 }
             }
         }
@@ -4836,6 +4915,46 @@ mod tests {
 
             // Knightrider should have at least 8 moves (the initial knight squares)
             assert!(moves.len() >= 8, "Knightrider should have at least 8 moves");
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn far_escape_is_generated_once_and_stays_tt_encodable() {
+        use crate::search::tt_defs::{MAX_TT_COORD, MIN_TT_COORD};
+        with_bounds_lock(|| {
+            // Omega^1 showcase: without the far escape the rook on 0,0 reaches
+            // only 0,5, so the search reports a mate that does not exist.
+            let icn = "b 1 -9223372036854773809,9223372036854773809,-9223372036854773811,9223372036854773811 r-2,4|r2,4|r-2,2|r2,2|r-2,0|r0,0|r2,0|k0,-1|R1,-2|P-2,-3|Q-1,-3|P2,-3|K0,-4";
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+
+            let ups: Vec<_> = game
+                .get_pseudo_legal_moves()
+                .into_iter()
+                .filter(|m| m.from.x == 0 && m.from.y == 0 && m.to.x == 0 && m.to.y >= 50)
+                .collect();
+            assert_eq!(ups.len(), 1, "exactly one far escape up the open ray");
+            let far = ups[0].to;
+            assert!(
+                far.y <= MAX_TT_COORD && far.y >= MIN_TT_COORD,
+                "far escape must encode into a TT move: {far:?}"
+            );
+
+            // From the shell the anchor yields zero room, so there is no second,
+            // farther escape - this is what keeps the branching bounded.
+            let mut game2 = GameState::new();
+            game2.setup_position_from_icn(icn);
+            let undo = game2.make_move(&ups[0]);
+            assert!(
+                !game2
+                    .get_pseudo_legal_moves()
+                    .iter()
+                    .any(|m| m.from == far && m.to.x == 0 && m.to.y > far.y),
+                "no farther escape may be generated from the shell"
+            );
+            game2.undo_move(&ups[0], undo);
+
             reset_world_bounds();
         });
     }
