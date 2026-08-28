@@ -1727,7 +1727,7 @@ impl GameState {
                     &m.to,
                     self.turn.opponent(),
                     &self.spatial_indices,
-                ) && !self.king_capturable(self.turn.opponent())
+                ) && !self.king_capturable(self.turn)
                 {
                     illegal = true;
                 }
@@ -4279,6 +4279,55 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Under a capture-based win condition there is no check to evade, so the
+    /// royal may legally step onto an attacked square. Without this the engine
+    /// can run out of moves and return no bestmove in a non-terminal position.
+    #[test]
+    fn capture_variant_king_may_step_onto_attacked_square() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(
+            "b 0/100 1 (8|1) allroyalscaptured,allroyalscaptured k5,2+|R4,6|K5,9+",
+        );
+        assert!(game.king_capturable(PlayerColor::Black));
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+        assert!(
+            moves
+                .iter()
+                .any(|m| m.from.x == 5 && m.from.y == 2 && m.to.x == 4 && m.to.y == 2),
+            "royal-capture king must be allowed onto the attacked file"
+        );
+    }
+
+    /// Pawn_Horde is asymmetric: Black has the only royal, so White wins by
+    /// checkmate while Black wins by capturing all pieces. Black's king must
+    /// still not be allowed to step onto an attacked square.
+    #[test]
+    fn asymmetric_variant_king_may_not_step_into_check() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(
+            "b 0/100 1 (2|-7) checkmate,allpiecescaptured k5,2+|R4,6|P1,-2+",
+        );
+        assert_eq!(game.game_rules.white_win_condition, WinCondition::Checkmate);
+        assert_eq!(
+            game.game_rules.black_win_condition,
+            WinCondition::AllPiecesCaptured
+        );
+        // Black's king is NOT capturable: White must mate it.
+        assert!(!game.king_capturable(PlayerColor::Black));
+
+        // The rook on file 4 attacks the whole file; k5,2 -> 4,2 walks into it.
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+        let steps_into_check = moves
+            .iter()
+            .any(|m| m.from.x == 5 && m.from.y == 2 && m.to.x == 4 && m.to.y == 2);
+        assert!(
+            !steps_into_check,
+            "black king stepped onto an attacked square legally"
+        );
+    }
+
     use std::sync::Mutex;
     use std::sync::OnceLock;
 
@@ -4339,7 +4388,8 @@ mod tests {
         game.setup_position_from_icn("w 0/100 1 (4|2) K5,1|k5,8|P3,2+|p4,4+");
         assert_incremental_state_matches_scratch(&mut game, "setup");
 
-        let moves = game.get_pseudo_legal_moves();
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
         let Some(dp) = moves
             .iter()
             .find(|m| m.from == Coordinate::new(3, 2) && m.to == Coordinate::new(3, 4))
