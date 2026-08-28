@@ -487,9 +487,10 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     let white_np = game.white_piece_count.saturating_sub(game.white_pawn_count);
     let black_np = game.black_piece_count.saturating_sub(game.black_pawn_count);
 
+    // No upper bound on the winner: a bare defender is the trigger, and capping
+    // the winner's material withheld the shaping from the most winning positions.
     if black_np < 3
         && white_np > 1
-        && white_np <= 10
         && (game.white_pawn_count == 0 || game.black_pawn_count == 0)
         && !game.black_royals.is_empty()
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::Black)
@@ -499,7 +500,6 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     }
     if white_np < 3
         && black_np > 1
-        && black_np <= 10
         && (game.black_pawn_count == 0 || game.white_pawn_count == 0)
         && !game.white_royals.is_empty()
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::White)
