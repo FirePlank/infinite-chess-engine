@@ -292,6 +292,9 @@ pub const DEFAULT_EVAL_SLIDER_NET_BONUS: i32 = 21;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS: i32 = 18;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS: i32 = 40;
 pub const DEFAULT_EVAL_FAR_QUEEN_PENALTY: i32 = 5;
+/// A slider re-enters the fight in one move, so drifting away costs it tempi,
+/// not a share of itself. The ramp is capped at this fraction of its value.
+pub const FAR_SLIDER_PENALTY_VALUE_DIV: i32 = 8;
 pub const DEFAULT_EVAL_FAR_ROOK_PENALTY: i32 = 7;
 pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS: i32 = 16;
 pub const DEFAULT_EVAL_SLIDER_AXIS_WIGGLE: i32 = 5;
@@ -2524,7 +2527,8 @@ pub fn evaluate_rook(
     if min_cheb != i64::MAX && min_cheb > far_slider_cheb_radius() as i64 {
         let excess = (min_cheb - far_slider_cheb_radius() as i64)
             .min(far_slider_cheb_max_excess() as i64) as i32;
-        bonus -= excess * far_rook_penalty();
+        let cap = get_piece_value_base(PieceType::Rook) / FAR_SLIDER_PENALTY_VALUE_DIV;
+        bonus -= (excess * far_rook_penalty()).min(cap);
     }
 
     // Open / Semi-Open File Bonus
@@ -2640,7 +2644,8 @@ pub fn evaluate_queen(
     if min_cheb != i64::MAX && min_cheb > far_slider_cheb_radius() as i64 {
         let excess = (min_cheb - far_slider_cheb_radius() as i64)
             .min(far_slider_cheb_max_excess() as i64) as i32;
-        bonus -= excess * far_queen_penalty();
+        let cap = get_piece_value_base(PieceType::Queen) / FAR_SLIDER_PENALTY_VALUE_DIV;
+        bonus -= (excess * far_queen_penalty()).min(cap);
     }
 
     // Open / Semi-Open File Bonus
