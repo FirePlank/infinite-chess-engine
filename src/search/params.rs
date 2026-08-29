@@ -62,7 +62,7 @@ pub const DEFAULT_RAZORING_QUAD: i32 = 281;
 
 pub const DEFAULT_NMP_MIN_DEPTH: usize = 3;
 pub const DEFAULT_NMP_BASE: i32 = 350;
-pub const DEFAULT_NMP_DEPTH_MULT: i32 = 26;
+pub const DEFAULT_NMP_DEPTH_MULT: i32 = 36;
 pub const DEFAULT_NMP_REDUCTION_BASE: usize = 7;
 pub const DEFAULT_NMP_REDUCTION_DIV: usize = 3;
 
