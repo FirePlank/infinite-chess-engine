@@ -625,6 +625,9 @@ pub const DEFAULT_EVAL_EG_KING_DEFENDER_BONUS: i32 = 0; // Less need for defende
 // passed_pawn_adv_bonus()[canAdvance][safeAdvance][rank]
 
 pub const DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS: i32 = 27;
+/// A slider walled in by its own pieces at one or two squares has no unbounded
+/// reach at all; the far penalties price the opposite failure, never this one.
+pub const SLIDER_CONGESTION_UNIT: i32 = 3;
 pub const DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS: i32 = 67;
 
 /// Probe a square offset (dx, dy) from a piece at local tile index `idx`.
@@ -2421,6 +2424,38 @@ fn compute_attack_bonus_optimized(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Congestion units for the two opposite rays sharing one spatial line: an own
+/// blocker one step out counts double what one two steps out does.
+#[inline]
+fn line_congestion(
+    line: Option<&crate::moves::SpatialLine>,
+    key: i64,
+    own: PlayerColor,
+) -> i32 {
+    let Some(l) = line else { return 0 };
+    let i = l.coords.partition_point(|&c| c < key);
+    let mut units = 0;
+    if i + 1 < l.coords.len() {
+        let d = l.coords[i + 1] - key;
+        if d <= 2 {
+            let p = Piece::from_packed(l.pieces[i + 1]);
+            if p.color() == own {
+                units += 3 - d as i32;
+            }
+        }
+    }
+    if i > 0 {
+        let d = key - l.coords[i - 1];
+        if d <= 2 {
+            let p = Piece::from_packed(l.pieces[i - 1]);
+            if p.color() == own {
+                units += 3 - d as i32;
+            }
+        }
+    }
+    units
+}
+
 pub fn evaluate_rook(
     game: &GameState,
     x: i64,
@@ -2529,6 +2564,13 @@ pub fn evaluate_rook(
             .min(far_slider_cheb_max_excess() as i64) as i32;
         let cap = get_piece_value_base(PieceType::Rook) / FAR_SLIDER_PENALTY_VALUE_DIV;
         bonus -= (excess * far_rook_penalty()).min(cap);
+    }
+
+    {
+        let idx = &game.spatial_indices;
+        let units =
+            line_congestion(idx.rows.get(&y), x, color) + line_congestion(idx.cols.get(&x), y, color);
+        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
     }
 
     // Open / Semi-Open File Bonus
@@ -2648,6 +2690,15 @@ pub fn evaluate_queen(
         bonus -= (excess * far_queen_penalty()).min(cap);
     }
 
+    {
+        let idx = &game.spatial_indices;
+        let units = line_congestion(idx.rows.get(&y), x, color)
+            + line_congestion(idx.cols.get(&x), y, color)
+            + line_congestion(idx.diag1.get(&(x - y)), x, color)
+            + line_congestion(idx.diag2.get(&(x + y)), x, color);
+        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
+    }
+
     // Open / Semi-Open File Bonus
     let (my_pawns, enemy_pawns) = if color == PlayerColor::White {
         (white_pawns, black_pawns)
@@ -2690,6 +2741,13 @@ pub fn evaluate_bishop(
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut bonus: i32 = 0;
+
+    {
+        let idx = &game.spatial_indices;
+        let units = line_congestion(idx.diag1.get(&(x - y)), x, color)
+            + line_congestion(idx.diag2.get(&(x + y)), x, color);
+        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
+    }
 
     // Scale king-targeting bonuses based on own win condition.
     let own_win_cond = if color == PlayerColor::White {
