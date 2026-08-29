@@ -4091,8 +4091,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // Null move pruning: give opponent an extra move, if still >= beta, prune
-        // Only in cut nodes with non-pawn material (avoid zugzwang)
-        if cut_node && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
+        // At every non-PV node with non-pawn material (avoid zugzwang)
+        if !is_pv && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
