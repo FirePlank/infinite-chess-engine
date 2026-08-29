@@ -799,13 +799,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         .collect();
 
     // Interaction threat constants
-    const PAWN_THREATENS_MINOR: i32 = 25;
-    const PAWN_THREATENS_ROOK: i32 = 40;
-    const PAWN_THREATENS_QUEEN: i32 = 60;
+    const PAWN_THREATENS_ROYAL: i32 = 20;
+    const MINOR_THREATENS_ROYAL: i32 = 20;
     // Sliders are graded by value gap rather than bucketed: on an unbounded
     // board they are the pieces that can threaten from anywhere, and a fixed
     // tier would have to be re-cut every time the piece values are refitted.
-    const MINOR_THREATENS_ROYAL: i32 = 20;
 
     const KNIGHT_OFFSETS: [(i64, i64); 8] = [
         (2, 1),
@@ -1078,25 +1076,20 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             dy,
                                         ) && target.color() == enemy
                                         {
-                                            let tv = get_piece_value_base(target.piece_type());
-                                            if tv >= 600 {
-                                                if is_white {
-                                                    w_pawn_threats += PAWN_THREATENS_QUEEN;
-                                                } else {
-                                                    b_pawn_threats += PAWN_THREATENS_QUEEN;
-                                                }
-                                            } else if tv >= 400 {
-                                                if is_white {
-                                                    w_pawn_threats += PAWN_THREATENS_ROOK;
-                                                } else {
-                                                    b_pawn_threats += PAWN_THREATENS_ROOK;
-                                                }
-                                            } else if tv >= 200 {
-                                                if is_white {
-                                                    w_pawn_threats += PAWN_THREATENS_MINOR;
-                                                } else {
-                                                    b_pawn_threats += PAWN_THREATENS_MINOR;
-                                                }
+                                            let tt = target.piece_type();
+                                            let tv = get_piece_value_base(tt);
+                                            let add = if tt.is_royal() {
+                                                PAWN_THREATENS_ROYAL
+                                            } else {
+                                                let raw = (tv - piece_val).max(0);
+                                                (raw / slider_threat_div())
+                                                    .min(slider_threat_cap())
+                                            };
+
+                                            if is_white {
+                                                w_pawn_threats += add;
+                                            } else {
+                                                b_pawn_threats += add;
                                             }
                                         }
                                     }
