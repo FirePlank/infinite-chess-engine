@@ -2427,22 +2427,19 @@ fn line_congestion(
     let Some(l) = line else { return 0 };
     let i = l.coords.partition_point(|&c| c < key);
     let mut units = 0;
+    // An enemy pawn walls a ray as surely as an own piece: it is usually
+    // defended, and capturing it does not open the line the slider wanted.
+    let walls = |p: Piece| p.color() == own || p.piece_type() == PieceType::Pawn;
     if i + 1 < l.coords.len() {
         let d = l.coords[i + 1] - key;
-        if d <= 2 {
-            let p = Piece::from_packed(l.pieces[i + 1]);
-            if p.color() == own {
-                units += 3 - d as i32;
-            }
+        if d <= 2 && walls(Piece::from_packed(l.pieces[i + 1])) {
+            units += 3 - d as i32;
         }
     }
     if i > 0 {
         let d = key - l.coords[i - 1];
-        if d <= 2 {
-            let p = Piece::from_packed(l.pieces[i - 1]);
-            if p.color() == own {
-                units += 3 - d as i32;
-            }
+        if d <= 2 && walls(Piece::from_packed(l.pieces[i - 1])) {
+            units += 3 - d as i32;
         }
     }
     units
