@@ -57,7 +57,7 @@ impl SearchParamSpec {
     }
 }
 
-pub const DEFAULT_RAZORING_LINEAR: i32 = 485;
+pub const DEFAULT_RAZORING_LINEAR: i32 = 647;
 pub const DEFAULT_RAZORING_QUAD: i32 = 374;
 
 pub const DEFAULT_NMP_MIN_DEPTH: usize = 3;
