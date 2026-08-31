@@ -91,7 +91,7 @@ pub struct StagedMoveGen {
     excluded_move: Option<Move>,
 
     // Pre-calculated continuation history pointers for the current ply.
-    cont_history_indices: smallvec::SmallVec<[ContHistoryIndex; 3]>,
+    pub(crate) cont_history_indices: smallvec::SmallVec<[ContHistoryIndex; 3]>,
 
     // Side-to-move pin map, computed once per node and shared by the capture
     // and quiet stages.

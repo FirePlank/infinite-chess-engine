@@ -4718,7 +4718,21 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let hist_score = searcher.history[p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
-                reduction -= (hist_score + pawn_score) / 4096;
+                // Continuation history already steers ordering; the reduction
+                // stat was blind to it, so a move that follows well after the
+                // previous two plies was reduced like a stranger.
+                let mut cont_score = 0i32;
+                {
+                    let cf = hash_coord_16(m.from.x, m.from.y);
+                    let ct = hash_coord_16(m.to.x, m.to.y);
+                    for &(ci, pc, pi, pp, pt_h) in movegen.cont_history_indices.iter() {
+                        if ci < 2 {
+                            cont_score +=
+                                searcher.cont_history[ci][pc][pi][pp][pt_h][cf][ct] as i32;
+                        }
+                    }
+                }
+                reduction -= (hist_score + pawn_score) / 4096 + cont_score / 8192;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
