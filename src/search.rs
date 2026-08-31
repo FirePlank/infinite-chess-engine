@@ -4146,7 +4146,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     return 0;
                 }
 
-                if null_score >= beta && !is_win(null_score) {
+                // An unproven mate from a null search is not returnable as-is,
+                // but the fail-high itself is real: clamp to beta and cut.
+                let null_score = if is_win(null_score) { beta } else { null_score };
+                if null_score >= beta {
                     // At high depths, we verify the NMP cutoff by running a reduced-depth
                     // search without the null move permission. This helps identify zugzwang
                     // positions or cases where NMP was too optimistic.
