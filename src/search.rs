@@ -4063,8 +4063,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         // Pre-move pruning techniques
 
-        // Razoring: if eval is really low, drop to qsearch
-        if !is_pv && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32 {
+        // Razoring: if eval is really low, drop to qsearch. Depth-capped the way
+        // Stockfish's quadratic margin caps itself against its mate scale: past
+        // this depth only mate-valued windows could ever clear the margin, and
+        // those nodes must search for real or shorter mates stay invisible.
+        if !is_pv
+            && depth <= 8
+            && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
+        {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }
 
