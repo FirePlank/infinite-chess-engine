@@ -649,6 +649,9 @@ pub struct SearcherHot {
     pub best_move_nodes: u64,
     /// Running average score smoothed across iterations
     pub best_previous_average_score: i32,
+    /// Root is deep enough and the score decisive enough that mate hunting is
+    /// on: static shortcuts stop being trustworthy (mirrors Stockfish seekMate).
+    pub seek_mate: bool,
     /// Running scores for falling eval (circular buffer of last 4 iterations)
     pub iter_values: [i32; 4],
     /// Index into iter_values circular buffer
@@ -1090,6 +1093,7 @@ impl Searcher {
                 best_move_changes: 0.0,
                 best_move_nodes: 0,
                 best_previous_average_score: 0,
+                seek_mate: false,
                 iter_values: [0; 4],
                 iter_idx: 0,
                 prev_time_reduction: 1.0,
@@ -1378,6 +1382,7 @@ impl Searcher {
         self.hot.best_move_changes = 0.0;
         self.hot.best_move_nodes = 0;
         self.hot.best_previous_average_score = 0;
+        self.hot.seek_mate = false;
         self.hot.iter_values.fill(0);
         self.hot.iter_idx = 0;
         self.hot.prev_time_reduction = 1.0;
@@ -2484,6 +2489,8 @@ fn search_with_searcher(
                 0.0
             };
             let high_best_move_effort = if nodes_effort >= 93340.0 { 0.76 } else { 1.0 };
+
+            searcher.hot.seek_mate = base_depth >= 16 && best_score.abs() >= 4000;
 
             // Accumulate instability changes from this iteration
             searcher.hot.tot_best_move_changes += searcher.hot.best_move_changes;
@@ -4062,8 +4069,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // Reverse Futility Pruning (RFP)
+        let rfp_depth_cap = if searcher.hot.seek_mate {
+            6
+        } else {
+            rfp_max_depth()
+        };
         if !tt_pv
-            && depth < rfp_max_depth()
+            && depth < rfp_depth_cap
             && (tt_move.is_none() || tt_capture)
             && !is_loss(beta)
             && !is_win(eval)
@@ -4312,7 +4324,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
-    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() {
+    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() && !searcher.hot.seek_mate
+    {
         if tt_hit_node
             && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
             && tt_data_depth as usize >= depth.saturating_sub(3)
