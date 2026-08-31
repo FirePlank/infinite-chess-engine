@@ -4732,7 +4732,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         }
                     }
                 }
-                reduction -= (hist_score + pawn_score) / 4096 + cont_score / 8192;
+                reduction -= (hist_score + pawn_score) / 4096 + cont_score / 6144;
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
