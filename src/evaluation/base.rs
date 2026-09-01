@@ -2405,7 +2405,9 @@ fn line_congestion(
     let mut units = 0;
     // An enemy pawn walls a ray as surely as an own piece: it is usually
     // defended, and capturing it does not open the line the slider wanted.
-    let walls = |p: Piece| p.color() == own || p.piece_type() == PieceType::Pawn;
+    let walls = |p: Piece| {
+        p.color() == own || p.piece_type() == PieceType::Pawn || p.piece_type().is_neutral_type()
+    };
     if i + 1 < l.coords.len() {
         let d = l.coords[i + 1] - key;
         if d <= 2 && walls(Piece::from_packed(l.pieces[i + 1])) {
