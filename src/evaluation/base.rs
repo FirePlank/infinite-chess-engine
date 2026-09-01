@@ -758,9 +758,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut b_king_ring_covered = false;
 
     let mut w_attacking_tropism: i32 = 0;
-    let mut w_defensive_tropism: i32 = 0;
     let mut b_attacking_tropism: i32 = 0;
-    let mut b_defensive_tropism: i32 = 0;
 
     let mut white_royal_tropisms: SmallVec<[_; 1]> = game
         .white_royals
@@ -1416,27 +1414,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     w_attacking_tropism +=
                                         tropism_contribution(piece_val, d, bk.tropism_addend);
                                 }
-                                for wk in &white_royal_tropisms {
-                                    let d = (px - wk.x).abs().max((py - wk.y).abs());
-                                    w_defensive_tropism += tropism_contribution(
-                                        piece_val.min(350),
-                                        d,
-                                        wk.tropism_addend,
-                                    );
-                                }
                             } else {
                                 for wk in &white_royal_tropisms {
                                     let d = (px - wk.x).abs().max((py - wk.y).abs());
                                     b_attacking_tropism +=
                                         tropism_contribution(piece_val, d, wk.tropism_addend);
-                                }
-                                for bk in &black_royal_tropisms {
-                                    let d = (px - bk.x).abs().max((py - bk.y).abs());
-                                    b_defensive_tropism += tropism_contribution(
-                                        piece_val.min(350),
-                                        d,
-                                        bk.tropism_addend,
-                                    );
                                 }
                             }
                         }
@@ -1624,8 +1606,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         // per-side percentage, so the style composes into it: weak
                         // levels crowd their own king instead of the enemy's.
                         let gt_att_mult = taper(180, 360);
-                        let gt_def_mult = taper(120, 60);
-
                         let w_att_scale = style.attack(match game.game_rules.white_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
@@ -1634,14 +1614,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
                         });
-                        let w_def_scale = style.defense(100);
-                        let b_def_scale = style.defense(100);
 
                         // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
-                        let w_gt = (w_attacking_tropism * gt_att_mult * w_att_scale / 10000)
-                            + (w_defensive_tropism * gt_def_mult * w_def_scale / 10000);
-                        let b_gt = (b_attacking_tropism * gt_att_mult * b_att_scale / 10000)
-                            + (b_defensive_tropism * gt_def_mult * b_def_scale / 10000);
+                        let w_gt = w_attacking_tropism * gt_att_mult * w_att_scale / 10000;
+                        let b_gt = b_attacking_tropism * gt_att_mult * b_att_scale / 10000;
 
                         tracer.record("Global Tropism", w_gt, b_gt);
                         score += w_gt - b_gt;
