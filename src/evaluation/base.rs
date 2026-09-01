@@ -2333,8 +2333,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     // pawns and barely notices a king it could be attacking — or one being attacked.
     let w_shelter = style.defense(w_safety * black_rc_mult / 100);
     let b_shelter = style.defense(b_safety * white_rc_mult / 100);
-    let w_pressure = style.attack(w_attack * white_rc_mult / 100);
-    let b_pressure = style.attack(b_attack * black_rc_mult / 100);
+    let w_pressure = style.attack(w_attack * white_rc_mult / 100) * 3 / 2;
+    let b_pressure = style.attack(b_attack * black_rc_mult / 100) * 3 / 2;
 
     let w_total = w_shelter + w_pressure;
     let b_total = b_shelter + b_pressure;
