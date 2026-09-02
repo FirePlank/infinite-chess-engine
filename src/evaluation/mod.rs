@@ -50,6 +50,39 @@ fn compute_mop_up_term(game: &GameState) -> i32 {
     }
 }
 
+/// A pawnless leader whose force alone could never mate a bare king cannot win,
+/// however much it is ahead: the insufficient-material rules only fire once the
+/// board is nearly empty, so without this the eval keeps a full material claim
+/// right up to the trade that makes the draw official.
+fn apply_pawnless_scale(game: &GameState, eval: i32) -> i32 {
+    if eval == 0 {
+        return eval;
+    }
+    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
+    {
+        return eval;
+    }
+    if game.white_royals.len() != 1 || game.black_royals.len() != 1 {
+        return eval;
+    }
+    let leader_white = (eval > 0) == (game.turn == PlayerColor::White);
+    let (pawns, pieces) = if leader_white {
+        (game.white_pawn_count, game.white_piece_count)
+    } else {
+        (game.black_pawn_count, game.black_piece_count)
+    };
+    // King plus at most four pieces: bigger forces always have mating material.
+    if pawns > 0 || pieces > 5 {
+        return eval;
+    }
+    if insufficient_material::side_cannot_mate(game, leader_white) {
+        eval / 8
+    } else {
+        eval
+    }
+}
+
 /// Bounded-board rook/minor endings that are drawn with correct defense are
 /// scaled hard toward the draw.
 fn apply_bounded_drawish_scale(game: &GameState, eval: i32) -> i32 {
@@ -175,7 +208,7 @@ pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -
 
     apply_rule50_damping(
         game,
-        apply_bounded_drawish_scale(game, raw_eval + mop_up),
+        apply_pawnless_scale(game, apply_bounded_drawish_scale(game, raw_eval + mop_up)),
         mop_up != 0,
     )
 }
@@ -197,7 +230,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     apply_rule50_damping(
         game,
-        apply_bounded_drawish_scale(game, raw_eval + mop_up),
+        apply_pawnless_scale(game, apply_bounded_drawish_scale(game, raw_eval + mop_up)),
         mop_up != 0,
     )
 }
@@ -224,6 +257,22 @@ mod tests {
         return evaluate(game, None);
         #[cfg(not(feature = "nnue"))]
         return evaluate(game);
+    }
+
+    #[test]
+    fn test_pawnless_leader_without_mating_force_is_scaled() {
+        // K+Q vs K+N+N+N: six pieces, so the insufficient rule stays silent, but a
+        // lone queen can never mate on an unbounded board. The queen side's claim
+        // must shrink toward the draw; give it a pawn and the claim is back.
+        let pawnless = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|Q4,4|k7,7|n6,1|n5,1|n8,3");
+        let with_pawn =
+            create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|Q4,4|P3,3|k7,7|n6,1|n5,1|n8,3");
+        let raw = base::evaluate(&pawnless);
+        assert!(raw > 100, "queen side should be ahead on raw eval: {raw}");
+        let scaled = evaluate_wrapper(&pawnless);
+        assert!(scaled.abs() <= raw.abs() / 4, "pawnless K+Q claim not scaled: raw {raw} -> {scaled}");
+        let full = evaluate_wrapper(&with_pawn);
+        assert!(full > raw / 2, "a pawn restores the full claim: {full}");
     }
 
     #[test]

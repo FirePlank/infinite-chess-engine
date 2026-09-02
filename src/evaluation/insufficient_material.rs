@@ -10,6 +10,35 @@ thread_local! {
 
 pub fn clear_material_cache() {
     MATERIAL_CACHE.with(|cache| cache.borrow_mut().clear());
+    NO_MATE_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+thread_local! {
+    /// Keyed by (material_hash, white?, bordered): whether that side's force
+    /// alone could ever mate a bare king.
+    static NO_MATE_CACHE: RefCell<FxHashMap<(u64, bool, bool), bool>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// True when `white`'s pawnless force could not mate a bare king even unopposed:
+/// however far ahead it is, the game is a draw unless the defender helps.
+pub fn side_cannot_mate(game: &crate::game::GameState, white: bool) -> bool {
+    let bordered = crate::moves::get_world_size() <= 200;
+    let key = (game.material_hash, white, bordered);
+    if let Some(v) = NO_MATE_CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return v;
+    }
+    let (w, b) = count_both(&game.board, &game.game_rules);
+    let m = if white { &w } else { &b };
+    let v = if bordered { is_insufficient_bordered(m) } else { is_insufficient(m) };
+    NO_MATE_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert(key, v);
+    });
+    v
 }
 
 #[inline]
