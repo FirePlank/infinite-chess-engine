@@ -256,6 +256,8 @@ pub fn value_draw(nodes: u64) -> i32 {
 /// Draw aversion. Scores are side-to-move relative and the root side moves at
 /// even ply, so the sign flips with parity to make a draw cost us either way.
 const CONTEMPT: i32 = 15;
+/// Node-count mask between slider-cache clears (every 16k nodes).
+const SLIDER_CACHE_CLEAR_MASK: u64 = 0x3FFF;
 #[inline(always)]
 fn draw_contempt(contempt: i32, ply: usize) -> i32 {
     if ply.is_multiple_of(2) { -contempt } else { contempt }
@@ -3794,6 +3796,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Initialize node state
     let in_check = game.is_in_check();
     searcher.hot.nodes += 1;
+    // The slider candidate cache is never invalidated per move; a periodic clear
+    // bounds how long a list built for a vanished position can hide a defence.
+    if searcher.hot.nodes & SLIDER_CACHE_CLEAR_MASK == 0 {
+        game.spatial_indices.slider_cache.borrow_mut().clear();
+    }
     searcher.pv_length[ply] = 0;
 
     // Initialize cutoff count for grandchild ply
