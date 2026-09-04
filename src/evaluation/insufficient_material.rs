@@ -1105,6 +1105,70 @@ mod tests {
         game
     }
 
+    /// Every material configuration infinitechess.org's practice mode lists as
+    /// matable (validcheckmates.ts, mirrored in tests/practice_mates.rs) must be
+    /// judged WINNABLE. The opposite error is severe and silent: the eval would
+    /// return 0 for a genuinely won position and the engine would stop trying.
+    #[test]
+    fn test_site_matable_catalog_is_never_called_a_draw() {
+        use PieceType as P;
+        // Attacker squares spread near the origin, defender king far away, as in
+        // the practice suite.
+        const SPOTS: [(i64, i64); 9] = [
+            (-2, 3),
+            (3, -2),
+            (0, 0),
+            (-3, 1),
+            (4, 2),
+            (1, 4),
+            (-1, -3),
+            (2, 2),
+            (-4, 0),
+        ];
+        let catalog: &[(&str, &[PieceType])] = &[
+            ("2Q", &[P::Queen, P::Queen]),
+            ("3R", &[P::Rook, P::Rook, P::Rook]),
+            ("Q+R+B", &[P::Queen, P::Rook, P::Bishop]),
+            ("Q+R+N", &[P::Queen, P::Rook, P::Knight]),
+            ("K+2R", &[P::King, P::Rook, P::Rook]),
+            ("Q+CH", &[P::Queen, P::Chancellor]),
+            ("2CH", &[P::Chancellor, P::Chancellor]),
+            ("K+4B", &[P::King, P::Bishop, P::Bishop, P::Bishop, P::Bishop]),
+            ("3AR", &[P::Archbishop, P::Archbishop, P::Archbishop]),
+            ("K+AM", &[P::King, P::Amazon]),
+            ("K+Q+B", &[P::King, P::Queen, P::Bishop]),
+            ("K+Q+N", &[P::King, P::Queen, P::Knight]),
+            ("Q+2B", &[P::Queen, P::Bishop, P::Bishop]),
+            ("K+R+2B", &[P::King, P::Rook, P::Bishop, P::Bishop]),
+            ("K+R+N+B", &[P::King, P::Rook, P::Knight, P::Bishop]),
+            ("K+AR+R", &[P::King, P::Archbishop, P::Rook]),
+            ("Q+N+B", &[P::Queen, P::Knight, P::Bishop]),
+            ("Q+2N", &[P::Queen, P::Knight, P::Knight]),
+            ("K+R+2N", &[P::King, P::Rook, P::Knight, P::Knight]),
+            ("K+CH+N", &[P::King, P::Chancellor, P::Knight]),
+            ("K+2AR", &[P::King, P::Archbishop, P::Archbishop]),
+            ("K+2HA+B", &[P::King, P::Hawk, P::Hawk, P::Bishop]),
+            ("5HU", &[P::Huygen, P::Huygen, P::Huygen, P::Huygen, P::Huygen]),
+        ];
+
+        for (name, force) in catalog {
+            let mut pieces: Vec<(i64, i64, PieceType, PlayerColor)> = force
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| {
+                    let (x, y) = SPOTS[i % SPOTS.len()];
+                    (x, y, *pt, PlayerColor::White)
+                })
+                .collect();
+            pieces.push((13, 2, PieceType::King, PlayerColor::Black));
+            let game = create_test_game_with_pieces(&pieces);
+            assert!(
+                !evaluate_insufficient_material(&game),
+                "{name} vs bare king is matable per the site catalog but was judged a dead draw"
+            );
+        }
+    }
+
     // Insufficient Material (dead draw)
 
     #[test]
