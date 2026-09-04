@@ -132,6 +132,9 @@ impl StagedMoveGen {
         let is_in_check = Self::is_in_check(game);
         let tt_move = tt_move.map(|m| Self::reconstruct_castling_partner(game, m));
         let tt_valid = tt_move.is_some() && Self::is_pseudo_legal(game, &tt_move.unwrap());
+        // An invalid TT move must not linger: the later stages filter "the TT
+        // move" out of killers and quiets, so keeping it erases a real move.
+        let tt_move = if tt_valid { tt_move } else { None };
 
         // Set initial stage based on TT move availability
         // If TT move is valid, start at TT stage; otherwise skip to Init stage
