@@ -5324,6 +5324,11 @@ fn quiescence(
 
     searcher.hot.nodes += 1;
     searcher.hot.qnodes += 1;
+    // Qsearch consumes roughly half of all node counts, so without this check
+    // the 16k-node clear in negamax fires only when a boundary lands there.
+    if searcher.hot.nodes & SLIDER_CACHE_CLEAR_MASK == 0 {
+        game.spatial_indices.slider_cache.borrow_mut().clear();
+    }
 
     // Update seldepth
     if ply > searcher.hot.seldepth {
