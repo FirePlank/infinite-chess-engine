@@ -102,6 +102,20 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
 
     // Chess: an 8×8 board with a single king each and normal promotion.
     let is_8x8 = min_x == 1 && max_x == 8 && min_y == 1 && max_y == 8;
+    // The Chess evaluator indexes only orthodox pieces, so a promotion set that
+    // can create a fairy piece mid-search must keep the position generic.
+    let orthodox_promotions = game
+        .game_rules
+        .promotion_types
+        .as_deref()
+        .is_none_or(|types| {
+            types.iter().all(|t| {
+                matches!(
+                    t,
+                    PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight
+                )
+            })
+        });
     // The Chess evaluator's pawn buffer holds 16; a custom 8x8 position can
     // carry more, and overflowing it panics, so such positions stay generic.
     if is_8x8
@@ -109,6 +123,7 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         && w_royals == 1
         && b_royals == 1
         && w_pawns + b_pawns <= 16
+        && orthodox_promotions
         && game.white_promo_rank == 8
         && game.black_promo_rank == 1
     {
@@ -175,6 +190,11 @@ mod tests {
             self
         }
 
+        fn promotions(mut self, types: &[PieceType]) -> Self {
+            self.game.game_rules.promotion_types = Some(types.to_vec());
+            self
+        }
+
         fn win_conditions(mut self, white: WinCondition, black: WinCondition) -> Self {
             self.game.game_rules.white_win_condition = white;
             self.game.game_rules.black_win_condition = black;
@@ -225,6 +245,21 @@ mod tests {
             .put(4, 4, PieceType::Amazon, PlayerColor::White)
             .detect((1, 8, 1, 8));
         assert_eq!(kind, EvalKind::Generic);
+    }
+
+    #[test]
+    fn fairy_promotion_set_keeps_eight_by_eight_generic() {
+        use PieceType::*;
+        // Orthodox promotions (explicit or default) stay Chess; a chancellor
+        // promotion would put a piece the Chess evaluator cannot index on the board.
+        let orthodox = standard_army(Builder::new())
+            .promotions(&[Queen, Rook, Bishop, Knight])
+            .detect((1, 8, 1, 8));
+        assert_eq!(orthodox, EvalKind::Chess);
+        let fairy = standard_army(Builder::new())
+            .promotions(&[Queen, Chancellor])
+            .detect((1, 8, 1, 8));
+        assert_eq!(fairy, EvalKind::Generic);
     }
 
     #[test]
