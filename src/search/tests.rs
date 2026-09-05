@@ -463,6 +463,19 @@ fn test_evaluate_with_search() {
 }
 
 #[test]
+fn test_eval_kind_switch_resets_searcher_but_same_kind_keeps_it() {
+    use crate::evaluation::eval_kind::EvalKind;
+    let mut s = Searcher::new(1_000);
+    s.adopt_eval_kind(EvalKind::Generic);
+    s.history[0][0] = 5;
+    s.adopt_eval_kind(EvalKind::Generic);
+    assert_eq!(s.history[0][0], 5, "same kind must keep learned state");
+    s.adopt_eval_kind(EvalKind::Chess);
+    assert_eq!(s.history[0][0], 0, "a kind change must reset histories");
+    assert_eq!(s.last_eval_kind, Some(EvalKind::Chess));
+}
+
+#[test]
 fn test_tt_basic_operations() {
     let tt = LocalTranspositionTable::new(1);
 

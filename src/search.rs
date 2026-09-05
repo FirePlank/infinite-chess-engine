@@ -966,6 +966,8 @@ pub struct Searcher {
 
     // Depth fully completed in the current search
     pub completed_depth: usize,
+    /// Evaluator family the cached scores and histories were produced under.
+    pub last_eval_kind: Option<crate::evaluation::eval_kind::EvalKind>,
 
     // Silent mode - no info output
     pub silent: bool,
@@ -1135,6 +1137,7 @@ impl Searcher {
             seed: 0,
             rng: Prng::new(0),
             completed_depth: 0,
+            last_eval_kind: None,
             silent: false,
             thread_id: 0,
             helper_epoch: 0,
@@ -1414,6 +1417,16 @@ impl Searcher {
         for row in self.low_ply_history.iter_mut() {
             row.fill(97);
         }
+    }
+
+    /// Cached scores are only meaningful under the evaluator that produced them,
+    /// so a kind change between searches (a custom position, or a mid-game
+    /// re-detection) resets the table and histories instead of reusing them.
+    pub fn adopt_eval_kind(&mut self, kind: crate::evaluation::eval_kind::EvalKind) {
+        if self.last_eval_kind.is_some() && self.last_eval_kind != Some(kind) {
+            self.clear();
+        }
+        self.last_eval_kind = Some(kind);
     }
 
     /// Clears TT and resets all history tables to neutral values.
@@ -2847,6 +2860,7 @@ pub(crate) fn get_best_move_threaded(
 
         searcher.thread_id = thread_id;
 
+        searcher.adopt_eval_kind(game.eval_kind);
         searcher.new_search();
 
         // Update search parameters for this search
@@ -2899,6 +2913,7 @@ pub fn get_best_moves_multipv(
         // Get or create the persistent searcher
         let searcher = opt.get_or_insert_with(|| Searcher::new(max_time_ms));
 
+        searcher.adopt_eval_kind(game.eval_kind);
         searcher.new_search();
 
         // Update search parameters for this search
@@ -2974,6 +2989,7 @@ pub fn analyse_position(
         let searcher = opt.get_or_insert_with(|| Searcher::new(slice_ms));
 
         if fresh {
+            searcher.adopt_eval_kind(game.eval_kind);
             searcher.new_search();
         } else {
             // Light per-slice reset: clear only the counters/flags that are scoped to a
