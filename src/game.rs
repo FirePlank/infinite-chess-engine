@@ -3835,6 +3835,12 @@ impl GameState {
 
     pub fn setup_position_from_icn(&mut self, position_icn: &str) {
         self.board = Board::new();
+        // History and the move-rule limit are not part of a position; a reused
+        // state must come out identical to a freshly constructed one.
+        self.hash_stack.clear();
+        self.rep_hash_stack.clear();
+        self.move_history.clear();
+        self.game_rules.move_rule_limit = None;
         self.special_rights.clear();
         self.en_passant = None;
         self.turn = PlayerColor::White;
@@ -4278,6 +4284,25 @@ impl GameState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_reused_setup_matches_fresh_setup() {
+        use super::GameState;
+        let with_move = "w 0/100 1 (8;q|1;q) K1,1|k8,8|R4,4 4,4>4,5";
+        let bare = "w (8;q|1;q) K1,1|k8,8|R4,4";
+        let mut reused = GameState::new();
+        reused.setup_position_from_icn(with_move);
+        assert!(
+            !reused.hash_stack.is_empty() || !reused.move_history.is_empty(),
+            "precondition: the first setup must leave history behind"
+        );
+        reused.setup_position_from_icn(bare);
+        let mut fresh = GameState::new();
+        fresh.setup_position_from_icn(bare);
+        assert_eq!(reused.hash_stack.len(), fresh.hash_stack.len());
+        assert_eq!(reused.move_history.len(), fresh.move_history.len());
+        assert_eq!(reused.game_rules.move_rule_limit, fresh.game_rules.move_rule_limit);
+    }
+
     use super::*;
     /// Under a capture-based win condition there is no check to evade, so the
     /// royal may legally step onto an attacked square. Without this the engine

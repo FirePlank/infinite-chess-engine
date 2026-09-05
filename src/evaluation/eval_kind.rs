@@ -18,6 +18,8 @@ const OBSTOCEAN_MIN_FILL_PCT: i128 = 60;
 /// Most pawns a Pawn-Horde side may field (an 8-wide, 7-deep wall). Also keeps
 /// the horde's pawn list within the evaluator's fixed-capacity buffer.
 const PAWN_HORDE_MAX_PAWNS: i64 = 56;
+/// The Pawn Horde evaluator stores Black's army in a fixed 18-slot buffer.
+const PAWN_HORDE_MAX_BLACK_PIECES: u16 = 18;
 
 /// Percent of White's pieces that must be pawns for the horde evaluator to
 /// apply. The horde eval only understands a dominant pawn mass; once promotions
@@ -59,6 +61,7 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
     // White's orthodox composition is all the Pawn-Horde test needs; Black is
     // only required to be an orthodox army with a king (fairy_present + royals).
     let mut w_pawns: i64 = 0;
+    let mut b_pawns: i64 = 0;
     let mut w_officers: i64 = 0; // white Q/R/B/N
 
     for (_x, _y, piece) in game.board.iter_all_pieces() {
@@ -73,6 +76,8 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
                 PieceType::Pawn => {
                     if color == PlayerColor::White {
                         w_pawns += 1;
+                    } else {
+                        b_pawns += 1;
                     }
                 }
                 PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight => {
@@ -97,10 +102,13 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
 
     // Chess: an 8×8 board with a single king each and normal promotion.
     let is_8x8 = min_x == 1 && max_x == 8 && min_y == 1 && max_y == 8;
+    // The Chess evaluator's pawn buffer holds 16; a custom 8x8 position can
+    // carry more, and overflowing it panics, so such positions stay generic.
     if is_8x8
         && obstacle_count == 0
         && w_royals == 1
         && b_royals == 1
+        && w_pawns + b_pawns <= 16
         && game.white_promo_rank == 8
         && game.black_promo_rank == 1
     {
@@ -113,6 +121,7 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
     if w_royals == 0
         && (1..=PAWN_HORDE_MAX_PAWNS).contains(&w_pawns)
         && b_royals >= 1
+        && game.black_piece_count <= PAWN_HORDE_MAX_BLACK_PIECES
         && obstacle_count == 0
         && game.game_rules.black_win_condition == WinCondition::AllPiecesCaptured
     {
@@ -216,6 +225,31 @@ mod tests {
             .put(4, 4, PieceType::Amazon, PlayerColor::White)
             .detect((1, 8, 1, 8));
         assert_eq!(kind, EvalKind::Generic);
+    }
+
+    #[test]
+    fn eight_by_eight_with_more_than_sixteen_pawns_is_generic() {
+        // The Chess evaluator's pawn buffer holds 16 for both sides together.
+        let kind = standard_army(Builder::new())
+            .put(3, 4, PieceType::Pawn, PlayerColor::White)
+            .detect((1, 8, 1, 8));
+        assert_eq!(kind, EvalKind::Generic);
+    }
+
+    #[test]
+    fn horde_facing_an_oversized_black_army_is_generic() {
+        // Black's army must fit the Pawn Horde evaluator's 18-slot buffer; a king
+        // plus 18 rooks is 19 pieces and used to overflow it.
+        use PieceType::*;
+        const INF: i64 = 1_000_000_000_000_000;
+        let mut b = Builder::new()
+            .put(5, 8, King, PlayerColor::Black)
+            .win_conditions(WinCondition::Checkmate, WinCondition::AllPiecesCaptured);
+        for i in 0..18 {
+            b = b.put(i % 8 + 1, 9 + i / 8, Rook, PlayerColor::Black);
+        }
+        b = b.put(4, 2, Pawn, PlayerColor::White);
+        assert_eq!(b.detect((-INF, INF, -INF, INF)), EvalKind::Generic);
     }
 
     #[test]
