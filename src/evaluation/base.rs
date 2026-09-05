@@ -1986,7 +1986,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     PieceType::Knightrider,
                     cloud_avg_spread,
                     phase,
-                ) + evaluate_knightrider_reach(x, y, piece.color(), piece_list, phase)
+                ) + evaluate_knightrider_reach(x, y, piece.color(), &game.board, phase)
             }
             _ => 0,
         };

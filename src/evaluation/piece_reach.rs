@@ -1,6 +1,6 @@
 //! Per-piece reach metrics that mirror each fairy piece's movegen exactly:
 //! what its distinctive movement actually attacks, covers, or is blocked by.
-use crate::board::{Coordinate, Piece, PlayerColor};
+use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::search::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
 
@@ -207,7 +207,7 @@ pub(crate) fn evaluate_knightrider_reach(
     x: i64,
     y: i64,
     own: PlayerColor,
-    piece_list: &[(i64, i64, Piece)],
+    board: &Board,
     phase: i32,
 ) -> i32 {
     let taper =
@@ -216,7 +216,9 @@ pub(crate) fn evaluate_knightrider_reach(
     let mut best_k = [i64::MAX; 8];
     let mut best: [Option<Piece>; 8] = [None; 8];
 
-    for &(px, py, other) in piece_list {
+    // Every occupant stops a ray, as in movegen; pawns and neutrals are scored
+    // as blockers only, so the officer-calibrated credits below stay unchanged.
+    for (px, py, other) in board.iter() {
         let (rx, ry) = (px - x, py - y);
         let (dx, dy) = (rx.abs(), ry.abs());
 
@@ -247,7 +249,7 @@ pub(crate) fn evaluate_knightrider_reach(
             continue;
         };
         let ot = occupant.piece_type();
-        if ot.is_neutral_type() {
+        if ot.is_neutral_type() || ot == PieceType::Pawn {
             continue;
         }
         if occupant.color() == own {
@@ -289,4 +291,28 @@ pub(crate) fn evaluate_compound_leap_threats(
         &crate::attacks::KNIGHT_OFFSETS,
         COMPOUND_LEAP_DEFEND,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn white_rider_reach(icn: &str) -> i32 {
+        let mut g = GameState::new();
+        g.setup_position_from_icn(icn);
+        // Endgame phase so the open-ray token is live as well as the attack.
+        evaluate_knightrider_reach(0, 0, PlayerColor::White, &g.board, 0)
+    }
+
+    /// The rider's (2,1) ray meets the queen at (4,2) only via (2,1); any
+    /// occupant there stops the ray exactly as movegen does.
+    #[test]
+    fn test_knightrider_ray_is_blocked_by_pawns_and_neutrals() {
+        let open = white_rider_reach("w (8;q|1;q) K-10,-10|k20,20|NR0,0|q4,2");
+        for blocker in ["P2,1", "p2,1", "OB2,1", "VO2,1"] {
+            let icn = format!("w (8;q|1;q) K-10,-10|k20,20|NR0,0|q4,2|{blocker}");
+            let blocked = white_rider_reach(&icn);
+            assert!(blocked < open, "{blocker}: open {open}, blocked {blocked}");
+        }
+    }
 }
