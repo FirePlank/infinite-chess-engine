@@ -271,10 +271,6 @@ fn test_mate_score_detection() {
     assert!(!is_normal_mate, "Normal score should not be mate");
 }
 
-#[test]
-fn test_corrhist_mode_enum() {
-    assert!(CorrHistMode::PawnBased != CorrHistMode::NonPawnBased);
-}
 
 #[test]
 fn test_node_type_enum() {
@@ -608,40 +604,30 @@ fn test_format_pv_empty() {
     assert!(pv.is_empty() || !pv.is_empty());
 }
 
-#[test]
-fn test_set_corrhist_mode() {
-    let mut searcher = Box::new(Searcher::new(1000));
-    let game = GameState::new();
 
-    searcher.set_corrhist_mode(&game);
-    // Mode should be set (either PawnBased or NonPawnBased)
-    assert!(
-        searcher.corrhist_mode == CorrHistMode::PawnBased
-            || searcher.corrhist_mode == CorrHistMode::NonPawnBased
-    );
-}
 
 #[test]
-fn test_omega_variant_tag_resolves_to_no_variant() {
-    let mut searcher = Box::new(Searcher::new(1000));
+fn test_variant_tag_cannot_change_search_behaviour() {
+    // A bogus tag still parses to Classical and an unknown one to None, but the
+    // engine no longer branches on either, so neither can alter how it plays.
+    let mut omega = GameState::new();
+    omega.setup_position_from_icn("[Variant \"Omega\"] K5,1|k5,8");
+    assert_eq!(omega.variant, None);
 
-    let mut omega_game = GameState::new();
-    omega_game.setup_position_from_icn("[Variant \"Omega\"] K5,1|k5,8");
-    assert_eq!(omega_game.variant, None);
-    searcher.set_corrhist_mode(&omega_game);
-    assert_eq!(searcher.corrhist_mode, CorrHistMode::NonPawnBased);
+    let mut bogus = GameState::new();
+    bogus.setup_position_from_icn("[Variant \"not a real variant\"] K5,1|k5,8");
+    assert_eq!(bogus.variant, Some(crate::Variant::Classical));
 
-    let mut classical_game = GameState::new();
-    classical_game.setup_position_from_icn("[Variant \"Classical\"] K5,1|k5,8");
-    assert_eq!(classical_game.variant, Some(crate::Variant::Classical));
-    searcher.set_corrhist_mode(&classical_game);
-    assert_eq!(searcher.corrhist_mode, CorrHistMode::PawnBased);
+    let mut tagged = GameState::new();
+    tagged.setup_position_from_icn("[Variant \"Classical\"] K5,1|k5,8");
+    assert_eq!(tagged.variant, Some(crate::Variant::Classical));
 
-    let mut unknown_game = GameState::new();
-    unknown_game.setup_position_from_icn("[Variant \"not a real variant\"] K5,1|k5,8");
-    assert_eq!(unknown_game.variant, Some(crate::Variant::Classical));
-    searcher.set_corrhist_mode(&unknown_game);
-    assert_eq!(searcher.corrhist_mode, CorrHistMode::PawnBased);
+    // Same board, three different tags: identical evaluation either way.
+    let a = crate::evaluation::base::evaluate(&omega);
+    let b = crate::evaluation::base::evaluate(&bogus);
+    let c = crate::evaluation::base::evaluate(&tagged);
+    assert_eq!(a, b);
+    assert_eq!(b, c);
 }
 
 #[test]

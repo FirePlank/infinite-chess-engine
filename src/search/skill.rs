@@ -703,8 +703,6 @@ pub(crate) fn get_best_move_limited(
         searcher.new_search();
         searcher.silent = silent;
         searcher.hot.timer.reset();
-
-        searcher.set_corrhist_mode(game);
         searcher.move_rule_limit = game
             .game_rules
             .move_rule_limit
