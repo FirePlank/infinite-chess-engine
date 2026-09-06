@@ -532,6 +532,14 @@ impl StagedMoveGen {
                 .copied()
                 .unwrap_or(0);
             10 * victim_val - attacker_val + (cap_hist / 8)
+        } else if let Some(pt) = m.promotion {
+            // A quiet promotion has no victim, so the branch above never sees it
+            // and it sorted at 0, below every capture; price it by what it wins.
+            let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+            let promo_gain = game.get_piece_value(pt, m.piece.color()) - attacker_val;
+            let hist_idx = hash_move_dest(m);
+            let history_score = searcher.history[m.piece.piece_type() as usize][hist_idx];
+            10 * promo_gain - attacker_val + (history_score / 8)
         } else {
             0
         }
@@ -1188,6 +1196,23 @@ mod tests {
             .into_iter()
             .find(|m| m.from.x == from.0 && m.from.y == from.1 && m.to.x == to.0 && m.to.y == to.1)
             .unwrap()
+    }
+
+    #[test]
+    fn quiet_queen_promotion_orders_above_a_pawn_capture() {
+        // A quiet promotion has no victim on its target square; it must still
+        // sort by what it wins, not fall through to the zero score.
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P4,7|P1,4|p2,5");
+        let searcher = Searcher::new(1_000);
+        let promo = find_move(&game, (4, 7), (4, 8));
+        assert!(promo.promotion.is_some());
+        let pxp = find_move(&game, (1, 4), (2, 5));
+        let promo_score = StagedMoveGen::score_capture(&game, &searcher, &promo);
+        let pxp_score = StagedMoveGen::score_capture(&game, &searcher, &pxp);
+        assert!(
+            promo_score > pxp_score,
+            "quiet promotion {promo_score} must outrank PxP {pxp_score}"
+        );
     }
 
     #[test]
