@@ -1766,8 +1766,37 @@ impl Searcher {
                 let minor_idx = self.get_minor_index(game);
                 let minor_corr = self.minor_corrhist[color_idx][minor_idx];
 
-                // 45% pawn, 25% material, 30% minor (sum=100)
-                (pawn_corr * 45 + mat_corr * 25 + minor_corr * 30) / (CORRHIST_GRAIN * 100)
+                let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
+                let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
+
+                let mut cont_corr = 0;
+                if ply > 0
+                    && let Some(m) = self.move_history[ply - 1]
+                {
+                    let cur_pc = m.piece.piece_type() as usize;
+                    let cur_to = hash_coord_32(m.to.x, m.to.y);
+                    for &plies_ago in &[1usize, 3] {
+                        if ply > plies_ago
+                            && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
+                        {
+                            let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
+                            if prev_piece < 32 {
+                                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                cont_corr +=
+                                    self.cont_corrhist[prev_piece][prev_to_hash][cur_pc][cur_to];
+                            }
+                        }
+                    }
+                }
+
+                // Mirrors the NonPawnBased split with pawn in place of non-pawn:
+                // 35% pawn, 20% minor, 15% material, 15% last-move, 15% continuation.
+                (pawn_corr * 35
+                    + minor_corr * 20
+                    + mat_corr * 15
+                    + lastmove_corr * 15
+                    + cont_corr * 15)
+                    / (CORRHIST_GRAIN * 100)
             }
             CorrHistMode::NonPawnBased => {
                 // Non-pawn + Minor (with King context) + Material + Last-move + Continuation
@@ -1874,6 +1903,42 @@ impl Searcher {
                     + scaled_diff as i64 * weight as i64)
                     / CORRHIST_WEIGHT_SCALE as i64) as i32;
                 *minor_entry = (*minor_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+
+                let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
+                let lm_weight = weight.min(64);
+                let lm_entry = &mut self.lastmove_corrhist[lastmove_idx];
+                *lm_entry = ((*lm_entry as i64 * (CORRHIST_WEIGHT_SCALE - lm_weight) as i64
+                    + scaled_diff as i64 * lm_weight as i64)
+                    / CORRHIST_WEIGHT_SCALE as i64) as i32;
+                *lm_entry = (*lm_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+
+                if let Some(cur_m) = self.move_history.get(ply.wrapping_sub(1)).and_then(|&m| m) {
+                    let cur_pc = cur_m.piece.piece_type() as usize;
+                    let cur_to = hash_coord_32(cur_m.to.x, cur_m.to.y);
+                    let cont_weight = weight.min(128);
+                    for &plies_ago in &[1usize, 3] {
+                        if ply > plies_ago
+                            && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
+                        {
+                            let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
+                            if prev_piece < 32 {
+                                let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
+                                let entry = &mut self.cont_corrhist[prev_piece][prev_to_hash]
+                                    [cur_pc][cur_to];
+                                let w = if plies_ago == 1 {
+                                    cont_weight
+                                } else {
+                                    cont_weight / 2
+                                };
+                                *entry = ((*entry as i64 * (CORRHIST_WEIGHT_SCALE - w) as i64
+                                    + scaled_diff as i64 * w as i64)
+                                    / CORRHIST_WEIGHT_SCALE as i64)
+                                    as i32;
+                                *entry = (*entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
+                            }
+                        }
+                    }
+                }
             }
 
             CorrHistMode::NonPawnBased => {
