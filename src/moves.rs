@@ -931,13 +931,6 @@ pub fn get_quiescence_captures(
 ) {
     use crate::tiles::TILE_SIZE;
 
-    // Use get_quiescence_captures from evaluation/obstocean_search.rs when the variant is Obstocean.
-    if ctx.game_rules.variant == Some(crate::Variant::Obstocean) {
-        return crate::evaluation::variants::obstocean_search::get_quiescence_captures(
-            board, turn, ctx, out,
-        );
-    }
-
     out.clear();
 
     // BITBOARD: CTZ iteration for O(popcount) piece enumeration

@@ -883,7 +883,18 @@ impl StagedMoveGen {
                 indices: &game.spatial_indices,
                 enemy_king_pos: game.enemy_king_pos(),
             };
-            get_quiescence_captures(&game.board, game.turn, &ctx, &mut captures);
+            // Routed on the position-derived eval_kind, not the [Variant] tag, so an
+            // untagged obstacle board gets the same treatment a tagged one does.
+            if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean {
+                crate::evaluation::variants::obstocean_search::get_quiescence_captures(
+                    &game.board,
+                    game.turn,
+                    &ctx,
+                    &mut captures,
+                );
+            } else {
+                get_quiescence_captures(&game.board, game.turn, &ctx, &mut captures);
+            }
         }
 
         for m in captures {

@@ -4469,7 +4469,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Obstocean breakout: a pawn taking a neutral obstacle opens the line the
         // variant is built around, but the neutral victim makes it score as quiet.
         // Treated as tactical for pruning/reduction only; SEE still gates it.
-        let is_obstocean_breakout = game.variant == Some(crate::Variant::Obstocean)
+        // Position-derived: LMP already keyed on eval_kind, so the tag left an
+        // untagged obstacle board with the LMP rule but not this exemption.
+        let is_obstocean_breakout = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean
             && p_type == PieceType::Pawn
             && captured_type == Some(PieceType::Obstacle);
 
@@ -5639,7 +5641,16 @@ fn quiescence(
             indices: &game.spatial_indices,
             enemy_king_pos: game.enemy_king_pos(),
         };
-        get_quiescence_captures(&game.board, game.turn, &ctx, &mut tactical_moves);
+        if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean {
+            crate::evaluation::variants::obstocean_search::get_quiescence_captures(
+                &game.board,
+                game.turn,
+                &ctx,
+                &mut tactical_moves,
+            );
+        } else {
+            get_quiescence_captures(&game.board, game.turn, &ctx, &mut tactical_moves);
+        }
     }
 
     // Sort captures by MVV-LVA
@@ -5685,7 +5696,7 @@ fn quiescence(
         // A pawn capturing a neutral obstacle is Obstocean's defining line-opening
         // tactic, yet it scores as quiet. Exempt it from the quiet cutoff; the SEE and
         // delta prunes below still bound the node growth.
-        let is_obstocean_breakout = game.variant == Some(crate::Variant::Obstocean)
+        let is_obstocean_breakout = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean
             && m.piece.piece_type() == PieceType::Pawn
             && captured.is_some_and(|p| p.piece_type() == PieceType::Obstacle);
 
