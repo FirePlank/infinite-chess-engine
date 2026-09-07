@@ -5115,8 +5115,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Correction history only learns from quiet, out-of-check nodes whose score
-    // respects the bound relative to the static eval.
-    if !in_check {
+    // respects the bound relative to the static eval. An exclusion search is barred
+    // too: its score deliberately omits the best move, so it reads low against the
+    // static eval for a reason the correction keys cannot represent.
+    if !in_check && excluded_move.is_none() {
         let best_move_is_quiet = match best_move {
             Some(m) => {
                 // BITBOARD: Fast capture check (incl. en passant)
