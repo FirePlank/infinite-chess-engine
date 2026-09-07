@@ -341,7 +341,7 @@ use shared_tt::SharedTranspositionTable;
 
 mod ordering;
 use ordering::{
-    hash_coord_16, hash_coord_32, hash_move_dest, hash_move_from, sort_captures, sort_moves_root,
+    hash_coord_16, hash_move_dest, hash_move_from, sort_captures, sort_moves_root,
 };
 
 pub mod movegen;
@@ -986,10 +986,6 @@ pub struct Searcher {
     // 16384, so i16 is lossless and the search's hottest table stays at 25MB.
     pub cont_history: Box<[[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3]>,
 
-    // Continuation Correction History: [prev_piece_type][prev_to_hash][cur_piece_type][cur_to_hash]
-    // Used for evaluation correction (32*32*32*32*4 = 4MB)
-    pub cont_corrhist: Box<[[[[i32; 32]; 32]; 32]; 32]>,
-
     // MultiPV: moves to exclude from root search (for finding 2nd, 3rd, etc. best moves)
     // Stored as (from_x, from_y, to_x, to_y) tuples for fast comparison without cloning
     pub excluded_moves: Vec<(i64, i64, i64, i64)>,
@@ -1137,12 +1133,6 @@ impl Searcher {
                     vec![0i16; 3 * 2 * 2 * 32 * 16 * 16 * 16].into_boxed_slice(),
                 )
                     as *mut [[[[[[[i16; 16]; 16]; 16]; 32]; 2]; 2]; 3])
-            },
-            cont_corrhist: unsafe {
-                Box::from_raw(
-                    Box::into_raw(vec![0i32; 32 * 32 * 32 * 32].into_boxed_slice())
-                        as *mut [[[[i32; 32]; 32]; 32]; 32],
-                )
             },
             excluded_moves: Vec::new(),
             nonpawn_corrhist: unsafe {
@@ -1433,15 +1423,6 @@ impl Searcher {
             }
         }
 
-        // Reset continuation correction history
-        for p in 0..32 {
-            for t in 0..32 {
-                for p2 in 0..32 {
-                    self.cont_corrhist[p][t][p2].fill(0);
-                }
-            }
-        }
-
         // Reset correction histories
         for row in self.nonpawn_corrhist.iter_mut() {
             row.fill(0);
@@ -1711,7 +1692,6 @@ impl Searcher {
         &self,
         game: &GameState,
         raw_eval: i32,
-        ply: usize,
         prev_move_idx: usize,
     ) -> i32 {
         // PlayerColor is Neutral=0/White=1/Black=2. Map White->0, Black->1 so the
@@ -1737,35 +1717,11 @@ impl Searcher {
             let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
             let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
 
-            // Continuation correction (ss-2 and ss-4):
-            let mut cont_corr = 0;
-
-            if ply > 0
-                && let Some(m) = self.move_history[ply - 1]
-            {
-                let cur_pc = m.piece.piece_type() as usize;
-                let cur_to = hash_coord_32(m.to.x, m.to.y);
-
-                for &plies_ago in &[1usize, 3] {
-                    if ply > plies_ago
-                        && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
-                    {
-                        let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
-                        if prev_piece < 32 {
-                            let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                            cont_corr +=
-                                self.cont_corrhist[prev_piece][prev_to_hash][cur_pc][cur_to];
-                        }
-                    }
-                }
-            }
-
-            // Weights: NonPawn 35%, Minor 20%, Mat 15%, LastMove 15%, Cont 15% (sum=100)
-            (nonpawn_corr * 35
-                + minor_corr * 20
-                + mat_corr * 15
-                + lastmove_corr * 15
-                + cont_corr * 15)
+            // Continuation correction ablated.
+            (nonpawn_corr * 42
+                + minor_corr * 23
+                + mat_corr * 17
+                + lastmove_corr * 18)
                 / (CORRHIST_GRAIN * 100)
                 };
 
@@ -1780,7 +1736,6 @@ impl Searcher {
     pub fn update_correction_history(
         &mut self,
         game: &GameState,
-        ply: usize,
         depth: usize,
         static_eval: i32,
         search_score: i32,
@@ -1833,37 +1788,6 @@ impl Searcher {
                 + scaled_diff as i64 * lm_weight as i64)
                 / CORRHIST_WEIGHT_SCALE as i64) as i32;
             *lm_entry = (*lm_entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
-
-            // Update continuation correction history (ss-2 and ss-4)
-            if let Some(cur_m) = self.move_history.get(ply.wrapping_sub(1)).and_then(|&m| m) {
-                let cur_pc = cur_m.piece.piece_type() as usize;
-                let cur_to = hash_coord_32(cur_m.to.x, cur_m.to.y);
-                let cont_weight = weight.min(128);
-
-                for &plies_ago in &[1usize, 3] {
-                    if ply > plies_ago
-                        && let Some(prev_move) = self.move_history[ply - plies_ago - 1]
-                    {
-                        let prev_piece = self.moved_piece_history[ply - plies_ago - 1] as usize;
-                        if prev_piece < 32 {
-                            let prev_to_hash = hash_coord_32(prev_move.to.x, prev_move.to.y);
-                            let entry = &mut self.cont_corrhist[prev_piece][prev_to_hash]
-                                [cur_pc][cur_to];
-
-                            let w = if plies_ago == 1 {
-                                cont_weight
-                            } else {
-                                cont_weight / 2
-                            };
-                            *entry = ((*entry as i64 * (CORRHIST_WEIGHT_SCALE - w) as i64
-                                + scaled_diff as i64 * w as i64)
-                                / CORRHIST_WEIGHT_SCALE as i64)
-                                as i32;
-                            *entry = (*entry).clamp(-CORRHIST_LIMIT, CORRHIST_LIMIT);
-                        }
-                    }
-                }
-            }
     }
 
     /// Format a score (cp or mate) as a string
@@ -2259,9 +2183,9 @@ fn search_with_searcher(
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
         #[cfg(feature = "nnue")]
-        let score = searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0, 0);
+        let score = searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0);
         #[cfg(not(feature = "nnue"))]
-        let score = searcher.adjusted_eval(game, evaluate(game), 0, 0);
+        let score = searcher.adjusted_eval(game, evaluate(game), 0);
         return Some((single, score));
     }
 
@@ -3039,9 +2963,9 @@ pub(crate) fn get_best_moves_multipv_impl(
             lines: vec![PVLine {
                 mv: single,
                 #[cfg(feature = "nnue")]
-                score: searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0, 0),
+                score: searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0),
                 #[cfg(not(feature = "nnue"))]
-                score: searcher.adjusted_eval(game, evaluate(game), 0, 0),
+                score: searcher.adjusted_eval(game, evaluate(game), 0),
                 depth: 0,
                 pv: vec![single],
             }],
@@ -3703,14 +3627,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             0
         };
         #[cfg(feature = "nnue")]
-        return searcher.adjusted_eval(
-            game,
-            evaluate(game, searcher.nnue_at(ply)),
-            ply,
-            prev_move_idx,
-        );
+        return searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(ply)), prev_move_idx);
         #[cfg(not(feature = "nnue"))]
-        return searcher.adjusted_eval(game, evaluate(game), ply, prev_move_idx);
+        return searcher.adjusted_eval(game, evaluate(game), prev_move_idx);
     }
 
     // Check if we have an upcoming move that draws by repetition
@@ -3885,7 +3804,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             );
         }
 
-        let adjusted = searcher.adjusted_eval(game, raw, ply, prev_move_idx);
+        let adjusted = searcher.adjusted_eval(game, raw, prev_move_idx);
         (adjusted, raw)
     };
 
@@ -5212,7 +5131,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if best_move_is_quiet && should_update {
             searcher.update_correction_history(
                 game,
-                ply,
                 depth,
                 raw_eval,
                 best_score,
@@ -5372,7 +5290,7 @@ fn quiescence(
                     unadjusted_static_eval = evaluate(game);
                 }
             }
-            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
+            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, prev_move_idx);
 
             // ttValue can be used as a better position evaluation
             if let Some(tt_s) = tt_value
@@ -5397,7 +5315,7 @@ fn quiescence(
             {
                 unadjusted_static_eval = evaluate(game);
             }
-            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, ply, prev_move_idx);
+            best_value = searcher.adjusted_eval(game, unadjusted_static_eval, prev_move_idx);
         }
 
         // Stand pat logic
@@ -5675,7 +5593,6 @@ fn quiescence(
 
         searcher.update_correction_history(
             game,
-            ply,
             0, // depth 0 for QSearch
             unadjusted_static_eval,
             best_value,

@@ -639,7 +639,7 @@ fn test_adjusted_eval() {
     game.material_hash = 11111;
 
     let raw_eval = 100;
-    let adjusted = searcher.adjusted_eval(&game, raw_eval, 0, 0);
+    let adjusted = searcher.adjusted_eval(&game, raw_eval, 0);
     // Adjusted eval should be within reasonable bounds of raw
     assert!(adjusted.abs() < raw_eval.abs() + 1000);
 }
