@@ -5593,7 +5593,15 @@ fn quiescence(
 
     // Learning is relative to the static eval, so it needs a real one: tactical_check
     // nodes leave the sentinel behind instead.
-    if !tactical_check {
+    //
+    // Only an obstacle board learns here. Its quiescence generator is widened to
+    // include the quiet pawn-takes-obstacle breakout, so quiescence there resolves
+    // position and the gap is real signal. Everywhere else the gap is the tactical
+    // swing quiescence just resolved, which the correction keys (material, non-pawn,
+    // minor structure) cannot identify, so it aliases as noise: measured mean |diff|
+    // 127cp here against 33cp in the main search, over 64% of all updates.
+    let widened_qsearch = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean;
+    if !tactical_check && widened_qsearch {
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
             from_hash ^ to_hash

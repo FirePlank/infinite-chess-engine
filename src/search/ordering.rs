@@ -256,14 +256,6 @@ pub fn hash_move_from(m: &Move) -> usize {
     ((h ^ (h >> 32)) & 0xFF) as usize
 }
 
-/// Hash coordinate to 32-size index (for continuation history)
-#[inline]
-pub fn hash_coord_32(x: i64, y: i64) -> usize {
-    let h = (x as u64).wrapping_mul(0x517cc1b727220a95)
-        ^ (y as u64).wrapping_mul(0x9e3779b185ebca87).rotate_left(32);
-    ((h ^ (h >> 32)) & 0x1F) as usize
-}
-
 /// Continuation-history coordinate hash. Deliberately narrower than
 /// `hash_coord_32`: the extra aliasing generalises across regions of an
 /// unbounded board, and it keeps the table small enough to stay cached.
@@ -311,12 +303,6 @@ mod tests {
         );
         let hash = hash_move_dest(&m);
         assert!(hash < 256);
-    }
-
-    #[test]
-    fn test_hash_coord_32() {
-        let hash = hash_coord_32(1000, -2000);
-        assert!(hash < 32);
     }
 
     #[test]
