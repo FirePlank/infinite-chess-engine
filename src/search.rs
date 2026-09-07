@@ -1699,7 +1699,7 @@ impl Searcher {
         let color_idx = (game.turn as usize).saturating_sub(1);
 
         let total_correction = {
-            // Non-pawn + Minor (with King context) + Material + Last-move + Continuation.
+            // Non-pawn + Minor (with king context) + Material + Last-move.
             let nonpawn_hash = if color_idx == 0 {
                 game.white_nonpawn_hash
             } else {
@@ -1717,13 +1717,12 @@ impl Searcher {
             let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
             let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
 
-            // Continuation correction ablated.
             (nonpawn_corr * 42
                 + minor_corr * 23
                 + mat_corr * 17
                 + lastmove_corr * 18)
                 / (CORRHIST_GRAIN * 100)
-                };
+        };
 
         let corrected = raw_eval + total_correction;
         corrected.clamp(-MATE_SCORE + 1, MATE_SCORE - 1)
@@ -1754,7 +1753,7 @@ impl Searcher {
         let weight = ((depth * depth + 2 * depth + 1) as i32).clamp(1, 128);
         let scaled_diff = diff * CORRHIST_GRAIN;
 
-            // Update non-pawn + material + minor + last-move + continuation.
+            // Update non-pawn + material + minor + last-move.
             let nonpawn_hash = if color_idx == 0 {
                 game.white_nonpawn_hash
             } else {
