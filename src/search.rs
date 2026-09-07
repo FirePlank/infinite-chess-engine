@@ -1717,7 +1717,18 @@ impl Searcher {
             let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
             let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
 
-            (nonpawn_corr * 42
+            // The opponent's non-pawn structure is separate information, and its
+            // slot already holds corrections learned with that side to move, so it
+            // is negated to reach this mover's perspective.
+            let opp_hash = if color_idx == 0 {
+                game.black_nonpawn_hash
+            } else {
+                game.white_nonpawn_hash
+            };
+            let opp_corr = -self.nonpawn_corrhist[1 - color_idx][(opp_hash & CORRHIST_MASK) as usize];
+
+            (nonpawn_corr * 34
+                + opp_corr * 8
                 + minor_corr * 23
                 + mat_corr * 17
                 + lastmove_corr * 18)
