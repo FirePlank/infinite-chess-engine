@@ -318,6 +318,8 @@ pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
 pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
 pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
 pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
+/// Counterplay units at which the weaker side is considered fully able to resist.
+pub const COMPLEXITY_RESIST_FULL: i32 = MAX_PHASE / 2;
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
@@ -696,6 +698,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
     // Single-Pass Collection and Scoring
     let mut phase = 0; // decreases with fewer pieces
+    // Counterplay units: like phase, but heavy pieces count double because a queen
+    // can harass forever on an unbounded board where four knights cannot.
+    let mut white_cp = 0;
+    let mut black_cp = 0;
     let mut white_undeveloped = 0;
     let mut black_undeveloped = 0;
     let mut white_bishops = 0;
@@ -966,7 +972,14 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 }
 
                                 // 1. Phase
-                                phase += get_piece_phase(pt);
+                                let pp = get_piece_phase(pt);
+                                phase += pp;
+                                let cp = if pp >= 4 { pp * 2 } else { pp };
+                                if is_white {
+                                    white_cp += cp;
+                                } else {
+                                    black_cp += cp;
+                                }
 
                                 // 2. Piece Collection (Optimized categorization)
                                 if pt == PieceType::Pawn {
@@ -1655,7 +1668,15 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
     // Damp the whole score by material complexity: the same advantage is worth
     // less with more resistance left, and trading it away raises the scaled score.
-    let excess = (phase - MAX_PHASE).clamp(0, complexity_excess_max());
+    let mut excess = (phase - MAX_PHASE).clamp(0, complexity_excess_max());
+    // Resistance is what the WEAKER side can still generate, so a stripped defender
+    // damps nothing however much the winner piles up. Saturates at half a starting
+    // army, leaving every position where both sides are still armed untouched.
+    let weak_cp = white_cp.min(black_cp);
+    if weak_cp < COMPLEXITY_RESIST_FULL {
+        let resist = weak_cp * weak_cp * 1024 / (COMPLEXITY_RESIST_FULL * COMPLEXITY_RESIST_FULL);
+        excess = excess * resist / 1024;
+    }
     if excess > 0 {
         let scaled = score * (1024 - complexity_damp() * excess) / 1024;
         tracer.record("Complexity scale", scaled - score, 0);
