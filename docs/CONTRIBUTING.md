@@ -192,6 +192,17 @@ Understanding the codebase:
 
 ---
 
+## Things to Know Before Proposing a Change
+
+Measured, not opinions - re-testing needs new evidence:
+
+- Derive behavior from the position, never the `[Variant]` tag.
+- Narrowing history tables tends to win; widening tends to lose.
+- Move ordering is near its practical ceiling (~91% first-move cutoff rate).
+- Eval-term tweaks are extremely SPRT-fragile.
+
+---
+
 ## Common Tasks
 
 ### Adding a New Evaluation Term

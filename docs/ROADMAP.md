@@ -8,14 +8,15 @@ This document outlines the high-level goals, planned features, and known technic
 
 ## Priority 1: Parameter Fine-tuning
 
-The single biggest opportunity for strength gain is fine-tuning the engine's parameters. Currently, almost all values in `src/search/params.rs`, `src/search.rs`, and `src/evaluation/base.rs` are rough estimates or hand-picked defaults.
+Most of the engine's parameters have already been bracketed by SPRT (razoring, NMP, RFP, LMR, IIR,
+late-move pruning, threat weights, correction-history mix) and piece values have had an SPSA pass.
+What's still open:
 
 ### The Plan
-1.  **Optimization of SPSA Tuner**:
-    - We have an SPSA tuner (`src/bin/spsa.rs`) that runs match-based self-play from the CLI, but it needs large-scale testing time to converge cleanly on stronger parameter sets.
-2.  **Hand-tuning via SPRT**:
-    - **Alternative**: Contributors can hand-tune the most relevant parameters (e.g., piece values, evaluation weights, LMR reductions) and verify them using the SPRT test suite.
-    - This allows for quick gains without too much effort.
+1.  **SPSA on search parameters**: The tuner (`src/bin/spsa.rs`) works, but the ~49 search parameters
+    have only ever been hand-bracketed one at a time; a full SPSA pass needs a long uninterrupted run.
+2.  **Joint tuning**: every parameter so far was bracketed against a fixed baseline, so interactions
+    between them are unexplored.
     - See `sprt/README.md` for how to run these tests.
 
 ### Relevant Files
@@ -54,4 +55,4 @@ If you are looking to contribute but aren't ready to tackle the big items above,
 
 ## Backlog Ideas
 
-- **NNUE**: Explore Neural Network evaluation for infinite chess.
+- **Joint parameter tuning**: see Priority 1.
