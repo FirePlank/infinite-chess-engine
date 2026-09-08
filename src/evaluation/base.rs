@@ -319,6 +319,11 @@ pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
 pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
 /// Counterplay units at which the weaker side is considered fully able to resist.
 pub const COMPLEXITY_RESIST_FULL: i32 = MAX_PHASE / 2;
+/// Pawn-rank spread bracketing the own-king tropism term. Set above Space_Classic's
+/// span of 27, which tested -42.5 Elo at a partial weight, so only a board as spread
+/// as Space strands material far enough from its king for the term to read true.
+pub const SPREAD_GATE_LO: i64 = 30;
+pub const SPREAD_GATE_HI: i64 = 34;
 /// Only pawns this close to promoting are worth the uncatchable scan.
 pub const UNSTOPPABLE_MAX_DIST: i64 = 5;
 pub const DEFAULT_UNSTOPPABLE_PASSER_BONUS: i32 = 400;
@@ -772,6 +777,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
     let mut w_attacking_tropism: i32 = 0;
     let mut b_attacking_tropism: i32 = 0;
+    let mut w_defensive_tropism: i32 = 0;
+    let mut b_defensive_tropism: i32 = 0;
+    // Pawn rank spread, the gate for own-king tropism. Pawns step one rank at a
+    // time, so unlike piece placement this stays put across a search tree.
+    let mut pawn_min_y: i64 = i64::MAX;
+    let mut pawn_max_y: i64 = i64::MIN;
 
     let mut white_royal_tropisms: SmallVec<[_; 1]> = game
         .white_royals
@@ -990,6 +1001,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                                 // 2. Piece Collection (Optimized categorization)
                                 if pt == PieceType::Pawn {
+                                    pawn_min_y = pawn_min_y.min(y);
+                                    pawn_max_y = pawn_max_y.max(y);
                                     if is_white {
                                         if y < w_promo {
                                             white_pawns.push((x, y));
@@ -1417,6 +1430,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             king.tropism_addend = compute_tropism_addend(total_effective_units);
                         }
 
+                        // Hoisted above the loop so a compact board, where this term
+                        // is off, does not pay to compute a value it discards.
+                        let spread = spread_gate(pawn_min_y, pawn_max_y);
+
                         // Accumulate piece-to-king tropism using the finalized addends.
                         for &(px, py, ppiece) in piece_list.iter() {
                             let ppt = ppiece.piece_type();
@@ -1434,11 +1451,31 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     w_attacking_tropism +=
                                         tropism_contribution(piece_val, d, bk.tropism_addend);
                                 }
+                                if spread > 0 {
+                                    for wk in &white_royal_tropisms {
+                                        let d = (px - wk.x).abs().max((py - wk.y).abs());
+                                        w_defensive_tropism += tropism_contribution(
+                                            piece_val.min(350),
+                                            d,
+                                            wk.tropism_addend,
+                                        );
+                                    }
+                                }
                             } else {
                                 for wk in &white_royal_tropisms {
                                     let d = (px - wk.x).abs().max((py - wk.y).abs());
                                     b_attacking_tropism +=
                                         tropism_contribution(piece_val, d, wk.tropism_addend);
+                                }
+                                if spread > 0 {
+                                    for bk in &black_royal_tropisms {
+                                        let d = (px - bk.x).abs().max((py - bk.y).abs());
+                                        b_defensive_tropism += tropism_contribution(
+                                            piece_val.min(350),
+                                            d,
+                                            bk.tropism_addend,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1626,6 +1663,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         // per-side percentage, so the style composes into it: weak
                         // levels crowd their own king instead of the enemy's.
                         let gt_att_mult = taper(180, 360);
+                        let gt_def_mult = taper(120, 60);
                         let w_att_scale = style.attack(match game.game_rules.white_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
@@ -1634,10 +1672,15 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
                         });
+                        // Off on a compact board, where every piece already sits near
+                        // its king and the term was a wash that cost 7 Elo to carry.
+                        let def_scale = style.defense(100) * spread / 100;
 
                         // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
-                        let w_gt = w_attacking_tropism * gt_att_mult * w_att_scale / 10000;
-                        let b_gt = b_attacking_tropism * gt_att_mult * b_att_scale / 10000;
+                        let w_gt = w_attacking_tropism * gt_att_mult * w_att_scale / 10000
+                            + w_defensive_tropism * gt_def_mult * def_scale / 10000;
+                        let b_gt = b_attacking_tropism * gt_att_mult * b_att_scale / 10000
+                            + b_defensive_tropism * gt_def_mult * def_scale / 10000;
 
                         tracer.record("Global Tropism", w_gt, b_gt);
                         score += w_gt - b_gt;
@@ -2205,6 +2248,23 @@ fn slider_threat_bonus(end: Option<(i64, u8)>, own: PlayerColor, piece_val: i32)
 #[inline(always)]
 fn saturating_dist_i32(d: i64) -> i32 {
     d.min(i32::MAX as i64) as i32
+}
+
+/// Own-king tropism weight from the pawn rank spread, 0..=100. A compact board
+/// keeps every piece near its king, so the term carries no information there.
+#[inline]
+fn spread_gate(pawn_min_y: i64, pawn_max_y: i64) -> i32 {
+    if pawn_max_y < pawn_min_y {
+        return 0;
+    }
+    let span = pawn_max_y - pawn_min_y;
+    if span <= SPREAD_GATE_LO {
+        0
+    } else if span >= SPREAD_GATE_HI {
+        100
+    } else {
+        ((span - SPREAD_GATE_LO) * 100 / (SPREAD_GATE_HI - SPREAD_GATE_LO)) as i32
+    }
 }
 
 /// One piece's king-tropism contribution: `numerator / (chebyshev_dist + addend)`.
