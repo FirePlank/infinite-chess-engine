@@ -211,6 +211,22 @@ enum Commands {
     },
 }
 
+/// Whether a child died because the console Ctrl+C reached it. Windows delivers
+/// CTRL_C_EVENT to every process on the console, and the engine installs no
+/// handler of its own, so it dies before this process's handler thread has run.
+fn exited_by_console_interrupt(status: &std::process::ExitStatus) -> bool {
+    #[cfg(windows)]
+    {
+        // STATUS_CONTROL_C_EXIT, which `code()` hands back as a negative i32.
+        matches!(status.code(), Some(c) if c as u32 == 0xC000_013A)
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal() == Some(2) // SIGINT
+    }
+}
+
 /// A persistent engine process for one game. Reusing it across every move is what
 /// real play does: the TT, history and correction tables stay warm, and the ~50ms
 /// Windows process spawn is paid once per game instead of once per move.
@@ -242,6 +258,24 @@ impl ServeEngine {
             stdin,
             stdout,
         })
+    }
+
+    /// Reap the child after a failed request: a Ctrl+C exit code proves the run
+    /// was cancelled, not that the engine crashed. USER_STOP cannot say yet, as
+    /// the child dies before `ctrlc`'s handler thread is scheduled.
+    fn died_by_interrupt(&mut self) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return exited_by_console_interrupt(&status),
+                // Still alive: the pipe broke for some other reason, so only wait
+                // out the window a dying child would need, never indefinitely.
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                _ => return false,
+            }
+        }
     }
 
     fn request(&mut self, req: &ServeRequest) -> std::io::Result<ServeResponse> {
@@ -1582,17 +1616,28 @@ fn play_game(
             };
 
             let round_trip = Instant::now();
-            match engine.request(&req) {
+            // Bound the borrow before `died_by_interrupt` needs `engine` again.
+            let response = engine.request(&req);
+            match response {
                 // Charge everything the engine itself did (parse, replay, search),
                 // not the one-time process spawn that already happened before this.
                 Ok(resp) => (resp.bestmove, resp.score, resp.panic, None, resp.elapsed_ms),
-                Err(e) => (
-                    None,
-                    None,
-                    None,
-                    Some(e.to_string()),
-                    round_trip.elapsed().as_millis() as u64,
-                ),
+                Err(e) => {
+                    // Ctrl+C kills the engine child before this process's handler
+                    // thread sets USER_STOP, so the closed pipe used to be read as
+                    // a crash. The child's exit code settles which it was.
+                    if engine.died_by_interrupt() {
+                        USER_STOP.store(true, Ordering::SeqCst);
+                        STOP.store(true, Ordering::SeqCst);
+                    }
+                    (
+                        None,
+                        None,
+                        None,
+                        Some(e.to_string()),
+                        round_trip.elapsed().as_millis() as u64,
+                    )
+                }
             }
         } else {
             // Legacy path for baselines built before `serve` existed: one process
@@ -1640,6 +1685,14 @@ fn play_game(
                 .unwrap_or_else(|e| panic!("Failed to execute engine binary {}: {}", bin, e));
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Same Ctrl+C race as the serve path: the console kills this child
+            // before the handler thread runs, so its exit code is what tells a
+            // cancellation apart from a crash.
+            if exited_by_console_interrupt(&output.status) {
+                USER_STOP.store(true, Ordering::SeqCst);
+                STOP.store(true, Ordering::SeqCst);
+            }
 
             let crash = (!(output.status.success() || STOP.load(Ordering::SeqCst))).then(|| {
                 format!(
@@ -2216,6 +2269,13 @@ static ABORT: OnceLock<AbortReason> = OnceLock::new();
 /// Set while a redraw-in-place view owns the bottom of the screen, so the panic
 /// hook knows whether printing directly would corrupt it.
 static LIVE_VIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Terminations meaning something broke, not that a side lost. The run is void
+/// either way, so a fault must never reach the record: scored as a loss it
+/// resurfaces later as an ordinary game with a puzzling result.
+fn is_fault_reason(reason: &str) -> bool {
+    matches!(reason, "engine failure" | "illegal move")
+}
 
 /// Record the first fatal cause and signal every worker to wind down.
 fn abort_run(reason: AbortReason) {
@@ -3589,6 +3649,12 @@ fn main() {
                         continue;
                     }
 
+                    // The abort report carries the fault; scoring it here, or
+                    // leaving it in the games file, only fakes a game result.
+                    if is_fault_reason(&outcome.termination_reason) {
+                        continue;
+                    }
+
                     if outcome.termination_reason == "timeout" {
                         stats.timeout_losses += 1;
                         if outcome.new_engine_timed_out {
@@ -3643,9 +3709,10 @@ fn main() {
             // Surface a worker panic that the channel closing would otherwise hide.
             let producer_panicked = producer.join().is_err();
 
-            if !USER_STOP.load(Ordering::SeqCst)
-                && let Some(reason) = ABORT.get()
-            {
+            // `abort_run` already refuses to record once USER_STOP is set, so a
+            // reason here always pre-dates the stop. Gating on USER_STOP too let
+            // a Ctrl+C after a real fault swallow it, log and all.
+            if let Some(reason) = ABORT.get() {
                 // Persist whatever was played, so an abort doesn't cost the games.
                 if let Some(ref path) = games_path {
                     save_games_file(path, &game_logs);
@@ -4026,6 +4093,33 @@ fn main() {
 #[cfg(test)]
 mod pentanomial_tests {
     use super::*;
+
+    /// A console Ctrl+C must not read as a crash: the engine child dies with
+    /// STATUS_CONTROL_C_EXIT (measured 0xC000013A), which is how the harness
+    /// tells cancellation apart from a real fault.
+    #[test]
+    #[cfg(windows)]
+    fn console_interrupt_exit_code_is_not_a_crash() {
+        use std::os::windows::process::ExitStatusExt;
+        let ctrl_c = std::process::ExitStatus::from_raw(0xC000_013A);
+        assert!(exited_by_console_interrupt(&ctrl_c));
+
+        for other in [0u32, 1, 101, 0xC000_0005] {
+            let status = std::process::ExitStatus::from_raw(other);
+            assert!(
+                !exited_by_console_interrupt(&status),
+                "exit code {other:#x} is not a Ctrl+C"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn console_interrupt_exit_code_is_not_a_crash() {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(exited_by_console_interrupt(&std::process::ExitStatus::from_raw(2)));
+        assert!(!exited_by_console_interrupt(&std::process::ExitStatus::from_raw(0)));
+    }
 
     // Reference values from fastchess app/tests/sprt_test.cpp (logistic model).
     // Stats(ll, ld, wl, dd, wd, ww) → PentaCounts fields.
