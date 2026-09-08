@@ -320,6 +320,14 @@ pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
 pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
 /// Counterplay units at which the weaker side is considered fully able to resist.
 pub const COMPLEXITY_RESIST_FULL: i32 = MAX_PHASE / 2;
+/// Only pawns this close to promoting are worth the uncatchable scan.
+pub const UNSTOPPABLE_MAX_DIST: i64 = 5;
+pub const DEFAULT_UNSTOPPABLE_PASSER_BONUS: i32 = 400;
+pub const DEFAULT_UNSTOPPABLE_PASSER_DECAY: i32 = 60;
+#[inline]
+fn unstoppable_passer_bonus() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_BONUS }
+#[inline]
+fn unstoppable_passer_decay() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_DECAY }
 pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
 pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
 pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
@@ -3587,6 +3595,53 @@ fn compute_pawn_core<T: EvaluationTracer>(
 /// Scores passed pawns live (never cached): king distances, blockers and the
 /// promotion path change every move and must stay current for conversion play.
 #[allow(clippy::too_many_arguments)]
+/// Chebyshev squares an enemy piece covers per move when racing to a promotion
+/// square. `None` means a slider or rider, which crosses arbitrary distance and so
+/// is never outrun.
+fn chase_reach(pt: PieceType) -> Option<i64> {
+    match pt {
+        PieceType::King | PieceType::Guard => Some(1),
+        PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => Some(2),
+        PieceType::Zebra | PieceType::Camel => Some(3),
+        PieceType::Giraffe => Some(4),
+        // Pawns cannot leave their file to catch a passer on another one.
+        PieceType::Pawn | PieceType::Obstacle | PieceType::Void => Some(0),
+        // Everything else slides or rides: treat as uncatchable-by-distance.
+        _ => None,
+    }
+}
+
+/// Can the side to promote get there before anything reaches the promotion square?
+/// Conservative: a single enemy slider anywhere means no, since it can usually
+/// intercept the file in one move.
+fn passer_is_unstoppable(
+    game: &GameState,
+    promo_sq: (i64, i64),
+    moves_to_promo: i64,
+    defender: PlayerColor,
+) -> bool {
+    if moves_to_promo <= 0 {
+        return false;
+    }
+    for (x, y, pc) in game.board.iter() {
+        if pc.color() != defender {
+            continue;
+        }
+        let Some(reach) = chase_reach(pc.piece_type()) else {
+            return false;
+        };
+        if reach == 0 {
+            continue;
+        }
+        let d = (x - promo_sq.0).abs().max((y - promo_sq.1).abs());
+        // Ceiling division: moves this piece needs to reach the promotion square.
+        if (d + reach - 1) / reach <= moves_to_promo {
+            return false;
+        }
+    }
+    true
+}
+
 fn score_passed_pawns<T: EvaluationTracer>(
     game: &GameState,
     phase: i32,
@@ -3663,7 +3718,17 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
         let base_bonus =
             passed_pawn_adv_bonus()[can_advance as usize][safe_advance as usize][rel_rank];
-        w_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+        // A pawn nothing can catch is a queen, not a bonus; the graded terms above
+        // top out far below that and the search needs ~75x its match budget to see it.
+        let unstoppable = dist_to_promo <= UNSTOPPABLE_MAX_DIST
+            && passer_is_unstoppable(game, (wx, w_promo), dist_to_promo, PlayerColor::Black);
+        let unstoppable_bonus = if unstoppable {
+            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
+        } else {
+            0
+        };
+        w_passed_score +=
+            base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus + unstoppable_bonus;
     }
 
     for &(bx, by) in b_passed {
@@ -3721,7 +3786,15 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
         let base_bonus =
             passed_pawn_adv_bonus()[can_advance as usize][safe_advance as usize][rel_rank];
-        b_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus;
+        let unstoppable = dist_to_promo <= UNSTOPPABLE_MAX_DIST
+            && passer_is_unstoppable(game, (bx, b_promo), dist_to_promo, PlayerColor::White);
+        let unstoppable_bonus = if unstoppable {
+            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
+        } else {
+            0
+        };
+        b_passed_score +=
+            base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus + unstoppable_bonus;
     }
 
     if tracer.is_active() {
