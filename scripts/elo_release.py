@@ -6,6 +6,9 @@ SPRT-reported Elo, scales it to a whole-engine estimate over the 17 canonical
 site variants, and cuts a minor bump when the net accumulated gain crosses a
 threshold. Major bumps require the explicit --force-major option.
 
+A `[skip-release]` subject stops a push build, so the bot's own bump commit
+cannot re-trigger one; --force-major overrides it.
+
 Bump rule:
   * --force-major                                      -> (X+1).0.0
   * net Elo since last release tag >= MINOR_THRESHOLD  -> X.(Y+1).0
@@ -180,7 +183,11 @@ def main() -> int:
     cargo = root / "Cargo.toml"
     major, minor, patch = read_cargo_version(cargo)
 
-    if SKIP_TOKEN in run(["git", "log", "-1", "--format=%B"], cwd=root):
+    # The token only exists to stop the bot's own bump commit from re-triggering
+    # a push build. A manual --force-major dispatch is deliberate, so it wins.
+    if not args.force_major and SKIP_TOKEN in run(
+        ["git", "log", "-1", "--format=%B"], cwd=root
+    ):
         print(f"HEAD carries {SKIP_TOKEN}; skipping.")
         emit_output("release", "false")
         return 0
