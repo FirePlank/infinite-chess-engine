@@ -13,6 +13,156 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 
+## v4.0.0 (2026-09-08)
+Commit: `4285d73b8f8e62f876647cc1abe0860426eccf4e` • [compare to v3.7.0](https://github.com/FirePlank/infinite-chess-engine/compare/08ce10a57db8dc58976f32dc2a3cd33bb647335f...4285d73b8f8e62f876647cc1abe0860426eccf4e)
+
+**It is about 21 Elo better than v3.7.0, and about 105 Elo better than the v3.0.0 baseline.**
+
+### Added
+- A square-rule term for a passer nothing can catch: reach is computed per piece type, and any enemy slider or rider silences it since those intercept a file in one move. One Knightline position had scored a runaway pawn as a 300cp passer, taking 75x the match budget to resolve by search
+- A test asserting every configuration the site's practice mode lists as matable is never scored as a draw
+
+### Changed
+- The move-time allocator sizes its horizon from the corpus's real game length (median 224 plies, not the ~50-move chess figure it assumed), spending 1.23x more through the opening and middlegame and holding increment-only late, where games are usually already decided
+- Correction history unified onto one style for every position instead of a pawn-based/non-pawn-based split keyed on the `[Variant]` tag, and it no longer learns from a quiescence node's tactical swing (except Obstocean, whose widened quiescence generator genuinely resolves position) or from the singular-exclusion search
+- The continuation correction-history table (4MB, read and written on every corrected eval) is dropped; an ablation showed the engine is better without it
+
+### Fixed
+- Complexity damping keyed on total phase, so the attacker's own material damped the defender's score; one reported position removed 22,111cp of a 67,980cp material edge. It now fades out only as the weaker side is stripped, matching a 1.17M-position corpus showing the attacker's material never raises the defender's save rate while a well-armed defender needs 2.03x the gap
+- Only the mover's own non-pawn correction-history slot was consulted, so half the available correction went permanently unread
+- Obstocean's evaluator/quiescence handling and the pawn-based correction mode's last-move/continuation history were keyed on the `[Variant]` tag instead of the position, so an omitted or mistyped tag silently changed evaluation; CoaIP, Classical and Chess had never built or read tables that already existed for the other mode (wiring them cuts CoaIP nodes 26%)
+- En passant priced as a victimless move in the qsearch sort key, and a quiet promotion scored as worthless there, so both searched far later than the tactics they are
+- A knightrider's attack-reach term credited it through pawns and obstacles its own movegen cannot ride past
+- The persistent searcher kept a warm TT and histories from the wrong evaluator family across an Obstocean/Pawn Horde evaluator switch mid-game
+- The slider candidate cache's periodic clear ran on the main search's node counter but not qsearch's, making its effective lifetime unbounded in practice (reproduced as a false mate-in-3 in 8x8 Chess); it now clears on both entry paths
+- An 8x8 position with a fairy promotion available, or a custom ICN overflowing a specialised evaluator's fixed piece buffers, could be routed to an evaluator that cannot see it or panic mid-evaluation
+- The staged move generator kept an invalid TT move for deduplication instead of dropping it, so the real move with the same squares was silently skipped by the killer and quiet stages
+- A pawnless leader whose remaining force cannot mate a bare king (K+Q, K+R) kept a full material claim until the trade that made the draw official
+- A manual major-release dispatch was blocked by the same `[skip-release]` guard meant only to stop the bot's own bump commit from re-triggering a build
+- A Ctrl+C landing during a fault's wind-down swallowed the abort report and left a fabricated "Loss on engine failure" game behind instead of voiding the game
+
+### Removed
+- The continuation correction-history table and the pawn-based/non-pawn-based variant split (see Changed)
+
+## v3.7.0 (2026-09-02)
+Commit: `08ce10a57db8dc58976f32dc2a3cd33bb647335f` • [compare to v3.6.0](https://github.com/FirePlank/infinite-chess-engine/compare/c6274d1524a408d3f81d505c2febca12914c43df...08ce10a57db8dc58976f32dc2a3cd33bb647335f)
+
+**It is about 8 Elo better than v3.6.0.**
+
+### Changed
+- An own piece walls a slider ray at half the congestion cost of a neutral or enemy pawn, since it can step aside
+- The attack half of king safety, previously priced at a third of its shelter half, now presses the enemy king half again harder
+
+### Fixed
+- A neutral piece one or two squares down a slider ray was not counted as a wall at all, even though it slows development and blocks the attack just like an enemy pawn
+- The defensive half of global tropism (crediting a piece for standing near its own king) duplicated what the king-defender bonus and ring cover already price and was pure gravity toward passivity; halving it was Elo-neutral, dropping it entirely was not
+- Razoring had no depth cap, so past depth 8 only mate-valued windows could clear its quadratic margin, hollowing the tree exactly where short mates live
+
+## v3.6.0 (2026-08-31)
+Commit: `c6274d1524a408d3f81d505c2febca12914c43df` • [compare to v3.5.0](https://github.com/FirePlank/infinite-chess-engine/compare/2e6133e22bdeddd34848763c2e55562332c6c00b...c6274d1524a408d3f81d505c2febca12914c43df)
+
+**It is about 19 Elo better than v3.5.0.**
+
+### Added
+- A ported Stockfish `seekMate`: once the root is deep and the score decisive, deep reverse-futility cutoffs and singular extensions switch off, since a static eval cannot tell mate-in-9 from mate-in-10
+
+### Changed
+- Late-move reductions read the 1- and 2-ply continuation-history planes the way move ordering already did, weighted up a further step afterward
+- ProbCut's verification search shaved a ply, since the SEE gate and beta margin already screen the candidates; the null-move verification search goes a ply deeper now that its steepened margin screens out marginal attempts up front
+- Razoring's floor raised alongside its slope, and it razors less as depth grows, since a static deficit is weaker proof at depth on a board this wide
+- A null-move cutoff is taken (score clamped to beta) even when its mate distance is unproven, instead of forfeiting the cutoff outright
+
+### Fixed
+- The pawn was the last attacker still scored on flat value buckets, and the lowest gate sat above the odd leapers, so a pawn attacking a camel scored nothing
+- Nothing priced a slider walled in by its own pieces one or two steps down its rays, the mirror image of the far-slider penalty already in place
+
+## v3.5.0 (2026-08-29)
+Commit: `2e6133e22bdeddd34848763c2e55562332c6c00b` • [compare to v3.4.0](https://github.com/FirePlank/infinite-chess-engine/compare/68913072bbdb9fee951c9ffb3131c8f170a589fc...2e6133e22bdeddd34848763c2e55562332c6c00b)
+
+**It is about 9 Elo better than v3.4.0.**
+
+### Changed
+- Null-move pruning runs at every non-PV node instead of only cut nodes, with its depth-scaled margin and depth tax raised in three further steps to match how much static surplus a deep cutoff needs on a board this wide; the reverse-futility margin steepened with depth for the same reason
+- Mop-up activation no longer caps the winner at ten non-pawn pieces; a bare defender alone identifies a conversion position, so a bigger army still gets the conversion shaping now
+- Sliders can generate the long run to the far shell of an open board, where before they could not reach the far edge in one move, hiding an escape or a switch to the other side
+
+### Fixed
+- The far-slider penalty ramped to 280cp for a rook, so shifting one far down an empty line read as losing half the piece even though a slider returns to the fight in one move; it now stops at an eighth of the piece's value
+- A royal could not step onto an attacked square even under a win condition where the opponent wins by capturing it rather than by mate, so a side whose every royal move was attacked could return no move at all in a non-terminal position
+
+## v3.4.0 (2026-08-27)
+Commit: `68913072bbdb9fee951c9ffb3131c8f170a589fc` • [compare to v3.3.0](https://github.com/FirePlank/infinite-chess-engine/compare/a2e6899bff6c43667a6adc476400fe5e3cfdc07c...68913072bbdb9fee951c9ffb3131c8f170a589fc)
+
+**It is about 10 Elo better than v3.3.0.**
+
+### Changed
+- Knight threat scoring replaced with a gradient tracking the victim's real value instead of two flat buckets stepping at 400 and 600cp, and the centaur is no longer excluded from its own branch
+- Threat credit raised generally, since it read 0.9-2.1 mean centipawns against piece activity's 30.9 (attacking a hanging piece scored far less than merely standing near the board's centre)
+- Camel, giraffe and zebra earn value-scaled threat credit on their own offset tables, and read position density the way a knight does; the hawk keeps its own figures on both, since testing showed its old scoring was already correct
+- Camel/giraffe/zebra lowered in three steps toward what a 130k-corpus regression says these pieces are worth, since a coarser lattice trades reach for the precision needed to actually land on a target
+
+### Fixed
+- The guard sat outside all three threat-scoring paths (not the knight bucket, not a slider, not the leaper arm), so a guard attacking a hanging rook scored nothing at all
+- Sizing the huygen sniper's prime-sieve candidate list to exactly its try-count budget silently shrank the set as pieces spread out, and could produce zero candidates past coordinate 719, dropping landings the search relied on; it also carried a per-call heap allocation and an O(line) nearest-prime scan, both removed (+5.6% NPS on the reproduction position)
+
+### Improved
+- Faster `evaluate_knightrider_reach` slot assignment (+6.6% NPS averaged over 2 variants)
+
+## v3.3.0 (2026-08-25)
+Commit: `a2e6899bff6c43667a6adc476400fe5e3cfdc07c` • [compare to v3.2.0](https://github.com/FirePlank/infinite-chess-engine/compare/bf9c542ead7907fe98c6212d1d3c98fbc6578dc4...a2e6899bff6c43667a6adc476400fe5e3cfdc07c)
+
+**It is about 19 Elo better than v3.2.0.**
+
+### Changed
+- The huygen sniper's candidate search asks each landing which enemy it hits in one pass instead of re-deriving the same 24 landings once per target, paying for a candidate cap raised 24 -> 128 and keeping the landing hardest to interpose against
+- The cloud-centre bonus is weighted by what the piece is worth instead of a per-type table, so an archbishop no longer pulls as hard as a bishop and a chancellor no longer pulls as hard as a rook worth half as much
+- King-defence value cutoffs now ramp with piece value on both ends instead of a flat penalty past 600cp and a hard flip at 400cp
+- A knightrider now earns most of the way to what a corpus regression puts it at (824 vs. the prior 720)
+- Piece values for the short pieces moved two thirds of the way toward what 130k corpus games say they're worth
+
+### Fixed
+- A royal centaur's legal (2,1) leap satisfied the "moved two files" castling test with no same-rank check, so a knight-like leap dragged the rook along and later crashed when undo restored it from the wrong square
+- The cloud-distance penalty could reach 128% of a piece's own value at maximum distance and moved a whole step per centipawn at its boundary, so a far-flung piece could score worse than no piece at all; it's now capped and scaled by value directly
+
+### Improved
+- The huygen snipe path no longer runs Miller-Rabin per candidate; a sieve now covers the snipe range instead (CoaIP_HO NPS +1.41%, node counts byte-identical)
+
+## v3.2.0 (2026-08-24)
+Commit: `bf9c542ead7907fe98c6212d1d3c98fbc6578dc4` • [compare to v3.1.0](https://github.com/FirePlank/infinite-chess-engine/compare/9efd72b32f319a23bc20a4d484ca838ae28c3fc1...bf9c542ead7907fe98c6212d1d3c98fbc6578dc4)
+
+**It is about 10 Elo better than v3.1.0.**
+
+### Changed
+- Threat scoring extended to three fairy pieces that had none: the rose (its sixteen spirals resolve to their first occupant, deduped across spirals), the knightrider (each ray resolves to its closest occupant, an enemy a target at any distance) and the huygen (each prime-distance ray terminates at its first occupant); none of the three are sliders, so the existing threat scan never saw them
+- A chancellor, archbishop or amazon is credited for the eight knight-leap squares it attacks directly, instead of only having its line moves scanned, since half its attack surface was scoring nothing
+- An open knightrider ray rides to the step limit instead of stopping at 5 hops while a blocked ray ran to 10, making longer maneuvers on an empty ray generatable at any depth
+- Late-move reductions read whether a node was ever on a principal variation, and reduce harder at cut nodes, on top of the signals already consulted
+- Quiet moves are pruned one move earlier (late-move-pruning base 2 -> 3)
+
+### Fixed
+- SPRT's ETA estimate improved, and a Ctrl+C no longer counts as an engine crash
+
+### Removed
+- The reverse-futility-pruning correction term, which never fired at its actual scale and tested Elo-neutral once corrected
+
+## v3.1.0 (2026-08-21)
+Commit: `9efd72b32f319a23bc20a4d484ca838ae28c3fc1` • [compare to v3.0.0](https://github.com/FirePlank/infinite-chess-engine/compare/dc89a0e41da6616dd8b678c93c9166796c99fb46...9efd72b32f319a23bc20a4d484ca838ae28c3fc1)
+
+**It is about 9 Elo better than v3.0.0.**
+
+### Changed
+- A transposition-table entry deep enough to cut but holding the wrong bound is penalized a ply instead of being re-probed forever without ever cutting, ported from Stockfish's `TTWriter::penalize`
+- The pawn relative-rank penalty ramps gradually for a pawn more than 6 ranks from promotion instead of a flat -48, capping at -100
+- Mop-up: the king marches in when it's the army's only wall besides the pieces, and leapers are pulled in hard when the queen is the army's only slider, since a lone queen can't mate and the leaper is the actual mating piece
+- A check delivered at the search horizon extends one ply so the reply gets searched, instead of handing resolution to the qsearch boundary
+- SPRT saves its games file every 10 games instead of 50, so an interrupted run loses less progress
+
+### Fixed
+- Secondary TT aging decayed every deep entry in the local table and never aged the shared table at all; both now decay only a decisive bound, so a stale mate score loses depth while ordinary bounds keep theirs
+
+### Removed
+- The dead `cutoff_score` TT field, computed on every probe in both tables but read by no caller
+
 ## v3.0.0 (2026-08-18)
 Commit: `dc89a0e41da6616dd8b678c93c9166796c99fb46` • [compare to v2.6.0](https://github.com/FirePlank/infinite-chess-engine/compare/a92199f9ffc95261b617cf0c93b18937e6390493...dc89a0e41da6616dd8b678c93c9166796c99fb46)
 
