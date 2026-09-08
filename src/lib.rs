@@ -664,10 +664,14 @@ impl Engine {
         // Maximum move horizon (centiMTG = moves to go * 100)
         // For games without movestogo, assume ~50 moves remaining
         // If less than 1 second, gradually reduce moves to go estimate
+        // Games here run far longer than the ~50-move horizon a chess clock assumes:
+        // over 32k corpus games the median is 224 plies (112 moves a side) and 57%
+        // pass 200 plies. Assuming too few moves remain front-loads the clock, which
+        // is why it decays from 9.5s to 1.4s and never recovers.
         let centi_mtg: i64 = if scaled_time >= 1000 {
-            5051 // 50.51 moves * 100
+            11200 // 112 moves * 100
         } else {
-            ((scaled_time as f64) * 5.051) as i64
+            ((scaled_time as f64) * 11.2) as i64
         };
         let centi_mtg = centi_mtg.max(100); // At least 1 move expected
 
