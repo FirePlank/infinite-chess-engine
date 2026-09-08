@@ -96,14 +96,8 @@ enum Commands {
         #[arg(long, default_value = "games/eval_params_tuned.json")]
         input: String,
     },
-    /// Sweep one or more parameters and report the loss curve PER VARIANT.
-    ///
-    /// This is the high-power alternative to inferring a parameter's per-variant
-    /// optimum from match results: an SPRT resolves a single variant to about
-    /// +/-50 Elo at a few dozen games, which is the same size as the effects worth
-    /// chasing, whereas each variant here is measured over tens of thousands of
-    /// positions. Use it to find out whether a parameter genuinely wants different
-    /// values in different variants before building any gating for it.
+    /// Sweep one or more parameters and report the loss curve PER VARIANT — higher-
+    /// power than inferring a per-variant optimum from noisy SPRT match results.
     Sweep {
         #[arg(long, default_value = "games/texel_corpus.jsonl")]
         corpus: String,
@@ -337,10 +331,9 @@ struct Dataset {
     baseline: Vec<f32>,
     /// Game result from the side-to-move's perspective (0 / 0.5 / 1).
     result: Vec<f32>,
-    /// Row indices held out for validation, and those trained on. The split is by
-    /// GAME, never by position: positions from one game share a result label and
-    /// are highly correlated, so splitting mid-game leaks the label into validation
-    /// and makes held-out loss look better than it is.
+    /// Row indices held out for validation, and those trained on. Split by GAME,
+    /// never by position — positions in a game share a result label, so a
+    /// mid-game split would leak label into validation and flatter held-out loss.
     train_rows: Vec<u32>,
     val_rows: Vec<u32>,
 }
@@ -390,22 +383,17 @@ fn set_field(params: &EvalParams, name: &str, value: i64) -> EvalParams {
     serde_json::from_value(v).unwrap_or_else(|_| params.clone())
 }
 
-/// Probe step for a parameter's finite difference. The eval is integer-valued and
-/// internally tapered by integer division, so a step of 1 can truncate a real
-/// slope to zero; a wider step averages that out. Kept inside the parameter's own
-/// range so the probe never evaluates an out-of-range configuration.
+/// Probe step for a parameter's finite difference. Integer taper division can
+/// truncate a step of 1 to zero slope, so use a wider step; clamped inside the
+/// parameter's own range so the probe never evaluates an out-of-range value.
 fn probe_delta(spec: &EvalParamSpec) -> i64 {
     let span = spec.max - spec.min;
     (span / 8).clamp(1, 16)
 }
 
-/// Extracts sparse coefficients for the whole corpus at weights `w0`.
-///
-/// Positions are materialized in chunks and dropped as soon as their row is
-/// written, so peak memory is bounded by `EXTRACT_CHUNK` live `GameState`s rather
-/// than by corpus size. Within a chunk, every parameter's probe is one parallel
-/// pass over the chunk — the global `EVAL_PARAMS` is a single shared value, so
-/// probes must be sequential over parameters and parallel over positions.
+/// Extracts sparse coefficients for the whole corpus at weights `w0`. Chunked so
+/// peak memory is bounded by `EXTRACT_CHUNK` live `GameState`s; `EVAL_PARAMS` is a
+/// shared global, so within a chunk probes run sequential over params, parallel over positions.
 #[allow(clippy::too_many_arguments)]
 fn extract_dataset(
     by_variant: &[(String, Vec<GameRecord>)],
@@ -430,10 +418,9 @@ fn extract_dataset(
     let deltas: Vec<i64> = specs.iter().map(|s| probe_delta(s)).collect();
     let started = Instant::now();
 
-    // EXTRACT_CHUNK bounds live POSITIONS, but chunking happens over games, so the
-    // game-chunk has to be derived from how many positions a game actually yields
-    // (~100 in this corpus). Chunking by games directly would hold thousands of
-    // ~100KB GameStates at once, which is exactly the blow-up to avoid.
+    // EXTRACT_CHUNK bounds live POSITIONS but chunking is over games, so derive the
+    // game-chunk size from positions/game (~100) — chunking by games directly would
+    // hold thousands of ~100KB GameStates at once.
     let total_games: usize = by_variant.iter().map(|(_, g)| g.len()).sum();
     let total_positions: usize = by_variant
         .iter()
@@ -463,13 +450,9 @@ fn extract_dataset(
             if STOP.load(Ordering::Relaxed) {
                 break 'outer;
             }
-            // `GameState` holds a `RefCell`-backed spatial-index cache, so it is
-            // `Send` but not `Sync`: shared refs can't cross threads, but the
-            // exclusive `&mut` slices `par_iter_mut` hands out can.
-            //
-            // Replayed per game rather than flat-mapped, so each row still knows
-            // which game it came from and the validation split can cut on game
-            // boundaries.
+            // `GameState`'s `RefCell` cache makes it Send but not Sync, so only the
+            // exclusive `&mut` slices from `par_iter_mut` can cross threads.
+            // Kept per-game (not flat-mapped) so rows retain which game they're from.
             let per_game: Vec<Vec<(GameState, f32)>> = chunk
                 .par_iter()
                 .map(|g| replay_game(g, quiet_only))
@@ -477,7 +460,7 @@ fn extract_dataset(
             let mut positions: Vec<(GameState, f32)> = Vec::new();
             let mut row_is_val: Vec<bool> = Vec::new();
             for game_rows in per_game {
-                let is_val = val_every > 0 && game_seq % val_every == 0;
+                let is_val = val_every > 0 && game_seq.is_multiple_of(val_every);
                 game_seq += 1;
                 row_is_val.extend(std::iter::repeat_n(is_val, game_rows.len()));
                 positions.extend(game_rows);
@@ -613,14 +596,9 @@ struct TrainOutcome {
     stopped_early: bool,
 }
 
-/// Full-batch Adam on the sparse coefficients. No `evaluate()` calls here, which
-/// is what makes many thousands of epochs affordable.
-///
-/// `epochs` is a CEILING, not a target: training stops when held-out loss stops
-/// improving, and the weights returned are the best-validation ones rather than
-/// whatever the last epoch happened to leave behind. A fixed epoch count either
-/// stops short of convergence or keeps fitting noise; neither is visible without
-/// a held-out split.
+/// Full-batch Adam on the sparse coefficients (no `evaluate()` calls, so thousands
+/// of epochs are affordable). `epochs` is a CEILING: training stops early on
+/// held-out loss and returns the best-validation weights.
 #[allow(clippy::too_many_arguments)]
 fn train(
     data: &Dataset,
@@ -722,7 +700,7 @@ fn train(
             since_improved = 0;
         } else {
             since_improved += 1;
-            if since_improved % plateau == 0 && lr > LR_MIN {
+            if since_improved.is_multiple_of(plateau) && lr > LR_MIN {
                 lr *= 0.5;
                 if verbose {
                     eprintln!("[texel]   epoch {:>6}  val plateau -> lr {:.4}", epoch, lr);
@@ -1067,10 +1045,8 @@ struct SweepCurve {
 }
 
 /// Measures, for each swept value of each parameter, the mean NLL PER VARIANT.
-///
-/// Positions are materialized once per chunk and every candidate value is scored
-/// against that same chunk, so the cost is one eval per (position, value) rather
-/// than a rebuild per value.
+/// Positions are materialized once per chunk; every candidate value is scored
+/// against that same chunk (one eval per position/value, no rebuild).
 fn run_sweep(
     corpus: &str,
     params: &str,

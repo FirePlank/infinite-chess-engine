@@ -1,22 +1,19 @@
 //! Self-play corpus generator for Texel tuning (and puzzle mining).
 //!
-//! Plays fixed-depth self-play games in-process (no UCI subprocess) and writes one
+//! Plays fixed-depth self-play games in-process (no UCI subprocess), writing one
 //! fully-annotated JSON record per game to a JSONL file, flushed as each game
 //! finishes so a kill never loses more than the games still in flight.
 //!
-//! Every position carries everything a downstream tuner needs decided HERE, at
-//! generation time: static eval, search score, depth actually reached, think time,
-//! nodes, piece count, phase, and the quiet-classification flags. Nothing has to be
-//! re-searched later.
+//! Every position carries everything a downstream tuner needs (static eval, search
+//! score, depth reached, think time, nodes, piece count, phase, quiet flags) decided
+//! HERE, so nothing has to be re-searched later.
 //!
 //! World bounds are a process-global (`moves::set_world_bounds`), so variants are
-//! grouped by bounds and each group dispatches as one flat, interleaved parallel
-//! pass (round-robin across the group's variants) rather than a per-variant batch —
-//! a per-variant batch barrier let one slow/stalled game stall an entire chunk
-//! while every other thread sat idle. Each game also runs under a hard wall-clock
-//! deadline (`with_hard_timeout`): `check_time`'s internal polling only re-checks
-//! every 4096 nodes, so a single pathologically expensive node can stall a search
-//! well past its intended cap with no internal chance to notice.
+//! grouped by bounds and each group runs as one flat, interleaved parallel pass
+//! (round-robin across variants) — a per-variant batch barrier let one slow game
+//! stall the whole chunk. Each game also runs under a hard wall-clock deadline
+//! (`with_hard_timeout`), since `check_time` only polls every 4096 nodes and can't
+//! catch a single pathologically expensive node on its own.
 
 use apeiron::Variant;
 use apeiron::board::{Coordinate, PlayerColor};
@@ -390,13 +387,9 @@ fn loser_to_terminal(loser: PlayerColor, reason: &'static str) -> Terminal {
     }
 }
 
-/// Runs `f` on a fresh OS thread and waits up to `dur`. `check_time`'s hard limit
-/// only re-polls every 4096 nodes, so a single pathologically expensive node (this
-/// board's movegen can produce them) can stall a search well past its intended cap
-/// with no internal chance to notice — puzzle_gen hit multi-hour stalls this way.
-/// This is the backstop: past the deadline the game is abandoned (its thread keeps
-/// running until process exit, but no longer blocks the rayon pool behind it) rather
-/// than letting one stuck game stall an entire batch with idle cores everywhere else.
+/// Runs `f` on a fresh OS thread and waits up to `dur`. Backstop for
+/// `check_time`'s 4096-node polling interval, which can miss one pathological
+/// node; past the deadline the game is abandoned without blocking the rayon pool.
 fn with_hard_timeout<T: Send + 'static>(
     dur: Duration,
     f: impl FnOnce() -> T + Send + 'static,
@@ -408,10 +401,8 @@ fn with_hard_timeout<T: Send + 'static>(
     rx.recv_timeout(dur).ok()
 }
 
-/// Exact legality test. `get_pseudo_legal_moves` is pseudo-legal and keeps the slider
-/// candidate cache, so a terminal check written on it silently never fires;
-/// `get_pseudo_legal_moves_into` bypasses the cache, and each move still needs a
-/// make/`is_move_illegal`/undo filter.
+/// Exact legality test: `get_pseudo_legal_moves_into` bypasses the slider candidate
+/// cache for a complete list, but still needs a make/`is_move_illegal`/undo filter.
 fn has_any_legal_move(game: &GameState) -> bool {
     let mut moves = MoveList::new();
     game.get_pseudo_legal_moves_into(&mut moves);
@@ -802,10 +793,9 @@ fn play_game(cfg: &Cli, variant: Variant, game_idx: usize) -> Option<GameRecord>
         }
     }
 
-    // Max-ply fallback: a game that never tripped a streak (e.g. it was still
-    // climbing) must not default to a draw when the last score was clearly
-    // decisive. Mirrors sprt.rs's own max-ply adjudication, just without a second
-    // engine to agree with since self-play only has the one score to trust.
+    // Max-ply fallback: don't default a still-climbing game to a draw when the
+    // last score was clearly decisive. Mirrors sprt.rs's adjudication, but with
+    // only one score to trust since self-play has no second engine to agree with.
     let terminal = terminal.or_else(|| detect_terminal(&game)).or_else(|| {
         last_score_white.and_then(|s| {
             if s >= cfg.maxply_cp {
@@ -977,14 +967,11 @@ fn main() {
             .max(120_000),
     );
 
-    // Group requested variants by world bounds: `set_world_bounds` is a process
-    // global, so only variants sharing identical bounds may be dispatched together
-    // in one flat parallel pass. In practice this run's variant list is almost
-    // always one group (every unbounded base-eval variant shares the same bounds),
-    // which is what actually matters: a single flat dispatch across the whole
-    // group removes the old per-variant batch barrier that let one slow/stalled
-    // game stall an entire chunk while every other thread sat idle.
-    let mut bounds_groups: Vec<((i64, i64, i64, i64), Vec<Variant>)> = Vec::new();
+    // `set_world_bounds` is a process global, so only same-bounds variants can
+    // dispatch together in one flat parallel pass (avoids one slow game stalling
+    // a whole per-variant batch while other cores sit idle).
+    type BoundsGroup = ((i64, i64, i64, i64), Vec<Variant>);
+    let mut bounds_groups: Vec<BoundsGroup> = Vec::new();
     for &v in &variants {
         let b = v.get_default_bounds();
         match bounds_groups.iter_mut().find(|(gb, _)| *gb == b) {
@@ -999,11 +986,9 @@ fn main() {
         }
         apeiron::moves::set_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
 
-        // Interleave every variant in this bounds-group into one flat work list
-        // (round-robin by index) so the corpus stays balanced even if the run is
-        // killed partway, while still dispatching it as a single parallel pass.
-        // `Variant` has no `Hash` impl, so track remaining counts by position in
-        // `group` rather than keying a map on the variant itself.
+        // Round-robin by index into one flat work list, so the corpus stays balanced
+        // if killed partway. `Variant` has no `Hash` impl, so track counts by
+        // position in `group` rather than keying a map on the variant itself.
         let done_by_pos: Vec<usize> = group
             .iter()
             .map(|v| *done_per_variant.entry(v.to_str().to_string()).or_insert(0))

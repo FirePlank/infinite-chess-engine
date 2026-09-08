@@ -2623,10 +2623,8 @@ impl LiveView {
                 *previous_len = line.len();
             }
             LiveView::Plain => {
-                // Every game, not throttled: a background/piped run has nothing
-                // else to poll for progress, so a sparse log reads as "stuck."
-                // No width cap: this is a log line, not a display — it's
-                // fine for it to wrap in whatever views the log later.
+                // Unthrottled: a piped/background run has nothing else to poll for
+                // progress, so a sparse log reads as "stuck." No width cap needed.
                 println!("{}", compact_status_line(stats, &Colors::new(false), None));
                 let _ = std::io::stdout().flush();
             }
@@ -2658,11 +2656,9 @@ impl LiveView {
     }
 }
 
-/// One-line status, used by both the compact and plain modes.
-/// One-line status. `max_width`, when given, drops trailing (less essential)
-/// fields — richest first — until the line's *visible* width fits: never
-/// mid-string truncation, which could slice through a color escape code and
-/// bleed that color onto the rest of the terminal.
+/// One-line status shared by compact and plain modes. `max_width`, when given,
+/// drops trailing fields (richest first) until it fits — never mid-string
+/// truncation, which could slice a color escape code and bleed color onward.
 fn compact_status_line(stats: &SprtStats, colors: &Colors, max_width: Option<usize>) -> String {
     let pe = stats.elo();
     let color = colors.by_elo(pe.elo);
@@ -2703,10 +2699,9 @@ fn compact_status_line(stats: &SprtStats, colors: &Colors, max_width: Option<usi
     .unwrap_or(core)
 }
 
-/// Multi-line dashboard drawn in an inline viewport: a fixed block at the
-/// bottom of the terminal that is redrawn in place, leaving scrollback intact.
-/// Deliberately not an alternate-screen TUI — those erase themselves on exit,
-/// taking the run's output with them.
+/// Multi-line dashboard in an inline viewport, redrawn in place at the bottom
+/// to keep scrollback intact — deliberately not an alternate-screen TUI,
+/// which would erase itself (and the run's output) on exit.
 struct FullView {
     terminal: ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     /// Selected variant count, kept to re-derive the row budget on resize.
@@ -2747,23 +2742,19 @@ impl FullView {
         })
     }
 
-    /// Ratatui's inline viewport height is fixed at construction: `Terminal::resize`
-    /// only repositions it for the new terminal size, clamped to that *original*
-    /// height (see `compute_inline_size` upstream) — it never grows back or
-    /// shrinks further. So a real height change tears down and recreates the
-    /// viewport instead.
+    /// Ratatui's inline viewport height is clamped to its *original* value at
+    /// construction, so `Terminal::resize` can't grow it — a real change tears
+    /// down and recreates the viewport instead.
     fn resize_if_needed(&mut self) {
         let (variant_rows, height) = Self::layout_for(self.variant_count);
         if variant_rows == self.variant_rows {
             return;
         }
-        // `clear` erases relative to ratatui's *stored* viewport position, which
-        // the window resize just invalidated. Sync it to the real terminal size
-        // first, or the clear wipes the wrong rows and strands the old frame in
-        // the scrollback above the new viewport.
+        // `clear` erases relative to ratatui's *stored* viewport position, which the
+        // resize just invalidated — sync to the real terminal size first, or it
+        // wipes the wrong rows and strands the old frame above the new viewport.
         let _ = self.terminal.autoresize();
-        // Erase the old viewport and park the cursor at its top, so the new one
-        // starts exactly there instead of duplicating space below it.
+        // Park the cursor at the erased viewport's top so the new one starts there.
         let _ = self.terminal.clear();
         let _ = std::io::stdout().flush();
         if let Ok(new_terminal) = ratatui::Terminal::with_options(
@@ -2889,11 +2880,9 @@ impl FullView {
             rule.clone(),
         ];
 
-        // Per-variant rows, in selection order — fixed for the run's lifetime, so
-        // a row's position never changes as its game count edges past another
-        // variant's. Not sorted by live count: variants are assigned round-robin
-        // (see play_game), so counts stay roughly even anyway, and re-sorting
-        // would only reshuffle rows for no real benefit.
+        // Fixed selection order, not sorted by live count: round-robin assignment
+        // (see play_game) keeps counts roughly even, so re-sorting would only
+        // reshuffle rows as counts edge past each other for no real benefit.
         let variants: Vec<_> = stats
             .variant_order
             .iter()
@@ -3055,10 +3044,9 @@ fn main() {
             save_interval,
         }) => {
             let concurrency = concurrency.unwrap_or_else(|| {
-                // Physical cores, not logical: each game is single-threaded
-                // (RAYON_NUM_THREADS=1), so SMT siblings just contend for the same
-                // execution units and inflate wall-clock time without adding real
-                // parallelism — exactly what caused the low-TC timeout regression.
+                // Physical cores, not logical: each game is single-threaded, so SMT
+                // siblings just contend for execution units and inflate wall-clock
+                // time, risking low-TC timeouts.
                 let physical = num_cpus::get_physical();
                 if physical > 0 {
                     physical
@@ -3114,14 +3102,8 @@ fn main() {
                 _ => variants,
             };
 
-            // ── Variant presets ──────────────────────────────────────────────────────
-            // all        — every variant in the engine
-            // site       — variants live on the public site (image order), no Abundance/Showcase
-            // base_only  — base-eval standard variants; no multi-king, no AllPieces, no Abundance
-            //              Default for testing base.rs changes against typical positions.
-            // base_full  — all base-eval variants including multi-king and AllPiecesClassical
-            // multi_king — only the double/triple-king variants
-            // coaip_set  — only the Chess-on-an-Infinite-Plane family
+            // Presets: all/site/base_only/base_full/multi_king/coaip_set.
+            // base_only excludes multi-king/AllPieces/Abundance — default for base.rs changes.
 
             // Every variant in the engine
             const ALL_VARIANTS: &[Variant] = &[
@@ -3585,12 +3567,9 @@ fn main() {
                     break;
                 }
 
-                // Receive on a timer rather than blocking: the Full dashboard's
-                // clock, throughput, ETA and terminal-resize check all need to
-                // keep ticking between game completions, which at slow time
-                // controls are far apart. Compact and Plain only ever redraw on
-                // an actual result — a single status line has nothing to animate,
-                // and Plain's output is a log, not a display.
+                // Timed, not blocking: the Full dashboard's clock/throughput/ETA/resize
+                // check must keep ticking between game completions, which are far
+                // apart at slow time controls. Compact/Plain redraw only on a result.
                 let pair_outcomes = match rx.recv_timeout(REFRESH_INTERVAL) {
                     Ok(outcomes) => outcomes,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -3893,10 +3872,8 @@ fn main() {
                     break;
                 };
 
-                // Started right after the request line is read: this game's process
-                // was already spawned and warmed up before now, so everything from
-                // here — ICN parse, move replay, search — is work the engine itself
-                // controls and is billed exactly like real play would bill it.
+                // Timer starts right after the request line is read, so it bills
+                // only ICN parse/replay/search — the same work real play bills.
                 let started = Instant::now();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // The searcher is a thread-local kept across requests, so the TT,

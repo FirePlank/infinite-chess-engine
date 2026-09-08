@@ -50,10 +50,9 @@ fn compute_mop_up_term(game: &GameState) -> i32 {
     }
 }
 
-/// A pawnless leader whose force alone could never mate a bare king cannot win,
-/// however much it is ahead: the insufficient-material rules only fire once the
-/// board is nearly empty, so without this the eval keeps a full material claim
-/// right up to the trade that makes the draw official.
+/// A pawnless leader whose force could never mate a bare king can't win no matter
+/// the material lead; the insufficient-material rules fire only once the board is
+/// nearly empty, so without this the eval claims full material up to the draw.
 fn apply_pawnless_scale(game: &GameState, eval: i32) -> i32 {
     if eval == 0 {
         return eval;

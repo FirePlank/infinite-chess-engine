@@ -22,10 +22,9 @@ const HUYGEN_SCAN_MAX: i64 = 120;
 const HUYGEN_DEFEND_BONUS: i32 = 4;
 const HUYGEN_ROYAL_ALIGN: i32 = 22;
 
-/// A huygen jumps to PRIME distances along its orthogonals, hopping over anything
-/// at a composite distance, but a piece sitting exactly at a prime distance stops
-/// it for the rest of that direction. So open lines say nothing about it -- what
-/// matters is the first prime-distance occupant of each of its four rays.
+/// A huygen jumps to PRIME distances along its orthogonals, hopping composite
+/// gaps but stopped by a piece exactly at a prime distance -- so open lines say
+/// nothing; what matters is the first prime-distance occupant per ray.
 pub(crate) fn evaluate_huygen_reach(
     indices: &crate::moves::SpatialIndices,
     x: i64,

@@ -618,11 +618,9 @@ pub fn get_eval_params_as_json() -> String {
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
 thread_local! {
-    /// Per-thread snapshot of the eval parameters, refreshed only when the global
-    /// generation moves. A single eval reads well over a hundred parameters, so
-    /// taking the shared `RwLock` per read made every eval acquire 130+ locks and
-    /// had all threads ping-ponging one cache line — the dominant cost in a tuning
-    /// build. This turns each read into a relaxed atomic load plus a field access.
+    /// Per-thread snapshot, refreshed only when the global generation moves.
+    /// A single eval reads 130+ params, so a shared `RwLock` per read thrashed one
+    /// cache line across threads; this is a relaxed atomic load plus a field access.
     static EVAL_PARAMS_TLS: std::cell::RefCell<(u64, EvalParams)> =
         std::cell::RefCell::new((u64::MAX, EvalParams::default()));
 }

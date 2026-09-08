@@ -458,15 +458,9 @@ impl TileTable {
         None
     }
 
-    /// Get or create a tile at the given coordinates.
-    ///
-    /// The probe must reach an `Empty` bucket before concluding the key is absent —
-    /// a `Tombstone` is a reusable slot, not the end of the chain. Inserting at the
-    /// first tombstone would duplicate a key that exists further along, hiding every
-    /// piece in the original tile.
-    ///
-    /// Panics if the table is full; the alternative is spinning here forever, below
-    /// the search's stop-flag poll where nothing can interrupt it.
+    /// Get or create a tile. The probe must reach an `Empty` bucket before concluding
+    /// the key is absent — stopping at the first `Tombstone` could duplicate a key
+    /// further along the chain. Panics rather than spin if the table is full.
     #[inline]
     pub fn get_or_create(&mut self, cx: i64, cy: i64) -> &mut Tile {
         let mut idx = Self::hash(cx, cy);

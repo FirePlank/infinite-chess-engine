@@ -1313,7 +1313,8 @@ mod tests {
     fn move_gives_check_fast_detects_fairy_leapers() {
         // Each lands on its own leap offset from k5,8; a miss here means the check
         // is scored as a quiet and can be futility/history-pruned or cut in qsearch.
-        let cases: [(&str, PieceType, (i64, i64), (i64, i64)); 5] = [
+        type Case = (&'static str, PieceType, (i64, i64), (i64, i64));
+        let cases: [Case; 5] = [
             ("w 0/100 1 (8;q|1;q) K5,1|k5,8|CA1,1", PieceType::Camel, (1, 1), (6, 5)),
             ("w 0/100 1 (8;q|1;q) K5,1|k5,8|GI1,1", PieceType::Giraffe, (1, 1), (6, 4)),
             ("w 0/100 1 (8;q|1;q) K5,1|k5,8|ZE1,1", PieceType::Zebra, (1, 1), (7, 5)),

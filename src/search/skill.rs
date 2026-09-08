@@ -43,10 +43,8 @@ struct SkillConfig {
 }
 
 /// Site levels 1..7; level 8 bypasses the limiter for the full parallel search.
-/// `mean_loss_permille` targets a loss in winning probability, not centipawns, so weak
-/// levels keep giving ground instead of turning near-perfect once ahead. Mop-up is held
-/// fixed across every knob here, pinned by `test_mop_up_depth_ladder_is_pinned` and
-/// `test_conversion_error_shape_is_preserved`.
+/// `mean_loss_permille` targets win-probability loss, not centipawns, so weak
+/// levels keep giving ground rather than turning near-perfect once ahead.
 const SKILL_CONFIGS: [SkillConfig; 7] = [
     SkillConfig {
         depth_cap: Some(2),

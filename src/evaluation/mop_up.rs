@@ -83,10 +83,9 @@ const KILL_ZONE_BONUS: i32 = 500;
 // needs the king, so approach is steep; with an overwhelming battery it stays a
 // mild tiebreaker so the pieces do the work without wasted king marches.
 const KING_STEP_NEEDED: i32 = 28;
-/// Our king IS the army's second wall when it owns at most one: the net cannot
-/// close without him, so his march must outweigh piece fidgeting (measured: a
-/// knight reposition gains ~184 while a king step gained only 28, so the king
-/// never walked in and K+Q+N — insufficient without him — never mated).
+/// Our king is the army's second wall when it owns at most one, so his march
+/// must outweigh piece fidgeting (measured: knight reposition ~184 vs king
+/// step 28 meant the king never walked in and K+Q+N never mated).
 const KING_STEP_SOLO_WALL: i32 = 55;
 /// Extra royals need their own march: king distance is measured from
 /// royals[0], so a second king (2K+R) had no reason to ever join the net.
@@ -125,9 +124,9 @@ const SLIDER_STANDOFF_CAP: i64 = 40;
 // prefer the front+side box over a corridor the runner can race along forever.
 const ORTHO_FLIGHT_SIDE: i32 = 70;
 
-// Dedicated K+2R vs K (two-rook lawnmower). The generic net treats the rooks as
-// independent cut lines and settles for a corridor the king runs up forever;
-// this term scores the FINITE box, so the only escape is toward our king.
+// Dedicated K+2R vs K (two-rook lawnmower): the generic net treats the rooks as
+// independent cut lines and settles for an infinite corridor; this scores the
+// FINITE box, so the king's only escape is toward our own king.
 /// A confining side (rook line or our king) counts only within this range.
 const TR_SIDE_RANGE: i64 = 200;
 /// Each of the four sides the king is bounded on.
@@ -150,10 +149,9 @@ const TR_CONNECTED: i32 = 80;
 const TR_HANG: i32 = 800;
 
 const LEAPER_ENGAGE_STEP: i32 = 8;
-/// A lone queen cannot mate on the unbounded board (K+Q vs k is insufficient),
-/// so when the queen is the army's only slider the LEAPERS are the mating
-/// pieces and must come in; measured, they otherwise idle 8-12 squares out
-/// while the king and queen squeeze to mobility 1 and never finish.
+/// K+Q vs k is insufficient, so when the queen is the only slider the LEAPERS
+/// must come in and mate; measured, they otherwise idle 8-12 squares out while
+/// king and queen squeeze to mobility 1 and never finish.
 const LEAPER_ENGAGE_STEP_ESSENTIAL: i32 = 16;
 const LEAPER_ENGAGE_CAP: i64 = 24;
 const OPPOSITE_SIDE_BONUS: i32 = 10;

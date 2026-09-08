@@ -3853,12 +3853,9 @@ impl GameState {
         self.white_promo_rank = i64::MIN;
         self.black_promo_rank = i64::MAX;
 
-        // World border is process-global (`moves::set_world_bounds`) and, unlike every
-        // other field above, was previously left untouched unless this ICN carried an
-        // explicit border token. That meant an ICN with no border token silently inherited
-        // whatever border the *previous* parsed position happened to leave behind instead
-        // of meaning "this position has no border" (unbounded). Reset it unconditionally so
-        // absence is authoritative for this position, matching every other explicit field.
+        // World border is process-global (`moves::set_world_bounds`), so an ICN with no
+        // border token must reset it, not silently inherit the previous position's
+        // border — absence has to mean unbounded, same as every other explicit field.
         crate::moves::set_world_bounds(
             -1_000_000_000_000_000,
             1_000_000_000_000_000,

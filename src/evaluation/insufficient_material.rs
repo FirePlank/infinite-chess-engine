@@ -1105,10 +1105,9 @@ mod tests {
         game
     }
 
-    /// Every material configuration infinitechess.org's practice mode lists as
-    /// matable (validcheckmates.ts, mirrored in tests/practice_mates.rs) must be
-    /// judged WINNABLE. The opposite error is severe and silent: the eval would
-    /// return 0 for a genuinely won position and the engine would stop trying.
+    /// Every config infinitechess.org's practice mode lists as matable (see
+    /// validcheckmates.ts / tests/practice_mates.rs) must be judged WINNABLE —
+    /// misjudging it draw silently zeroes the eval and the engine stops trying.
     #[test]
     fn test_site_matable_catalog_is_never_called_a_draw() {
         use PieceType as P;

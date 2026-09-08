@@ -2412,12 +2412,9 @@ pub fn is_far_escape_move(m: &Move) -> bool {
 /// generated. Cheap default filter; critical targets bypass it entirely.
 const BASE_INTERCEPTION_DIST: i64 = 16;
 
-/// Whether a target is worth reaching from any distance. Attacking a piece that
-/// cannot be defended wins material outright, and a heavy piece is worth the move
-/// slot regardless - in both cases proximity says nothing about the move's value.
-/// The `is_square_attacked` probe is the expensive half, so it is only reached for
-/// candidates the distance filter would otherwise drop, and the whole candidate
-/// list is cached per (square, direction).
+/// Whether a target is worth reaching from any distance: an undefendable piece or
+/// a heavy piece is worth the move slot regardless of proximity. The expensive
+/// `is_square_attacked` probe only runs for candidates the distance filter drops.
 #[inline]
 fn is_critical_target(
     board: &Board,
@@ -2740,10 +2737,9 @@ fn find_cross_ray_targets_into(
     }
 }
 
-/// Ray distances whose destination square would attack an enemy piece with a
-/// KNIGHT leap. Compound knight-sliders need these separately: ray interception
-/// only proposes squares near pieces already on the ray, so a knight fork or
-/// check reachable from an otherwise-empty diagonal is never generated.
+/// Ray distances whose destination would attack an enemy piece via a KNIGHT leap.
+/// Needed separately for compound knight-sliders: ray interception only proposes
+/// squares near existing pieces, missing a knight fork off an empty diagonal.
 #[allow(clippy::too_many_arguments)]
 fn collect_knight_attack_dists(
     indices: &SpatialIndices,
@@ -3312,10 +3308,9 @@ fn generate_sliding_moves_impl(
                 }
             }
 
-            // A fully open ray is provably empty to the border, but the candidate
-            // window tops out at 256, so a slider can never just run away. One
-            // escape to the far shell fixes that; it is deliberately outside the
-            // cached candidate list, which is never invalidated.
+            // A fully open ray is empty to the border, but the candidate window caps
+            // at 256, so a slider could never run away without this far-shell escape,
+            // kept deliberately outside the cached (never-invalidated) candidate list.
             if gen_type != MoveGenType::Captures
                 && closest_dist == i64::MAX
                 && ray_cap == 0
@@ -3471,10 +3466,9 @@ pub fn generate_huygen_moves_into(
         }
     }
 
-    // Sniper landings: a quiet hop onto an open ray placed so a chosen enemy on
-    // this line becomes the FIRST prime-distance piece, i.e. directly attacked
-    // next move with everything between at composite offsets. These are exactly
-    // the quiets the open-ray filter above prunes. Skipped under tight gen.
+    // Sniper landings: a quiet hop onto an open ray placed so a chosen enemy
+    // becomes the FIRST prime-distance piece (directly attacked next move).
+    // These are exactly the quiets the open-ray filter above prunes.
     if gen_type != MoveGenType::Captures && QUIET_RAY_CAP.with(|c| c.get()) == 0 {
         generate_huygen_snipes(from, piece, indices, &blockers, out);
     }
@@ -3556,10 +3550,9 @@ fn generate_huygen_snipes(
             min_off = min_off.min(off);
         }
 
-        // SNIPE_TRIES candidates BEYOND the line's outermost piece on each open
-        // side, so the count never depends on where the pieces happen to sit.
-        // Borrowed as slices rather than collected: 2 x SNIPE_TRIES overflowed
-        // the inline SmallVec and heap-allocated on every call.
+        // SNIPE_TRIES candidates BEYOND the line's outermost piece on each open side.
+        // Borrowed as slices rather than collected: 2x SNIPE_TRIES overflowed the
+        // inline SmallVec and heap-allocated on every call.
         let side_slice = |open: bool, base: i64| -> &[i64] {
             if !open {
                 return &[];
@@ -3594,26 +3587,21 @@ fn generate_huygen_snipes(
             }
         }
 
-        // A huygen only attacks the nearest prime-distance piece per side, so
-        // asking each landing that question covers every target in one pass.
-        // Keeps the single best landing per target: the widest gap to the next
-        // lower prime, the only stretch a piece could interpose in, so the
-        // wider the gap the harder the attack is to block.
+        // A huygen only attacks the nearest prime-distance piece per side, so each
+        // landing's question covers every target in one pass. Keeps the widest-gap
+        // landing per target: that gap is the only stretch a piece could interpose in.
         let mut best: smallvec::SmallVec<[(i64, i64, i64); 16]> = smallvec::SmallVec::new();
 
         let far = pos_cands
-            .iter()
-            .map(|&p| p)
+            .iter().copied()
             .chain(neg_cands.iter().map(|&p| -p));
         for s_off in close.iter().copied().chain(far) {
             if !reachable_open(s_off) {
                 continue;
             }
-            // Nearest prime-distance piece below and above the landing; a huygen
-            // there attacks those two and nothing else on the line.
-            // coords are sorted, so the nearest prime-distance piece per side is
-            // found by walking outward from the landing and stopping at the first
-            // hit, instead of scanning the whole line and taking a minimum.
+            // Nearest prime-distance piece below/above the landing (a huygen there
+            // attacks only those two). Coords are sorted, so walking outward and
+            // stopping at the first hit avoids scanning the whole line.
             let landing = our + s_off;
             let split = vec.coords.partition_point(|&c| c < landing);
             let probe = |o2: i64, packed2: u8| -> Option<(i64, i64, u8)> {
@@ -5347,7 +5335,7 @@ mod snipe_coverage_probe {
         println!("HUYGEN SNIPE COVERAGE: {}/{} enemies attackable, total huygen moves = {}",
             covered, enemies.len(),
             moves.iter().filter(|m| m.piece.piece_type() == PieceType::Huygen).count());
-        for (y, m) in moves.iter()
+        for (_y, m) in moves.iter()
             .filter(|m| m.piece.piece_type() == PieceType::Huygen && m.from.x == 0)
             .map(|m| m.to.y)
             .fold(std::collections::HashMap::<i64, usize>::new(), |mut acc, y| {

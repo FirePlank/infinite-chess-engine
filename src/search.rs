@@ -1306,11 +1306,8 @@ impl Searcher {
         false
     }
 
-    /// Set correction history mode based on variant.
-    /// Called once at search start for zero runtime overhead.
-    #[inline]
-
     /// Decay history scores at the start of each iteration
+    #[inline]
     pub fn decay_history(&mut self) {
         for row in self.history.iter_mut() {
             for val in row.iter_mut() {
@@ -3928,10 +3925,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         // Pre-move pruning techniques
 
-        // Razoring: if eval is really low, drop to qsearch. Depth-capped the way
-        // Stockfish's quadratic margin caps itself against its mate scale: past
-        // this depth only mate-valued windows could ever clear the margin, and
-        // those nodes must search for real or shorter mates stay invisible.
+        // Razoring: if eval is really low, drop to qsearch. Depth-capped like SF's
+        // quadratic margin against its mate scale — past this depth only mate-valued
+        // windows clear the margin, and those must search for real or mates go invisible.
         if !is_pv
             && depth <= 8
             && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
@@ -4243,11 +4239,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
             && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
 
-        // Obstocean breakout: a pawn taking a neutral obstacle opens the line the
-        // variant is built around, but the neutral victim makes it score as quiet.
-        // Treated as tactical for pruning/reduction only; SEE still gates it.
-        // Position-derived: LMP already keyed on eval_kind, so the tag left an
-        // untagged obstacle board with the LMP rule but not this exemption.
+        // Obstocean breakout: pawn-takes-neutral-obstacle opens the variant's key line
+        // but scores as quiet since the victim is neutral. Treated as tactical for
+        // pruning/reduction only (SEE still gates it); keyed on eval_kind not the tag.
         let is_obstocean_breakout = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean
             && p_type == PieceType::Pawn
             && captured_type == Some(PieceType::Obstacle);
@@ -4259,10 +4253,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if !is_pv && game.has_non_pawn_material(game.turn) && !is_loss(best_score) {
             // Late move pruning: skip quiet moves after seeing enough
             let improving_div = if improving { 1 } else { 2 };
-            // Bounded boards branch ~29 wide against ~101 on an open plane, so a
-            // count tuned for the latter lets far too many quiets through. Not
-            // Obstocean: its defining breakout is a QUIET pawn-takes-obstacle, so
-            // skipping quiets sooner throws the variant's main tactic away.
+            // Bounded boards branch ~29 wide vs ~101 open-plane, so a count tuned for
+            // the latter lets too many quiets through. Excludes Obstocean: its main
+            // tactic IS a quiet pawn-takes-obstacle, so pruning sooner discards it.
             let mut lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
             if crate::moves::get_world_size() <= LMP_BOUNDED_WORLD
                 && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
@@ -4533,10 +4526,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
-        // A check delivered right at the horizon would otherwise be resolved by
-        // the qsearch boundary instead of a real reply; give it one more ply.
-        // Gated on !in_check so a forced sequence of replying checks can't chain
-        // extensions indefinitely.
+        // A check right at the horizon would otherwise be resolved by the qsearch
+        // boundary instead of a real reply; give it one more ply. Gated on !in_check
+        // so a forced sequence of replying checks can't chain extensions forever.
         if extension == 0 && depth <= 1 && gives_check && !in_check {
             extension = 1;
         }
@@ -5115,9 +5107,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Correction history only learns from quiet, out-of-check nodes whose score
-    // respects the bound relative to the static eval. An exclusion search is barred
-    // too: its score deliberately omits the best move, so it reads low against the
-    // static eval for a reason the correction keys cannot represent.
+    // respects the bound vs static eval. Exclusion searches are barred too: their
+    // score deliberately omits the best move, for a reason the keys can't represent.
     if !in_check && excluded_move.is_none() {
         let best_move_is_quiet = match best_move {
             Some(m) => {
@@ -5593,15 +5584,9 @@ fn quiescence(
         },
     );
 
-    // Learning is relative to the static eval, so it needs a real one: tactical_check
-    // nodes leave the sentinel behind instead.
-    //
-    // Only an obstacle board learns here. Its quiescence generator is widened to
-    // include the quiet pawn-takes-obstacle breakout, so quiescence there resolves
-    // position and the gap is real signal. Everywhere else the gap is the tactical
-    // swing quiescence just resolved, which the correction keys (material, non-pawn,
-    // minor structure) cannot identify, so it aliases as noise: measured mean |diff|
-    // 127cp here against 33cp in the main search, over 64% of all updates.
+    // Skips tactical_check (sentinel, no real eval). Only Obstocean learns here:
+    // its widened qsearch resolves position so the gap is real signal; elsewhere
+    // it's unidentifiable tactical noise (measured mean |diff| 127cp vs 33cp).
     let widened_qsearch = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean;
     if !tactical_check && widened_qsearch {
         let prev_move_idx = if ply > 0 {

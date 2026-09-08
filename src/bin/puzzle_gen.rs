@@ -1,33 +1,20 @@
 //! Puzzle generator: mines a self-play game corpus for tactical puzzles.
 //!
-//! Five stages, cheapest filter first. Stage 0 uses only the `[%eval]`/`[%mate]`
-//! annotations the corpus already carries, so the overwhelming majority of plies
-//! are rejected before the engine is ever started.
-//!
+//! Five stages, cheapest filter first:
 //!   0 scan   - annotation trace -> candidate plies (no engine)
-//!   1 replay - reconstruct only those positions, board filters + hash dedup
+//!   1 replay - reconstruct positions, board filters + hash dedup
 //!   2 verify - shallow MultiPV: is there a single clearly-best move?
-//!   3 cook   - deep walk building the forced line, only-move checked every solver ply
-//!   4 rate   - difficulty features -> an absolute rating, plus theme tagging
+//!   3 cook   - deep walk building the forced line, only-move checked each ply
+//!   4 rate   - difficulty features -> rating + theme tags
 //!
-//! Four candidate sources feed stage 0 (see `Source`): a game turning decisively
-//! (`turning_point`), a mate materialising out of nowhere (`mate_shot`), a holding
-//! position collapsing (`missed_save`), and a lost position that drew (`draw_save`,
-//! solved by `cook_draw` instead of `cook` -- there the win condition is reaching a
-//! proven repetition, not converting an advantage).
+//! Four `Source`s feed stage 0: `turning_point`, `mate_shot`, `missed_save`,
+//! `draw_save` (solved by `cook_draw` -- win condition is a proven repetition,
+//! not converting an advantage). World bounds are process-global
+//! (`moves::set_world_bounds`), so variants run one at a time.
 //!
-//! World bounds are a process-global (`moves::set_world_bounds`), so variants are
-//! processed one at a time and parallelism lives inside a variant, never across.
-//!
-//! Maintenance passes, run against an existing output file instead of generating:
-//! `--refresh` recomputes search-free features and re-rates; `--recook` rebuilds
-//! each solution line with the current defence logic; `--deep-verify` re-checks
-//! every root at high depth and records the true mate distance. All three
-//! checkpoint their own progress (`<out>.recook.jsonl`, `<out>.deepverify.jsonl`),
-//! so a killed run resumes instead of restarting. `--auto-corpus` (with
-//! `--auto-corpus-root` or `PUZZLE_GEN_AUTO_CORPUS_ROOT`) and a persistent
-//! `--seen-manifest` mean a second invocation only ever mines corpus files it
-//! has not already fully processed.
+//! Maintenance passes (`--refresh`, `--recook`, `--deep-verify`) run against an
+//! existing output and checkpoint progress so a killed run resumes.
+//! `--auto-corpus` + `--seen-manifest` skip already-mined corpus files.
 
 use apeiron::Variant;
 use apeiron::board::{Coordinate, PieceType, PlayerColor};
@@ -95,17 +82,15 @@ const TURN_WIN_FLOOR: i32 = 400;
 const MATE_MAX_DIST: i32 = 10;
 /// Below this the position is a trivial mop-up, not a puzzle.
 const MIN_PIECES: u32 = 6;
-/// Winner-perspective material cap. Lichess drops anything where the winner is
-/// already ahead, as a proxy for "the win is not already in hand". The only-move
-/// rule tests that directly and far better, so this only has to cut the hopeless
+/// Winner-perspective material cap (Lichess-style "win not already in hand" proxy).
+/// The only-move rule already tests that directly, so this just cuts hopeless
 /// conversions where a search would be wasted.
 const MAX_LEAD: i32 = 3000;
 /// Candidates from one game must sit this far apart, or they are near-copies.
 const MIN_PLY_GAP: usize = 4;
-/// A move wins past this on this engine's scale; at or under `HELD_CP` the win is
-/// gone. A puzzle has to *cross* that boundary: +5 -> 0 is a puzzle, +20 -> +10 is
-/// not, because every move there still wins. A win-chance gap cannot express this —
-/// it passes +2000 vs +900, where missing the "solution" costs nothing real.
+/// A move wins past this; at/under `HELD_CP` the win is gone. A puzzle must
+/// *cross* that boundary (+5->0 is one, +20->+10 isn't) -- a win-chance gap alone
+/// can't express this, since it would also pass +2000 vs +900, where nothing is lost.
 const WON_CP: i32 = 500;
 /// +300 is a ~64% expected score on the fitted curve — clearly better, not won —
 /// so an alternative there still means the win was thrown away.
@@ -120,10 +105,9 @@ const DEF_LOST_CP: i32 = 600;
 /// Source D: the mover must be underwater by at least this much for the "drew
 /// from a lost position" premise to mean anything.
 const DRAW_LOST_CP: i32 = 700;
-/// How much clearer the runner-up must be, in win-chance terms, for a draw-save
-/// ply's best defence to count as the only one. Not an absolute score band -- a
-/// real save often stays clearly bad for several moves before the repetition
-/// that actually closes it, so gating on "already near 0" rejects the premise.
+/// Win-chance gap (not an absolute score band) for a draw-save ply's best defence
+/// to count as the only one -- a real save often stays clearly bad for several
+/// moves before the repetition that closes it, so gating on "near 0" would reject it.
 const DRAW_ONLY_GAP: f64 = 0.30;
 /// Screen threshold, a deliberately slack version of `HELD_CP` so a shallow
 /// search's noise cannot throw away a genuine puzzle.
@@ -132,14 +116,9 @@ const SCREEN_SECOND_CEIL: i32 = 1200;
 /// an already-forced sequence.
 const MAX_REWIND: usize = 6;
 
-/// Variants worth building a puzzle set from: everything live on the public site,
-/// plus Scattered_Leapers for fairy-piece coverage. Custom test variants are out.
-///
-/// Obstocean is deliberately absent, not merely skipped by default: its eval is
-/// unreliable enough (real, observed swings) that its puzzles were regularly not
-/// sound only-moves. Structural exclusion here means no flag combination can bring
-/// it back in -- unlike `Cfg::skip`, which only Chess defaults into and which
-/// `--keep-all-variants` can override.
+/// Public-site variants plus Scattered_Leapers (fairy-piece coverage); custom test
+/// variants excluded. Obstocean is structurally absent (not just `Cfg::skip`-default)
+/// because its unreliable eval regularly produced unsound only-moves.
 const ALLOWED_VARIANTS: &[Variant] = &[
     Variant::Classical,
     Variant::ConfinedClassical,
@@ -216,10 +195,8 @@ struct Scan {
 }
 
 impl Scan {
-    /// Widens only what adds *distinct* positions. The eval thresholds are left
-    /// alone on purpose: dropping them measured 5x worse acceptance (turning
-    /// points went 4.2% -> 0.2%), so relaxing those costs CPU and yields fewer
-    /// puzzles, not more.
+    /// Widens only what adds *distinct* positions; eval thresholds stay put --
+    /// relaxing them measured 5x worse acceptance (turning points 4.2% -> 0.2%).
     fn wide(self) -> Self {
         Self {
             mate_max_dist: 12,
@@ -276,21 +253,16 @@ struct Cfg {
     /// Scan every session's scratchpad for corpus files instead of requiring
     /// `--corpus` for each new one by hand.
     auto_corpus: bool,
-    /// Root to walk for `--auto-corpus`: every immediate subdirectory's own
-    /// `scratchpad` is searched. Set via `--auto-corpus-root` or the
-    /// `PUZZLE_GEN_AUTO_CORPUS_ROOT` env var -- there is no built-in default,
-    /// since this is specific to wherever the caller's game-generation tooling
-    /// happens to drop its output.
+    /// Root to walk for `--auto-corpus`: every subdirectory's own `scratchpad` is
+    /// searched. No built-in default -- set via `--auto-corpus-root` or
+    /// `PUZZLE_GEN_AUTO_CORPUS_ROOT`, specific to the caller's tooling layout.
     auto_corpus_root: Option<String>,
-    /// Unix timestamp (seconds): mark every discovered corpus file with mtime at
-    /// or before this as already scanned, without actually scanning it. For
-    /// backfilling the manifest against files a prior run (before the manifest
-    /// existed) already mined -- hashes still come from `hash_file_contents`, so
-    /// they dedup identically to a file the manifest recorded the normal way.
+    /// Unix timestamp: mark corpus files with mtime at or before this as already
+    /// scanned without scanning them, to backfill the manifest for files a prior
+    /// run (before the manifest existed) already mined.
     seed_before: Option<String>,
-    /// Persistent record of corpus files already scanned by ANY prior run,
-    /// independent of `--out` -- generation output changes across runs, but
-    /// "have I already mined this file" should not.
+    /// Persistent record of corpus files scanned by ANY prior run, independent of
+    /// `--out` -- generation output changes across runs, mining history shouldn't.
     seen_manifest: PathBuf,
     mark_seen: bool,
 }
@@ -540,11 +512,9 @@ fn scan_game(
     if skip.contains(name) {
         return None;
     }
-    // A real prior for "this position had a save in it": drawn games are rare
-    // (~16% of the corpus) next to decisive ones, so restricting the draw-save
-    // detector to games that actually drew is most of the filtering for free,
-    // before a single search runs. Everything found is still re-verified from
-    // scratch by `cook_draw` -- this only decides where to look.
+    // Drawn games are rare (~16% of the corpus), so restricting the draw-save
+    // detector to games that actually drew is most of the filtering for free.
+    // `cook_draw` still re-verifies everything found -- this only picks where to look.
     let drawn_game = header(raw, "Result") == Some("1/2-1/2");
     // `Variant::parse` returns `None` for anything it cannot resolve (fixed
     // upstream so an unrecognized tag like "Omega" no longer silently falls back
@@ -662,10 +632,9 @@ fn scan_game(
         ));
     }
 
-    // Source D - the mover was already dead lost, in a game that drew. The
-    // position asks: what is the one line back to a proven draw? Sampled evenly
-    // rather than just once, since only a fraction survive the only-move test and
-    // the eval trace cannot tell us in advance which lost stretch held.
+    // Source D: mover was dead lost in a game that drew. Sampled evenly rather
+    // than once, since only a fraction survive the only-move test and the eval
+    // trace can't tell in advance which lost stretch held.
     if drawn_game {
         // `j` is stored as `ply`, not just used to index -- the iterator rewrite
         // clippy suggests would need the same index kept alongside it anyway.
@@ -712,10 +681,8 @@ fn scan_game(
 }
 
 /// Every immediate subdirectory's `scratchpad`, for `--auto-corpus`. Matches a
-/// layout where each work session gets its own `<id>/scratchpad`, and SPRT runs
-/// drop `games*.json` wherever the active session happened to be -- e.g. Claude
-/// Code's per-session temp directories, but any tool using the same convention
-/// works.
+/// layout where each work session has its own `<id>/scratchpad` and SPRT runs
+/// drop `games*.json` there (e.g. Claude Code's per-session temp directories).
 fn discover_session_scratchpads(root: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(root) else {
@@ -824,12 +791,9 @@ fn corpus_dirs(cfg: &Cfg) -> Vec<PathBuf> {
     dirs
 }
 
-/// Marks every discovered corpus file with mtime at or before `cutoff` (a Unix
-/// timestamp in seconds) as already scanned, without running a single search --
-/// for backfilling the manifest against a corpus a run before the manifest
-/// existed already mined. Anything newer is left alone for a real `scan()` to
-/// pick up. Hashing goes through the exact same `hash_file_contents` a real scan
-/// uses, so a file seeded this way dedups identically to one recorded normally.
+/// Marks corpus files with mtime at or before `cutoff` (Unix seconds) as already
+/// scanned, without running a search -- backfills the manifest for a corpus mined
+/// before it existed. Newer files are left for a real `scan()`.
 fn seed_manifest_before(cfg: &Cfg, cutoff_str: &str) {
     let Ok(cutoff) = cutoff_str.parse::<u64>() else {
         eprintln!("--seed-manifest-before wants a Unix timestamp in seconds, got {cutoff_str:?}");
@@ -927,13 +891,9 @@ fn scan(cfg: &Cfg) -> (Vec<GameRec>, Vec<u64>) {
         })
         .collect();
     pb.finish_and_clear();
-    // NOT marked here. Scanning a file is cheap; solving its candidates is the
-    // expensive part and can be killed mid-way through -- exactly what happened
-    // once already. Marking this early meant a killed run's un-solved candidates
-    // (for whichever variants the per-variant loop had not yet reached) silently
-    // vanished on resume, because the file that would have re-produced them was
-    // already "seen". The caller marks these hashes only after every variant's
-    // solve loop has actually finished.
+    // NOT marked here: solving (not scanning) is the expensive, killable part.
+    // Marking early once made un-solved candidates vanish on resume; the caller
+    // marks these only after every variant's solve loop finishes.
     (recs, file_hashes.into_iter().map(|(_, h)| h).collect())
 }
 
@@ -1093,10 +1053,9 @@ fn mpv(st: &mut GameState, depth: usize, cap_ms: u128, lines: usize) -> search::
     )
 }
 
-/// Fully legal moves. `get_pseudo_legal_moves` is pseudo-legal and keeps the slider
-/// candidate cache, so an exact list needs the buffer form (which bypasses it)
-/// plus a legality filter -- the same two steps the search does at its root.
-/// Without this an empty list never appears and checkmate is never detected.
+/// Fully legal moves via the exact-list buffer form (bypasses the slider cache)
+/// plus a legality filter -- neither pseudo-legal generator alone can produce an
+/// empty list, so skipping either step means checkmate is never detected.
 fn legal_moves(st: &mut GameState) -> MoveList {
     let mut pseudo = MoveList::new();
     st.get_pseudo_legal_moves_into(&mut pseudo);
@@ -1112,11 +1071,9 @@ fn legal_moves(st: &mut GameState) -> MoveList {
     out
 }
 
-/// The one rule, applied at every solver ply: the move has to put the game on the
-/// good side of an outcome boundary and every alternative on the bad side. Read as
-/// an attack (win vs not-win) or as a defence (playable vs lost). A gap that stays
-/// inside one band -- +20 down to +10, say -- is not a puzzle, because missing the
-/// move costs nothing that matters.
+/// The one rule, applied at every solver ply: the move must land on the good side
+/// of an outcome boundary (win vs not-win, or playable vs lost) and every
+/// alternative on the bad side. A gap within one band (+20 to +10) isn't a puzzle.
 fn valid_attack(best: i32, second: Option<i32>) -> bool {
     let wins = search::is_win(best) || best >= WON_CP;
     let holds = best >= HOLD_FLOOR;
@@ -1318,12 +1275,9 @@ fn cook(
                 stop = 2;
                 break;
             };
-            // The strongest defence is not always the best one to show. If a reply
-            // that concedes almost nothing leaves the attacker exactly one winning
-            // move, while the top reply leaves several, the near-equal move makes the
-            // better puzzle: it forces the solver to find more precise moves. So
-            // among replies that do not throw the game away, prefer one that keeps
-            // the attacker on a single move, and take the strongest such reply.
+            // Strongest defence isn't always best to show: among replies that don't
+            // throw the game away, prefer one that leaves the attacker exactly one
+            // winning move (a better puzzle), else fall back to the strongest reply.
             let mut choice = top.mv;
             let best_def = top.score;
             for l in r.lines.iter() {
@@ -1388,12 +1342,9 @@ fn cook(
     })
 }
 
-/// The only-move rule for a defensive save, read relative to the position rather
-/// than against an absolute band: the move must not itself be a proven loss, and
-/// every alternative must be clearly worse -- either a proven loss outright, or a
-/// win-chance gap wide enough that it is not a real second try. Whether the
-/// position is *good* is not the question here; a save can stay ugly for a long
-/// time before the repetition that actually closes it.
+/// Only-move rule for a defensive save, relative not absolute: the move must not
+/// itself be a proven loss, and every alternative must be a proven loss or a
+/// win-chance gap too wide to be a real second try -- being *good* isn't required.
 fn valid_defense(best: i32, second: Option<i32>) -> bool {
     if search::is_loss(best) {
         return false;
@@ -1404,12 +1355,9 @@ fn valid_defense(best: i32, second: Option<i32>) -> bool {
     }
 }
 
-/// Mirrors `cook`, but the win condition is different in kind, not just degree: a
-/// move is validated by the same only-move rule (`valid_attack`'s "holds" branch --
-/// this move stays inside the draw band, every other move loses outright), and
-/// success is a position repeat, checked against the SAME hash rule `cook` uses to
-/// reject one. A line that never repeats and never escapes is not a proven draw,
-/// so it is discarded rather than shipped as a hopeful near-miss.
+/// Mirrors `cook`, but success is a position repeat (checked via the same hash rule
+/// `cook` uses to reject one) rather than converting an advantage; a line that
+/// never repeats and never escapes is not a proven draw and is discarded.
 fn cook_draw(st: &mut GameState, defender: PlayerColor, cfg: &Cfg) -> Option<Cooked> {
     let mut line: Vec<Move> = Vec::new();
     let mut defender_replies = Vec::new();
@@ -1454,10 +1402,8 @@ fn cook_draw(st: &mut GameState, defender: PlayerColor, cfg: &Cfg) -> Option<Coo
             final_score = best.score;
             line.push(best.mv);
             st.make_move(&best.mv);
-            // Checked only here, on the defender's own move: an opponent move that
-            // happens to repeat a position was not the solver forcing anything, and
-            // trimming the line for parity would otherwise risk erasing the exact
-            // move that closed the repetition.
+            // Checked only on the defender's own move -- an opponent move that
+            // happens to repeat wasn't the solver forcing anything.
             if !seen.insert(st.hash) {
                 drew = true;
                 break;
@@ -1541,10 +1487,9 @@ struct Features {
     mean_solver_choice: f64,
 }
 
-/// How unintuitive a piece is to calculate with, which is not the same as how
-/// strong it is. A chancellor is just rook+knight and reads easily; a huygen
-/// jumps prime distances and a knightrider slides in knight steps, and neither
-/// has any counterpart in normal chess.
+/// How unintuitive a piece is to calculate with, not how strong it is: a
+/// chancellor reads as rook+knight, but a huygen (prime-distance jumps) and a
+/// knightrider (sliding knight steps) have no normal-chess counterpart.
 fn fairy_complexity(pt: PieceType) -> f64 {
     match pt {
         PieceType::Huygen => 1.00,
@@ -1670,10 +1615,9 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
     let mut solver_dests: Vec<Coordinate> = Vec::new();
     let mut fork_by_move: Vec<f64> = Vec::new();
     let mut solver_choice_sum = 0.0f64;
-    // How narrow the defender's survival is at each of their turns. A defender with
-    // one or two saving replies among many legal ones means the solver had to see
-    // past a pile of tries that all look like they hold -- exactly the work that
-    // makes a line hard to be sure of.
+    // How narrow the defender's survival is: one or two saving replies among many
+    // legal ones means the solver had to see past a pile of tries that look like
+    // they hold.
     let mut escape_narrow_sum = 0.0f64;
     let mut defender_plies = 0usize;
 
@@ -1702,10 +1646,8 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         let legal_here = legal_moves(&mut st);
         let chosen = legal_here.iter().find(|m| move_to_icn(m) == *mv).copied()?;
         if solver {
-            // Nothing is "found" when there was nothing to choose between. The old
-            // cutoff only zeroed a single legal move, so a move picked from two --
-            // which is what a forced recapture after a desperado looks like -- scored
-            // the same as one picked from three hundred. Scale smoothly instead.
+            // Scale smoothly by legal-move count: a hard cutoff scored a move picked
+            // from two (a forced recapture) the same as one picked from three hundred.
             let choice = n01((legal_here.len().max(1) as f64).log2() / 6.0);
             let choice_w = 0.25 + 0.75 * choice;
             solver_choice_sum += choice;
@@ -1799,11 +1741,9 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
     // time; a single piece manoeuvring is one idea followed through.
     calc_load += 0.30 * distinct_pieces.saturating_sub(1) as f64;
 
-    // Span of where the solution LANDS, not where its pieces set out from. One
-    // piece travelling in from a corner does not make a tactic spread out -- the
-    // action is still concentrated wherever the moves arrive, and the journey is
-    // already paid for in `move_visibility_cost`. Including origins here both
-    // double-counted travel and read a concentrated combination as a sprawling one.
+    // Span of where the solution LANDS, not where pieces set out from -- one piece
+    // travelling in from a corner isn't a sprawling tactic; the travel is already
+    // paid for in `move_visibility_cost`.
     let mut action_span = 0i64;
     for (i, a) in solver_dests.iter().enumerate() {
         for b in &solver_dests[i + 1..] {
@@ -1835,10 +1775,8 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         distinct_pieces,
         action_span,
         mean_hop,
-        // A fork you only have to spot once you are already there is a different
-        // thing from one you must foresee from the very first move. Weight each by
-        // how deep in the line it lands, so the payoff at the end -- the case that
-        // has to be visualised from far back -- counts for most.
+        // A fork foreseen from move one is harder than one spotted once you're
+        // already there; weight by depth so the payoff far back counts for most.
         fork_peak: fork_by_move
             .iter()
             .enumerate()
@@ -1940,42 +1878,33 @@ fn explain(path: &Path, needle: &str) {
     }
 }
 
-/// Absolute rating in Elo-like points, judged on the puzzle alone -- not a rank
-/// transform, which would rate something 2800 every run whether anything that
-/// hard exists or not. Every term below is a fixed number of points, so the top
-/// of the scale needs a long quiet line, an invisible move, a crowded board and
-/// an exotic piece together, which rarely co-occurs. Tuned anchors: an obvious
-/// mate in 1 lands near 600, a forcing mate in 3 near 1000, a mid-length
-/// half-forcing tactic near 1500, a long quiet combination near 2400.
+/// Absolute rating in Elo-like points, not a rank transform (which would always
+/// rate something 2800). Each term is a fixed budget, so the top needs a long
+/// quiet line, invisible move, crowded board and exotic piece all together.
 fn puzzle_rating(f: &Features) -> i32 {
     let n = |v: f64, hi: f64| (v / hi).clamp(0.0, 1.0);
     let forcing = f.forcing.clamp(0.0, 1.0);
     let fairy_used = f.fairy_used.clamp(0.0, 1.0);
 
-    // Forcing is only cheap when you can see the moves at a glance; a sequence of
-    // huygen jumps has to be verified square by square, so exotic pieces claw
-    // most of that discount back.
+    // Forcing is only cheap when the moves are seen at a glance; huygen-style
+    // jumps need square-by-square verification, clawing the discount back.
     let eff_forcing = forcing * (1.0 - 0.65 * fairy_used);
 
-    // `calc_load` sums how hard each solver move is to FIND, so a tail that only
-    // collects material the first move already won counts as one idea, not extra
-    // plies. `mate_tail` is a floor for deep-verified mates whose recorded line
-    // stops short: the solver still has to see the mate through, capped so a
-    // mate in 9 shown as a one-mover can't max out the whole term alone.
+    // `calc_load` sums how hard each move is to FIND, so mopping up already-won
+    // material counts as one idea, not extra plies. `mate_tail` floors deep-verified
+    // mates whose recorded line stops short (capped, so mate in 9 can't dominate).
     let mate_tail = (f.mate_plies.saturating_sub(f.plies) as f64 * 0.20).min(2.0);
     let load = f.calc_load + mate_tail;
     let calc = n(load, 5.5); // genuinely hard lines run past four hard moves
 
-    // How invisible the key move is, damped by how much there is to find --
-    // an invisible one-mover and an invisible move at the end of nine plies of
-    // calculation are not the same thing.
+    // How invisible the key move is, damped by how much there is to find -- an
+    // invisible one-mover isn't the same as one at the end of nine plies of calc.
     let obscure = (0.60 * n(f.shallow_rank as f64, 10.0)
         + 0.40 * n(f.depth_to_find.saturating_sub(2) as f64, 12.0))
         * (0.50 + 0.50 * calc);
 
-    // How much board the solver has to hold in their head, counted only once the
-    // move is actually hard to find -- an obvious move stays obvious on a busy
-    // board, so raw crowding or fairy presence alone should not buy a high rating.
+    // How much board the solver must hold in mind, counted only once the move is
+    // hard to find -- an obvious move stays obvious on a busy board.
     let raw_complex =
         0.55 * n(f.relevant as f64, 110.0) + 0.25 * fairy_used + 0.20 * n(f.fairy_present, 4.0);
     let complex = raw_complex * (0.35 + 0.65 * calc);
@@ -1986,11 +1915,9 @@ fn puzzle_rating(f: &Features) -> i32 {
     // loses, so how much worse it is beyond that is a weak extra signal.
     let margin_edge = 1.0 - n(f.margin, 1.4);
 
-    // How many candidate moves actually have to be weighed, log-scaled (legal
-    // counts run into the hundreds on an unbounded board) and, like `complex`,
-    // counted only when the moves have to be calculated rather than glanced at.
-    // Averaged over every solver ply rather than the root alone: a puzzle that opens
-    // narrow and fans out later is not a narrow puzzle.
+    // How many candidates must be weighed, log-scaled (legal counts run into the
+    // hundreds on an unbounded board), averaged over every ply rather than the
+    // root alone -- a puzzle that opens narrow and fans out later isn't narrow.
     let (cand_all, cand_forcing) = if f.mean_cand > 0.0 {
         (f.mean_cand, f.mean_forcing_cand)
     } else {
@@ -1999,17 +1926,14 @@ fn puzzle_rating(f: &Features) -> i32 {
     let candidates = eff_forcing * cand_forcing + (1.0 - eff_forcing) * cand_all;
     let branching = n((candidates.max(1.0)).log2() / 9.0, 1.0) * calc;
 
-    // Forcing has to SCALE the calculation, not be subtracted from it. As a flat
-    // -120 against a term worth up to 1500 it was an 8% rebate at the top, which is
-    // how an all-check line came to outrank every quiet combination in the set.
-    // Every check narrows the tree at every ply, so its saving grows with length.
+    // Forcing must SCALE the calculation, not subtract from it: as a flat -120
+    // against a term worth up to 1500, an all-check line outranked every quiet
+    // combination. Each check narrows the tree, so its saving grows with length.
     let calc_term = 1500.0 * calc * (1.0 - 0.45 * eff_forcing);
 
-    // How far apart the solution's squares lie. A tactic confined to one corner is
-    // a single pattern to see; one spanning the board asks the solver to hold
-    // distant areas in mind together. Measured to carry information the rest of the
-    // model does not (partial r 0.26 against calc_load), and log-scaled because
-    // 30 squares versus 60 is not twice as hard to span.
+    // How far apart the solution's squares lie -- one corner is a single pattern,
+    // a board-spanning tactic asks the solver to hold distant areas together.
+    // Log-scaled: 30 squares vs 60 isn't twice as hard.
     let spread = n((f.action_span.max(1) as f64).log2() / 5.0, 1.0) * calc;
 
     let r = 560.0
@@ -2039,10 +1963,9 @@ fn puzzle_rating(f: &Features) -> i32 {
 /// engine-derived signals (shallow_rank, depth-to-find) rank within that.
 fn raw_difficulty(f: &Features) -> f64 {
     let n = |v: f64, hi: f64| (v / hi).clamp(0.0, 1.0);
-    // Forcing shortens the line you actually have to calculate rather than shaving a
-    // fixed amount off the end: at every check or capture the replies collapse to a
-    // handful. So it scales the length term instead of being subtracted from it --
-    // a seven-ply line of checks is about as much work as a three-ply quiet one.
+    // Forcing scales the length term (not a flat subtraction): at every check or
+    // capture the replies collapse to a handful, so a seven-ply check line is
+    // about as much work as a three-ply quiet one.
     let eff_plies = f.plies.saturating_sub(1) as f64 * (1.0 - 0.60 * f.forcing.clamp(0.0, 1.0));
     0.30 * n(eff_plies, 6.0)
         + 0.16 * n(f.shallow_rank as f64, 8.0)
@@ -2121,10 +2044,9 @@ fn attackers_of(st: &GameState, sq: Coordinate, side: PlayerColor) -> usize {
         .count()
 }
 
-/// How hard a move is to even *notice*, independent of what it accomplishes. A
-/// piece arriving from far away is the classic "I never looked there" move, and
-/// distance was previously computed but never used. Log-scaled: 20 squares vs 40
-/// isn't twice the surprise, both are simply off the part of the board in view.
+/// How hard a move is to even *notice*, independent of what it accomplishes -- a
+/// piece arriving from far away is the classic "I never looked there" move.
+/// Log-scaled: 20 squares vs 40 isn't twice the surprise, both are off-screen.
 fn move_visibility_cost(mv: &Move) -> f64 {
     let dist = chebyshev(mv.from, mv.to).max(1) as f64;
     let reach = (dist.log2() / 4.0).clamp(0.0, 1.0); // 1 sq -> 0, 16+ -> 1
@@ -2132,11 +2054,9 @@ fn move_visibility_cost(mv: &Move) -> f64 {
     1.0 + 0.45 * reach + 0.35 * exotic
 }
 
-/// How hard one solver move is to FIND, from 0 (writes itself) to ~1.2 (has to be
-/// seen). Raw ply count treats every move alike, which is what lets a skewer
-/// whose follow-up is "take the other one" rate as long when it's one idea.
-/// `st` is the position before the move; `prev_capture` is the opponent's last
-/// capture square, if any.
+/// How hard one solver move is to FIND, 0 (writes itself) to ~1.2 (has to be
+/// seen) -- raw ply count would rate a skewer's "take the other one" follow-up
+/// as long when it's one idea. `prev_capture` is the opponent's last capture square.
 fn move_find_difficulty(
     st: &GameState,
     mv: &Move,
@@ -2180,10 +2100,8 @@ fn move_find_difficulty(
             return 0.55;
         }
         if vv + 100 < av {
-            // Giving up material to take something smaller is a sacrifice, and those
-            // are exactly the moves that do not suggest themselves -- unless the
-            // sacrifice is itself a check, in which case it sits in the handful of
-            // forcing moves the solver scans first and is far easier to stumble on.
+            // A sacrifice doesn't suggest itself -- unless it's also a check, which
+            // puts it in the handful of forcing moves a solver scans first.
             return if gives_check { 0.65 } else { 1.20 };
         }
         return 0.85;
@@ -2194,14 +2112,9 @@ fn move_find_difficulty(
     if gives_check { 0.60 } else { 1.0 }
 }
 
-/// Counts enemy pieces the just-moved piece now hits that are worth hitting:
-/// royals, undefended pieces, or anything more valuable than the attacker.
-/// How hard a double attack is to see coming, rather than merely whether one
-/// exists. Three things compound: the piece arrives from a distance, it hits two
-/// or more pieces worth hitting, and those targets lie in different directions,
-/// so no single glance takes them both in. A huygen landing between a queen and a
-/// royal on opposite sides is the extreme case, and the plain `fork` theme flag
-/// says nothing about any of it.
+/// How hard a double attack is to see coming, not merely whether one exists: the
+/// piece arrives from distance, hits two+ worthwhile targets in different
+/// directions -- a huygen forking a queen and royal is the extreme the `fork` flag misses.
 fn fork_strength(st: &GameState, at: Coordinate, winner: PlayerColor, move_dist: i64) -> f64 {
     let Some(piece) = st.board.get_piece(at.x, at.y) else {
         return 0.0;
@@ -2505,10 +2418,9 @@ struct PuzzleRecord {
     /// What the annotation-only scan thought, before any search. Handy for
     /// re-tuning stage 0 without re-running the engine.
     scan_eval: i32,
-    /// Sum of per-move find-difficulty over the solver's moves, which is what the
-    /// rating measures instead of raw ply count: a move that recaptures or takes a
-    /// hanging piece scores near zero, so lines that "collect" after the real shot
-    /// no longer read as long.
+    /// Sum of per-move find-difficulty (what the rating uses instead of raw ply
+    /// count): a recapture or hanging-piece grab scores near zero, so a "collect"
+    /// tail after the real shot doesn't read as long.
     #[serde(default)]
     calc_load: f64,
     /// Internals exposed so the rating model can be audited against real data
@@ -2596,11 +2508,9 @@ fn spawn_writer(out: PathBuf, prog: PathBuf, rx: mpsc::Receiver<Emit>) -> thread
     })
 }
 
-/// Runs `f` on a fresh OS thread and waits up to `dur`. `check_time`'s hard-limit
-/// polling has not proven reliable on every position this engine's movegen can
-/// produce -- a `--deep-verify` pass has stalled for hours on one candidate with
-/// 15 of 16 cores idle. Past the deadline the candidate is abandoned (its thread
-/// keeps running, but no longer blocks the batch) rather than holding up the rest.
+/// Runs `f` on a fresh OS thread and waits up to `dur`, because `check_time`'s
+/// polling isn't reliable on every position (a `--deep-verify` pass once stalled
+/// for hours). Past the deadline the candidate is abandoned, not awaited.
 fn with_hard_timeout<T: Send + 'static>(
     dur: Duration,
     f: impl FnOnce() -> T + Send + 'static,
@@ -2612,10 +2522,9 @@ fn with_hard_timeout<T: Send + 'static>(
     rx.recv_timeout(dur).ok()
 }
 
-/// Append-only JSONL cache keyed by `position_icn`, so an expensive pass
-/// (`--deep-verify`, `--recook`) can resume after a kill instead of restarting.
-/// On load, the LAST entry per key wins, so a resumed run's fresh results
-/// naturally supersede a stale line without any explicit invalidation.
+/// Append-only JSONL cache keyed by `position_icn`, so `--deep-verify`/`--recook`
+/// resume after a kill. On load the LAST entry per key wins, so fresh results
+/// supersede stale ones with no explicit invalidation.
 struct Checkpoint<T> {
     done: FxHashMap<String, T>,
     writer: Mutex<BufWriter<fs::File>>,
@@ -2668,10 +2577,9 @@ struct DeepVerifyResult {
     verified: bool,
 }
 
-/// Re-examines every stored puzzle at a much greater depth than generation used:
-/// the true score, whether it's really a forced mate (the cook can truncate a
-/// line as soon as two moves both mate, mislabeling it a material win), and
-/// whether the stored answer is still the unique one.
+/// Re-examines every stored puzzle at much greater depth: the true score, whether
+/// it's really a forced mate (the cook can truncate as soon as two moves both
+/// mate, mislabeling it a material win), and whether the answer stays unique.
 fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let ckpt: Checkpoint<DeepVerifyResult> =
         Checkpoint::open(checkpoint_path(&cfg.out, "deepverify"));
@@ -2911,11 +2819,6 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     (longer, kept)
 }
 
-/// Recomputes the difficulty features that need no search -- forcing fraction,
-/// mate flag, piece and fairy counts -- by replaying each stored solution, then
-/// rebuilds `difficulty_raw`. Lets the rating model be retuned against an existing
-/// CSV without redoing a single search. Bounds are global, so rows are grouped by
-/// variant exactly as generation does.
 /// Rewrites the `<halfmove>/<limit>` token to a fresh clock.
 fn zero_move_clock(icn: &str) -> String {
     let mut toks: Vec<String> = icn.split_whitespace().map(str::to_string).collect();
@@ -2927,6 +2830,9 @@ fn zero_move_clock(icn: &str) -> String {
     toks.join(" ")
 }
 
+/// Recomputes the difficulty features that need no search -- forcing fraction,
+/// mate flag, piece/fairy counts -- and rebuilds `difficulty_raw`, so the rating
+/// model can be retuned against an existing CSV without redoing a single search.
 fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
     let mut by_variant: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
     for (i, p) in puzzles.iter().enumerate() {
@@ -3136,10 +3042,9 @@ fn move_to_icn(m: &Move) -> String {
 
 // ---------------------------------------------------------------------------
 
-/// Last line of defence before a puzzle is written: the position must be legal
-/// (a side to move that can capture the enemy royal means the replay desynced),
-/// every solution move must actually be legal where it is played, and a line
-/// claiming mate must really end in one.
+/// Last line of defence before a puzzle is written: position legal (a side that
+/// can capture the enemy royal means replay desynced), every move actually legal
+/// where played, and a claimed mate really ends in one.
 fn line_is_sound(icn: &str, line: &[Move], ends_in_mate: bool) -> bool {
     let mut st = GameState::new();
     st.setup_position_from_icn(icn);
@@ -3157,14 +3062,9 @@ fn line_is_sound(icn: &str, line: &[Move], ends_in_mate: bool) -> bool {
     !ends_in_mate || (legal_moves(&mut st).is_empty() && st.is_in_check())
 }
 
-/// True when the answer is just "take it back". The opponent traded on a square
-/// and the solution recaptures there; not finding that is not a puzzle, it is not
-/// knowing the rules. A recapture only survives when the solver still has to pick
-/// *which* piece takes and the shallow-obvious choice is the wrong one.
-/// Serialises the position itself, with no move list, so there is no question of
-/// which ply the puzzle starts on. The promotion/bounds/win-condition tokens are
-/// copied verbatim from the game's own starting ICN: they never change, and
-/// rebuilding them risks a dialect mismatch.
+/// Serialises the position with no move list, so there's no ambiguity about which
+/// ply it starts on. Promotion/bounds/win-condition tokens are copied verbatim
+/// from the game's starting ICN to avoid a dialect mismatch from rebuilding them.
 fn position_to_icn(st: &GameState, start_icn: &str) -> String {
     let toks: Vec<&str> = start_icn.split_whitespace().collect();
     let middle = if toks.len() > 4 {
@@ -3208,10 +3108,9 @@ fn position_to_icn(st: &GameState, start_icn: &str) -> String {
     }
 }
 
-/// The scan fires where the evaluation swing *shows up*, which can be several plies
-/// into a combination that was already forced. Walk back two plies at a time --
-/// same side to move -- while the earlier position is still an only-move win, so the
-/// puzzle starts where the sequence starts rather than in the middle of it.
+/// The scan fires where the eval swing *shows up*, which can be several plies into
+/// an already-forced combination. Walk back two plies (same side to move) while
+/// the earlier position is still an only-move win, to find the true start.
 fn rewind_to_start(cand: &Candidate, winner: PlayerColor, cfg: &Cfg) -> usize {
     let mut ply = cand.ply;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cfg.budget_ms);
@@ -3236,6 +3135,9 @@ fn rewind_to_start(cand: &Candidate, winner: PlayerColor, cfg: &Cfg) -> usize {
     ply
 }
 
+/// True when the answer is just "take it back" -- not finding that isn't a
+/// puzzle, it's not knowing the rules. Survives only when the solver still has
+/// to pick *which* piece takes and the obvious choice is wrong.
 fn trivial_recapture(cand: &Candidate, ply: usize, key: &Move, solution_plies: usize) -> bool {
     let Some((last_to, last_was_capture)) = cand.game.move_info(ply) else {
         return false;
@@ -3253,10 +3155,9 @@ fn trivial_recapture(cand: &Candidate, ply: usize, key: &Move, solution_plies: u
         .iter()
         .filter(|m| m.to == last_to)
         .count();
-    // Purely structural, on purpose. Engine ordering is no guide here: a move can
-    // top the shallow list merely for being a check and still be a fine puzzle.
-    // What makes a recapture worthless is having no choice about it, or being the
-    // whole answer -- they took, you took back, nothing else happened.
+    // Purely structural: engine ordering is no guide, a move can top the shallow
+    // list just for being a check and still be a fine puzzle. What makes a
+    // recapture worthless is having no choice, or being the whole answer.
     takers < 2 || solution_plies == 1
 }
 
@@ -3461,10 +3362,9 @@ fn solve(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> 
     })
 }
 
-/// Draw-save pipeline: the solver is not trying to win, they are trying to prove a
-/// draw from a position that is, right now, clearly lost. No rewind -- the scan
-/// already samples several lost stretches per game, so where exactly to start is
-/// covered by candidate density rather than by walking backward from one point.
+/// Draw-save pipeline: the solver proves a draw from a clearly lost position.
+/// No rewind -- the scan already samples several lost stretches per game, so
+/// where to start is covered by candidate density, not walking backward.
 fn solve_draw(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRecord> {
     let mut st = cand.game.state_at(cand.ply);
     let defender = st.turn;

@@ -70,10 +70,9 @@ thread_local! {
     pub(crate) static EVAL_BLACK_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
 }
 
-/// Per-level play-style weighting, in percent of the full-strength term. Damping
-/// attack and amplifying defense makes a weak level misjudge the position instead
-/// of misplaying a correct ranking. `NEUTRAL` is full strength, and only the
-/// generic evaluation honours it — `variants/` evaluators are unscaled.
+/// Per-level play-style weighting, in percent of the full-strength term: damps
+/// attack / amplifies defense so a weak level misjudges the position rather than
+/// the ranking. `NEUTRAL` is full strength; only generic eval honours this.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EvalStyle {
     pub attack_scale: i32,
@@ -2066,10 +2065,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         if (pt.is_minor() || pt == PieceType::Archbishop)
             && game.starting_squares.contains(&Coordinate::new(x, y))
         {
-            // A fairy leaper is near-useless from its starting square -- an odd leap
-            // pattern only pays once it has room -- while a knight or bishop at home
-            // is far less urgent. One shared value has to compromise between the two,
-            // which suits neither, so they are priced apart.
+            // A fairy leaper needs room for its odd leap pattern to pay off, unlike a
+            // knight/bishop at home; one shared value suited neither, so priced apart.
             piece_score -= if pt.is_minor() {
                 if matches!(pt, PieceType::Knight | PieceType::Bishop) {
                     // Ramped in value rather than flipped at a threshold, which paid
@@ -2432,10 +2429,9 @@ fn line_congestion(
     let Some(l) = line else { return 0 };
     let i = l.coords.partition_point(|&c| c < key);
     let mut units = 0;
-    // An enemy pawn walls a ray as surely as an own piece: it is usually
-    // defended, and capturing it does not open the line the slider wanted.
-    // A neutral or an enemy pawn is a fixture; an own piece can step aside, so it
-    // walls at a discount rather than in full.
+    // An enemy pawn walls a ray as surely as an own piece (usually defended, and
+    // capturing it doesn't open the line). Own pieces can step aside, so they
+    // wall at a discount; neutral/enemy pawns are fixtures and wall in full.
     let wall_units = |p: Piece, d: i64| -> i32 {
         let base = 3 - d as i32;
         if p.piece_type().is_neutral_type() || (p.color() != own && p.piece_type() == PieceType::Pawn)

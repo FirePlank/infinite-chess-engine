@@ -487,6 +487,8 @@ impl SharedTranspositionTable {
     }
 }
 
+const _: () = assert!(std::mem::size_of::<TTEntry>() == 16);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,7 +507,7 @@ mod tests {
             best_move: None,
             ply: 0,
         });
-        let res = tt
+        let _res = tt
             .probe(&TTProbeParams {
                 hash,
                 alpha: -1000,
@@ -796,5 +798,3 @@ mod tests {
         }
     }
 }
-
-const _: () = assert!(std::mem::size_of::<TTEntry>() == 16);
