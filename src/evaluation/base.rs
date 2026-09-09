@@ -3776,7 +3776,10 @@ fn score_passed_pawns<T: EvaluationTracer>(
             passed_pawn_adv_bonus()[can_advance as usize][safe_advance as usize][rel_rank];
         // A pawn nothing can catch is a queen, not a bonus; the graded terms above
         // top out far below that and the search needs ~75x its match budget to see it.
-        let unstoppable = dist_to_promo <= UNSTOPPABLE_MAX_DIST
+        // A blockaded pawn is going nowhere however far the defenders are: "passed"
+        // only rules out enemy pawns, not a knight parked in front of it.
+        let unstoppable = safe_path
+            && dist_to_promo <= UNSTOPPABLE_MAX_DIST
             && passer_is_unstoppable(game, (wx, w_promo), dist_to_promo, PlayerColor::Black);
         let unstoppable_bonus = if unstoppable {
             (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
@@ -3842,7 +3845,8 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
         let base_bonus =
             passed_pawn_adv_bonus()[can_advance as usize][safe_advance as usize][rel_rank];
-        let unstoppable = dist_to_promo <= UNSTOPPABLE_MAX_DIST
+        let unstoppable = safe_path
+            && dist_to_promo <= UNSTOPPABLE_MAX_DIST
             && passer_is_unstoppable(game, (bx, b_promo), dist_to_promo, PlayerColor::White);
         let unstoppable_bonus = if unstoppable {
             (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
