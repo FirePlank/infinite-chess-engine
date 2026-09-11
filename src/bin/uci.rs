@@ -149,7 +149,7 @@ fn fen_to_icn(fen: &str) -> Result<String, String> {
                 let token = if has_special_right {
                     format!("{}{},{}+", icn_code, x, y)
                 } else {
-                    format!("{},{},{}", icn_code, x, y)
+                    format!("{}{},{}", icn_code, x, y)
                 };
                 // Reformat: ICN uses `CODE x,y[+]` where CODE is uppercase for white
                 // Actually our ICN format is: `Px,y+` for white pawn with special right
