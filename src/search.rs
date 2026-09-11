@@ -9,7 +9,7 @@ use crate::search::params::{
     lmr_divisor, lmr_min_depth, lmr_min_moves, lmr_tt_history_thresh, low_depth_probcut_margin,
     nmp_base, nmp_depth_mult, nmp_min_depth, nmp_reduction_base, nmp_reduction_div,
     pawn_history_bonus_scale, pawn_history_malus_scale, probcut_depth_sub, probcut_divisor,
-    probcut_improving, probcut_margin, probcut_min_depth, razoring_linear, razoring_quad,
+    probcut_improving, probcut_margin, probcut_min_depth, razoring_quad,
     rfp_improving_mult, rfp_max_depth, rfp_mult_no_tt, rfp_mult_tt, rfp_worsening_mult,
     see_capture_hist_div, see_capture_linear, see_quiet_quad,
 };
@@ -3930,7 +3930,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // windows clear the margin, and those must search for real or mates go invisible.
         if !is_pv
             && depth <= 8
-            && eval < alpha - razoring_linear() - razoring_quad() * (depth * depth) as i32
+            && eval < alpha - razoring_quad() * (depth * depth) as i32
         {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }

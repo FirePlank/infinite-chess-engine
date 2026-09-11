@@ -57,8 +57,9 @@ impl SearchParamSpec {
     }
 }
 
-pub const DEFAULT_RAZORING_LINEAR: i32 = 647;
-pub const DEFAULT_RAZORING_QUAD: i32 = 374;
+// Stockfish 19 razors at 482*depth^2 against a pawn of 208; ours is 100, so the
+// equivalent margin is 232 per depth squared.
+pub const DEFAULT_RAZORING_QUAD: i32 = 232;
 
 pub const DEFAULT_NMP_MIN_DEPTH: usize = 3;
 pub const DEFAULT_NMP_BASE: i32 = 350;
@@ -923,7 +924,6 @@ pub fn passed_pawn_adv_bonus() -> [[[i32; 6]; 2]; 2] {
 
 #[rustfmt::skip]
 pub const TUNABLE_PARAM_SPECS: &[SearchParamSpec] = &[
-    SearchParamSpec::new("razoring_linear", SearchParamKind::I32, DEFAULT_RAZORING_LINEAR as i64, 200, 700, 16.0, 0.002, "Razoring linear margin"),
     SearchParamSpec::new("razoring_quad", SearchParamKind::I32, DEFAULT_RAZORING_QUAD as i64, 100, 500, 12.0, 0.002, "Razoring quadratic margin"),
     SearchParamSpec::new("nmp_min_depth", SearchParamKind::Usize, DEFAULT_NMP_MIN_DEPTH as i64, 1, 8, 1.0, 0.002, "Null move minimum depth"),
     SearchParamSpec::new("nmp_base", SearchParamKind::I32, DEFAULT_NMP_BASE as i64, 100, 600, 16.0, 0.002, "Null move base margin"),
@@ -978,7 +978,6 @@ pub const TUNABLE_PARAM_SPECS: &[SearchParamSpec] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchParams {
-    pub razoring_linear: i32,
     pub razoring_quad: i32,
     pub nmp_min_depth: usize,
     pub nmp_base: i32,
@@ -1033,7 +1032,6 @@ pub struct SearchParams {
 impl Default for SearchParams {
     fn default() -> Self {
         Self {
-            razoring_linear: DEFAULT_RAZORING_LINEAR,
             razoring_quad: DEFAULT_RAZORING_QUAD,
             nmp_min_depth: DEFAULT_NMP_MIN_DEPTH,
             nmp_base: DEFAULT_NMP_BASE,
@@ -1133,7 +1131,6 @@ macro_rules! define_accessor {
     };
 }
 
-define_accessor!(razoring_linear, i32, DEFAULT_RAZORING_LINEAR);
 define_accessor!(razoring_quad, i32, DEFAULT_RAZORING_QUAD);
 define_accessor!(nmp_min_depth, usize, DEFAULT_NMP_MIN_DEPTH);
 define_accessor!(nmp_base, i32, DEFAULT_NMP_BASE);
@@ -1222,7 +1219,6 @@ mod tests {
 
     #[test]
     fn test_params_default() {
-        assert_eq!(razoring_linear(), DEFAULT_RAZORING_LINEAR);
         assert!(
             TUNABLE_PARAM_SPECS
                 .iter()
