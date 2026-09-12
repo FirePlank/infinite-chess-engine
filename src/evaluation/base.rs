@@ -66,8 +66,6 @@ thread_local! {
     pub(crate) static EVAL_PIECE_LIST: UnsafeCell<SmallVec<[(i64, i64, Piece); 128]>> = UnsafeCell::new(SmallVec::new());
     pub(crate) static EVAL_WHITE_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
     pub(crate) static EVAL_BLACK_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
-    pub(crate) static EVAL_WHITE_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
-    pub(crate) static EVAL_BLACK_RQ: UnsafeCell<SmallVec<[(i64, i64); 32]>> = UnsafeCell::new(SmallVec::new());
 }
 
 /// Per-level play-style weighting, in percent of the full-strength term: damps
@@ -864,19 +862,15 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     EVAL_PIECE_LIST.with(|piece_list_cell| {
         EVAL_WHITE_PAWNS.with(|white_pawns_cell| {
             EVAL_BLACK_PAWNS.with(|black_pawns_cell| {
-                EVAL_WHITE_RQ.with(|white_rq_cell| {
-                    EVAL_BLACK_RQ.with(|black_rq_cell| {
+                {
+                    {
                         let piece_list = unsafe { &mut *piece_list_cell.get() };
                         let white_pawns = unsafe { &mut *white_pawns_cell.get() };
                         let black_pawns = unsafe { &mut *black_pawns_cell.get() };
-                        let white_rq = unsafe { &mut *white_rq_cell.get() };
-                        let black_rq = unsafe { &mut *black_rq_cell.get() };
 
                         piece_list.clear();
                         white_pawns.clear();
                         black_pawns.clear();
-                        white_rq.clear();
-                        black_rq.clear();
 
                         // Main piece loop
                         for (cx, cy, tile) in game.board.tiles.iter() {
@@ -1628,8 +1622,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             tracer,
                             white_pawns,
                             black_pawns,
-                            white_rq,
-                            black_rq,
                         );
 
                         if phase < MAX_KING_PHASE {
@@ -1710,8 +1702,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         tracer.record("King: Pawn Storm", w_storm, b_storm);
                         score += w_storm - b_storm;
-                    }); // brq
-                }); // wrq
+                    }
+                }
             }); // bp
         }); // wp
     }); // pl
@@ -3199,16 +3191,12 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
     // For standalone call, we must fill the vectors
     EVAL_WHITE_PAWNS.with(|wp_cell| {
         EVAL_BLACK_PAWNS.with(|bp_cell| {
-            EVAL_WHITE_RQ.with(|wrq_cell| {
-                EVAL_BLACK_RQ.with(|brq_cell| {
+            {
+                {
                     let wp = unsafe { &mut *wp_cell.get() };
                     let bp = unsafe { &mut *bp_cell.get() };
-                    let wrq = unsafe { &mut *wrq_cell.get() };
-                    let brq = unsafe { &mut *brq_cell.get() };
                     wp.clear();
                     bp.clear();
-                    wrq.clear();
-                    brq.clear();
 
                     let w_promo = game.white_promo_rank;
                     let b_promo = game.black_promo_rank;
@@ -3247,11 +3235,9 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                         &mut NoTrace,
                         wp,
                         bp,
-                        wrq,
-                        brq,
                     )
-                })
-            })
+                }
+            }
         })
     })
 }
@@ -3265,10 +3251,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     tracer: &mut T,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
-    white_rq: &[(i64, i64)],
-    black_rq: &[(i64, i64)],
 ) -> i32 {
-    let _ = (white_rq, black_rq);
     let pawn_hash = game.pawn_hash;
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -3667,6 +3650,14 @@ fn chase_reach(pt: PieceType) -> Option<i64> {
     }
 }
 
+/// Does this side own anything that slides or rides? Such a piece intercepts a
+/// promotion file in one move, so it silences the term whatever the distances are.
+fn side_has_interceptor(game: &GameState, side: PlayerColor) -> bool {
+    game.board
+        .iter()
+        .any(|(_, _, pc)| pc.color() == side && chase_reach(pc.piece_type()).is_none())
+}
+
 /// Can the side to promote get there before anything reaches the promotion square?
 /// Conservative: a single enemy slider anywhere means no, since it can usually
 /// intercept the file in one move.
@@ -3675,14 +3666,16 @@ fn passer_is_unstoppable(
     promo_sq: (i64, i64),
     moves_to_promo: i64,
     defender: PlayerColor,
+    defender_has_interceptor: bool,
 ) -> bool {
-    if moves_to_promo <= 0 {
+    if moves_to_promo <= 0 || defender_has_interceptor {
         return false;
     }
     for (x, y, pc) in game.board.iter() {
         if pc.color() != defender {
             continue;
         }
+        // Interceptors were ruled out above, so every remaining piece has a reach.
         let Some(reach) = chase_reach(pc.piece_type()) else {
             return false;
         };
@@ -3713,6 +3706,10 @@ fn score_passed_pawns<T: EvaluationTracer>(
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut w_passed_score = 0;
     let mut b_passed_score = 0;
+    // Computed at most once per side, and only if a passer gets close enough to
+    // ask; the scan used to run once per passer.
+    let mut black_interceptor: Option<bool> = None;
+    let mut white_interceptor: Option<bool> = None;
 
     for &(wx, wy) in w_passed {
         let w_promo = game.white_promo_rank;
@@ -3780,7 +3777,14 @@ fn score_passed_pawns<T: EvaluationTracer>(
         // only rules out enemy pawns, not a knight parked in front of it.
         let unstoppable = safe_path
             && dist_to_promo <= UNSTOPPABLE_MAX_DIST
-            && passer_is_unstoppable(game, (wx, w_promo), dist_to_promo, PlayerColor::Black);
+            && passer_is_unstoppable(
+                game,
+                (wx, w_promo),
+                dist_to_promo,
+                PlayerColor::Black,
+                *black_interceptor
+                    .get_or_insert_with(|| side_has_interceptor(game, PlayerColor::Black)),
+            );
         let unstoppable_bonus = if unstoppable {
             (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
         } else {
@@ -3847,7 +3851,14 @@ fn score_passed_pawns<T: EvaluationTracer>(
             passed_pawn_adv_bonus()[can_advance as usize][safe_advance as usize][rel_rank];
         let unstoppable = safe_path
             && dist_to_promo <= UNSTOPPABLE_MAX_DIST
-            && passer_is_unstoppable(game, (bx, b_promo), dist_to_promo, PlayerColor::White);
+            && passer_is_unstoppable(
+                game,
+                (bx, b_promo),
+                dist_to_promo,
+                PlayerColor::White,
+                *white_interceptor
+                    .get_or_insert_with(|| side_has_interceptor(game, PlayerColor::White)),
+            );
         let unstoppable_bonus = if unstoppable {
             (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
         } else {

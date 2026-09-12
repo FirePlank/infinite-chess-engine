@@ -129,7 +129,20 @@ impl StagedMoveGen {
         searcher: &Searcher,
         game: &GameState,
     ) -> Self {
-        let is_in_check = Self::is_in_check(game);
+        Self::new_with_check(tt_move, ply, depth, searcher, game, game.is_in_check())
+    }
+
+    /// Same as [`new`], for callers that already know whether the side to move is
+    /// attacked: recomputing it here costs a full attack scan per node.
+    pub fn new_with_check(
+        tt_move: Option<Move>,
+        ply: usize,
+        depth: i32,
+        searcher: &Searcher,
+        game: &GameState,
+        in_check: bool,
+    ) -> Self {
+        let is_in_check = in_check && game.must_escape_check();
         let tt_move = tt_move.map(|m| Self::reconstruct_castling_partner(game, m));
         let tt_valid = tt_move.is_some() && Self::is_pseudo_legal(game, &tt_move.unwrap());
         // An invalid TT move must not linger: the later stages filter "the TT
@@ -873,10 +886,12 @@ impl StagedMoveGen {
     fn generate_captures(&mut self, game: &GameState, searcher: &Searcher) {
         let mut captures = MoveList::new();
 
-        self.ensure_pins(game);
+        // Only quiet slider generation reads the pin map, so the capture stage
+        // pays nothing for one.
+        let no_pins = rustc_hash::FxHashMap::default();
         {
             let ctx = MoveGenContext {
-                pinned: self.pins_cache.as_ref().unwrap(),
+                pinned: &no_pins,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
                 game_rules: &game.game_rules,

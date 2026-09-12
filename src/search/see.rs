@@ -2,6 +2,9 @@ use crate::board::{Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::moves::Move;
 
+/// Hop cap for knightrider rays, matching `is_square_attacked`'s own limit.
+const KNIGHTRIDER_SEE_HOPS: i64 = 20;
+
 /// Tests if SEE value of move is >= threshold.
 /// Uses early cutoffs to avoid full SEE calculation when possible.
 #[inline(always)]
@@ -278,10 +281,10 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                 .find_first_blocker(target_x, target_y, dx, dy);
         } else if game.spatial_indices.has_knightrider[0] || game.spatial_indices.has_knightrider[1]
         {
-            // Knightrider Rays (Step-based with Tile skipping)
+            // Knightrider Rays. Capped at the same hop count `is_square_attacked`
+            // uses, so the exchange and the legality check agree on who attacks.
             let mut k = 1;
-            while k < 128 {
-                // Practical limit for Infinite Chess SEE
+            while k <= KNIGHTRIDER_SEE_HOPS {
                 let x = target_x + dx * k;
                 let y = target_y + dy * k;
                 // Optimization: Tile boundary check
@@ -306,7 +309,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                 {
                     let mut nb = None;
                     let mut k = 1;
-                    while k < 128 {
+                    while k <= KNIGHTRIDER_SEE_HOPS {
                         let x = m.from.x + dx * k;
                         let y = m.from.y + dy * k;
                         if let Some(np) = game.board.get_piece(x, y) {
@@ -419,7 +422,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                     || game.spatial_indices.has_knightrider[1]
                 {
                     let mut k = 1;
-                    while k < 128 {
+                    while k <= KNIGHTRIDER_SEE_HOPS {
                         let nx = chosen.pos.x + dx * k;
                         let ny = chosen.pos.y + dy * k;
                         if let Some(np) = game.board.get_piece(nx, ny) {

@@ -622,19 +622,15 @@ fn evaluate_inner(game: &GameState) -> i32 {
     base::EVAL_WHITE_PAWNS.with(|wp_cell| {
         base::EVAL_BLACK_PAWNS.with(|bp_cell| {
             base::EVAL_PIECE_LIST.with(|pl_cell| {
-                base::EVAL_WHITE_RQ.with(|wrq_cell| {
-                    base::EVAL_BLACK_RQ.with(|brq_cell| {
+                {
+                    {
                         let white_pawns = unsafe { &mut *wp_cell.get() };
                         let black_pawns = unsafe { &mut *bp_cell.get() };
                         let heavy_pieces = unsafe { &mut *pl_cell.get() };
-                        let white_rq = unsafe { &mut *wrq_cell.get() };
-                        let black_rq = unsafe { &mut *brq_cell.get() };
 
                         white_pawns.clear();
                         black_pawns.clear();
                         heavy_pieces.clear();
-                        white_rq.clear();
-                        black_rq.clear();
 
                         let mut phase: i32 = 0;
 
@@ -780,8 +776,6 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             &mut base::NoTrace,
                             white_pawns,
                             black_pawns,
-                            white_rq,
-                            black_rq,
                         );
 
                         // 5. Outside pawn connectivity
@@ -790,8 +784,8 @@ fn evaluate_inner(game: &GameState) -> i32 {
 
                         // 6. Promotion race
                         score += race_eval_optimized(game, white_pawns, black_pawns);
-                    });
-                });
+                    }
+                }
             });
         });
     });

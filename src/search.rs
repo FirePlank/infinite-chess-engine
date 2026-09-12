@@ -4185,7 +4185,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Staged Move Generation - generate moves in stages for better efficiency
-    let mut movegen = StagedMoveGen::new(tt_move, ply, depth as i32, searcher, game);
+    let mut movegen =
+        StagedMoveGen::new_with_check(tt_move, ply, depth as i32, searcher, game, in_check);
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
@@ -4356,6 +4357,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 ^ piece_key(to_type, p_color, m.to.x, m.to.y);
             if let Some(cap) = captured_piece {
                 child_hash ^= piece_key(cap.piece_type(), cap.color(), m.to.x, m.to.y);
+            }
+            // The child always clears the parent's en-passant square, so without
+            // this the prefetch walks to an unrelated bucket on those nodes.
+            if let Some(ep) = game.en_passant {
+                child_hash ^= crate::search::zobrist::en_passant_key(ep.square.x, ep.square.y);
             }
             #[cfg(feature = "multithreading")]
             if let Some(tt) = SHARED_TT.get() {
@@ -4706,40 +4712,23 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // Store reduction for hindsight depth adjustment in child nodes
             searcher.reduction_stack[ply] = reduction;
 
-            // The first move of a PV node establishes that node's score, so it takes
-            // the full window directly. Scouting it first only yields a bound when it
-            // fails low, and a PV node then reports an upper bound as if it were real.
-            let first_pv_move = is_pv && legal_moves == 1;
-            let mut s = if first_pv_move {
-                -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: (depth as i32 - 1 + extension).max(0) as usize,
-                    ply: ply + 1,
-                    alpha: -beta,
-                    beta: -alpha,
-                    allow_null: true,
-                    node_type: NodeType::PV,
-                    was_null_move: false,
-                    excluded_move: None,
-                })
-            } else {
-                -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: search_depth,
-                    ply: ply + 1,
-                    alpha: -alpha - 1,
-                    beta: -alpha,
-                    allow_null: true,
-                    node_type: child_type,
-                    was_null_move: false,
-                    excluded_move: None,
-                })
-            };
+            // The first move of the node already took the full window in the
+            // `legal_moves == 1` arm above, so every move reaching here is scouted.
+            let mut s = -negamax(&mut NegamaxContext {
+                searcher,
+                game,
+                depth: search_depth,
+                ply: ply + 1,
+                alpha: -alpha - 1,
+                beta: -alpha,
+                allow_null: true,
+                node_type: child_type,
+                was_null_move: false,
+                excluded_move: None,
+            });
 
             // Re-search at full depth if it looks promising
-            if !first_pv_move && s > alpha && (reduction > 0 || s < beta) {
+            if s > alpha && (reduction > 0 || s < beta) {
                 // Re-search with PV-like search if we're in PV, otherwise same child type
                 let research_type = if is_pv { NodeType::PV } else { child_type };
 
@@ -5391,16 +5380,9 @@ fn quiescence(
         game.get_evasion_moves_into(&mut tactical_moves);
     } else {
         // Normal quiescence: generate captures only
-        let king_pos = if game.turn == PlayerColor::White {
-            game.white_royals.first().copied()
-        } else {
-            game.black_royals.first().copied()
-        };
-        let pinned = if let Some(kp) = king_pos {
-            game.compute_pins(&kp, game.turn)
-        } else {
-            rustc_hash::FxHashMap::default()
-        };
+        // Only quiet slider generation consults the pin map; every capture
+        // generator ignores it, so computing one here is eight wasted ray walks.
+        let pinned = rustc_hash::FxHashMap::default();
 
         let ctx = MoveGenContext {
             pinned: &pinned,
@@ -5494,6 +5476,29 @@ fn quiescence(
         let fast_legal = game.is_legal_fast(m, in_check);
         if let Ok(false) = fast_legal {
             continue;
+        }
+
+        // Quiescence probes the table at every node and is about half of them, so
+        // it wants the same prefetch the main loop already issues.
+        {
+            let p_color = m.piece.color();
+            let from_type = m.piece.piece_type();
+            let to_type = m.promotion.unwrap_or(from_type);
+            let mut child_hash = game.hash
+                ^ SIDE_KEY
+                ^ piece_key(from_type, p_color, m.from.x, m.from.y)
+                ^ piece_key(to_type, p_color, m.to.x, m.to.y);
+            if let Some(cap) = captured {
+                child_hash ^= piece_key(cap.piece_type(), cap.color(), m.to.x, m.to.y);
+            }
+            if let Some(ep) = game.en_passant {
+                child_hash ^= crate::search::zobrist::en_passant_key(ep.square.x, ep.square.y);
+            }
+            #[cfg(feature = "multithreading")]
+            if let Some(tt) = SHARED_TT.get() {
+                tt.prefetch_entry(child_hash);
+            }
+            searcher.tt.prefetch_entry(child_hash);
         }
 
         // Incremental NNUE accumulator update for the child position (ply+1).
