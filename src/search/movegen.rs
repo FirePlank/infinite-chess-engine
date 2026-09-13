@@ -776,7 +776,9 @@ impl StagedMoveGen {
     /// Fast check detection
     #[inline(always)]
     pub fn move_gives_check_fast(game: &GameState, m: &Move) -> bool {
-        let pt = m.piece.piece_type();
+        // What stands on the destination after the move, which is the promoted piece
+        // for a promotion; testing those with the pawn's geometry misses the check.
+        let pt = m.promotion.unwrap_or(m.piece.piece_type());
         let color = m.piece.color();
         let tx = m.to.x;
         let ty = m.to.y;
