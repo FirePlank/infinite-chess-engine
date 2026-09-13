@@ -90,7 +90,7 @@ pub fn score_move(
             // Main history heuristic
             let idx = hash_move_dest(m);
             let pt_idx = m.piece.piece_type() as usize;
-            score += 2 * searcher.history[pt_idx][idx];
+            score += 2 * searcher.history[crate::search::hist_color(m.piece.color())][pt_idx][idx];
 
             let ph_idx = (game.pawn_hash & crate::search::PAWN_HISTORY_MASK) as usize;
             score += 2 * searcher.pawn_hist(ph_idx, pt_idx, idx);

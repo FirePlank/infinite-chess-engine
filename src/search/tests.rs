@@ -225,25 +225,25 @@ fn test_searcher_new() {
 #[test]
 fn test_searcher_decay_history() {
     let mut searcher = Searcher::new(5000);
-    searcher.history[0][0] = 100;
-    searcher.history[1][1] = 200;
+    searcher.history[0][0][0] = 100;
+    searcher.history[0][1][1] = 200;
 
     searcher.decay_history();
 
-    assert_eq!(searcher.history[0][0], 90); // 100 * 9/10
-    assert_eq!(searcher.history[1][1], 180); // 200 * 9/10
+    assert_eq!(searcher.history[0][0][0], 90); // 100 * 9/10
+    assert_eq!(searcher.history[0][1][1], 180); // 200 * 9/10
 }
 
 #[test]
 fn test_searcher_update_history() {
     let mut searcher = Searcher::new(5000);
 
-    searcher.update_history(PieceType::Knight, 42, 100);
-    let val = searcher.history[PieceType::Knight as usize][42];
+    searcher.update_history(PlayerColor::White, PieceType::Knight, 42, 100);
+    let val = searcher.history[0][PieceType::Knight as usize][42];
     assert!(val > 0, "History should be updated positively");
 
-    searcher.update_history(PieceType::Knight, 42, -100);
-    let val_after = searcher.history[PieceType::Knight as usize][42];
+    searcher.update_history(PlayerColor::White, PieceType::Knight, 42, -100);
+    let val_after = searcher.history[0][PieceType::Knight as usize][42];
     assert!(
         val_after < val,
         "History should decrease with negative bonus"
@@ -463,11 +463,11 @@ fn test_eval_kind_switch_resets_searcher_but_same_kind_keeps_it() {
     use crate::evaluation::eval_kind::EvalKind;
     let mut s = Searcher::new(1_000);
     s.adopt_eval_kind(EvalKind::Generic);
-    s.history[0][0] = 5;
+    s.history[0][0][0] = 5;
     s.adopt_eval_kind(EvalKind::Generic);
-    assert_eq!(s.history[0][0], 5, "same kind must keep learned state");
+    assert_eq!(s.history[0][0][0], 5, "same kind must keep learned state");
     s.adopt_eval_kind(EvalKind::Chess);
-    assert_eq!(s.history[0][0], 0, "a kind change must reset histories");
+    assert_eq!(s.history[0][0][0], 0, "a kind change must reset histories");
     assert_eq!(s.last_eval_kind, Some(EvalKind::Chess));
 }
 
@@ -546,9 +546,10 @@ fn test_searcher_killers_and_history() {
 fn test_history_table_dimensions() {
     let searcher = Searcher::new(1000);
 
-    // Verify history table dimensions [32 piece types][256 to squares]
-    assert_eq!(searcher.history.len(), 32);
-    assert_eq!(searcher.history[0].len(), 256);
+    // Verify history table dimensions [2 sides][32 piece types][256 to squares]
+    assert_eq!(searcher.history.len(), 2);
+    assert_eq!(searcher.history[0].len(), 32);
+    assert_eq!(searcher.history[0][0].len(), 256);
 }
 
 // MoveList Operations

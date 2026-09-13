@@ -380,6 +380,13 @@ pub(crate) fn init_shared_tt() {
 /// Indexed by [depth][moves_searched].
 static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
 
+/// Side index for the quiet-history tables. PlayerColor is Neutral=0/White=1/Black=2
+/// and a mover is never Neutral, so this maps White->0 and Black->1.
+#[inline(always)]
+fn hist_color(color: crate::board::PlayerColor) -> usize {
+    (color as usize).saturating_sub(1)
+}
+
 #[inline]
 fn get_lmr(depth: usize, moves: usize) -> i32 {
     let table = LMR_TABLE.get_or_init(|| {
@@ -927,7 +934,7 @@ pub struct Searcher {
     pub killers: Vec<[Option<Move>; 2]>,
 
     // History heuristic [piece_type][to_square_hash]
-    pub history: Box<[[i32; 256]; 32]>,
+    pub history: Box<[[[i32; 256]; 32]; 2]>,
 
     // Capture history [moving_piece_type][captured_piece_type], ordering captures
     // beyond pure MVV-LVA.
@@ -1095,7 +1102,8 @@ impl Searcher {
             killers,
             history: unsafe {
                 Box::from_raw(
-                    Box::into_raw(vec![0i32; 32 * 256].into_boxed_slice()) as *mut [[i32; 256]; 32]
+                    Box::into_raw(vec![0i32; 2 * 32 * 256].into_boxed_slice())
+                        as *mut [[[i32; 256]; 32]; 2]
                 )
             },
             capture_history: unsafe {
@@ -1309,9 +1317,11 @@ impl Searcher {
     /// Decay history scores at the start of each iteration
     #[inline]
     pub fn decay_history(&mut self) {
-        for row in self.history.iter_mut() {
-            for val in row.iter_mut() {
-                *val = *val * 9 / 10; // Decay by 10%
+        for side in self.history.iter_mut() {
+            for row in side.iter_mut() {
+                for val in row.iter_mut() {
+                    *val = *val * 9 / 10; // Decay by 10%
+                }
             }
         }
     }
@@ -1393,9 +1403,11 @@ impl Searcher {
         self.tt.clear();
 
         // Reset main history
-        for row in self.history.iter_mut() {
-            for val in row.iter_mut() {
-                *val = 0;
+        for side in self.history.iter_mut() {
+            for row in side.iter_mut() {
+                for val in row.iter_mut() {
+                    *val = 0;
+                }
             }
         }
 
@@ -1523,11 +1535,17 @@ impl Searcher {
 
     /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
     #[inline]
-    pub fn update_history(&mut self, piece: PieceType, idx: usize, bonus: i32) {
+    pub fn update_history(
+        &mut self,
+        color: crate::board::PlayerColor,
+        piece: PieceType,
+        idx: usize,
+        bonus: i32,
+    ) {
         let max_h = params::history_max_gravity();
         let clamped = bonus.clamp(-max_h, max_h);
 
-        let entry = &mut self.history[piece as usize][idx];
+        let entry = &mut self.history[hist_color(color)][piece as usize][idx];
         *entry += clamped - ((*entry * clamped.abs()) >> 14);
     }
 
@@ -4115,8 +4133,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     .is_some_and(|p| !p.piece_type().is_neutral_type());
             let pc_ctx = searcher.push_move_context(ply, &m, in_check, pc_is_capture);
             searcher.reduction_stack[ply] = 0;
-            searcher.stat_score_stack[ply] =
-                searcher.history[m.piece.piece_type() as usize][hash_move_dest(&m)];
+            searcher.stat_score_stack[ply] = searcher.history[hist_color(m.piece.color())]
+                [m.piece.piece_type() as usize][hash_move_dest(&m)];
 
             let undo = game.make_move(&m);
 
@@ -4306,7 +4324,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             } else {
                 // Quiet move pruning
                 let hist_idx = hash_move_dest(&m);
-                let main_hist = searcher.history[p_type as usize][hist_idx];
+                let main_hist =
+                    searcher.history[hist_color(m.piece.color())][p_type as usize][hist_idx];
                 let history = main_hist;
 
                 // History-based pruning: skip moves with very bad history
@@ -4556,7 +4575,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // The child reads this for evaluation smoothing. Set for every move, not only
         // on a beta cutoff, or it reflects a prior sibling's subtree instead.
-        searcher.stat_score_stack[ply] = searcher.history[p_type as usize][hash_move_dest(&m)];
+        searcher.stat_score_stack[ply] =
+            searcher.history[hist_color(m.piece.color())][p_type as usize][hash_move_dest(&m)];
 
         let score;
         if legal_moves == 1 {
@@ -4618,7 +4638,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // History-adjusted LMR
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
-                let hist_score = searcher.history[p_type as usize][hist_idx];
+                let hist_score =
+                    searcher.history[hist_color(m.piece.color())][p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 // Continuation history already steers ordering; the reduction
                 // stat was blind to it, so a move that follows well after the
@@ -4686,7 +4707,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             {
                 let idx = hash_move_dest(&m);
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
-                let value = searcher.history[p_type as usize][idx]
+                let value = searcher.history[hist_color(m.piece.color())][p_type as usize][idx]
                     + searcher.pawn_hist(ph_idx, p_type as usize, idx);
 
                 if value < hlp_history_reduce() {
@@ -4869,7 +4890,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
 
-                searcher.update_history(m.piece.piece_type(), idx, bonus);
+                searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
                 searcher.update_pawn_history(
                     game.pawn_hash,
                     m.piece.piece_type(),
@@ -4884,7 +4905,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
                         continue;
                     }
-                    searcher.update_history(quiet.piece.piece_type(), qidx, -bonus);
+                    searcher.update_history(
+                        quiet.piece.color(),
+                        quiet.piece.piece_type(),
+                        qidx,
+                        -bonus,
+                    );
                     searcher.update_pawn_history(
                         game.pawn_hash,
                         quiet.piece.piece_type(),
@@ -5096,7 +5122,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Update main history for opponent's previous move
                 let prev_idx = hash_move_dest(&prev_move);
                 let hist_adj = bonus.clamp(-max_h, max_h);
-                let entry = &mut searcher.history[prev_pt][prev_idx];
+                let entry =
+                    &mut searcher.history[hist_color(prev_move.piece.color())][prev_pt][prev_idx];
                 *entry += hist_adj - ((*entry * hist_adj.abs()) >> 14);
 
                 // Update pawn history for non-pawn, non-promotion opponent moves

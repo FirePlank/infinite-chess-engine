@@ -529,7 +529,8 @@ impl StagedMoveGen {
                 .unwrap_or(0);
 
             let hist_idx = hash_move_dest(m);
-            let history_score = searcher.history[pt_idx][hist_idx];
+            let history_score =
+                searcher.history[crate::search::hist_color(m.piece.color())][pt_idx][hist_idx];
 
             10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8) + (history_score / 8)
         } else if game.is_en_passant(m) {
@@ -551,7 +552,8 @@ impl StagedMoveGen {
             let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
             let promo_gain = game.get_piece_value(pt, m.piece.color()) - attacker_val;
             let hist_idx = hash_move_dest(m);
-            let history_score = searcher.history[m.piece.piece_type() as usize][hist_idx];
+            let history_score = searcher.history[crate::search::hist_color(m.piece.color())]
+                [m.piece.piece_type() as usize][hist_idx];
             10 * promo_gain - attacker_val + (history_score / 8)
         } else {
             0
@@ -610,7 +612,12 @@ impl StagedMoveGen {
         unsafe {
             if pt_idx < 32 {
                 // Bounds check for safety, though piece type should be valid
-                let val = *searcher.history.get_unchecked(pt_idx).get_unchecked(idx);
+                let side = crate::search::hist_color(m.piece.color());
+                let val = *searcher
+                    .history
+                    .get_unchecked(side)
+                    .get_unchecked(pt_idx)
+                    .get_unchecked(idx);
                 score += 2 * val;
             }
         }
