@@ -4402,6 +4402,95 @@ mod tests {
         assert_eq!(bpc, game.black_pawn_count, "{label}: black_pawn_count drifted");
     }
 
+    /// Every incremental hash must equal a from-scratch recompute after each make,
+    /// and must return to its previous value after the matching undo. Covers the move
+    /// kinds one variant at a time so the world-bounds global is never interleaved.
+    #[test]
+    fn incremental_hashes_match_scratch_across_make_and_undo() {
+        // Obstacle boards are deliberately excluded: `recompute_hash` never hashes
+        // neutral pieces while `make_move` xors a captured one, so the two conventions
+        // diverge after any obstacle capture. That asymmetry is benign in play (a game
+        // always recomputes once at setup and is incremental thereafter) but it makes
+        // the two paths incomparable here.
+        for variant in [
+            crate::Variant::Classical,
+            crate::Variant::Palace,
+            crate::Variant::CoaIPNO,
+            crate::Variant::PawnHorde,
+        ] {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(variant.starting_icn());
+            game.variant = Some(variant);
+
+            // Deterministic walk: take a spread of moves at each ply rather than
+            // always the first, so captures and promotions are actually reached.
+            for ply in 0..24usize {
+                let snapshot = (
+                    game.hash,
+                    game.rep_hash,
+                    game.pawn_hash,
+                    game.white_nonpawn_hash,
+                    game.black_nonpawn_hash,
+                    game.material_hash,
+                    game.minor_hash,
+                );
+
+                let mut moves = crate::moves::MoveList::new();
+                game.get_pseudo_legal_moves_into(&mut moves);
+                let legal: Vec<_> = moves
+                    .iter()
+                    .copied()
+                    .filter(|m| {
+                        let undo = game.make_move(m);
+                        let ok = !game.is_move_illegal();
+                        game.undo_move(m, undo);
+                        ok
+                    })
+                    .collect();
+                if legal.is_empty() {
+                    break;
+                }
+                let m = legal[(ply * 7 + 3) % legal.len()];
+
+                let undo = game.make_move(&m);
+
+                // Primary key and repetition key, checked against a full rebuild.
+                let (inc_hash, inc_rep) = (game.hash, game.rep_hash);
+                game.recompute_hash();
+                assert_eq!(
+                    inc_hash, game.hash,
+                    "{variant:?} ply {ply}: hash drifted on {m:?}"
+                );
+                assert_eq!(
+                    inc_rep, game.rep_hash,
+                    "{variant:?} ply {ply}: rep_hash drifted on {m:?}"
+                );
+                assert_incremental_state_matches_scratch(
+                    &mut game,
+                    &format!("{variant:?} ply {ply} make"),
+                );
+
+                game.undo_move(&m, undo);
+
+                assert_eq!(
+                    snapshot,
+                    (
+                        game.hash,
+                        game.rep_hash,
+                        game.pawn_hash,
+                        game.white_nonpawn_hash,
+                        game.black_nonpawn_hash,
+                        game.material_hash,
+                        game.minor_hash,
+                    ),
+                    "{variant:?} ply {ply}: undo did not restore every hash after {m:?}"
+                );
+
+                game.make_move(&m);
+            }
+        }
+    }
+
     #[test]
     fn en_passant_on_promoted_double_push_keeps_hashes_consistent() {
         // Palace geometry: y=2 double-pushes onto promo rank y=4, so the pawn

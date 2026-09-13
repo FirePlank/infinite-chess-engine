@@ -127,11 +127,17 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         (-2, -1),
     ];
 
-    let piece_count = board.len();
     let mut moves = MoveList::new();
 
-    // Pre-collect piece data once
-    let mut pieces_data: Vec<(i64, i64, bool)> = Vec::with_capacity(piece_count);
+    // Reused across calls: this ran once per knightrider per stage and the board is
+    // walked in full each time, so a fresh allocation here is pure churn.
+    thread_local! {
+        static KR_PIECES: std::cell::RefCell<Vec<(i64, i64, bool)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    KR_PIECES.with(|cell| {
+    let mut pieces_data = cell.borrow_mut();
+    pieces_data.clear();
     // BITBOARD: Use tile-based CTZ iteration for O(popcount) piece enumeration
     for (cx, cy, tile) in board.tiles.iter() {
         let mut bits = tile.occ_all;
@@ -154,7 +160,7 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         let mut closest_k: i64 = i64::MAX;
         let mut closest_is_enemy = false;
 
-        for &(px, py, is_enemy) in &pieces_data {
+        for &(px, py, is_enemy) in pieces_data.iter() {
             let rx = px - from.x;
             let ry = py - from.y;
 
@@ -242,6 +248,7 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
     }
 
     moves
+    })
 }
 
 /// Check if a coordinate is within valid bounds (world border)

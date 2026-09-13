@@ -3933,12 +3933,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let rule50_threshold = (searcher.move_rule_limit as u32).saturating_sub(4);
         let rule50_ok = game.halfmove_clock < rule50_threshold;
 
-        if tt_data_depth_ok
-            && bound_matches
-            && node_type_matches
-            && rule50_ok
-            && !game.is_repetition(ply)
-        {
+        // No repetition test: `is_draw` above already returned on one, and both it
+        // and `is_repetition` report false inside a null subtree.
+        if tt_data_depth_ok && bound_matches && node_type_matches && rule50_ok {
             return tt_s;
         }
 
@@ -4533,13 +4530,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if se_value < singular_beta {
                 // TT move is singular - calculate extension level
-                let corr_val_adj = (static_eval - raw_eval).abs() / 256;
-
                 let pv_bonus = if is_pv { (depth as i32) * 2 } else { 0 };
-                let double_margin =
-                    (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_val_adj + pv_bonus;
+                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) + pv_bonus;
                 let triple_margin =
-                    (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_val_adj + pv_bonus * 2;
+                    (depth as i32) * 4 - (tt_capture as i32 * 10) + pv_bonus * 2;
 
                 extension = 1;
                 if se_value < singular_beta - double_margin {
