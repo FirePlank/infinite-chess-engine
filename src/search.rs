@@ -3752,7 +3752,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             (
                 true,
                 res.best_move,
-                if res.tt_score == INFINITY + 1 {
+                // An eval-only entry stores score 0 under TTFlag::None. Every other
+                // consumer masks it away against a bound bit, but ProbCut's gate reads
+                // the bare value and would treat that 0 as a real "below beta" bound.
+                if res.tt_score == INFINITY + 1 || res.flag == TTFlag::None {
                     None
                 } else {
                     Some(res.tt_score)
@@ -5227,7 +5230,10 @@ fn quiescence(
         if let Some(res) = tt_probe {
             (
                 true,
-                if res.tt_score == INFINITY + 1 {
+                // An eval-only entry stores score 0 under TTFlag::None. Every other
+                // consumer masks it away against a bound bit, but ProbCut's gate reads
+                // the bare value and would treat that 0 as a real "below beta" bound.
+                if res.tt_score == INFINITY + 1 || res.flag == TTFlag::None {
                     None
                 } else {
                     Some(res.tt_score)
