@@ -3664,7 +3664,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if ply >= MAX_PLY - 1 {
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
-            from_hash ^ to_hash
+            (from_hash << 4) ^ to_hash
         } else {
             0
         };
@@ -3803,7 +3803,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Static evaluation for pruning decisions
     let prev_move_idx = if ply > 0 {
         let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
-        from_hash ^ to_hash
+        (from_hash << 4) ^ to_hash
     } else {
         0
     };
@@ -5313,7 +5313,7 @@ fn quiescence(
         // Calculate previous move index for correction history
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
-            from_hash ^ to_hash
+            (from_hash << 4) ^ to_hash
         } else {
             0
         };
@@ -5647,7 +5647,7 @@ fn quiescence(
     if !tactical_check && widened_qsearch {
         let prev_move_idx = if ply > 0 {
             let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
-            from_hash ^ to_hash
+            (from_hash << 4) ^ to_hash
         } else {
             0
         };
