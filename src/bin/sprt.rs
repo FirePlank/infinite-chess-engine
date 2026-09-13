@@ -456,12 +456,15 @@ fn print_settings_context(config: &Config) {
         format!("{} cp", config.maxply_adjudication)
     };
     println!(
-        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {} | Adjudication: {} | Max-ply adjudication: {}",
+        "  TC: {} | Concurrency: {} | Variants: {} | Strength: {} vs {}",
         config.tc,
         config.concurrency,
         config.variants.len(),
         config.new_strength,
         config.old_strength,
+    );
+    println!(
+        "  Material adjudication: {} | Max-ply adjudication: {}",
         adjudication_str,
         maxply_adjudication_str,
     );
@@ -947,6 +950,8 @@ struct ResumeState {
     draws: usize,
     penta: PentaCounts,
     per_variant_stats: HashMap<String, (usize, usize, usize)>,
+    timeout_losses: usize,
+    new_engine_timeouts: usize,
     resume_pair_offset: usize,
     detected_tc: Option<String>,
     detected_variants: Vec<String>,
@@ -962,6 +967,8 @@ fn load_resume_state(path: &str) -> ResumeState {
     let mut losses = 0usize;
     let mut draws = 0usize;
     let mut per_variant_stats: HashMap<String, (usize, usize, usize)> = HashMap::new();
+    let mut timeout_losses = 0usize;
+    let mut new_engine_timeouts = 0usize;
     let mut max_game_idx: Option<usize> = None;
     let mut detected_tc: Option<String> = None;
     let mut seen_variants: HashSet<String> = HashSet::new();
@@ -980,6 +987,7 @@ fn load_resume_state(path: &str) -> ResumeState {
         }
 
         let result_tag = parse_icn_tag(icn, "Result");
+        let termination_reason = parse_icn_tag(icn, "Termination");
         let white_player = parse_icn_tag(icn, "White");
         let new_plays_white = white_player.as_deref() == Some("Apeiron New");
 
@@ -1000,6 +1008,13 @@ fn load_resume_state(path: &str) -> ResumeState {
             }
             _ => GameResult::Draw,
         };
+
+        if termination_reason.as_deref() == Some("Loss on time") {
+            timeout_losses += 1;
+            if result == GameResult::Loss {
+                new_engine_timeouts += 1;
+            }
+        }
 
         match result {
             GameResult::Win => wins += 1,
@@ -1050,6 +1065,8 @@ fn load_resume_state(path: &str) -> ResumeState {
         draws,
         penta,
         per_variant_stats,
+        timeout_losses,
+        new_engine_timeouts,
         resume_pair_offset,
         detected_tc,
         detected_variants,
@@ -3481,6 +3498,8 @@ fn main() {
                 stats.losses = rs.losses;
                 stats.draws = rs.draws;
                 stats.penta = rs.penta;
+                stats.timeout_losses = rs.timeout_losses;
+                stats.new_engine_timeouts = rs.new_engine_timeouts;
                 // Resumed variants merge into the pre-seeded map rather than
                 // replacing it, so the fixed row order still covers every variant.
                 for (name, counts) in rs.per_variant_stats {
