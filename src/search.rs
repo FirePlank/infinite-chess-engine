@@ -3435,6 +3435,18 @@ fn negamax_root(
 
     let in_check = game.is_in_check();
 
+    // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
+    // improving tests compare against a zero root eval, i.e. against the score's sign.
+    if !in_check {
+        #[cfg(feature = "nnue")]
+        let root_raw = evaluate(game, searcher.nnue_at(0));
+        #[cfg(not(feature = "nnue"))]
+        let root_raw = evaluate(game);
+        searcher.eval_stack[0] = searcher.adjusted_eval(game, root_raw, 0);
+    } else {
+        searcher.eval_stack[0] = 0;
+    }
+
     // Reorders `moves` in place, TT move first then by score, so the next iteration
     // inherits the ordering.
     sort_moves_root(searcher, game, moves, &tt_move);
