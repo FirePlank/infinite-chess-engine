@@ -5531,6 +5531,9 @@ fn quiescence(
 
         // Quiescence probes the table at every node and is about half of them, so
         // it wants the same prefetch the main loop already issues.
+        // Prefetching only exists on x86_64; everywhere else `prefetch_entry` is an
+        // empty body, so the child-hash arithmetic feeding it would be pure waste.
+        #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
         {
             let p_color = m.piece.color();
             let from_type = m.piece.piece_type();
