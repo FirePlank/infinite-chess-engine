@@ -3647,6 +3647,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let cut_node = node_type == NodeType::Cut;
     let all_node = !is_pv && !cut_node;
 
+    // Claim this ply's triangular row before any early return. Quiescence never
+    // writes the table, so a leaf that returned with a stale row here used to hand
+    // its parent an earlier sibling's continuation to copy onto the real PV.
+    searcher.pv_length[ply] = 0;
+
     // Leaf node: transition to quiescence search
     if depth == 0 {
         return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
@@ -3686,8 +3691,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if searcher.hot.nodes & SLIDER_CACHE_CLEAR_MASK == 0 {
         game.spatial_indices.slider_cache.borrow_mut().clear();
     }
-    searcher.pv_length[ply] = 0;
-
     // Initialize cutoff count for grandchild ply
     if ply + 2 < MAX_PLY {
         searcher.cutoff_cnt[ply + 2] = 0;
