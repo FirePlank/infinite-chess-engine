@@ -4223,6 +4223,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
+    // What the table actually gets. A fail-low node's `best_move` is the least-bad of
+    // a set of null-window bounds, and storing it evicts a move a real search learned.
+    // Kept separate because `best_move` also feeds the futility margin and tt history.
+    let mut tt_best_move: Option<Move> = None;
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
 
@@ -4858,6 +4862,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             best_move = Some(m);
 
             if score > alpha {
+                tt_best_move = Some(m);
                 alpha = score;
 
                 // Update PV using triangular indexing
@@ -5006,6 +5011,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             best_score = 0; // Stalemate
         }
         best_move = None;
+        tt_best_move = None;
     }
 
     // Adjust best value for fail high cases
@@ -5049,7 +5055,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 score: best_score,
                 static_eval: raw_eval,
                 is_pv: tt_pv,
-                best_move,
+                best_move: tt_best_move,
                 ply,
             },
         );
