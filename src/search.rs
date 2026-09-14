@@ -4112,6 +4112,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let mut probcut_gen = StagedMoveGen::new_probcut(tt_move, threshold, searcher, game);
 
         while let Some(m) = probcut_gen.next(game, searcher) {
+            // The singular search must not consult the move it is excluding.
+            if excluded_move.as_ref().is_some_and(|ex| {
+                ex.from == m.from && ex.to == m.to && ex.promotion == m.promotion
+            }) {
+                continue;
+            }
             // Fast legality check (skips is_move_illegal for non-pinned pieces)
             let fast_legal = game.is_legal_fast(&m, in_check);
             if let Ok(false) = fast_legal {
