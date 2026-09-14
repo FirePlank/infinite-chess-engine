@@ -5,8 +5,8 @@ use smallvec::SmallVec;
 use std::cell::{Cell, UnsafeCell};
 
 use super::piece_reach::{
-    evaluate_compound_leap_threats, evaluate_huygen_reach, evaluate_knightrider_reach,
-    evaluate_rose_reach,
+    RiderRays, evaluate_compound_leap_threats, evaluate_huygen_reach,
+    evaluate_knightrider_reach, evaluate_rose_reach, knightrider_ray_occupants,
 };
 use crate::search::params::{
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
@@ -1795,6 +1795,11 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         black_attack_ready.min(cap)
     };
 
+    // Built on the first rider met, so boards without one pay nothing: it
+    // resolves every rider's rays in one board pass instead of one pass each.
+    let mut kr_rays: Option<SmallVec<[RiderRays; 4]>> = None;
+    let mut kr_seen = 0usize;
+
     for &(x, y, piece) in piece_list {
         let pt = piece.piece_type();
         let mut piece_score = match pt {
@@ -2039,7 +2044,19 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     PieceType::Knightrider,
                     cloud_avg_spread,
                     phase,
-                ) + evaluate_knightrider_reach(x, y, piece.color(), &game.board, phase)
+                ) + {
+                    let rays = kr_rays.get_or_insert_with(|| {
+                        let squares: SmallVec<[(i64, i64); 4]> = piece_list
+                            .iter()
+                            .filter(|(_, _, p)| p.piece_type() == PieceType::Knightrider)
+                            .map(|&(px, py, _)| (px, py))
+                            .collect();
+                        knightrider_ray_occupants(&squares, &game.board)
+                    });
+                    let idx = kr_seen;
+                    kr_seen += 1;
+                    evaluate_knightrider_reach(piece.color(), &rays[idx], phase)
+                }
             }
             _ => 0,
         };
