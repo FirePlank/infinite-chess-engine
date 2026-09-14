@@ -878,6 +878,32 @@ impl StagedMoveGen {
         false
     }
 
+    /// Continuation-history slots for this ply. Built before the killer stages as
+    /// well as the quiet one, or a killer searched late reads an empty list and gets
+    /// none of the reduction relief every other quiet move gets.
+    fn ensure_cont_history_indices(&mut self, searcher: &Searcher) {
+        if !self.cont_history_indices.is_empty() {
+            return;
+        }
+        let ply = self.ply;
+        let offsets = [1usize, 2, 4];
+        for (idx, &plies_ago) in offsets.iter().enumerate() {
+            if let Some(prev_idx) = ply.checked_sub(plies_ago)
+                && let Some(Some(prev_move)) = searcher.move_history.get(prev_idx)
+                && let Some(&prev_piece) = searcher.moved_piece_history.get(prev_idx)
+            {
+                let prev_piece = prev_piece as usize;
+                if prev_piece < 32 {
+                    let prev_to_h = hash_coord_16(prev_move.to.x, prev_move.to.y);
+                    let prev_ic = searcher.in_check_history[prev_idx] as usize;
+                    let prev_cap = searcher.capture_history_stack[prev_idx] as usize;
+                    self.cont_history_indices
+                        .push((idx, prev_cap, prev_ic, prev_piece, prev_to_h));
+                }
+            }
+        }
+    }
+
     /// Compute and cache the side-to-move pin map, shared by the capture and
     /// quiet stages.
     fn ensure_pins(&mut self, game: &GameState) {
@@ -1051,6 +1077,7 @@ impl StagedMoveGen {
                     if self.skip_quiets {
                         continue;
                     }
+                    self.ensure_cont_history_indices(searcher);
 
                     if let Some(m) = self.killer1
                         && !self.is_tt_move(&m)
@@ -1092,28 +1119,7 @@ impl StagedMoveGen {
 
                     let quiet_start = self.moves.len();
 
-                    // Pre-calculate history indices
-                    if self.cont_history_indices.is_empty() {
-                        let ply = self.ply;
-                        let offsets = [1usize, 2, 4];
-                        for (idx, &plies_ago) in offsets.iter().enumerate() {
-                            if let Some(prev_idx) = ply.checked_sub(plies_ago)
-                                && let Some(Some(prev_move)) = searcher.move_history.get(prev_idx)
-                                && let Some(&prev_piece) =
-                                    searcher.moved_piece_history.get(prev_idx)
-                            {
-                                let prev_piece = prev_piece as usize;
-                                if prev_piece < 32 {
-                                    let prev_to_h = hash_coord_16(prev_move.to.x, prev_move.to.y);
-                                    let prev_ic = searcher.in_check_history[prev_idx] as usize;
-                                    let prev_cap =
-                                        searcher.capture_history_stack[prev_idx] as usize;
-                                    self.cont_history_indices
-                                        .push((idx, prev_cap, prev_ic, prev_piece, prev_to_h));
-                                }
-                            }
-                        }
-                    }
+                    self.ensure_cont_history_indices(searcher);
 
                     self.generate_quiets(game, searcher);
                     self.end_generated = self.moves.len();
