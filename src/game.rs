@@ -1721,13 +1721,20 @@ impl GameState {
             if pt.is_royal() {
                 // King moves: destination must not be attacked, or the mover's win
                 // condition must allow its king to be captured
-                use crate::moves::is_square_attacked;
-                if is_square_attacked(
+                use crate::moves::{is_square_attacked, knightrider_attacks_square_exact};
+                // The root list must be exact, so the capped rider walk inside
+                // is_square_attacked is backed up by an uncapped check here.
+                if (is_square_attacked(
                     &self.board,
                     &m.to,
                     self.turn.opponent(),
                     &self.spatial_indices,
-                ) && !self.king_capturable(self.turn)
+                ) || knightrider_attacks_square_exact(
+                    &self.board,
+                    &m.to,
+                    self.turn.opponent(),
+                    &self.spatial_indices,
+                )) && !self.king_capturable(self.turn)
                 {
                     illegal = true;
                 }
@@ -4405,6 +4412,33 @@ mod tests {
     /// Every incremental hash must equal a from-scratch recompute after each make,
     /// and must return to its previous value after the matching undo. Covers the move
     /// kinds one variant at a time so the world-bounds global is never interleaved.
+    /// A knightrider attacks along knight rays without limit, but the attack query
+    /// that decides legality stops after 20 hops, so a king step onto a square only a
+    /// distant rider covers was returned as legal.
+    #[test]
+    fn root_rejects_king_step_into_a_distant_knightrider_ray() {
+        let mut game = GameState::new();
+        // Black knightrider at (21,42): 21 hops of (-1,-2) reach (0,0) on a clear ray.
+        game.setup_position_from_icn("w 0/100 1 K1,1+|k9,9+|nr21,42");
+        let target = Coordinate::new(0, 0);
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+        let step = moves
+            .iter()
+            .find(|m| m.from == Coordinate::new(1, 1) && m.to == target)
+            .copied();
+        let Some(step) = step else {
+            return; // that king step is not generated here; nothing to assert
+        };
+        let undo = game.make_move(&step);
+        let illegal = game.is_move_illegal();
+        game.undo_move(&step, undo);
+        assert!(
+            illegal,
+            "king stepped onto a square a knightrider covers from 21 hops away"
+        );
+    }
+
     #[test]
     fn incremental_hashes_match_scratch_across_make_and_undo() {
         // Obstacle boards are deliberately excluded: `recompute_hash` never hashes
