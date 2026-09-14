@@ -4666,7 +4666,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // Correction history adjustment
                 let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
-                reduction -= (correction.abs() / 30370).clamp(0, 2);
+                reduction -= (correction.abs() / 15185).clamp(0, 2);
 
                 // Shuffle penalty
                 if searcher.is_shuffling(game, &m, ply, is_capture) {
