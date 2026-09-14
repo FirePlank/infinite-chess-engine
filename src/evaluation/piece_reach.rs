@@ -7,12 +7,9 @@ use crate::search::params::{huygen, knightrider, rose, slider_threat_cap, slider
 use super::base::{MAX_PHASE, get_piece_value_base};
 
 const ROSE_DEFEND_BONUS: i32 = 4;
-const ROSE_ROYAL_REACH: i32 = 20;
 
 const COMPOUND_LEAP_DEFEND: i32 = 4;
-const COMPOUND_LEAP_ROYAL: i32 = 20;
 
-const KNIGHTRIDER_ROYAL_ALIGN: i32 = 20;
 const KNIGHTRIDER_DEFEND_BONUS: i32 = 4;
 const KNIGHTRIDER_OPEN_RAY_EG: i32 = 2;
 
@@ -20,7 +17,6 @@ const KNIGHTRIDER_OPEN_RAY_EG: i32 = 2;
 /// lookup path and the scan bounded on crowded lines.
 const HUYGEN_SCAN_MAX: i64 = 120;
 const HUYGEN_DEFEND_BONUS: i32 = 4;
-const HUYGEN_ROYAL_ALIGN: i32 = 22;
 
 /// A huygen jumps to PRIME distances along its orthogonals, hopping composite
 /// gaps but stopped by a piece exactly at a prime distance -- so open lines say
@@ -67,7 +63,6 @@ pub(crate) fn evaluate_huygen_reach(
         None
     };
 
-    let royal_at = |p: &Piece| -> bool { p.piece_type().is_royal() };
 
     let mut score_hit = |hit: Option<Piece>| {
         let Some(victim) = hit else { return };
@@ -77,12 +72,6 @@ pub(crate) fn evaluate_huygen_reach(
         }
         if victim.color() == own {
             defend += HUYGEN_DEFEND_BONUS;
-            return;
-        }
-        if royal_at(&victim) {
-            // Nothing can interpose at a composite distance, so this is a
-            // standing check threat rather than a merely aligned one.
-            attack += HUYGEN_ROYAL_ALIGN;
             return;
         }
         let v = get_piece_value_base(vt);
@@ -135,10 +124,6 @@ pub(crate) fn evaluate_leap_threats(
             defend += defend_unit;
             continue;
         }
-        if tt.is_royal() {
-            attack += COMPOUND_LEAP_ROYAL;
-            continue;
-        }
         let v = get_piece_value_base(tt);
         // Unblockable, so even a lesser victim is a genuine threat and earns a floor.
         let raw = (v - attacker_value).max(v / 4);
@@ -183,8 +168,6 @@ pub(crate) fn evaluate_rose_reach(
                 if !ot.is_neutral_type() {
                     if occupant.color() == own {
                         defend += ROSE_DEFEND_BONUS;
-                    } else if ot.is_royal() {
-                        attack += ROSE_ROYAL_REACH;
                     } else {
                         let v = get_piece_value_base(ot);
                         let raw = (v - rose()).max(v / 4);
@@ -254,10 +237,6 @@ pub(crate) fn evaluate_knightrider_reach(
         if occupant.color() == own {
             // The ray stops one leap short of it: cover, not a target.
             defend += KNIGHTRIDER_DEFEND_BONUS;
-            continue;
-        }
-        if ot.is_royal() {
-            attack += KNIGHTRIDER_ROYAL_ALIGN;
             continue;
         }
         let v = get_piece_value_base(ot);

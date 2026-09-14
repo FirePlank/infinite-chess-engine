@@ -386,10 +386,22 @@ impl StagedMoveGen {
                 {
                     return false;
                 }
+                // Both ends need their rights, and the pair must stand at least three
+                // apart, or the king would land on or past its partner.
+                if !game.special_rights.contains(&m.from)
+                    || !game.special_rights.contains(partner)
+                    || partner.y != m.from.y
+                    || (partner.x - m.from.x).abs() < 3
+                    || (partner.x - m.from.x).signum() != (m.to.x - m.from.x).signum()
+                {
+                    return false;
+                }
+                // The partner must be the nearest piece along the row: anything in
+                // between blocks the castle, however far apart the two ends are.
                 let dir = if dx > 0 { 1 } else { -1 };
-                if game.board.is_occupied(m.from.x + dir, m.from.y)
-                    || game.board.is_occupied(m.to.x, m.from.y)
-                    || (dir < 0 && game.board.is_occupied(m.from.x - 3, m.from.y))
+                if let Some(row_pieces) = game.spatial_indices.rows.get(&m.from.y)
+                    && let Some((nearest_x, _)) = row_pieces.find_nearest(m.from.x, dir)
+                    && ((dir > 0 && nearest_x < partner.x) || (dir < 0 && nearest_x > partner.x))
                 {
                     return false;
                 }
@@ -1227,6 +1239,33 @@ mod tests {
     use super::*;
     use crate::board::{Coordinate, Piece, PieceType};
     use crate::search::Searcher;
+
+    /// A castling partner may stand any distance away on the row, so validation must
+    /// use the same rules the generator does: rights on both ends, at least three
+    /// apart, and nothing in between. It previously demanded the square three files
+    /// out be empty, which is the partner itself at the minimum legal distance.
+    #[test]
+    fn pseudo_legal_accepts_castling_with_a_partner_three_squares_away() {
+        let game = game_from_icn("w 0/100 1 K5,1+|R2,1+|k5,8+");
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+        let castle = moves
+            .iter()
+            .find(|m| m.from == Coordinate::new(5, 1) && m.to == Coordinate::new(3, 1))
+            .copied()
+            .expect("generator emits the castle with a partner three away");
+        assert!(
+            StagedMoveGen::is_pseudo_legal(&game, &castle),
+            "a legal castle was rejected, so a killer naming it would be dropped"
+        );
+
+        // A piece between the two ends blocks it, however far apart they are.
+        let blocked = game_from_icn("w 0/100 1 K5,1+|R1,1+|N3,1|k5,8+");
+        assert!(
+            !StagedMoveGen::is_pseudo_legal(&blocked, &castle),
+            "castling must be rejected when a piece stands between king and partner"
+        );
+    }
 
     fn game_from_icn(icn: &str) -> GameState {
         let mut game = GameState::new();

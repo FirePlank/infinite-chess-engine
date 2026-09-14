@@ -22,7 +22,7 @@ use crate::search::params::{
     minor_development_penalty_threshold, passed_enemy_king_dist, passed_friendly_king_dist,
     passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
     pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
-    piece_cloud_cheb_max_excess, piece_cloud_cheb_radius, queen_ideal_line_dist,
+    piece_cloud_cheb_max_excess, piece_cloud_cheb_radius,
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     slider_threat_div, zebra,
@@ -822,11 +822,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         .collect();
 
     // Interaction threat constants
-    const PAWN_THREATENS_ROYAL: i32 = 20;
     // Sliders are graded by value gap rather than bucketed: on an unbounded
     // board they are the pieces that can threaten from anywhere, and a fixed
     // tier would have to be re-cut every time the piece values are refitted.
-    const MINOR_THREATENS_ROYAL: i32 = 20;
 
     const KNIGHT_OFFSETS: [(i64, i64); 8] = [
         (2, 1),
@@ -1106,13 +1104,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         {
                                             let tt = target.piece_type();
                                             let tv = get_piece_value_base(tt);
-                                            let add = if tt.is_royal() {
-                                                PAWN_THREATENS_ROYAL
-                                            } else {
-                                                let raw = (tv - piece_val).max(0);
-                                                (raw / slider_threat_div())
-                                                    .min(slider_threat_cap())
-                                            };
+                                            let raw = (tv - piece_val).max(0);
+                                            let add = (raw / slider_threat_div())
+                                                .min(slider_threat_cap());
 
                                             if is_white {
                                                 w_pawn_threats += add;
@@ -1147,13 +1141,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             // The old value gates excluded the
                                             // centaur from its own branch, since
                                             // both required a cheap attacker.
-                                            let add = if tt.is_royal() {
-                                                MINOR_THREATENS_ROYAL
-                                            } else {
-                                                let raw = (tv - piece_val).max(tv / 4);
-                                                (raw / slider_threat_div())
-                                                    .min(slider_threat_cap())
-                                            };
+                                            let raw = (tv - piece_val).max(tv / 4);
+                                            let add = (raw / slider_threat_div())
+                                                .min(slider_threat_cap());
                                             if is_white {
                                                 w_minor_threats += add;
                                             } else {
@@ -2671,59 +2661,11 @@ pub fn evaluate_queen(
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut bonus: i32 = 0;
 
-    // Scale king-targeting bonuses based on own win condition.
-    let own_win_cond = if color == PlayerColor::White {
-        game.game_rules.white_win_condition
-    } else {
-        game.game_rules.black_win_condition
-    };
-    let king_mult = match own_win_cond {
-        WinCondition::AllRoyalsCaptured => 70,
-        _ => 100,
-    };
-
-    // Queen should aggressively aim at the enemy king from a safe distance.
     let enemy_royals = if color == PlayerColor::White {
         black_royals
     } else {
         white_royals
     };
-
-    let from = Coordinate { x, y };
-    for ek in enemy_royals {
-        let dx = ek.x - x;
-        let dy = ek.y - y;
-        let same_file = dx == 0;
-        let same_rank = dy == 0;
-        let same_diag = dx.abs() == dy.abs();
-
-        if (same_file || same_rank || same_diag)
-            && is_clear_line_between_fast(&game.spatial_indices, &from, ek)
-        {
-            let mut line_bonus = 15;
-            let lin_dist = saturating_dist_i32(dx.abs().max(dy.abs()));
-            let max_lin = 20;
-            let clamped = lin_dist.min(max_lin);
-            let diff = (clamped - queen_ideal_line_dist()).abs();
-            let base = (max_lin - diff * 2).max(0);
-            line_bonus += base
-                * (taper(
-                    crate::search::params::mg_king_tropism_bonus(),
-                    crate::search::params::eg_king_tropism_bonus(),
-                ) / 2)
-                    .max(1);
-            let line_bonus = line_bonus
-                + if (color == PlayerColor::White && y > ek.y)
-                    || (color == PlayerColor::Black && y < ek.y)
-                {
-                    10
-                } else {
-                    0
-                };
-            bonus += line_bonus * king_mult / 100;
-            break;
-        }
-    }
 
     let mut min_cheb = i64::MAX;
     for ek in enemy_royals {
