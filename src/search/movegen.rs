@@ -414,8 +414,10 @@ impl StagedMoveGen {
                     if dy == dir {
                         !target_occupied
                     } else if dy == 2 * dir {
-                        // 2 steps
-                        if target_occupied {
+                        // 2 steps. The right is per-square and a killer outlives the
+                        // pawn that earned it, so a different pawn now standing there
+                        // must not inherit its double step.
+                        if target_occupied || !game.special_rights.contains(&m.from) {
                             return false;
                         }
                         // Intermediate square: one direct occ_all read (reuse
@@ -1419,10 +1421,20 @@ mod tests {
             "pawn must not push through a void"
         );
 
-        // Control: with the square clear both pushes are pseudo-legal.
-        let clear = game_from_icn("w 0/100 1 (8;q|1;q) K1,1|P4,4|k8,8");
+        // Control: with the square clear the single push is pseudo-legal, and the
+        // double push is too once the pawn actually holds its double-step right.
+        let clear = game_from_icn("w 0/100 1 (8;q|1;q) K1,1|P4,4+|k8,8");
         assert!(StagedMoveGen::is_pseudo_legal(&clear, &push));
         assert!(StagedMoveGen::is_pseudo_legal(&clear, &double));
+
+        // Without that right the generator never emits the double step, so a stale
+        // killer naming it must not be replayed either.
+        let no_right = game_from_icn("w 0/100 1 (8;q|1;q) K1,1|P4,4|k8,8");
+        assert!(StagedMoveGen::is_pseudo_legal(&no_right, &push));
+        assert!(
+            !StagedMoveGen::is_pseudo_legal(&no_right, &double),
+            "a pawn with no double-step right must not double-push"
+        );
     }
 
     #[test]
