@@ -3863,8 +3863,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
     searcher.eval_stack[ply] = static_eval;
 
-    // Position improving heuristic: compare eval to 2 plies ago
-    let mut improving = if ply >= 2 && !in_check {
+    // Position improving heuristic: compare eval to 2 plies ago. In check there is no
+    // honest static eval to compare, so Stockfish calls it not-improving rather than
+    // improving; late-move pruning is not gated on check, so the choice is live.
+    let mut improving = if in_check {
+        false
+    } else if ply >= 2 {
         static_eval > searcher.eval_stack[ply - 2]
     } else {
         true
