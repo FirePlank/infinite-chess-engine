@@ -1473,23 +1473,12 @@ impl GameState {
         let mut rh: u64 = 0;
 
         // Hash all pieces (excluding obstacles/voids for performance)
-        if let Some(active) = &self.board.active_coords {
-            for (x, y) in active {
-                let piece = match self.board.get_piece(*x, *y) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                h ^= piece_key(piece.piece_type(), piece.color(), *x, *y);
-                rh ^= rep_piece_key(piece.piece_type(), piece.color(), *x, *y);
-            }
-        } else {
-            for (x, y, piece) in self.board.iter() {
-                if piece.color() == PlayerColor::Neutral {
-                    continue;
-                }
-                h ^= piece_key(piece.piece_type(), piece.color(), x, y);
-                rh ^= rep_piece_key(piece.piece_type(), piece.color(), x, y);
-            }
+        // Every piece, neutrals included: make_move xors a captured obstacle out, so
+        // leaving them out here made the two paths disagree after any obstacle capture,
+        // and made two boards differing only by an obstacle hash the same.
+        for (x, y, piece) in self.board.iter() {
+            h ^= piece_key(piece.piece_type(), piece.color(), x, y);
+            rh ^= rep_piece_key(piece.piece_type(), piece.color(), x, y);
         }
 
         let (castle_h, castle_rh) = self.castling_hash_pair();
@@ -4441,16 +4430,12 @@ mod tests {
 
     #[test]
     fn incremental_hashes_match_scratch_across_make_and_undo() {
-        // Obstacle boards are deliberately excluded: `recompute_hash` never hashes
-        // neutral pieces while `make_move` xors a captured one, so the two conventions
-        // diverge after any obstacle capture. That asymmetry is benign in play (a game
-        // always recomputes once at setup and is incremental thereafter) but it makes
-        // the two paths incomparable here.
         for variant in [
             crate::Variant::Classical,
             crate::Variant::Palace,
             crate::Variant::CoaIPNO,
             crate::Variant::PawnHorde,
+            crate::Variant::Obstocean,
         ] {
             let mut game = GameState::new();
             game.setup_position_from_icn(variant.starting_icn());
