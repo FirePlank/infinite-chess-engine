@@ -60,6 +60,12 @@ const DIAG_PAIR_SANDWICH: i32 = 50;
 /// flight. Big enough to beat shadow-chasing with split bishops.
 const DIAG_PAIR_FAR_SIDE: i32 = 40;
 const FULL_BOX_BONUS: i32 = 120;
+// Wall credit for the minor armies, which have nothing else to stop a runner.
+// Weights are large because the gate makes them invisible to every ending that
+// converges on its own, measured at +0 -0 over the 270-game guard.
+const AHEAD_PAIR_FLAT: i32 = 300;
+const AHEAD_PAIR_STEP: i32 = 24;
+const AHEAD_SINGLE: i32 = 220;
 const CAGE_FLAT: i32 = 120;
 const CAGE_MAX: i32 = 620;
 // A tight cage is a certificate, and the area term saturates inside it, so the
@@ -1249,6 +1255,11 @@ fn evaluate_mating_net(
         &game.black_royals
     };
 
+    let minors_only = material.queen_count == 0
+        && material.ortho_count == 0
+        && material.chancellor_count == 0
+        && material.amazon_count == 0
+        && material.archbishops == 0;
     let lone_king = game
         .board
         .get_piece(ex, ey)
@@ -1389,7 +1400,18 @@ fn evaluate_mating_net(
     // Which side of each diagonal family our king stands on (0 = none/aligned).
     let our_dp_rel = (kr.our_dx + kr.our_dy).signum();
     let our_dn_rel = (kr.our_dx - kr.our_dy).signum();
-    let score_diag_family = |lines: &[i64], enemy_line: i64, our_rel: i64| -> i32 {
+    let flight = (-kr.our_dx.signum(), -kr.our_dy.signum());
+    let crosses_family = |sum_family: bool| {
+        if !minors_only || !lone_king || (flight.0 == 0 && flight.1 == 0) {
+            return false;
+        }
+        if sum_family {
+            flight.0 + flight.1 != 0
+        } else {
+            flight.0 - flight.1 != 0
+        }
+    };
+    let score_diag_family = |lines: &[i64], enemy_line: i64, our_rel: i64, crosses: bool| -> i32 {
         let mut single_above = i64::MAX;
         let mut single_below = i64::MAX;
         let mut pair_above = i64::MAX;
@@ -1420,9 +1442,25 @@ fn evaluate_mating_net(
                 score += CUT_FLAT_DIAG + ((CUT_CAP_DIAG - d).max(0) as i32) * CUT_STEP_DIAG;
             }
         }
-        for d in [pair_above, pair_below] {
-            if d <= WALL_RELEVANT_DIST {
+        for (d, far) in [(pair_above, our_rel < 0), (pair_below, our_rel > 0)] {
+            if d > WALL_RELEVANT_DIST {
+                continue;
+            }
+            if crosses && far {
+                score += AHEAD_PAIR_FLAT + ((DIAG_PAIR_CAP - d).max(0) as i32) * AHEAD_PAIR_STEP;
+            } else if !crosses {
                 score += DIAG_PAIR_FLAT + ((DIAG_PAIR_CAP - d).max(0) as i32) * DIAG_PAIR_STEP;
+            }
+        }
+        // Half a wall, in the only place a wall matters. Without it the first
+        // bishop to leave a useless pair scored LOWER than staying, a valley at
+        // step one of the plan that no search depth could cross.
+        if crosses {
+            if single_above <= WALL_RELEVANT_DIST && our_rel < 0 {
+                score += AHEAD_SINGLE;
+            }
+            if single_below <= WALL_RELEVANT_DIST && our_rel > 0 {
+                score += AHEAD_SINGLE;
             }
         }
         // A pair wall on the side away from our king fences the flight path.
@@ -1440,8 +1478,17 @@ fn evaluate_mating_net(
         }
         score
     };
-    bonus += score_diag_family(&fences.dp_lines[..fences.dp_count], enemy_dp, our_dp_rel)
-        + score_diag_family(&fences.dn_lines[..fences.dn_count], enemy_dn, our_dn_rel);
+    bonus += score_diag_family(
+        &fences.dp_lines[..fences.dp_count],
+        enemy_dp,
+        our_dp_rel,
+        crosses_family(true),
+    ) + score_diag_family(
+        &fences.dn_lines[..fences.dn_count],
+        enemy_dn,
+        our_dn_rel,
+        crosses_family(false),
+    );
 
     // The defender royal may move like more than a king (e.g. a royal centaur
     // leaps out of king-step cages); its extra escape squares extend the ring.

@@ -21,6 +21,22 @@ thread_local! {
     /// never invalidated, so its target set can be stale for the current
     /// occupancy and omit legal moves. Exact move lists set this to skip it.
     static SLIDER_CACHE_BYPASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Bare-king conversion: also generate the quiet squares that wall the
+    /// defender in. A slider only escapes the distance filter by giving check,
+    /// so the square one line beside his - the one that builds a wall - is not
+    /// generated at all past sixteen squares, and no evaluation can reach a
+    /// formation the move list does not contain.
+    static WALL_TARGETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Enable wall-target generation for lone-king conversions. Changing it clears
+/// the slider cache, whose entries are keyed only by (square, direction) and
+/// would otherwise serve a target set built under the other mode.
+pub fn set_wall_targets(on: bool, indices: &SpatialIndices) {
+    if WALL_TARGETS.with(|c| c.replace(on)) != on {
+        indices.slider_cache.borrow_mut().clear();
+    }
 }
 
 /// Generate slider candidates without consulting or filling the position-stale
@@ -3287,6 +3303,37 @@ fn generate_sliding_moves_impl(
                                     royal_dists.insert(d);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // 3b. Wall targets: the quiet squares just beside his lines.
+                if WALL_TARGETS.with(|c| c.get())
+                    && let Some(ek) = ek_ref
+                {
+                    // Along a diagonal one of x+y, x-y is fixed and the other
+                    // moves by two a step; along a rank or file, x or y moves
+                    // by one. Pick whichever this ray actually changes.
+                    let (base, king_line, step) = if dir_x != 0 && dir_y != 0 {
+                        if dir_x == dir_y {
+                            (from.x + from.y, ek.x + ek.y, 2 * dir_x)
+                        } else {
+                            (from.x - from.y, ek.x - ek.y, 2 * dir_x)
+                        }
+                    } else if dir_x != 0 {
+                        (from.x, ek.x, dir_x)
+                    } else {
+                        (from.y, ek.y, dir_y)
+                    };
+                    for offset in [-2i64, -1, 1, 2] {
+                        let delta = king_line + offset - base;
+                        if delta == 0 || delta % step != 0 {
+                            continue;
+                        }
+                        let d = delta / step;
+                        if d > 0 && d <= max_dist {
+                            add_dist(&mut dist_counts, d, max_dist);
+                            royal_dists.insert(d);
                         }
                     }
                 }

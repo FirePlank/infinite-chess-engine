@@ -2200,6 +2200,19 @@ fn search_with_searcher(
         return None;
     }
 
+    // Wall-target generation for lone-king conversions: without it the square
+    // that builds a wall is not in the move list at all past sixteen squares,
+    // because only checks escape the slider distance filter.
+    let bare_conversion = crate::evaluation::mop_up::active_mop_up(game).is_some_and(|(w, _)| {
+        let defender = if w == PlayerColor::White {
+            game.black_piece_count
+        } else {
+            game.white_piece_count
+        };
+        defender == 1
+    });
+    crate::moves::set_wall_targets(bare_conversion, &game.spatial_indices);
+
     // Initialize NNUE accumulator stack for this search (stored on searcher).
     #[cfg(feature = "nnue")]
     searcher.nnue_init_root(game);
