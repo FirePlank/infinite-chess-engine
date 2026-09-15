@@ -1548,11 +1548,17 @@ fn evaluate_mating_net(
         );
         if caged {
             bonus += CAGE_FLAT + (3600 / (isqrt_u32(area) as i32 + 2)).min(CAGE_MAX);
-        } else if minors_only {
-            // Room taken from him nearby, graded. Leapers and same-coloured
-            // bishops cannot cut a line, so covering squares IS their technique,
-            // and it was worth nothing until he was already shut in.
-            bonus += (169 - local.min(169)) as i32 * SQUEEZE_STEP;
+        } else {
+            // Room taken from him nearby, graded. Covering squares is the whole
+            // technique for a force that cannot cut a line, and the same measure
+            // read backwards is what tells a bare king to leave a closing net,
+            // so it is not keyed to the attacking army.
+            let step = if minors_only {
+                SQUEEZE_STEP
+            } else {
+                SQUEEZE_STEP / 2
+            };
+            bonus += (169 - local.min(169)) as i32 * step;
         }
     }
 
