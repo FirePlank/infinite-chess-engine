@@ -1121,6 +1121,14 @@ fn evaluate_two_rook_drive(
     bonus
 }
 
+/// Penalty for one pair's separation along one axis. The steep near slope is
+/// what closes a formed wall; the shallow tail exists because a flat cap made
+/// every bishop more than nine lines from its partner invisible to the search.
+fn pair_gap(a: i64, b: i64) -> i32 {
+    let d = ((a - b).abs() - 1).max(0);
+    (d.min(8) * 24 + (d - 8).clamp(0, 56) * 5) as i32
+}
+
 // Opposite-colour neighbours cut both diagonal families, like a rook in
 // rotated coordinates. Pair separation measures the holes in that cross.
 fn evaluate_bishop_battery(
@@ -1159,7 +1167,7 @@ fn evaluate_bishop_battery(
             continue;
         }
         let mut sides = [i64::MAX; 4];
-        let mut holes = 0;
+        let mut holes = 0i32;
         for i in 0..nl {
             let a = pieces[light[i]];
             let b = pieces[dark[matching[i]]];
@@ -1167,7 +1175,7 @@ fn evaluate_bishop_battery(
             let av = a.x - enemy.x - (a.y - enemy.y);
             let bu = b.x - enemy.x + b.y - enemy.y;
             let bv = b.x - enemy.x - (b.y - enemy.y);
-            holes += ((au - bu).abs() - 1).min(8) + ((av - bv).abs() - 1).min(8);
+            holes += pair_gap(au, bu) + pair_gap(av, bv);
             for (axis, (a, b)) in [(au, bu), (av, bv)].into_iter().enumerate() {
                 if a.min(b) > 0 {
                     sides[axis * 2] = sides[axis * 2].min(a.min(b));
@@ -1185,7 +1193,7 @@ fn evaluate_bishop_battery(
                 sides[axis * 2 + 1] = sides[axis * 2 + 1].min(-k);
             }
         }
-        let mut score = -(holes as i32) * 24;
+        let mut score = -holes;
         for d in sides {
             score += if d <= 200 {
                 150 + (32 - d).max(0) as i32 * 6
@@ -1195,10 +1203,21 @@ fn evaluate_bishop_battery(
         }
         best = best.max(score);
     }
-    best + king.map_or(0, |k| {
-        let distance = (k.x - enemy.x).abs().max((k.y - enemy.y).abs());
-        (100 - distance.min(100)) as i32 * 28
-    })
+    // A bishop keeps cutting its line from any range, so the cross alone is
+    // happy to be built thousands of squares out - where it can never be
+    // tightened, because every adjustment costs that many moves.
+    let stranded: i32 = pieces
+        .iter()
+        .map(|s| {
+            let d = (s.x - enemy.x).abs().max((s.y - enemy.y).abs());
+            (d - 16).clamp(0, 200) as i32 * 8
+        })
+        .sum();
+    best - stranded
+        + king.map_or(0, |k| {
+            let distance = (k.x - enemy.x).abs().max((k.y - enemy.y).abs());
+            (100 - distance.min(100)) as i32 * 28
+        })
 }
 
 /// Unified mating-net evaluation for the piece-coordination (unbounded) model.
