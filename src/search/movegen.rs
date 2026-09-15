@@ -70,6 +70,7 @@ pub struct StagedMoveGen {
     moves: Vec<ScoredMove>,
     cur: usize,
     end_bad_captures: usize,
+    end_bad_quiets: usize,
     end_captures: usize,
     end_generated: usize,
 
@@ -231,6 +232,7 @@ impl StagedMoveGen {
             moves: Vec::new(),
             cur: 0,
             end_bad_captures: 0,
+            end_bad_quiets: 0,
             end_captures: 0,
             end_generated: 0,
             ply,
@@ -1141,6 +1143,7 @@ impl StagedMoveGen {
                     partial_insertion_sort(&mut self.moves[quiet_start..], limit);
 
                     self.cur = quiet_start;
+                    self.end_bad_quiets = quiet_start;
                     self.stage = MoveStage::GoodQuiet;
                 }
 
@@ -1152,12 +1155,15 @@ impl StagedMoveGen {
                     }
 
                     while self.cur < self.end_generated {
-                        let sm = self.moves[self.cur];
-                        self.cur += 1;
-
-                        if sm.score > GOOD_QUIET_THRESHOLD {
-                            return Some(sm.m);
+                        if self.moves[self.cur].score > GOOD_QUIET_THRESHOLD {
+                            let m = self.moves[self.cur].m;
+                            self.cur += 1;
+                            return Some(m);
                         }
+                        // Bad quiet - swap to the front of the quiet span for later
+                        self.moves.swap(self.end_bad_quiets, self.cur);
+                        self.end_bad_quiets += 1;
+                        self.cur += 1;
                     }
 
                     // Prepare for bad captures
@@ -1183,13 +1189,10 @@ impl StagedMoveGen {
                         return None;
                     }
 
-                    while self.cur < self.end_generated {
-                        let sm = self.moves[self.cur];
+                    if self.cur < self.end_bad_quiets {
+                        let m = self.moves[self.cur].m;
                         self.cur += 1;
-
-                        if sm.score <= GOOD_QUIET_THRESHOLD {
-                            return Some(sm.m);
-                        }
+                        return Some(m);
                     }
 
                     self.stage = MoveStage::Done;
