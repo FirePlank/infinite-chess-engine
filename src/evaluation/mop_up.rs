@@ -62,6 +62,9 @@ const DIAG_PAIR_FAR_SIDE: i32 = 40;
 const FULL_BOX_BONUS: i32 = 120;
 const CAGE_FLAT: i32 = 120;
 const CAGE_MAX: i32 = 620;
+// A tight cage is a certificate, and the area term saturates inside it, so the
+// only progress left is walking the king in. That march has to out-bid every
+// piece-shaping term or the pieces shuffle until the fifty-move clock runs out.
 
 // Target-box formation: a fixed cage blueprint anchored to the enemy king's cell
 // on a coarse grid. Stations don't move while he shuffles inside the cell, so
@@ -702,7 +705,7 @@ fn king_mostly_idle(m: &MaterialSummary, bounded: bool) -> bool {
     } else {
         // Without an edge almost every net needs the king; only a large battery
         // of heavies can weave one alone.
-        heavy + m.chancellor_count >= 3 || m.total_non_pawn_pieces >= 6
+        heavy + m.chancellor_count >= 3 || (m.total_non_pawn_pieces >= 6 && m.wall_count() >= 3)
     }
 }
 
@@ -1118,6 +1121,86 @@ fn evaluate_two_rook_drive(
     bonus
 }
 
+// Opposite-colour neighbours cut both diagonal families, like a rook in
+// rotated coordinates. Pair separation measures the holes in that cross.
+fn evaluate_bishop_battery(
+    pieces: &[SliderInfo],
+    king: Option<&Coordinate>,
+    enemy: &Coordinate,
+) -> i32 {
+    let mut light = [0; 3];
+    let mut dark = [0; 3];
+    let (mut nl, mut nd) = (0, 0);
+    for (i, s) in pieces.iter().enumerate() {
+        if (s.x + s.y) & 1 == 0 {
+            light[nl] = i;
+            nl += 1;
+        } else {
+            dark[nd] = i;
+            nd += 1;
+        }
+    }
+    let (ku, kv) = king.map_or((0, 0), |k| {
+        (
+            k.x - enemy.x + k.y - enemy.y,
+            k.x - enemy.x - (k.y - enemy.y),
+        )
+    });
+    let mut best = i32::MIN;
+    for matching in [
+        [0, 1, 2],
+        [1, 0, 2],
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        if nl == 2 && matching[2] != 2 {
+            continue;
+        }
+        let mut sides = [i64::MAX; 4];
+        let mut holes = 0;
+        for i in 0..nl {
+            let a = pieces[light[i]];
+            let b = pieces[dark[matching[i]]];
+            let au = a.x - enemy.x + a.y - enemy.y;
+            let av = a.x - enemy.x - (a.y - enemy.y);
+            let bu = b.x - enemy.x + b.y - enemy.y;
+            let bv = b.x - enemy.x - (b.y - enemy.y);
+            holes += ((au - bu).abs() - 1).min(8) + ((av - bv).abs() - 1).min(8);
+            for (axis, (a, b)) in [(au, bu), (av, bv)].into_iter().enumerate() {
+                if a.min(b) > 0 {
+                    sides[axis * 2] = sides[axis * 2].min(a.min(b));
+                } else if a.max(b) < 0 {
+                    sides[axis * 2 + 1] = sides[axis * 2 + 1].min(-a.max(b));
+                }
+            }
+        }
+        // The king supplies the near corner while the two pairs close the far
+        // corner; this is a formation gradient, not a certificate of confinement.
+        for (axis, k) in [ku, kv].into_iter().enumerate() {
+            if k > 0 {
+                sides[axis * 2] = sides[axis * 2].min(k);
+            } else if k < 0 {
+                sides[axis * 2 + 1] = sides[axis * 2 + 1].min(-k);
+            }
+        }
+        let mut score = -(holes as i32) * 24;
+        for d in sides {
+            score += if d <= 200 {
+                150 + (32 - d).max(0) as i32 * 6
+            } else {
+                -300
+            };
+        }
+        best = best.max(score);
+    }
+    best + king.map_or(0, |k| {
+        let distance = (k.x - enemy.x).abs().max((k.y - enemy.y).abs());
+        (100 - distance.min(100)) as i32 * 28
+    })
+}
+
 /// Unified mating-net evaluation for the piece-coordination (unbounded) model.
 /// Tiered so the search always has a monotone progress gradient: confinement,
 /// king participation, escape-ring control, then small per-piece shaping.
@@ -1147,6 +1230,28 @@ fn evaluate_mating_net(
         &game.black_royals
     };
 
+    let lone_king = game
+        .board
+        .get_piece(ex, ey)
+        .is_some_and(|p| p.piece_type() == PieceType::King)
+        && if winning_color == PlayerColor::White {
+            game.black_piece_count == 1
+        } else {
+            game.white_piece_count == 1
+        };
+    if lone_king
+        && !bounded
+        && material.diag_light == material.diag_dark
+        && (2..=3).contains(&material.diag_light)
+        && pieces.len() == usize::from(material.diag_light + material.diag_dark)
+        && (our_king.is_some() || material.diag_light >= 3)
+    {
+        let formation = evaluate_bishop_battery(pieces, our_king, enemy_king);
+        if our_king.is_some() {
+            return formation;
+        }
+        bonus += formation.max(0);
+    }
     // Pure K+2R vs a bare king: the rolling lawnmower needs our king as the
     // near wall, so it has its own dedicated drive evaluation (the generic
     // tiers settle for a safe corridor the king runs up forever).
@@ -1383,8 +1488,8 @@ fn evaluate_mating_net(
             // Additional royals are mating material too, not spectators.
             for r in our_royals.iter().skip(1) {
                 let d = (r.x - ex).abs().max((r.y - ey).abs());
-                bonus += ((KING_CAP_NEEDED - d.min(KING_CAP_NEEDED)) as i32)
-                    * KING_STEP_EXTRA_ROYAL;
+                bonus +=
+                    ((KING_CAP_NEEDED - d.min(KING_CAP_NEEDED)) as i32) * KING_STEP_EXTRA_ROYAL;
             }
             if kr.king_dist <= 2 {
                 bonus += KING_NEAR2_NEEDED;
@@ -1490,6 +1595,10 @@ fn evaluate_mating_net(
         let is_diag = is_diag_slider(s.pt);
 
         if is_ortho || is_diag {
+            // The knight component cannot help finish from a distant diagonal.
+            if lone_king && s.pt == PieceType::Archbishop && material.wall_count() <= 1 {
+                bonus += (24 - dist.min(72)) as i32 * 12;
+            }
             // A slider's power is its line, not its proximity: engagement is the
             // offset of its nearest usable line from the enemy king, so a rook far
             // away along a cutting line is not far. Hugging the king risks capture.
@@ -1512,10 +1621,19 @@ fn evaluate_mating_net(
             // A cut is held from FAR along its line: near the king the wall piece
             // gets harassed off it and the runner slips through. Standoff needs
             // wall redundancy, so a lone wall piece must stay close.
-            if line_off <= 2 && dist < 8 {
+            let protected = lone_king
+                && material.ortho_count == 0
+                && dist < 8
+                && is_square_attacked(
+                    &game.board,
+                    &Coordinate::new(s.x, s.y),
+                    winning_color,
+                    &game.spatial_indices,
+                );
+            if line_off <= 2 && dist < 8 && !protected {
                 bonus -= ((8 - dist) as i32) * WALL_HARASS_PENALTY;
             }
-            if (1..=2).contains(&line_off) && material.wall_count() >= 2 {
+            if (1..=2).contains(&line_off) && material.wall_count() >= 2 && !protected {
                 bonus += (dist.min(SLIDER_STANDOFF_CAP) as i32) * SLIDER_STANDOFF_STEP;
             }
         } else {
@@ -1717,6 +1835,68 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::game::GameState;
+
+    #[test]
+    fn bishop_battery_is_translation_and_order_invariant() {
+        let king = Coordinate::new(0, 0);
+        let enemy = Coordinate::new(13, -2);
+        let pieces = [(-1, 0), (-2, 0), (1, 2), (2, 2)].map(|(x, y)| SliderInfo {
+            x,
+            y,
+            pt: PieceType::Bishop,
+        });
+        let expected = evaluate_bishop_battery(&pieces, Some(&king), &enemy);
+        for (dx, dy) in [(1, 0), (-19, 34), (1_000_000_000_000, -2_000_000_000_000)] {
+            let shifted = pieces.map(|s| SliderInfo {
+                x: s.x + dx,
+                y: s.y + dy,
+                pt: s.pt,
+            });
+            let k = Coordinate::new(king.x + dx, king.y + dy);
+            let e = Coordinate::new(enemy.x + dx, enemy.y + dy);
+            assert_eq!(expected, evaluate_bishop_battery(&shifted, Some(&k), &e));
+        }
+        let mut reordered = pieces;
+        reordered.reverse();
+        assert_eq!(
+            expected,
+            evaluate_bishop_battery(&reordered, Some(&king), &enemy)
+        );
+        let rotated = pieces.map(|s| SliderInfo {
+            x: -s.y,
+            y: s.x,
+            pt: s.pt,
+        });
+        assert_eq!(
+            expected,
+            evaluate_bishop_battery(&rotated, Some(&king), &Coordinate::new(-enemy.y, enemy.x))
+        );
+    }
+
+    #[test]
+    fn same_colour_bishop_mass_still_needs_its_king() {
+        let material = MaterialSummary {
+            diag_light: 6,
+            total_non_pawn_pieces: 8,
+            ..MaterialSummary::default()
+        };
+        assert!(!king_mostly_idle(&material, false));
+    }
+
+    #[test]
+    fn four_bishop_finish_is_legal_mate() {
+        let mut game =
+            create_test_game_from_icn("b (8;q|1;q) B13,14|B14,14|B23,3|B24,1|K19,3|k21,5");
+        assert!(game.is_in_check());
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+        for m in moves {
+            let undo = game.make_move(&m);
+            let illegal = game.is_move_illegal();
+            game.undo_move(&m, undo);
+            assert!(illegal, "defender escapes via {m:?}");
+        }
+    }
 
     fn create_test_game() -> GameState {
         let mut game = GameState::new();

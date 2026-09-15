@@ -30,7 +30,13 @@ pub fn side_cannot_mate(game: &crate::game::GameState, white: bool) -> bool {
     }
     let (w, b) = count_both(&game.board, &game.game_rules);
     let m = if white { &w } else { &b };
-    let v = if bordered { is_insufficient_bordered(m) } else { is_insufficient(m) };
+    let v = if bordered {
+        is_insufficient_bordered(m)
+    } else {
+        // The unbounded decision tree assumes at most three non-royal attackers.
+        // Larger minor armies can mate despite matching its small-army rules.
+        m.non_royal() <= 3 && is_insufficient(m)
+    };
     NO_MATE_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > 4096 {
@@ -1132,7 +1138,10 @@ mod tests {
             ("K+2R", &[P::King, P::Rook, P::Rook]),
             ("Q+CH", &[P::Queen, P::Chancellor]),
             ("2CH", &[P::Chancellor, P::Chancellor]),
-            ("K+4B", &[P::King, P::Bishop, P::Bishop, P::Bishop, P::Bishop]),
+            (
+                "K+4B",
+                &[P::King, P::Bishop, P::Bishop, P::Bishop, P::Bishop],
+            ),
             ("3AR", &[P::Archbishop, P::Archbishop, P::Archbishop]),
             ("K+AM", &[P::King, P::Amazon]),
             ("K+Q+B", &[P::King, P::Queen, P::Bishop]),
@@ -1147,7 +1156,10 @@ mod tests {
             ("K+CH+N", &[P::King, P::Chancellor, P::Knight]),
             ("K+2AR", &[P::King, P::Archbishop, P::Archbishop]),
             ("K+2HA+B", &[P::King, P::Hawk, P::Hawk, P::Bishop]),
-            ("5HU", &[P::Huygen, P::Huygen, P::Huygen, P::Huygen, P::Huygen]),
+            (
+                "5HU",
+                &[P::Huygen, P::Huygen, P::Huygen, P::Huygen, P::Huygen],
+            ),
         ];
 
         for (name, force) in catalog {
@@ -1169,6 +1181,25 @@ mod tests {
     }
 
     // Insufficient Material (dead draw)
+
+    #[test]
+    fn pawnless_scaling_preserves_large_minor_armies() {
+        for army in ["K0,0|N1,2|B2,2|B4,4|B3,2", "K0,0|N1,2|N2,1|B2,2|B3,2"] {
+            for white in [true, false] {
+                let icn = if white {
+                    format!("w (8;q|1;q) {army}|k13,7")
+                } else {
+                    format!("b (8;q|1;q) {}|K13,7", army.to_lowercase())
+                };
+                let mut game = GameState::new();
+                game.setup_position_from_icn(&icn);
+                assert!(!side_cannot_mate(&game, white), "{icn}");
+            }
+        }
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w (8;q|1;q) K0,0|N1,2|B2,2|k13,7");
+        assert!(side_cannot_mate(&game, true));
+    }
 
     #[test]
     fn test_king_vs_king() {
