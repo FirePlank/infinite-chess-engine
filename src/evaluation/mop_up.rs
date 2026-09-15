@@ -68,6 +68,7 @@ const AHEAD_PAIR_STEP: i32 = 24;
 const AHEAD_SINGLE: i32 = 220;
 const CAGE_FLAT: i32 = 120;
 const CAGE_MAX: i32 = 620;
+const SQUEEZE_STEP: i32 = 8;
 // A tight cage is a certificate, and the area term saturates inside it, so the
 // only progress left is walking the king in. That march has to out-bid every
 // piece-shaping term or the pieces shuffle until the fifty-move clock runs out.
@@ -312,7 +313,7 @@ fn find_bitboard_cage(
     indices: &SpatialIndices,
     enemy_king: &Coordinate,
     our_color: PlayerColor,
-) -> (bool, u32) {
+) -> (bool, u32, u32) {
     // 32x32 local window: indices 0..31 map to king_coord - 16 .. king_coord + 15.
     let origin_x = enemy_king.x - 16;
     let origin_y = enemy_king.y - 16;
@@ -320,6 +321,7 @@ fn find_bitboard_cage(
 
     let mut forbidden = [0u32; 32];
     let mut computed = [0u32; 32];
+    let mut escaped = false;
 
     // Flood fill from the center (16, 16) via iterative 8-way dilation.
     let mut reachable = [0u32; 32];
@@ -370,12 +372,15 @@ fn find_bitboard_cage(
             break;
         }
 
+        // Touching the rim means he is not enclosed, but the fill still has to
+        // finish: the room he has is the only progress signal during a chase,
+        // and bailing out here threw it away.
         if (reachable[0] | reachable[31]) != 0 {
-            return (false, 1024);
+            escaped = true;
         }
         for reach in reachable.iter().take(31).skip(1) {
             if (reach & 0x80000001) != 0 {
-                return (false, 1024);
+                escaped = true;
             }
         }
     }
@@ -385,8 +390,14 @@ fn find_bitboard_cage(
     for row in reachable.iter() {
         area += row.count_ones();
     }
+    // Room within six squares of him: the part a single move can actually move.
+    const LOCAL: u32 = 0x1fff << 10;
+    let mut local = 0u32;
+    for row in reachable.iter().take(23).skip(10) {
+        local += (row & LOCAL).count_ones();
+    }
 
-    (area > 0 && area < 1000, area)
+    (!escaped && area > 0 && area < 1000, area, local)
 }
 
 /// True when the losing side has no pawns and at most one non-royal piece:
@@ -1529,7 +1540,7 @@ fn evaluate_mating_net(
     // rewards shrinking its reachable area. The flood is king-step based, so
     // it proves nothing for a leaping royal.
     if bareish && !royal_leaps {
-        let (caged, area) = find_bitboard_cage(
+        let (caged, area, local) = find_bitboard_cage(
             &game.board,
             &game.spatial_indices,
             enemy_king,
@@ -1537,6 +1548,11 @@ fn evaluate_mating_net(
         );
         if caged {
             bonus += CAGE_FLAT + (3600 / (isqrt_u32(area) as i32 + 2)).min(CAGE_MAX);
+        } else if minors_only {
+            // Room taken from him nearby, graded. Leapers and same-coloured
+            // bishops cannot cut a line, so covering squares IS their technique,
+            // and it was worth nothing until he was already shut in.
+            bonus += (169 - local.min(169)) as i32 * SQUEEZE_STEP;
         }
     }
 
@@ -2448,7 +2464,7 @@ mod tests {
         let game = create_test_game_from_icn("w (8;q|1;q) k4,4|R4,0|R4,8|R0,4|R8,4|K1,1");
 
         let enemy_king = Coordinate::new(4, 4);
-        let (_is_caged, area) = find_bitboard_cage(
+        let (_is_caged, area, _local) = find_bitboard_cage(
             &game.board,
             &game.spatial_indices,
             &enemy_king,
@@ -2468,7 +2484,7 @@ mod tests {
         indices: &SpatialIndices,
         enemy_king: &Coordinate,
         our_color: PlayerColor,
-    ) -> (bool, u32) {
+    ) -> (bool, u32, u32) {
         let mut forbidden = [0u32; 32];
         let origin_x = enemy_king.x - 16;
         let origin_y = enemy_king.y - 16;
@@ -2490,6 +2506,7 @@ mod tests {
         }
         let mut reachable = [0u32; 32];
         reachable[16] = 1 << 16;
+        let mut escaped = false;
         for _ in 0..32 {
             let mut changed = false;
             let mut next = reachable;
@@ -2519,11 +2536,11 @@ mod tests {
                 break;
             }
             if (reachable[0] | reachable[31]) != 0 {
-                return (false, 1024);
+                escaped = true;
             }
             for r in reachable.iter().take(31).skip(1) {
                 if (r & 0x80000001) != 0 {
-                    return (false, 1024);
+                    escaped = true;
                 }
             }
         }
@@ -2531,7 +2548,12 @@ mod tests {
         for row in reachable.iter() {
             area += row.count_ones();
         }
-        (area > 0 && area < 1000, area)
+        const LOCAL: u32 = 0x1fff << 10;
+        let mut local = 0u32;
+        for row in reachable.iter().take(23).skip(10) {
+            local += (row & LOCAL).count_ones();
+        }
+        (!escaped && area > 0 && area < 1000, area, local)
     }
 
     #[test]
