@@ -4344,11 +4344,25 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     }
                 }
             } else {
-                // Quiet move pruning
+                // Quiet move pruning. Ordering and the LMR reduction both pool these
+                // four tables; pruning read main history alone, so a move that follows
+                // well after the previous plies was pruned like a stranger.
                 let hist_idx = hash_move_dest(&m);
                 let main_hist =
                     searcher.history[hist_color(m.piece.color())][p_type as usize][hist_idx];
-                let history = main_hist;
+                let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+                let pawn_h = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
+                let mut cont_h = 0i32;
+                {
+                    let cf = hash_coord_16(m.from.x, m.from.y);
+                    let ct = hash_coord_16(m.to.x, m.to.y);
+                    for &(ci, pc, pi, pp, pt_h) in movegen.cont_history_indices.iter() {
+                        if ci < 2 {
+                            cont_h += searcher.cont_history[ci][pc][pi][pp][pt_h][cf][ct] as i32;
+                        }
+                    }
+                }
+                let history = main_hist + pawn_h + cont_h;
 
                 // History-based pruning: skip moves with very bad history
                 if history < -4083 * depth as i32 && !is_obstocean_breakout {
