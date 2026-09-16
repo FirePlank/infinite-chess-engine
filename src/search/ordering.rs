@@ -1,3 +1,4 @@
+use crate::board::PieceType;
 use crate::game::GameState;
 use crate::moves::{Move, MoveList};
 
@@ -32,9 +33,19 @@ pub fn score_move(
         return sort_hash(); // Early return - TT move always first
     }
 
-    // Capture scoring
-    if let Some(target) = game.board.get_piece(m.to.x, m.to.y) {
-        let victim_val = game.get_piece_value(target.piece_type(), target.color());
+    // Capture scoring. En passant's victim sits beside m.to rather than on it, so
+    // the square lookup alone sorted a real pawn capture among the quiets.
+    let ep_victim = game
+        .is_en_passant(m)
+        .then(|| (PieceType::Pawn, m.piece.color().opponent()));
+    let victim = game
+        .board
+        .get_piece(m.to.x, m.to.y)
+        .map(|t| (t.piece_type(), t.color()))
+        .or(ep_victim);
+
+    if let Some((victim_type, victim_color)) = victim {
+        let victim_val = game.get_piece_value(victim_type, victim_color);
         let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
         // Include promotion gain so capture-promotions sort by their true value.
         let promo_gain = m.promotion.map_or(0, |pt| {
@@ -46,7 +57,7 @@ pub fn score_move(
 
         // Capture history
         let cap_hist =
-            searcher.capture_history[m.piece.piece_type() as usize][target.piece_type() as usize];
+            searcher.capture_history[m.piece.piece_type() as usize][victim_type as usize];
 
         score += mvv_lva + (cap_hist / 8);
         if is_winning {
@@ -118,6 +129,13 @@ pub fn score_move(
                         score += (val * CONT_WEIGHTS[idx]) / 1024;
                     }
                 }
+            }
+
+            // A quiet promotion keeps every quiet signal above; the material it wins
+            // is added on top so it still outranks ordinary quiets.
+            if let Some(promo) = m.promotion {
+                let attacker_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
+                score += 10 * (game.get_piece_value(promo, m.piece.color()) - attacker_val);
             }
 
             // Low-ply history bonus (same index as the writer and the staged picker).
