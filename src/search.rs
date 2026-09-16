@@ -3991,12 +3991,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             rfp_max_depth()
         };
-        if !tt_pv
-            && depth < rfp_depth_cap
-            && (tt_move.is_none() || tt_capture)
-            && !is_loss(beta)
-            && !is_win(eval)
-        {
+        if !tt_pv && depth < rfp_depth_cap && !is_loss(beta) && !is_win(eval) {
             let futility_mult = if tt_hit_node {
                 rfp_mult_tt()
             } else {
