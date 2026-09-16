@@ -1747,7 +1747,7 @@ impl Searcher {
                 + minor_corr * 23
                 + mat_corr * 17
                 + lastmove_corr * 18)
-                / (CORRHIST_GRAIN * 100)
+                / (CORRHIST_GRAIN * 77)
         };
 
         let corrected = raw_eval + total_correction;
