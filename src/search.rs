@@ -1376,6 +1376,17 @@ impl Searcher {
         // Reset StatScore stack
         self.stat_score_stack.fill(0);
 
+        // Age main history between searches, as Stockfish does (729/1024). It
+        // persisted undecayed here, so a move's credit from many moves ago counted
+        // as much as one earned in the position actually on the board.
+        for side in self.history.iter_mut() {
+            for piece in side.iter_mut() {
+                for v in piece.iter_mut() {
+                    *v = *v * 729 / 1024;
+                }
+            }
+        }
+
         // Fill lowPlyHistory with 97 at the start of iterative deepening
         // (not 0, to give a small positive bias to moves that haven't been seen)
         for row in self.low_ply_history.iter_mut() {
