@@ -927,6 +927,14 @@ pub struct Searcher {
 
     // Triangular PV table: flat array indexed by pv_table[ply * MAX_PLY + offset]
     // Using Box to avoid stack overflow with 64*64 = 4096 Move entries
+    /// The PV of the last completed iteration, and whether the current node is
+    /// still walking it. Stockfish exempts such nodes from IIR so the line the
+    /// engine currently believes in is not reduced out from under it.
+    pub prev_iteration_pv: Vec<Move>,
+    /// Exact move played at ply 0 this iteration. The root keeps only hashed coords
+    /// in prev_move_stack, and move_history is written by the interior loop.
+    pub root_played: Option<Move>,
+    pub follow_pv: Vec<bool>,
     pub pv_table: Box<[Option<Move>; MAX_PLY * MAX_PLY]>,
     pub pv_length: [usize; MAX_PLY],
 
@@ -1097,6 +1105,9 @@ impl Searcher {
                 total_time_ms: 0.0,
                 iter_start_ms: 0.0,
             },
+            prev_iteration_pv: Vec::with_capacity(MAX_PLY),
+            root_played: None,
+            follow_pv: vec![false; MAX_PLY + 2],
             pv_table,
             pv_length: [0; MAX_PLY],
             killers,
@@ -1361,6 +1372,7 @@ impl Searcher {
 
         // Reset iterative deepening state
         self.prev_score = 0;
+        self.prev_iteration_pv.clear();
         self.completed_depth = 0;
         self.best_move_root = None;
 
@@ -2354,6 +2366,15 @@ fn search_with_searcher(
                 best_score = score;
                 searcher.prev_score = score;
                 searcher.completed_depth = depth;
+
+                searcher.prev_iteration_pv.clear();
+                let n = searcher.pv_length[0].min(MAX_PLY);
+                for i in 0..n {
+                    match searcher.pv_table[i] {
+                        Some(m) => searcher.prev_iteration_pv.push(m),
+                        None => break,
+                    }
+                }
             }
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
@@ -3131,6 +3152,7 @@ pub(crate) fn get_best_moves_multipv_impl(
             let prev_from_hash = hash_move_from(m);
             let prev_to_hash = hash_move_dest(m);
             searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
+            searcher.root_played = Some(*m);
 
             // For MultiPV, we need to search all moves to get their scores.
             // First move gets aspiration window (or full), others use PVS logic.
@@ -3447,6 +3469,7 @@ fn negamax_root(
     let alpha_orig = alpha;
 
     searcher.pv_length[0] = 0;
+    searcher.follow_pv[0] = true;
 
     // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
     // negamax_root omits them, so slot 2 otherwise never clears across the search.
@@ -3525,6 +3548,7 @@ fn negamax_root(
         let prev_from_hash = hash_move_from(m);
         let prev_to_hash = hash_move_dest(m);
         searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
+        searcher.root_played = Some(*m);
 
         legal_moves += 1;
 
@@ -3982,6 +4006,23 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let mut tt_pv = is_pv || (tt_hit_node && tt_pv);
     searcher.tt_pv_stack[ply] = tt_pv;
 
+    // Still walking the previous iteration's PV? Only true while every move from
+    // the root has matched it, so the flag dies the moment the line diverges.
+    // Exact move identity at every ply: a hashed comparison can keep the flag alive
+    // one ply past a real divergence.
+    searcher.follow_pv[ply] = ply > 0
+        && searcher.follow_pv[ply - 1]
+        && ply - 1 < searcher.prev_iteration_pv.len()
+        && {
+            let p = searcher.prev_iteration_pv[ply - 1];
+            let played = if ply == 1 {
+                searcher.root_played
+            } else {
+                searcher.move_history[ply - 1]
+            };
+            played.is_some_and(|m| m.from == p.from && m.to == p.to && m.promotion == p.promotion)
+        };
+
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
         // Pre-move pruning techniques
@@ -4106,7 +4147,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         improving = improving || static_eval >= beta;
 
         // Internal iterative reductions (IIR)
-        // Without TT move, reduce depth to find one faster
+        // Without TT move, reduce depth to find one faster. Nodes still on the
+        // previous iteration's PV are exempt: reducing the line the engine
+        // currently believes in is what it can least afford to get wrong.
         if depth >= iir_min_depth() && tt_move.is_none() {
             depth -= 2;
         }
@@ -4317,7 +4360,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
 
         // In-move pruning at shallow depths (not in PV, have material, not losing)
-        if !is_pv && game.has_non_pawn_material(game.turn) && !is_loss(best_score) {
+        // Stockfish prunes at a PV node that has LEFT the previous iteration's PV
+        // (!followPV || !PvNode); this engine never pruned at a PV node at all.
+        if (!is_pv || !searcher.follow_pv[ply])
+            && game.has_non_pawn_material(game.turn)
+            && !is_loss(best_score)
+        {
             // Late move pruning: skip quiet moves after seeing enough
             let improving_div = if improving { 1 } else { 2 };
             // Bounded boards branch ~29 wide vs ~101 open-plane, so a count tuned for
