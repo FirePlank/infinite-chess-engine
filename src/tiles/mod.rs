@@ -13,9 +13,9 @@ pub const TILE_SHIFT: i32 = 3;
 pub const TILE_SIZE: i64 = 1 << TILE_SHIFT;
 pub const TILE_MASK: i64 = TILE_SIZE - 1; // 0b111 = 7
 
-/// TileTable capacity (power of 2) - 512 handles extreme positions during search
-pub const TILE_TABLE_CAPACITY: usize = 512;
-const TILE_TABLE_MASK: usize = TILE_TABLE_CAPACITY - 1;
+/// TileTable starting capacity (power of 2). Every position the engine actually
+/// plays fits well inside this, so the table never reallocates in normal play.
+pub const TILE_TABLE_INITIAL_CAPACITY: usize = 512;
 
 // Tile Coordinate Math
 
@@ -325,57 +325,39 @@ impl Tile {
     }
 }
 
-// TileTable Bucket
+// TileTable Slots
 
-/// Bucket states for open-addressing hash table.
+/// Slot states for the open-addressing hash table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
-enum BucketState {
+enum SlotState {
     Empty = 0,
     Occupied = 1,
     Tombstone = 2,
 }
 
-/// A bucket in the tile table.
-#[derive(Clone, Debug)]
-struct Bucket {
-    cx: i64,
-    cy: i64,
-    state: BucketState,
-    tile: Tile,
-}
-
-impl Default for Bucket {
-    fn default() -> Self {
-        Bucket {
-            cx: 0,
-            cy: 0,
-            state: BucketState::Empty,
-            tile: Tile::new(),
-        }
-    }
-}
-
 // TileTable
 
-/// Fixed-size open-addressing hash table for tiles.
-/// Uses linear probing. Never grows (128 buckets is plenty for ~70 pieces).
-#[derive(Debug)]
+/// Open-addressing hash table for tiles, linear probing, power-of-two capacity.
+/// Grows on demand so the board stays unbounded in piece count as well as extent.
+///
+/// Parallel arrays rather than one array of fat buckets: a probe reads only
+/// `states`, so the metadata a lookup scans is 1 byte per slot instead of a
+/// 64-byte line embedded in a 192-byte tile. Ray generation on an open board
+/// misses far more often than it hits, and the whole `states` array stays hot.
+#[derive(Debug, Clone)]
 pub struct TileTable {
-    buckets: Box<[Bucket; TILE_TABLE_CAPACITY]>,
+    /// `capacity - 1`; kept as a field so probing never reloads a slice length.
+    mask: usize,
     count: usize,
-    /// BITBOARD: Bitmask of occupied buckets (512 bits = 8 * u64)
-    occ_mask: [u64; 8],
-}
-
-impl Clone for TileTable {
-    fn clone(&self) -> Self {
-        TileTable {
-            buckets: self.buckets.clone(),
-            count: self.count,
-            occ_mask: self.occ_mask,
-        }
-    }
+    /// Occupied + tombstoned slots. Probes rely on reaching an `Empty`, so this
+    /// (not `count`) is what the load factor must be kept under.
+    used: usize,
+    states: Box<[SlotState]>,
+    keys: Box<[(i64, i64)]>,
+    tiles: Box<[Tile]>,
+    /// BITBOARD: Bitmask of occupied slots, `capacity / 64` words.
+    occ_mask: Box<[u64]>,
 }
 
 impl Default for TileTable {
@@ -387,21 +369,27 @@ impl Default for TileTable {
 impl TileTable {
     /// Create a new empty tile table.
     pub fn new() -> Self {
-        // Use a boxed array to avoid stack overflow
-        let buckets = vec![Bucket::default(); TILE_TABLE_CAPACITY]
-            .into_boxed_slice()
-            .try_into()
-            .unwrap();
+        Self::with_capacity(TILE_TABLE_INITIAL_CAPACITY)
+    }
+
+    /// `capacity` must be a power of two and at least 64.
+    fn with_capacity(capacity: usize) -> Self {
+        debug_assert!(capacity.is_power_of_two() && capacity >= 64);
         TileTable {
-            buckets,
+            mask: capacity - 1,
             count: 0,
-            occ_mask: [0; 8],
+            used: 0,
+            states: vec![SlotState::Empty; capacity].into_boxed_slice(),
+            keys: vec![(0i64, 0i64); capacity].into_boxed_slice(),
+            // Boxed slice rather than an array: 512 tiles is ~96 KiB of stack.
+            tiles: vec![Tile::new(); capacity].into_boxed_slice(),
+            occ_mask: vec![0u64; capacity / 64].into_boxed_slice(),
         }
     }
 
-    /// Hash tile coordinates to bucket index.
+    /// Hash tile coordinates. Unmasked, so the result survives a capacity change.
     #[inline(always)]
-    fn hash(cx: i64, cy: i64) -> usize {
+    fn hash_raw(cx: i64, cy: i64) -> usize {
         const P1: u64 = 0x517cc1b727220a95; // FxHash prime
         const P2: u64 = 0x9e3779b185ebca87; // Golden ratio prime
 
@@ -413,26 +401,63 @@ impl TileTable {
         h = h.wrapping_mul(0x319642b7d2d84941);
         h ^= h >> 33;
 
-        (h as usize) & TILE_TABLE_MASK
+        h as usize
+    }
+
+    /// Hash tile coordinates to a slot index in this table.
+    #[inline(always)]
+    fn hash(&self, cx: i64, cy: i64) -> usize {
+        Self::hash_raw(cx, cy) & self.mask
+    }
+
+    /// Reinsert every live tile into a fresh table, dropping tombstones. Doubles the
+    /// capacity only once the live tiles alone would pass half of it, so a table that
+    /// is merely tombstone-choked is cleaned in place instead of growing forever.
+    #[cold]
+    #[inline(never)]
+    fn grow_or_rehash(&mut self) {
+        let capacity = self.mask + 1;
+        let new_capacity = if (self.count + 1) * 2 > capacity {
+            capacity * 2
+        } else {
+            capacity
+        };
+        let mut fresh = Self::with_capacity(new_capacity);
+        for i in 0..capacity {
+            if self.states[i] != SlotState::Occupied {
+                continue;
+            }
+            let (cx, cy) = self.keys[i];
+            let mut idx = fresh.hash(cx, cy);
+            while fresh.states[idx] == SlotState::Occupied {
+                idx = (idx + 1) & fresh.mask;
+            }
+            fresh.count += 1;
+            fresh.used += 1;
+            fresh.occ_mask[idx / 64] |= 1u64 << (idx % 64);
+            fresh.states[idx] = SlotState::Occupied;
+            fresh.keys[idx] = (cx, cy);
+            fresh.tiles[idx] = std::mem::replace(&mut self.tiles[i], Tile::new());
+        }
+        *self = fresh;
     }
 
     /// Get a tile, if it exists.
     #[inline]
     pub fn get_tile(&self, cx: i64, cy: i64) -> Option<&Tile> {
-        let mut idx = Self::hash(cx, cy);
-        for _ in 0..TILE_TABLE_CAPACITY {
-            // Unsafe: idx is masked by TILE_TABLE_MASK
-            let bucket = unsafe { self.buckets.get_unchecked(idx) };
-            match bucket.state {
-                BucketState::Empty => return None,
-                BucketState::Occupied => {
-                    if bucket.cx == cx && bucket.cy == cy {
-                        return Some(&bucket.tile);
+        let mut idx = self.hash(cx, cy);
+        for _ in 0..self.states.len() {
+            // Unsafe: idx is masked by self.mask
+            match unsafe { *self.states.get_unchecked(idx) } {
+                SlotState::Empty => return None,
+                SlotState::Occupied => {
+                    if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
+                        return Some(unsafe { self.tiles.get_unchecked(idx) });
                     }
                 }
-                BucketState::Tombstone => {}
+                SlotState::Tombstone => {}
             }
-            idx = (idx + 1) & TILE_TABLE_MASK;
+            idx = (idx + 1) & self.mask;
         }
         None
     }
@@ -440,109 +465,124 @@ impl TileTable {
     /// Get a mutable tile, if it exists.
     #[inline]
     pub fn get_tile_mut(&mut self, cx: i64, cy: i64) -> Option<&mut Tile> {
-        let mut idx = Self::hash(cx, cy);
-        for _ in 0..TILE_TABLE_CAPACITY {
-            // Unsafe: idx is masked by TILE_TABLE_MASK
-            let bucket = unsafe { self.buckets.get_unchecked(idx) };
-            match bucket.state {
-                BucketState::Empty => return None,
-                BucketState::Occupied => {
-                    if bucket.cx == cx && bucket.cy == cy {
-                        return Some(unsafe { &mut self.buckets.get_unchecked_mut(idx).tile });
+        let mut idx = self.hash(cx, cy);
+        for _ in 0..self.states.len() {
+            // Unsafe: idx is masked by self.mask
+            match unsafe { *self.states.get_unchecked(idx) } {
+                SlotState::Empty => return None,
+                SlotState::Occupied => {
+                    if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
+                        return Some(unsafe { self.tiles.get_unchecked_mut(idx) });
                     }
                 }
-                BucketState::Tombstone => {}
+                SlotState::Tombstone => {}
             }
-            idx = (idx + 1) & TILE_TABLE_MASK;
+            idx = (idx + 1) & self.mask;
         }
         None
     }
 
-    /// Get or create a tile. The probe must reach an `Empty` bucket before concluding
+    /// Get or create a tile. The probe must reach an `Empty` slot before concluding
     /// the key is absent — stopping at the first `Tombstone` could duplicate a key
-    /// further along the chain. Panics rather than spin if the table is full.
+    /// further along the chain.
     #[inline]
     pub fn get_or_create(&mut self, cx: i64, cy: i64) -> &mut Tile {
-        let mut idx = Self::hash(cx, cy);
+        let mut idx = self.hash(cx, cy);
         let mut first_tombstone: Option<usize> = None;
         let mut found: Option<usize> = None;
         let mut empty_at: Option<usize> = None;
 
-        for _ in 0..TILE_TABLE_CAPACITY {
-            // Unsafe: idx is masked by TILE_TABLE_MASK
-            let bucket = unsafe { self.buckets.get_unchecked(idx) };
-            match bucket.state {
+        for _ in 0..self.states.len() {
+            // Unsafe: idx is masked by self.mask
+            match unsafe { *self.states.get_unchecked(idx) } {
                 // The chain ends here, so the key is definitely not in the table.
-                BucketState::Empty => {
+                SlotState::Empty => {
                     empty_at = Some(idx);
                     break;
                 }
-                BucketState::Tombstone => {
+                SlotState::Tombstone => {
                     if first_tombstone.is_none() {
                         first_tombstone = Some(idx);
                     }
                 }
-                BucketState::Occupied => {
-                    if bucket.cx == cx && bucket.cy == cy {
+                SlotState::Occupied => {
+                    if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
                         found = Some(idx);
                         break;
                     }
                 }
             }
-            idx = (idx + 1) & TILE_TABLE_MASK;
+            idx = (idx + 1) & self.mask;
         }
 
         if let Some(i) = found {
-            return unsafe { &mut self.buckets.get_unchecked_mut(i).tile };
+            return unsafe { self.tiles.get_unchecked_mut(i) };
         }
 
         // Absent: reuse the earliest tombstone in the chain if there was one, so
-        // repeated create/remove churn doesn't lengthen the chain indefinitely.
-        let Some(slot) = first_tombstone.or(empty_at) else {
-            panic!(
-                "TileTable full: {} / {TILE_TABLE_CAPACITY} tiles occupied, cannot place ({cx}, {cy})",
-                self.count
-            );
+        // repeated create/remove churn doesn't lengthen the chain indefinitely. A
+        // fresh slot instead has to stay under the load factor, or probes would
+        // stop finding the `Empty` that terminates them.
+        let slot = match (first_tombstone, empty_at) {
+            (Some(t), _) => t,
+            (None, Some(e)) if (self.used + 1) * 4 <= (self.mask + 1) * 3 => {
+                self.used += 1;
+                e
+            }
+            _ => {
+                self.grow_or_rehash();
+                return self.insert_fresh(cx, cy);
+            }
         };
 
         self.count += 1;
         self.occ_mask[slot / 64] |= 1u64 << (slot % 64);
-        let bucket_mut = unsafe { self.buckets.get_unchecked_mut(slot) };
-        *bucket_mut = Bucket {
-            cx,
-            cy,
-            state: BucketState::Occupied,
-            tile: Tile::new(),
-        };
-        &mut bucket_mut.tile
+        self.states[slot] = SlotState::Occupied;
+        self.keys[slot] = (cx, cy);
+        self.tiles[slot] = Tile::new();
+        &mut self.tiles[slot]
+    }
+
+    /// Insert a key known to be absent into a table known to hold no tombstones.
+    #[inline]
+    fn insert_fresh(&mut self, cx: i64, cy: i64) -> &mut Tile {
+        let mut idx = self.hash(cx, cy);
+        while self.states[idx] == SlotState::Occupied {
+            idx = (idx + 1) & self.mask;
+        }
+        self.count += 1;
+        self.used += 1;
+        self.occ_mask[idx / 64] |= 1u64 << (idx % 64);
+        self.states[idx] = SlotState::Occupied;
+        self.keys[idx] = (cx, cy);
+        self.tiles[idx] = Tile::new();
+        &mut self.tiles[idx]
     }
 
     /// Remove a tile at the given coordinates (marks as tombstone).
     /// Used when a tile becomes completely empty.
     #[inline]
     pub fn remove(&mut self, cx: i64, cy: i64) {
-        let mut idx = Self::hash(cx, cy);
+        let mut idx = self.hash(cx, cy);
         let start_idx = idx;
 
         loop {
-            // Unsafe: idx is masked by TILE_TABLE_MASK
-            let bucket = unsafe { self.buckets.get_unchecked(idx) };
-            match bucket.state {
-                BucketState::Occupied => {
-                    if bucket.cx == cx && bucket.cy == cy {
-                        // Found logic
-                        let bucket_mut = unsafe { self.buckets.get_unchecked_mut(idx) };
-                        bucket_mut.state = BucketState::Tombstone;
-                        bucket_mut.tile.clear();
+            // Unsafe: idx is masked by self.mask
+            match unsafe { *self.states.get_unchecked(idx) } {
+                SlotState::Occupied => {
+                    if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
+                        self.states[idx] = SlotState::Tombstone;
+                        self.tiles[idx].clear();
                         self.count -= 1;
                         self.occ_mask[idx / 64] &= !(1u64 << (idx % 64));
                         // A tombstone run ending at an Empty can be freed: any probe crossing
                         // it would have stopped at that Empty anyway. Else debris only grows.
-                        if self.buckets[(idx + 1) & TILE_TABLE_MASK].state == BucketState::Empty {
+                        if self.states[(idx + 1) & self.mask] == SlotState::Empty {
                             let mut j = idx;
-                            while self.buckets[j].state == BucketState::Tombstone {
-                                self.buckets[j].state = BucketState::Empty;
-                                j = j.wrapping_sub(1) & TILE_TABLE_MASK;
+                            while self.states[j] == SlotState::Tombstone {
+                                self.states[j] = SlotState::Empty;
+                                self.used -= 1;
+                                j = j.wrapping_sub(1) & self.mask;
                                 if j == idx {
                                     break;
                                 }
@@ -551,10 +591,10 @@ impl TileTable {
                         return;
                     }
                 }
-                BucketState::Empty => return, // Not found
-                _ => {}
+                SlotState::Empty => return, // Not found
+                SlotState::Tombstone => {}
             }
-            idx = (idx + 1) & TILE_TABLE_MASK;
+            idx = (idx + 1) & self.mask;
             if idx == start_idx {
                 break;
             }
@@ -581,18 +621,25 @@ impl TileTable {
 
     /// Clear all tiles.
     pub fn clear(&mut self) {
-        for bucket in self.buckets.iter_mut() {
-            bucket.state = BucketState::Empty;
-            bucket.tile.clear();
+        self.states.fill(SlotState::Empty);
+        for tile in self.tiles.iter_mut() {
+            tile.clear();
         }
         self.count = 0;
-        self.occ_mask = [0; 8];
+        self.used = 0;
+        self.occ_mask.fill(0);
     }
 
     /// Get the number of occupied tiles.
     #[inline]
     pub fn len(&self) -> usize {
         self.count
+    }
+
+    /// Number of slots currently allocated.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.mask + 1
     }
 
     /// Check if the table is empty.
@@ -628,10 +675,8 @@ impl TileTable {
 
     /// Count total pieces across all tiles
     pub fn piece_count(&self) -> usize {
-        self.buckets
-            .iter()
-            .filter(|b| b.state == BucketState::Occupied)
-            .map(|b| b.tile.occ_all.count_ones() as usize)
+        self.iter()
+            .map(|(_, _, t)| t.occ_all.count_ones() as usize)
             .sum()
     }
 
@@ -641,7 +686,8 @@ impl TileTable {
     }
 }
 
-/// CTZ-based iterator over occupied buckets in the TileTable
+
+/// CTZ-based iterator over occupied slots in the TileTable
 struct TileTableIter<'a> {
     table: &'a TileTable,
     mask_idx: usize,
@@ -657,13 +703,13 @@ impl<'a> Iterator for TileTableIter<'a> {
             if self.mask != 0 {
                 let bit_idx = self.mask.trailing_zeros() as usize;
                 self.mask &= self.mask - 1;
-                let bucket_idx = self.mask_idx * 64 + bit_idx;
-                let bucket = &self.table.buckets[bucket_idx];
-                return Some((bucket.cx, bucket.cy, &bucket.tile));
+                let slot = self.mask_idx * 64 + bit_idx;
+                let (cx, cy) = self.table.keys[slot];
+                return Some((cx, cy, &self.table.tiles[slot]));
             }
 
             self.mask_idx += 1;
-            if self.mask_idx >= 8 {
+            if self.mask_idx >= self.table.occ_mask.len() {
                 return None;
             }
             self.mask = self.table.occ_mask[self.mask_idx];
@@ -756,13 +802,13 @@ impl<'a> Iterator for TileTablePieceIter<'a> {
                 let local_idx = self.current_tile_bits.trailing_zeros() as usize;
                 self.current_tile_bits &= self.current_tile_bits - 1;
 
-                if let Some(bucket_idx) = self.current_bucket_idx {
-                    let bucket = &self.table.buckets[bucket_idx];
+                if let Some(slot) = self.current_bucket_idx {
+                    let (cx, cy) = self.table.keys[slot];
                     let local_x = (local_idx % 8) as i64;
                     let local_y = (local_idx / 8) as i64;
-                    let world_x = bucket.cx * TILE_SIZE + local_x;
-                    let world_y = bucket.cy * TILE_SIZE + local_y;
-                    let packed = bucket.tile.piece[local_idx];
+                    let world_x = cx * TILE_SIZE + local_x;
+                    let world_y = cy * TILE_SIZE + local_y;
+                    let packed = self.table.tiles[slot].piece[local_idx];
                     return Some((world_x, world_y, Piece::from_packed(packed)));
                 }
                 continue;
@@ -771,7 +817,7 @@ impl<'a> Iterator for TileTablePieceIter<'a> {
             // Find next occupied bucket
             while self.bucket_mask == 0 {
                 self.bucket_mask_idx += 1;
-                if self.bucket_mask_idx >= 8 {
+                if self.bucket_mask_idx >= self.table.occ_mask.len() {
                     return None;
                 }
                 self.bucket_mask = self.table.occ_mask[self.bucket_mask_idx];
@@ -782,12 +828,11 @@ impl<'a> Iterator for TileTablePieceIter<'a> {
             self.bucket_mask &= self.bucket_mask - 1;
             let bucket_idx = self.bucket_mask_idx * 64 + bit_idx;
 
-            if bucket_idx < TILE_TABLE_CAPACITY {
-                let bucket = &self.table.buckets[bucket_idx];
-                if bucket.state == BucketState::Occupied {
-                    self.current_bucket_idx = Some(bucket_idx);
-                    self.current_tile_bits = bucket.tile.occ_all;
-                }
+            if bucket_idx < self.table.states.len()
+                && self.table.states[bucket_idx] == SlotState::Occupied
+            {
+                self.current_bucket_idx = Some(bucket_idx);
+                self.current_tile_bits = self.table.tiles[bucket_idx].occ_all;
             }
         }
     }
@@ -814,13 +859,13 @@ impl<'a> Iterator for TileTableColorIter<'a> {
                 let local_idx = self.current_tile_bits.trailing_zeros() as usize;
                 self.current_tile_bits &= self.current_tile_bits - 1;
 
-                if let Some(bucket_idx) = self.current_bucket_idx {
-                    let bucket = &self.table.buckets[bucket_idx];
+                if let Some(slot) = self.current_bucket_idx {
+                    let (cx, cy) = self.table.keys[slot];
                     let local_x = (local_idx % 8) as i64;
                     let local_y = (local_idx / 8) as i64;
-                    let world_x = bucket.cx * TILE_SIZE + local_x;
-                    let world_y = bucket.cy * TILE_SIZE + local_y;
-                    let packed = bucket.tile.piece[local_idx];
+                    let world_x = cx * TILE_SIZE + local_x;
+                    let world_y = cy * TILE_SIZE + local_y;
+                    let packed = self.table.tiles[slot].piece[local_idx];
                     return Some((world_x, world_y, Piece::from_packed(packed)));
                 }
                 continue;
@@ -829,7 +874,7 @@ impl<'a> Iterator for TileTableColorIter<'a> {
             // Find next occupied bucket
             while self.bucket_mask == 0 {
                 self.bucket_mask_idx += 1;
-                if self.bucket_mask_idx >= 8 {
+                if self.bucket_mask_idx >= self.table.occ_mask.len() {
                     return None;
                 }
                 self.bucket_mask = self.table.occ_mask[self.bucket_mask_idx];
@@ -840,17 +885,17 @@ impl<'a> Iterator for TileTableColorIter<'a> {
             self.bucket_mask &= self.bucket_mask - 1;
             let bucket_idx = self.bucket_mask_idx * 64 + bit_idx;
 
-            if bucket_idx < TILE_TABLE_CAPACITY {
-                let bucket = &self.table.buckets[bucket_idx];
-                if bucket.state == BucketState::Occupied {
-                    self.current_bucket_idx = Some(bucket_idx);
-                    // Use color-specific occupancy
-                    self.current_tile_bits = if self.is_white {
-                        bucket.tile.occ_white
-                    } else {
-                        bucket.tile.occ_black
-                    };
-                }
+            if bucket_idx < self.table.states.len()
+                && self.table.states[bucket_idx] == SlotState::Occupied
+            {
+                self.current_bucket_idx = Some(bucket_idx);
+                // Use color-specific occupancy
+                let tile = &self.table.tiles[bucket_idx];
+                self.current_tile_bits = if self.is_white {
+                    tile.occ_white
+                } else {
+                    tile.occ_black
+                };
             }
         }
     }
@@ -860,6 +905,56 @@ impl<'a> Iterator for TileTableColorIter<'a> {
 mod tests {
     use super::*;
     use crate::board::{Piece, PieceType, PlayerColor};
+
+    #[test]
+    fn test_tile_table_grows_past_initial_capacity() {
+        let mut table = TileTable::new();
+        let n = TILE_TABLE_INITIAL_CAPACITY * 8;
+        let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+        for i in 0..n as i64 {
+            table.get_or_create(i * 7, i * 13).set_piece(0, piece);
+        }
+        assert_eq!(table.len(), n);
+        assert!(table.capacity() >= n);
+        for i in 0..n as i64 {
+            let tile = table
+                .get_tile(i * 7, i * 13)
+                .unwrap_or_else(|| panic!("tile {i} lost across growth"));
+            assert_eq!(tile.occ_all, 1);
+        }
+        assert_eq!(table.iter().count(), n);
+        assert_eq!(table.piece_count(), n);
+        assert_eq!(table.iter_all_pieces().count(), n);
+    }
+
+    #[test]
+    fn test_tile_table_small_table_never_reallocates() {
+        // Non-regression guard: ordinary positions must keep the original layout,
+        // since bucket order is what the piece iterators (and so eval) walk.
+        let mut table = TileTable::new();
+        let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+        for i in 0..64i64 {
+            table.get_or_create(i, -i).set_piece(0, piece);
+        }
+        assert_eq!(table.capacity(), TILE_TABLE_INITIAL_CAPACITY);
+    }
+
+    #[test]
+    fn test_tile_table_churn_stays_bounded() {
+        // Tombstones must be reclaimed, not accumulate until probes stop finding
+        // the Empty bucket that terminates them.
+        let mut table = TileTable::new();
+        let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
+        for i in 0..100_000i64 {
+            let (cx, cy) = (i % 37, (i * 5) % 41);
+            table.get_or_create(cx, cy).set_piece(0, piece);
+            assert!(table.get_tile(cx, cy).is_some());
+            table.remove(cx, cy);
+            assert!(table.get_tile(cx, cy).is_none());
+        }
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.capacity(), TILE_TABLE_INITIAL_CAPACITY);
+    }
 
     #[test]
     fn test_tile_coords() {
