@@ -4027,13 +4027,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         // Pre-move pruning techniques
 
-        // Razoring: if eval is really low, drop to qsearch. Depth-capped like SF's
-        // quadratic margin against its mate scale — past this depth only mate-valued
-        // windows clear the margin, and those must search for real or mates go invisible.
-        if !is_pv
-            && depth <= 8
-            && eval < alpha - razoring_quad() * (depth * depth) as i32
-        {
+        // Razoring: if eval is really low, drop to qsearch. Stockfish's margin is
+        // LINEAR in depth (482/ply, ~241 in our units) and uncapped, guarded against
+        // losing mates by seek_mate rather than by a depth cap. The quadratic margin
+        // here reached ~148 pawns by depth 8, so razoring was dead past depth 2.
+        if !is_pv && !searcher.hot.seek_mate && eval < alpha - razoring_quad() * depth as i32 {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }
 
