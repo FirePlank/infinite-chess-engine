@@ -329,35 +329,59 @@ pub fn evaluate(game: &GameState) -> i32 {
         .copied()
         .unwrap_or(Coordinate { x: 5, y: 8 });
 
-    // PRE-PASS: pawn file masks, plus an occupancy window of the 1..=8 board so the
-    // mobility rays below read bits instead of hashing a tile per square.
+    // The 1..=8 board spans at most four tiles, and within a tile the window index is
+    // the square index shifted by a constant, so the occupancy comes straight from the
+    // tile bitboards with no piece walk at all. Neutral is whatever is occupied but in
+    // neither colour mask.
     let mut occ_win: u64 = 0;
     let mut white_win: u64 = 0;
-    let mut neutral_win: u64 = 0;
-    for (x, y, piece) in game.board.iter_all_pieces() {
-        if piece.piece_type() == PieceType::Pawn {
-            let file_bit = 1u8 << ((x - 1).clamp(0, 7));
-            if piece.color() == PlayerColor::White {
-                w_pawn_files |= file_bit;
-            } else {
-                b_pawn_files |= file_bit;
-            }
-        }
-        if (1..=8).contains(&x) && (1..=8).contains(&y) {
-            let bit = 1u64 << (((y - 1) * 8 + (x - 1)) as u32);
-            occ_win |= bit;
-            match piece.color() {
-                PlayerColor::White => white_win |= bit,
-                PlayerColor::Neutral => neutral_win |= bit,
-                PlayerColor::Black => {}
-            }
+    let mut black_win: u64 = 0;
+    // (cx, cy, keep-mask, left-shift) - the mask drops squares outside 1..=8.
+    const NOT_FILE0: u64 = 0xFEFE_FEFE_FEFE_FEFE;
+    const NOT_RANK0: u64 = 0xFFFF_FFFF_FFFF_FF00;
+    const FILE0: u64 = 0x0101_0101_0101_0101;
+    const RANK0: u64 = 0x0000_0000_0000_00FF;
+    for &(cx, cy, keep, shl) in &[
+        (0i64, 0i64, NOT_FILE0 & NOT_RANK0, -9i32),
+        (1, 0, FILE0 & NOT_RANK0, -1),
+        (0, 1, NOT_FILE0 & RANK0, 55),
+        (1, 1, FILE0 & RANK0, 63),
+    ] {
+        if let Some(t) = game.board.tiles.get_tile(cx, cy) {
+            let shift = |v: u64| {
+                if shl >= 0 {
+                    v << shl as u32
+                } else {
+                    v >> (-shl) as u32
+                }
+            };
+            occ_win |= shift(t.occ_all & keep);
+            white_win |= shift(t.occ_white & keep);
+            black_win |= shift(t.occ_black & keep);
         }
     }
     let win = BoardWindow {
         occ: occ_win,
         white: white_win,
-        neutral: neutral_win,
+        neutral: occ_win & !white_win & !black_win,
     };
+
+    // Pawn file masks still need every pawn, including any outside the window (their
+    // file clamps in), but only pawn bits are touched - no piece is decoded.
+    for (cx, _cy, t) in game.board.tiles.iter() {
+        let mut bits = t.occ_pawns;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let x = cx * 8 + (idx % 8) as i64;
+            let file_bit = 1u8 << ((x - 1).clamp(0, 7));
+            if t.occ_white & (1u64 << idx as u32) != 0 {
+                w_pawn_files |= file_bit;
+            } else {
+                b_pawn_files |= file_bit;
+            }
+        }
+    }
 
     // FIRST PASS: material, PST, phase, mobility, bishop pair, rook files
     for (x, y, piece) in game.board.iter_all_pieces() {
