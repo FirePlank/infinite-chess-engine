@@ -92,6 +92,13 @@ fn bounded_drawish_scale_inner(game: &GameState, eval: i32, world_size: i64) -> 
     if eval == 0 || world_size > 200 {
         return eval;
     }
+    // "Drawn with correct defense" is checkmate reasoning; under capture-all
+    // the same extra rook is a plain win.
+    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
+    {
+        return eval;
+    }
     if game.white_royals.len() != 1 || game.black_royals.len() != 1 {
         return eval;
     }
@@ -256,6 +263,24 @@ mod tests {
         return evaluate(game, None);
         #[cfg(not(feature = "nnue"))]
         return evaluate(game);
+    }
+
+    /// The bounded rook/minor "drawn with correct defense" scale is checkmate
+    /// reasoning. Under capture-all the extra minor is a plain win, so applying
+    /// it there discounted a winning score eightfold.
+    #[test]
+    fn bounded_drawish_scale_does_not_apply_to_capture_all() {
+        let checkmate =
+            create_test_game_from_icn("w 0/100 1 (8|1) 1,8,1,8 K1,1|R2,2|N3,3|k8,8|r7,7");
+        let capture_all = create_test_game_from_icn(
+            "w 0/100 1 (8|1) 1,8,1,8 allpiecescaptured,allpiecescaptured K1,1|R2,2|N3,3|k8,8|r7,7",
+        );
+        let scaled = evaluate_wrapper(&checkmate);
+        let unscaled = evaluate_wrapper(&capture_all);
+        assert!(
+            unscaled.abs() > scaled.abs(),
+            "capture-all must keep the full score ({unscaled}) that checkmate rules damp ({scaled})"
+        );
     }
 
     #[test]
