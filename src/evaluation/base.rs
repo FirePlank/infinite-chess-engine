@@ -1601,6 +1601,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             &b_king_rays,
                             w_king_ring_covered,
                             b_king_ring_covered,
+                            piece_list,
                             style,
                         );
 
@@ -2331,6 +2332,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     w_ring_covered: bool,
     b_ring_covered: bool,
+    pieces: &[(i64, i64, Piece)],
     style: EvalStyle,
 ) -> i32 {
     let mut w_safety: i32 = 0;
@@ -2350,6 +2352,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             white_pawns,
             w_king_rays,
             w_ring_covered,
+            white_royals.len() > 1,
+            pieces,
         );
     }
     for &bk in black_royals {
@@ -2363,6 +2367,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             black_pawns,
             b_king_rays,
             b_ring_covered,
+            black_royals.len() > 1,
+            pieces,
         );
     }
 
@@ -2913,9 +2919,161 @@ fn evaluate_leaper_positioning(
     bonus
 }
 
+/// Danger units for the safe checks the enemy has next move, after Stockfish's SafeCheck.
+/// A check square is where an enemy piece's line crosses a king ray, so the cost scales
+/// with enemy pieces rather than with the squares of an unbounded ray.
+fn safe_check_units(
+    game: &GameState,
+    king: &Coordinate,
+    us: PlayerColor,
+    king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    pieces: &[(i64, i64, Piece)],
+) -> i32 {
+    use crate::attacks::{DIAG_MASK, KNIGHT_MASK, KNIGHT_OFFSETS, ORTHO_MASK, matches_mask};
+    // [knight, bishop, rook, queen] x [one square, several].
+    const UNITS: [[i32; 2]; 4] = [[50, 80], [40, 60], [68, 119], [48, 70]];
+    type Squares = arrayvec::ArrayVec<(i64, i64), 32>;
+
+    let them = us.opponent();
+    let (kx, ky) = (king.x, king.y);
+    let idx = &game.spatial_indices;
+    let (min_x, max_x, min_y, max_y) = crate::moves::get_coord_bounds();
+
+    // The king must see the square down one of its rays, and it may hold one of ours:
+    // a capture that checks is still a check.
+    let king_sees = |sx: i64, sy: i64| -> bool {
+        let slot = match ((sx - kx).signum(), (sy - ky).signum()) {
+            (1, 1) => 0,
+            (1, -1) => 1,
+            (-1, 1) => 2,
+            (-1, -1) => 3,
+            (1, 0) => 4,
+            (-1, 0) => 5,
+            (0, 1) => 6,
+            (0, -1) => 7,
+            _ => return false,
+        };
+        let t = (sx - kx).abs().max((sy - ky).abs()).min(i32::MAX as i64 - 1) as i32;
+        let (bd, _, bc, _) = king_rays[slot];
+        t < bd || (t == bd && bc == us)
+    };
+    let slides_to = |px: i64, py: i64, sx: i64, sy: i64| -> bool {
+        let (dx, dy) = ((sx - px).signum(), (sy - py).signum());
+        let (line, from, to, step) = if dx == 0 {
+            (idx.cols.get(&px), py, sy, dy)
+        } else if dy == 0 {
+            (idx.rows.get(&py), px, sx, dx)
+        } else if dx == dy {
+            (idx.diag1.get(&(px - py)), px, sx, dx)
+        } else {
+            (idx.diag2.get(&(px + py)), px, sx, dx)
+        };
+        match line.and_then(|l| l.find_nearest(from, step)) {
+            None => true,
+            Some((c, packed)) => {
+                let (d, t) = ((c - from).abs(), (to - from).abs());
+                d > t || (d == t && Piece::from_packed(packed).color() == us)
+            }
+        }
+    };
+    let safe = |sx: i64, sy: i64| -> bool {
+        (min_x..=max_x).contains(&sx)
+            && (min_y..=max_y).contains(&sy)
+            && !crate::moves::is_square_attacked(&game.board, &Coordinate::new(sx, sy), us, idx)
+    };
+
+    let (mut knight, mut bishop, mut rook, mut queen) =
+        (Squares::new(), Squares::new(), Squares::new(), Squares::new());
+    let (ka, kb) = (kx - ky, kx + ky);
+
+    for &(px, py, piece) in pieces {
+        if piece.color() != them {
+            continue;
+        }
+        let pt = piece.piece_type();
+        let ortho = matches_mask(pt, ORTHO_MASK);
+        let diag = matches_mask(pt, DIAG_MASK);
+
+        if ortho || diag {
+            // Where this piece's lines cross the king's lines of the kind it checks along.
+            let mut cands = arrayvec::ArrayVec::<(i64, i64), 12>::new();
+            if ortho {
+                cands.push((kx, py));
+                cands.push((px, ky));
+                if diag {
+                    cands.push((ka + py, py));
+                    cands.push((kb - py, py));
+                    cands.push((px, px - ka));
+                    cands.push((px, kb - px));
+                }
+            }
+            if diag {
+                let (pa, pb) = (px - py, px + py);
+                if (pa + kb) & 1 == 0 {
+                    cands.push(((pa + kb) / 2, (kb - pa) / 2));
+                }
+                if (pb + ka) & 1 == 0 {
+                    cands.push(((pb + ka) / 2, (pb - ka) / 2));
+                }
+                if ortho {
+                    cands.push((pa + ky, ky));
+                    cands.push((kx, kx - pa));
+                    cands.push((pb - ky, ky));
+                    cands.push((kx, pb - kx));
+                }
+            }
+            let set = if ortho && diag {
+                &mut queen
+            } else if ortho {
+                &mut rook
+            } else {
+                &mut bishop
+            };
+            for (sx, sy) in cands {
+                if (sx, sy) != (px, py)
+                    && (sx, sy) != (kx, ky)
+                    && !set.is_full()
+                    && !set.contains(&(sx, sy))
+                    && king_sees(sx, sy)
+                    && slides_to(px, py, sx, sy)
+                    && safe(sx, sy)
+                {
+                    set.push((sx, sy));
+                }
+            }
+        }
+
+        if matches_mask(pt, KNIGHT_MASK) && (px - kx).abs() <= 4 && (py - ky).abs() <= 4 {
+            for &(ox, oy) in &KNIGHT_OFFSETS {
+                let (sx, sy) = (kx + ox, ky + oy);
+                let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
+                if ((ddx == 1 && ddy == 2) || (ddx == 2 && ddy == 1))
+                    && !knight.is_full()
+                    && !knight.contains(&(sx, sy))
+                    && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+                    && safe(sx, sy)
+                {
+                    knight.push((sx, sy));
+                }
+            }
+        }
+    }
+
+    // A queen check is counted only where no rook check exists, and a bishop check only
+    // where no queen check does: the stronger piece would make that check instead.
+    queen.retain(|s| !rook.contains(s));
+    bishop.retain(|s| !queen.contains(s));
+    let units = |set: &Squares, u: [i32; 2]| match set.len() {
+        0 => 0,
+        1 => u[0],
+        _ => u[1],
+    };
+    units(&knight, UNITS[0]) + units(&bishop, UNITS[1]) + units(&rook, UNITS[2]) + units(&queen, UNITS[3])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn evaluate_king_shelter(
-    _game: &GameState,
+    game: &GameState,
     king: &Coordinate,
     color: PlayerColor,
     phase: i32,
@@ -2924,6 +3082,8 @@ fn evaluate_king_shelter(
     pawns: &[(i64, i64)], // Pre-sorted by (x, y)
     king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     has_ring_cover: bool,
+    multi_royal: bool,
+    pieces: &[(i64, i64, Piece)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -3108,7 +3268,18 @@ fn evaluate_king_shelter(
         total_ray_penalty += penalty;
     }
 
-    let mut total_danger = total_ray_penalty + tied_defender_penalty;
+    // Merged rays take each direction's nearest piece over every royal, so a
+    // second royal needs its own.
+    let own_rays;
+    let check_rays = if multi_royal {
+        own_rays = king_rays_from_indices(&game.spatial_indices, king.x, king.y, color).0;
+        &own_rays
+    } else {
+        king_rays
+    };
+    let mut total_danger = total_ray_penalty
+        + tied_defender_penalty
+        + safe_check_units(game, king, color, check_rays, pieces);
     if !has_enemy_queen_possible {
         total_danger = total_danger * 70 / 100;
     }
@@ -4210,6 +4381,28 @@ mod tests {
     use super::*;
 
     use crate::game::GameState;
+
+    fn white_safe_check_units(icn: &str) -> i32 {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        let king = game.white_royals[0];
+        let rays = king_rays_from_indices(&game.spatial_indices, king.x, king.y, PlayerColor::White).0;
+        let pieces: Vec<_> = game.board.iter().collect();
+        safe_check_units(&game, &king, PlayerColor::White, &rays, &pieces)
+    }
+
+    #[test]
+    fn safe_check_units_count_only_undefended_check_squares() {
+        // The rook drops to (1,1) and checks down the open first rank; the file is shut.
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|r1,10|P4,2|P5,2|P6,2"), 68);
+        // A rook of ours on the same file guards the landing square.
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|r1,10|P4,2|P5,2|P6,2|R1,-5"), 0);
+        // Knight checks from (3,2) and (6,3); only one counts, since the pawn on (5,2) guards (6,3).
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|n4,4|P4,2|P5,2|P6,2"), 50);
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|n4,4|P4,2|P6,2"), 80);
+        // A far queen crosses the king's rank, file and diagonal at many open squares.
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K0,0|k0,50|q7,20"), 70);
+    }
 
     /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an
     /// absolute board position rather than one derived from the pieces -- an 8x8
