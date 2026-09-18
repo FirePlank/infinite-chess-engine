@@ -730,7 +730,21 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         (Some(wk), Some(bk)) => (wk.x + bk.x, wk.y + bk.y),
         (Some(wk), None) => (2 * wk.x, 2 * wk.y),
         (None, Some(bk)) => (2 * bk.x, 2 * bk.y),
-        (None, None) => (0, 0),
+        // Offsets from here are clamped, so an absolute origin would make the
+        // cloud terms depend on where the position sits rather than its shape.
+        (None, None) => {
+            let n = (game.white_pieces.len() + game.black_pieces.len()) as i64;
+            if n == 0 {
+                (0, 0)
+            } else {
+                let (sx, sy) = game
+                    .white_pieces
+                    .iter()
+                    .chain(game.black_pieces.iter())
+                    .fold((0i64, 0i64), |(ax, ay), &(px, py)| (ax + px, ay + py));
+                (2 * sx / n, 2 * sy / n)
+            }
+        }
     };
 
     // Slider counts for attack bonus (white, black) and attacking units

@@ -265,6 +265,16 @@ mod tests {
         return evaluate(game);
     }
 
+    /// With no royals the cloud reference fell back to the absolute origin, and
+    /// since offsets from it are clamped, translating a kingless position changed
+    /// its score. Shape, not location, is what the cloud terms mean to measure.
+    #[test]
+    fn kingless_evaluation_is_translation_invariant() {
+        let near = create_test_game_from_icn("w allpiecescaptured N1,2|N2,3|r10,5");
+        let far = create_test_game_from_icn("w allpiecescaptured N101,102|N102,103|r110,105");
+        assert_eq!(base::evaluate(&near), base::evaluate(&far));
+    }
+
     /// The bounded rook/minor "drawn with correct defense" scale is checkmate
     /// reasoning. Under capture-all the extra minor is a plain win, so applying
     /// it there discounted a winning score eightfold.
