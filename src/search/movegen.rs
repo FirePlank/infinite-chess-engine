@@ -229,7 +229,7 @@ impl StagedMoveGen {
         Self {
             stage,
             tt_move,
-            moves: Vec::new(),
+            moves: Vec::with_capacity(64),
             cur: 0,
             end_bad_captures: 0,
             end_bad_quiets: 0,
@@ -962,7 +962,7 @@ impl StagedMoveGen {
             }
         }
 
-        for m in captures {
+        for &m in captures.iter() {
             if self.is_tt_move(&m) || self.is_excluded(&m) {
                 continue;
             }
@@ -997,7 +997,7 @@ impl StagedMoveGen {
             }
         }
 
-        for m in quiets {
+        for &m in quiets.iter() {
             if self.is_tt_move(&m)
                 || self.is_excluded(&m)
                 || Self::moves_match(&m, &self.killer1)
@@ -1014,7 +1014,7 @@ impl StagedMoveGen {
         let mut evasions = MoveList::new();
         game.get_evasion_moves_into(&mut evasions);
 
-        for m in evasions {
+        for &m in evasions.iter() {
             if self.is_tt_move(&m) || self.is_excluded(&m) {
                 continue;
             }
