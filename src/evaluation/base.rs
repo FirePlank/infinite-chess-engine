@@ -3895,8 +3895,12 @@ pub fn is_clear_line_between(board: &Board, from: &Coordinate, to: &Coordinate) 
         if dx.abs() == dy.abs() {
             let vx = px - from.x;
             let vy = py - from.y;
-            // Collinear and between
-            if vx * dy == vy * dx && is_between(px, from.x, to.x) && is_between(py, from.y, to.y) {
+            // Multiply by the unit direction, not by dx/dy: the raw cross product
+            // wraps to a false zero for coordinates past 2^31.
+            if vx * dy.signum() == vy * dx.signum()
+                && is_between(px, from.x, to.x)
+                && is_between(py, from.y, to.y)
+            {
                 return false;
             }
         }

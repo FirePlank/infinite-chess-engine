@@ -68,8 +68,12 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         let pt = piece.piece_type();
         match piece.color() {
             PlayerColor::Neutral => {
+                // Obstacles are the only neutral type the specialized evaluators
+                // model; the rest fall through their piece tables to a black pawn.
                 if pt == PieceType::Obstacle {
                     obstacle_count += 1;
+                } else {
+                    fairy_present = true;
                 }
             }
             color => match pt {
@@ -92,7 +96,8 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         }
     }
 
-    // All three specialized evaluators assume an orthodox army.
+    // All three specialized evaluators assume an orthodox army and no unmodelled
+    // neutral material.
     if fairy_present {
         return EvalKind::Generic;
     }

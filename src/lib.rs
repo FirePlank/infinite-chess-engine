@@ -1012,7 +1012,9 @@ impl Engine {
 
     /// Returns all legal moves as a JS array of {from: "x,y", to: "x,y", promotion: string|null}
     pub fn get_legal_moves_js(&mut self) -> JsValue {
-        let pseudo_legal = self.game.get_pseudo_legal_moves();
+        // Filtering cannot recover a move the cached candidate list omitted.
+        let mut pseudo_legal = moves::MoveList::new();
+        self.game.get_pseudo_legal_moves_into(&mut pseudo_legal);
         let mut legal_moves: Vec<JsMove> = Vec::new();
 
         for m in pseudo_legal {

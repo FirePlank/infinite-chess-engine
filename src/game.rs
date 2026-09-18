@@ -3849,6 +3849,19 @@ impl GameState {
         self.white_promo_rank = i64::MIN;
         self.black_promo_rank = i64::MAX;
 
+        // An absent token means the default, not the previous position's value:
+        // a retained royal count makes has_lost_by_royal_capture fire at once.
+        self.game_rules.promotion_types = None;
+        self.game_rules.promotions_allowed = None;
+        self.game_rules.white_win_condition = WinCondition::default();
+        self.game_rules.black_win_condition = WinCondition::default();
+        self.variant = None;
+        self.game_rules.variant = None;
+        self.starting_white_royals = 0;
+        self.starting_black_royals = 0;
+        self.white_back_rank = 1;
+        self.black_back_rank = 8;
+
         // World border is process-global (`moves::set_world_bounds`), so an ICN with no
         // border token must reset it, not silently inherit the previous position's
         // border — absence has to mean unbounded, same as every other explicit field.

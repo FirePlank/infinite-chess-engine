@@ -1100,7 +1100,9 @@ fn parse_bestmove_to_icn(bestmove_str: &str, turn: PlayerColor) -> Option<String
 }
 
 fn has_any_fully_legal_move(game: &GameState) -> bool {
-    let moves = game.get_pseudo_legal_moves();
+    // A move missing from the cached list is adjudicated as mate or stalemate.
+    let mut moves = apeiron::moves::MoveList::new();
+    game.get_pseudo_legal_moves_into(&mut moves);
     for m in moves {
         let mut game_copy = game.clone();
         game_copy.make_move(&m);

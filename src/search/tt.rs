@@ -186,7 +186,6 @@ pub struct LocalTranspositionTable {
     _mem_anchor: Vec<TTBucket>,
 }
 
-unsafe impl Sync for LocalTranspositionTable {}
 unsafe impl Send for LocalTranspositionTable {}
 
 /// Allocates `cap` zeroed buckets without a memset: TTBucket's all-zero bytes ARE its empty
