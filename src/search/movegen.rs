@@ -799,9 +799,8 @@ impl StagedMoveGen {
         let tx = m.to.x;
         let ty = m.to.y;
 
-        // Knights and pawns: test the current royal positions directly. The old
-        // precomputed set was built once at setup, so it was wrong for every node
-        // where a royal had moved -- and this arithmetic beats a hash probe.
+        // Knights and pawns: test the live royal positions directly. This arithmetic
+        // beats a hash probe, and a set built at setup goes stale once a royal moves.
         if pt == PieceType::Knight || pt == PieceType::Pawn {
             let royals = if color == PlayerColor::White {
                 &game.black_royals

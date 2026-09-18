@@ -5,9 +5,8 @@ use super::*;
 pub const MAX_SITE_SKILL: u32 = 8; // Current max skill level on the site
 pub const MAX_PV_COUNT: usize = 96; // Safety cap for MultiPV candidate collection
 
-/// Infinite-chess strength limiting needs a much wider candidate set than Stockfish's
-/// fixed MultiPV=4. On a large board, the first several moves are often effectively
-/// equivalent, so picking one of four does not create a meaningful error.
+/// Strength limiting needs a wide candidate set here: on a large board the first
+/// several moves are often equivalent, so picking one of four is not a real error.
 #[derive(Clone, Copy, Debug)]
 struct SkillConfig {
     depth_cap: Option<usize>,

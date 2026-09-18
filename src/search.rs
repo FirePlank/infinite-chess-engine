@@ -185,9 +185,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 /// when the wasm memory is shared, so `check_time` polls it every node batch.
 pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
 
-/// Per-thread node counter for thread-aggregated NPS (Stockfish-style: total nodes across all
-/// search threads / wall-clock). Each slot is cache-line aligned so threads publishing their
-/// own counts never bounce a shared line (no false sharing).
+/// Per-thread node counter for aggregated NPS. Each slot is cache-line aligned so
+/// threads publishing their own counts never bounce a shared line.
 #[cfg(feature = "multithreading")]
 #[repr(align(64))]
 pub(crate) struct NodeSlot(std::sync::atomic::AtomicU64);
@@ -300,8 +299,8 @@ fn zeroed_box<T>() -> Box<T> {
     }
 }
 
-/// One pawn-history table shared by every search thread (Stockfish shares pawn history
-/// across threads too). Concurrent i16 gravity updates race benignly, like the shared TT.
+/// One pawn-history table shared by every search thread. Concurrent i16 gravity
+/// updates race benignly, like the shared TT.
 #[cfg(feature = "multithreading")]
 mod shared_hist {
     pub struct Shared<T>(pub std::cell::UnsafeCell<T>);
@@ -649,8 +648,8 @@ pub struct SearcherHot {
     pub best_move_nodes: u64,
     /// Running average score smoothed across iterations
     pub best_previous_average_score: i32,
-    /// Root is deep enough and the score decisive enough that mate hunting is
-    /// on: static shortcuts stop being trustworthy (mirrors Stockfish seekMate).
+    /// Root is deep enough and the score decisive enough that mate hunting is on:
+    /// static shortcuts stop being trustworthy.
     pub seek_mate: bool,
     /// Running scores for falling eval (circular buffer of last 4 iterations)
     pub iter_values: [i32; 4],
@@ -789,9 +788,9 @@ pub struct ThreadResult {
     pub thread_id: usize,
 }
 
-/// Picks the winning thread's result index by weighted voting, a port of Stockfish
-/// `get_best_thread`. Each move accrues `(score - minScore + 14) * completedDepth`
-/// votes; decisive scores win outright and a proven loss is never switched to.
+/// Picks the winning thread's result by weighted voting: each move accrues
+/// `(score - minScore + 14) * completedDepth`. Decisive scores win outright and a
+/// proven loss is never switched to.
 #[cfg(feature = "multithreading")]
 fn select_best_thread(all_results: &[ThreadResult]) -> usize {
     let min_score = all_results.iter().map(|r| r.score).min().unwrap_or(0);
@@ -927,12 +926,11 @@ pub struct Searcher {
 
     // Triangular PV table: flat array indexed by pv_table[ply * MAX_PLY + offset]
     // Using Box to avoid stack overflow with 64*64 = 4096 Move entries
-    /// The PV of the last completed iteration, and whether the current node is
-    /// still walking it. Stockfish exempts such nodes from IIR so the line the
-    /// engine currently believes in is not reduced out from under it.
+    /// The PV of the last completed iteration, and whether this node is still
+    /// walking it. Nodes on it are exempt from IIR.
     pub prev_iteration_pv: Vec<Move>,
-    /// Exact move played at ply 0 this iteration. The root keeps only hashed coords
-    /// in prev_move_stack, and move_history is written by the interior loop.
+    /// Exact move played at ply 0. The root keeps only hashed coords in
+    /// prev_move_stack, and move_history is written by the interior loop.
     pub root_played: Option<Move>,
     pub follow_pv: Vec<bool>,
     pub pv_table: Box<[Option<Move>; MAX_PLY * MAX_PLY]>,
@@ -1388,9 +1386,8 @@ impl Searcher {
         // Reset StatScore stack
         self.stat_score_stack.fill(0);
 
-        // Age main history between searches, as Stockfish does (729/1024). It
-        // persisted undecayed here, so a move's credit from many moves ago counted
-        // as much as one earned in the position actually on the board.
+        // Age history between searches, or credit earned in the opening still
+        // counts at full weight hundreds of plies later.
         for side in self.history.iter_mut() {
             for piece in side.iter_mut() {
                 for v in piece.iter_mut() {
@@ -2632,7 +2629,7 @@ pub fn get_best_move_parallel(
         return None;
     }
 
-    // Select the winning thread by Stockfish-style weighted voting.
+    // Select the winning thread by weighted voting.
     let best_idx = select_best_thread(&all_results);
     let best_result = &all_results[best_idx];
 
@@ -3337,8 +3334,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                 #[cfg(not(feature = "multithreading"))]
                 let hashfull = searcher.tt.fill_permille();
 
-                // Thread-aggregated node count (Stockfish-style: total across all search
-                // threads). Publish this thread's latest count first, then sum every slot.
+                // Publish this thread's latest count first, then sum every slot.
                 #[cfg(feature = "multithreading")]
                 let report_nodes = {
                     publish_thread_nodes(searcher.thread_id, searcher.hot.nodes);
@@ -3911,9 +3907,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
     searcher.eval_stack[ply] = static_eval;
 
-    // Position improving heuristic: compare eval to 2 plies ago. In check there is no
-    // honest static eval to compare, so Stockfish calls it not-improving rather than
-    // improving; late-move pruning is not gated on check, so the choice is live.
+    // Compare eval to 2 plies ago. In check there is no honest static eval to
+    // compare against, and late-move pruning is not gated on check.
     let mut improving = if in_check {
         false
     } else if ply >= 2 {
@@ -4027,10 +4022,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if !in_check {
         // Pre-move pruning techniques
 
-        // Razoring: if eval is really low, drop to qsearch. Stockfish's margin is
-        // LINEAR in depth (482/ply, ~241 in our units) and uncapped, guarded against
-        // losing mates by seek_mate rather than by a depth cap. The quadratic margin
-        // here reached ~148 pawns by depth 8, so razoring was dead past depth 2.
+        // Razoring: if eval is really low, drop to qsearch. The margin is linear so
+        // it stays reachable at depth; seek_mate guards mate-finding instead of a cap.
         if !is_pv && !searcher.hot.seek_mate && eval < alpha - razoring_quad() * depth as i32 {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }
@@ -4357,9 +4350,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
         let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
 
-        // In-move pruning at shallow depths (not in PV, have material, not losing)
-        // Stockfish prunes at a PV node that has LEFT the previous iteration's PV
-        // (!followPV || !PvNode); this engine never pruned at a PV node at all.
+        // In-move pruning at shallow depths. A PV node is prunable once it has left
+        // the previous iteration's PV; only the believed line is protected.
         if (!is_pv || !searcher.follow_pv[ply])
             && game.has_non_pawn_material(game.turn)
             && !is_loss(best_score)
@@ -4401,9 +4393,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     }
                 }
             } else {
-                // Quiet move pruning. Ordering and the LMR reduction both pool these
-                // four tables; pruning read main history alone, so a move that follows
-                // well after the previous plies was pruned like a stranger.
+                // Quiet move pruning. Pools the same four tables ordering and the LMR
+                // reduction use, so a move that follows well is not pruned as a stranger.
                 let hist_idx = hash_move_dest(&m);
                 let main_hist =
                     searcher.history[hist_color(m.piece.color())][p_type as usize][hist_idx];
@@ -4575,9 +4566,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             #[cfg(feature = "nnue")]
             searcher.nnue_save_scratch(ply + 1);
 
-            // Recursive search excluding the TT move (Stockfish excludedMove pattern)
-            // This searches the full move tree minus the TT move at reduced depth,
-            // providing accurate singularity verification.
+            // Search every move but the TT move at reduced depth: if none comes near
+            // the TT score, the TT move is singular.
             let se_value = negamax(&mut NegamaxContext {
                 searcher,
                 game,
@@ -4714,8 +4704,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
 
-                // Stockfish reduces more when the TT move is a capture (r += 1079):
-                // the quiet alternatives are competing against a tactical refutation.
+                // A capturing TT move means these quiets are competing against a
+                // tactical refutation, so they earn more reduction.
                 if tt_capture {
                     reduction += 1;
                 }
@@ -4732,9 +4722,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let hist_score =
                     searcher.history[hist_color(m.piece.color())][p_type as usize][hist_idx];
                 let pawn_score = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
-                // Continuation history already steers ordering; the reduction
-                // stat was blind to it, so a move that follows well after the
-                // previous two plies was reduced like a stranger.
+                // Continuation history steers ordering, so the reduction stat reads it
+                // too: a move following well after the previous two plies reduces less.
                 let mut cont_score = 0i32;
                 {
                     let cf = hash_coord_16(m.from.x, m.from.y);
@@ -5602,8 +5591,10 @@ fn quiescence(
         }
 
         if !captures_royal_for_win && !in_check && !is_loss(best_value) && !is_recapture {
+            // A slightly losing capture can still be the point of a combination, so
+            // the floor sits below zero rather than at it.
             let see_gain = static_exchange_eval(game, m);
-            if see_gain < 0 {
+            if see_gain < -37 {
                 continue;
             }
             if best_value + see_gain + delta_margin < alpha {

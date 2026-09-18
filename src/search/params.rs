@@ -57,8 +57,7 @@ impl SearchParamSpec {
     }
 }
 
-// Stockfish 19 razors at 482*depth^2 against a pawn of 208; ours is 100, so the
-// equivalent margin is 232 per depth squared.
+// Razoring margin per ply of depth.
 pub const DEFAULT_RAZORING_QUAD: i32 = 232;
 
 pub const DEFAULT_NMP_MIN_DEPTH: usize = 3;

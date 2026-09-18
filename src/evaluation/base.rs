@@ -3648,8 +3648,8 @@ fn score_passed_pawns<T: EvaluationTracer>(
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut w_passed_score = 0;
     let mut b_passed_score = 0;
-    // Computed at most once per side, and only if a passer gets close enough to
-    // ask; the scan used to run once per passer.
+    // Computed at most once per side, and only if a passer gets close enough to ask:
+    // the scan is O(all pieces).
     let mut black_interceptor: Option<bool> = None;
     let mut white_interceptor: Option<bool> = None;
 
