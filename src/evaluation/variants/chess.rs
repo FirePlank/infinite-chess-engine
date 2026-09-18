@@ -324,8 +324,12 @@ pub fn evaluate(game: &GameState) -> i32 {
         .copied()
         .unwrap_or(Coordinate { x: 5, y: 8 });
 
-    // PRE-PASS: collect pawn file masks (needed by piece evaluation)
-    for (x, _, piece) in game.board.iter_all_pieces() {
+    // PRE-PASS: pawn file masks, plus an occupancy window of the 1..=8 board so the
+    // mobility rays below read bits instead of hashing a tile per square.
+    let mut occ_win: u64 = 0;
+    let mut white_win: u64 = 0;
+    let mut neutral_win: u64 = 0;
+    for (x, y, piece) in game.board.iter_all_pieces() {
         if piece.piece_type() == PieceType::Pawn {
             let file_bit = 1u8 << ((x - 1).clamp(0, 7));
             if piece.color() == PlayerColor::White {
@@ -334,7 +338,21 @@ pub fn evaluate(game: &GameState) -> i32 {
                 b_pawn_files |= file_bit;
             }
         }
+        if (1..=8).contains(&x) && (1..=8).contains(&y) {
+            let bit = 1u64 << (((y - 1) * 8 + (x - 1)) as u32);
+            occ_win |= bit;
+            match piece.color() {
+                PlayerColor::White => white_win |= bit,
+                PlayerColor::Neutral => neutral_win |= bit,
+                PlayerColor::Black => {}
+            }
+        }
     }
+    let win = BoardWindow {
+        occ: occ_win,
+        white: white_win,
+        neutral: neutral_win,
+    };
 
     // FIRST PASS: material, PST, phase, mobility, bishop pair, rook files
     for (x, y, piece) in game.board.iter_all_pieces() {
@@ -373,7 +391,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                     b_bishop_dark = true;
                 }
 
-                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(13) as usize;
                 mg[ci] += MG_BISHOP_MOB[mob_idx];
                 eg[ci] += EG_BISHOP_MOB[mob_idx];
@@ -406,7 +424,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
 
             PieceType::Knight => {
-                let mob = count_knight_mobility(&game.board, x, y, piece);
+                let mob = count_knight_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(8) as usize;
                 mg[ci] += MG_KNIGHT_MOB[mob_idx];
                 eg[ci] += EG_KNIGHT_MOB[mob_idx];
@@ -449,7 +467,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
 
             PieceType::Rook => {
-                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(14) as usize;
                 mg[ci] += MG_ROOK_MOB[mob_idx];
                 eg[ci] += EG_ROOK_MOB[mob_idx];
@@ -481,7 +499,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
 
             PieceType::Queen => {
-                let mob = count_sliding_mobility(&game.board, x, y, piece);
+                let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(27) as usize;
                 mg[ci] += MG_QUEEN_MOB[mob_idx];
                 eg[ci] += EG_QUEEN_MOB[mob_idx];
@@ -672,8 +690,37 @@ pub fn evaluate(game: &GameState) -> i32 {
     (mg_score * mg_phase + eg_score * eg_phase) / MAX_PHASE
 }
 
+/// Occupancy of the 1..=8 board packed into bitboards, indexed (y-1)*8 + (x-1).
+struct BoardWindow {
+    occ: u64,
+    white: u64,
+    neutral: u64,
+}
+
+impl BoardWindow {
+    /// None when empty; otherwise Some(true) if the occupant counts as an enemy
+    /// for `our_color`, matching the piece-colour test the callers used.
+    #[inline(always)]
+    fn enemy_at(&self, x: i64, y: i64, our_color: PlayerColor) -> Option<bool> {
+        let bit = 1u64 << (((y - 1) * 8 + (x - 1)) as u32);
+        if self.occ & bit == 0 {
+            return None;
+        }
+        if self.neutral & bit != 0 {
+            return Some(false);
+        }
+        let is_white = self.white & bit != 0;
+        let occupant = if is_white {
+            PlayerColor::White
+        } else {
+            PlayerColor::Black
+        };
+        Some(occupant != our_color)
+    }
+}
+
 fn count_knight_mobility(
-    board: &crate::board::Board,
+    win: &BoardWindow,
     x: i64,
     y: i64,
     piece: crate::board::Piece,
@@ -695,19 +742,17 @@ fn count_knight_mobility(
         if !(1..=8).contains(&nx) || !(1..=8).contains(&ny) {
             continue;
         }
-        if let Some(p) = board.get_piece(nx, ny) {
-            if p.color() != our_color && p.color() != PlayerColor::Neutral {
-                count += 1;
-            }
-        } else {
-            count += 1;
+        match win.enemy_at(nx, ny, our_color) {
+            Some(true) => count += 1,
+            Some(false) => {}
+            None => count += 1,
         }
     }
     count
 }
 
 fn count_sliding_mobility(
-    board: &crate::board::Board,
+    win: &BoardWindow,
     x: i64,
     y: i64,
     piece: crate::board::Piece,
@@ -734,8 +779,8 @@ fn count_sliding_mobility(
         let mut nx = x + dx;
         let mut ny = y + dy;
         while (1..=8).contains(&nx) && (1..=8).contains(&ny) {
-            if let Some(p) = board.get_piece(nx, ny) {
-                if p.color() != our_color && p.color() != PlayerColor::Neutral {
+            if let Some(is_enemy) = win.enemy_at(nx, ny, our_color) {
+                if is_enemy {
                     count += 1;
                 }
                 break;
