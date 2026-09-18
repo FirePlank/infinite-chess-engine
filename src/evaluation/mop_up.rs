@@ -510,7 +510,7 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     if black_np < 3
         && white_np > 1
         && (game.white_pawn_count == 0 || game.black_pawn_count == 0)
-        && !game.black_royals.is_empty()
+        && game.black_royals.len() == 1
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::Black)
         && scale > 0
     {
@@ -519,7 +519,7 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
     if white_np < 3
         && black_np > 1
         && (game.black_pawn_count == 0 || game.white_pawn_count == 0)
-        && !game.white_royals.is_empty()
+        && game.white_royals.len() == 1
         && let Some(scale) = calculate_mop_up_scale(game, PlayerColor::White)
         && scale > 0
     {
@@ -532,14 +532,23 @@ pub fn active_mop_up(game: &GameState) -> Option<(PlayerColor, u32)> {
 /// defended king it saturates toward MOP_UP_DEFENDED_CAP, so no sum of shaping
 /// bonuses can outweigh the material on the board.
 pub fn evaluate_mop_up_scaled(game: &GameState, winner: PlayerColor, scale: u32) -> i32 {
-    let (our_king, enemy_king) = if winner == PlayerColor::White {
-        (game.white_royals.first(), game.black_royals.first())
+    let (ours, theirs) = if winner == PlayerColor::White {
+        (&game.white_royals, &game.black_royals)
     } else {
-        (game.black_royals.first(), game.white_royals.first())
+        (&game.black_royals, &game.white_royals)
     };
-    let Some(enemy_king) = enemy_king else {
+    let Some(enemy_king) = theirs.first() else {
         return 0;
     };
+    // The mating royal is the one doing the work, not whichever the list happens
+    // to hold first; coordinates break ties so the score cannot depend on order.
+    let our_king = ours.iter().min_by_key(|k| {
+        (
+            (k.x - enemy_king.x).abs().max((k.y - enemy_king.y).abs()),
+            k.x,
+            k.y,
+        )
+    });
     let scaled = evaluate_mop_up_core(game, our_king, enemy_king, winner) * scale as i32 / 100;
     if scaled <= 0 {
         // Saturate the downside: the simplifying capture that ACTIVATES mop-up
@@ -897,6 +906,7 @@ const POCKET_ALL_MANNED: i32 = 140;
 fn evaluate_pocket(
     pieces: &[SliderInfo],
     royals: &[Coordinate],
+    our_king: Option<&Coordinate>,
     kr: KingRelation,
     enemy_king: &Coordinate,
 ) -> i32 {
@@ -960,7 +970,9 @@ fn evaluate_pocket(
             manned += 1;
         }
     }
-    for r in royals.iter().skip(1) {
+    // The pusher is scored through kr above; the rest man the flanks. Which one
+    // pushes is chosen by distance, so it need not be the list's first.
+    for r in royals.iter().filter(|r| our_king != Some(*r)) {
         let (v, m) = station(r.x, r.y, &mut taken);
         bonus += v;
         if m {
@@ -1519,7 +1531,7 @@ fn evaluate_mating_net(
         } else {
             &game.black_royals
         };
-        bonus += evaluate_pocket(pieces, royals, kr, enemy_king);
+        bonus += evaluate_pocket(pieces, royals, our_king, kr, enemy_king);
     } else if bareish {
         // The box is scaffolding: once the kill zone is set, its station gradients
         // only detour the search away from the fastest mate.
@@ -1573,8 +1585,9 @@ fn evaluate_mating_net(
                 KING_STEP_NEEDED
             };
             bonus += ((KING_CAP_NEEDED - kr.king_dist.min(KING_CAP_NEEDED)) as i32) * step;
-            // Additional royals are mating material too, not spectators.
-            for r in our_royals.iter().skip(1) {
+            // Additional royals are mating material too, not spectators. Skip the
+            // one already scored above, which is not necessarily the list's first.
+            for r in our_royals.iter().filter(|r| our_king != Some(*r)) {
                 let d = (r.x - ex).abs().max((r.y - ey).abs());
                 bonus +=
                     ((KING_CAP_NEEDED - d.min(KING_CAP_NEEDED)) as i32) * KING_STEP_EXTRA_ROYAL;
@@ -1923,6 +1936,29 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::game::GameState;
+
+    /// Royal vectors carry no positional meaning, so reordering them must not
+    /// move the score. Both the defending target and the mating royal used to be
+    /// taken as `.first()`, which made the term depend on internal ordering.
+    #[test]
+    fn mop_up_does_not_depend_on_royal_order() {
+        for icn in [
+            "w (8;q|1;q) K0,0|K30,25|N3,2|B4,4|R7,2|k15,18|k60,60",
+            "w (8;q|1;q) K0,0|K30,25|N3,2|B4,4|R7,2|k15,18",
+        ] {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+            let before = crate::evaluation::compute_mop_up_term(&game);
+
+            game.white_royals.reverse();
+            game.black_royals.reverse();
+            assert_eq!(
+                before,
+                crate::evaluation::compute_mop_up_term(&game),
+                "reordering royals in {icn}"
+            );
+        }
+    }
 
     #[test]
     fn bishop_battery_is_translation_and_order_invariant() {
