@@ -5,8 +5,8 @@ use smallvec::SmallVec;
 use std::cell::{Cell, UnsafeCell};
 
 use super::piece_reach::{
-    evaluate_compound_leap_threats, evaluate_huygen_reach, evaluate_knightrider_reach,
-    evaluate_rose_reach,
+    MAX_BATCHED_RIDERS, RiderRays, evaluate_compound_leap_threats, evaluate_huygen_reach,
+    evaluate_rose_reach, fill_knightrider_rays, knightrider_rays, score_knightrider_rays,
 };
 use crate::search::params::{
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
@@ -1809,6 +1809,20 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         black_attack_ready.min(cap)
     };
 
+    // One traversal serves every rider: each would otherwise walk the whole
+    // board for itself.
+    let mut rider_coords: smallvec::SmallVec<[(i64, i64); MAX_BATCHED_RIDERS]> =
+        smallvec::SmallVec::new();
+    for &(x, y, piece) in piece_list {
+        if piece.piece_type() == PieceType::Knightrider && rider_coords.len() < MAX_BATCHED_RIDERS {
+            rider_coords.push((x, y));
+        }
+    }
+    let mut rider_rays = [[None; 8] as RiderRays; MAX_BATCHED_RIDERS];
+    if !rider_coords.is_empty() {
+        fill_knightrider_rays(&rider_coords, &game.board, &mut rider_rays[..rider_coords.len()]);
+    }
+
     for &(x, y, piece) in piece_list {
         let pt = piece.piece_type();
         let mut piece_score = match pt {
@@ -2053,7 +2067,12 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     PieceType::Knightrider,
                     cloud_avg_spread,
                     phase,
-                ) + evaluate_knightrider_reach(x, y, piece.color(), &game.board, phase)
+                ) + match rider_coords.iter().position(|&c| c == (x, y)) {
+                    Some(i) => score_knightrider_rays(&rider_rays[i], piece.color(), phase),
+                    None => {
+                        score_knightrider_rays(&knightrider_rays(x, y, &game.board), piece.color(), phase)
+                    }
+                }
             }
             _ => 0,
         };

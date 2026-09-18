@@ -182,50 +182,65 @@ pub(crate) fn evaluate_rose_reach(
     attack + taper(defend, defend / 2)
 }
 
-/// Mirrors knightrider movegen: each ray stops at its closest occupant, and a
-/// capture is emitted at any distance while quiets cap out. One gcd places a
-/// piece on its ray, since k = gcd(|rx|, |ry|) for a reduced knight step.
-pub(crate) fn evaluate_knightrider_reach(
-    x: i64,
-    y: i64,
-    own: PlayerColor,
-    board: &Board,
-    phase: i32,
-) -> i32 {
-    let taper =
-        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+/// The nearest occupant of each of a knightrider's eight rays.
+pub(crate) type RiderRays = [Option<Piece>; 8];
 
-    let mut best_k = [i64::MAX; 8];
-    let mut best: [Option<Piece>; 8] = [None; 8];
+/// Riders past this many fall back to one traversal each, keeping the batch
+/// scratch on the stack.
+pub(crate) const MAX_BATCHED_RIDERS: usize = 8;
+
+/// Fills `out[i]` with the rays of `riders[i]` in one board traversal, so a
+/// position with several riders does not re-walk every piece for each of them.
+pub(crate) fn fill_knightrider_rays(riders: &[(i64, i64)], board: &Board, out: &mut [RiderRays]) {
+    debug_assert_eq!(riders.len(), out.len());
+    let mut best_k = [[i64::MAX; 8]; MAX_BATCHED_RIDERS];
+    for rays in out.iter_mut() {
+        *rays = [None; 8];
+    }
 
     // Every occupant stops a ray, as in movegen; pawns and neutrals are scored
     // as blockers only, so the officer-calibrated credits below stay unchanged.
     for (px, py, other) in board.iter() {
-        let (rx, ry) = (px - x, py - y);
-        let (dx, dy) = (rx.abs(), ry.abs());
+        for (i, &(x, y)) in riders.iter().enumerate() {
+            let (rx, ry) = (px - x, py - y);
+            let (dx, dy) = (rx.abs(), ry.abs());
 
-        // Only check pieces that are on knightrider's rays.
-        if dx == 0 || (dx * 2 != dy && dx != dy * 2) {
-            continue;
-        }
+            // Only check pieces that are on knightrider's rays.
+            if dx == 0 || (dx * 2 != dy && dx != dy * 2) {
+                continue;
+            }
 
-        let slot = 4 * (rx > 0) as usize
-            + 2 * (ry > 0) as usize
-            + (dx > dy) as usize;
+            let slot = 4 * (rx > 0) as usize + 2 * (ry > 0) as usize + (dx > dy) as usize;
 
-        // It only needs to check the minimum dx since it's always a multiple of
-        // either 1 or 2 depending on the slot.
-        if dx < best_k[slot] {
-            best_k[slot] = dx;
-            best[slot] = Some(other);
+            // It only needs to check the minimum dx since it's always a multiple
+            // of either 1 or 2 depending on the slot.
+            if dx < best_k[i][slot] {
+                best_k[i][slot] = dx;
+                out[i][slot] = Some(other);
+            }
         }
     }
+}
+
+/// Mirrors knightrider movegen: each ray stops at its closest occupant, and a
+/// capture is emitted at any distance while quiets cap out. One gcd places a
+/// piece on its ray, since k = gcd(|rx|, |ry|) for a reduced knight step.
+pub(crate) fn knightrider_rays(x: i64, y: i64, board: &Board) -> RiderRays {
+    let mut out = [[None; 8]; 1];
+    fill_knightrider_rays(&[(x, y)], board, &mut out);
+    out[0]
+}
+
+/// Scores one rider from its precomputed rays.
+pub(crate) fn score_knightrider_rays(rays: &RiderRays, own: PlayerColor, phase: i32) -> i32 {
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
 
     let mut attack = 0i32;
     let mut defend = 0i32;
     let mut open_rays = 0i32;
 
-    for slot in best.iter() {
+    for slot in rays.iter() {
         let Some(occupant) = slot else {
             open_rays += 1;
             continue;
@@ -248,7 +263,6 @@ pub(crate) fn evaluate_knightrider_reach(
     // token, and only in the endgame where the rider has room to use it.
     attack + taper(defend, defend / 2) + taper(0, open_rays * KNIGHTRIDER_OPEN_RAY_EG)
 }
-
 
 /// Compound pieces threaten along the knight offsets they carry.
 pub(crate) fn evaluate_compound_leap_threats(
@@ -279,7 +293,8 @@ mod tests {
         let mut g = GameState::new();
         g.setup_position_from_icn(icn);
         // Endgame phase so the open-ray token is live as well as the attack.
-        evaluate_knightrider_reach(0, 0, PlayerColor::White, &g.board, 0)
+        let rays = knightrider_rays(0, 0, &g.board);
+        score_knightrider_rays(&rays, PlayerColor::White, 0)
     }
 
     /// The rider's (2,1) ray meets the queen at (4,2) only via (2,1); any
