@@ -300,6 +300,11 @@ pub fn evaluate(game: &GameState) -> i32 {
     let mut b_pawn_files = 0u8;
     // Pawns stored as (x, y, is_white)
     let mut pawns: ArrayVec<(i64, i64, bool), 16> = ArrayVec::new();
+    // Pawn bitboards for the structure predicates below. Only valid while every pawn
+    // is inside 1..=8: the predicates compare raw coordinates, not clamped files.
+    let mut w_pawn_bb: u64 = 0;
+    let mut b_pawn_bb: u64 = 0;
+    let mut pawns_in_window = true;
 
     // Bishop tracking for bishop pair
     let mut w_bishop_light = false;
@@ -374,6 +379,16 @@ pub fn evaluate(game: &GameState) -> i32 {
         match pt {
             PieceType::Pawn => {
                 pawns.push((x, y, is_white));
+                if (1..=8).contains(&x) && (1..=8).contains(&y) {
+                    let bit = 1u64 << (((y - 1) * 8 + (x - 1)) as u32);
+                    if is_white {
+                        w_pawn_bb |= bit;
+                    } else {
+                        b_pawn_bb |= bit;
+                    }
+                } else {
+                    pawns_in_window = false;
+                }
             }
 
             PieceType::Bishop => {
@@ -545,10 +560,31 @@ pub fn evaluate(game: &GameState) -> i32 {
             eg[ci] -= EG_ISOLATED_PENALTY;
         }
 
-        let is_doubled = pawns
-            .iter()
-            .enumerate()
-            .any(|(j, &(nx, _, nw))| j != i && nw == is_white && nx == x);
+        let own_bb = if is_white { w_pawn_bb } else { b_pawn_bb };
+        let enemy_bb = if is_white { b_pawn_bb } else { w_pawn_bb };
+        let rk = (y - 1) as u32;
+        let file_mask = 0x0101_0101_0101_0101u64 << f;
+        let adj_mask = (if f > 0 { 0x0101_0101_0101_0101u64 << (f - 1) } else { 0 })
+            | (if f < 7 { 0x0101_0101_0101_0101u64 << (f + 1) } else { 0 });
+        let behind = if is_white {
+            (1u64 << (8 * rk)) - 1
+        } else {
+            !0u64 << (8 * (rk + 1))
+        };
+        let ahead = if is_white {
+            !0u64 << (8 * (rk + 1))
+        } else {
+            (1u64 << (8 * rk)) - 1
+        };
+
+        let is_doubled = if pawns_in_window {
+            (own_bb & file_mask).count_ones() > 1
+        } else {
+            pawns
+                .iter()
+                .enumerate()
+                .any(|(j, &(nx, _, nw))| j != i && nw == is_white && nx == x)
+        };
         if is_doubled {
             mg[ci] -= MG_DOUBLED_PENALTY;
             eg[ci] -= EG_DOUBLED_PENALTY;
@@ -556,14 +592,27 @@ pub fn evaluate(game: &GameState) -> i32 {
 
         // -- Connected (phalanx or supported) --
         // Phalanx: friendly pawn on same rank, adjacent file
-        let phalanx = pawns
-            .iter()
-            .any(|&(nx, ny, nw)| nw == is_white && ny == y && (nx - x).abs() == 1);
-        // Supported: friendly pawn one rank behind on adjacent file
         let support_y = if is_white { y - 1 } else { y + 1 };
-        let supported = pawns
-            .iter()
-            .any(|&(nx, ny, nw)| nw == is_white && ny == support_y && (nx - x).abs() <= 1);
+        let (phalanx, supported) = if pawns_in_window {
+            let rank_mask = 0xFFu64 << (8 * rk);
+            let ph = own_bb & rank_mask & adj_mask != 0;
+            let sup = if (1..=8).contains(&support_y) {
+                let sup_mask = 0xFFu64 << (8 * (support_y - 1) as u32);
+                own_bb & sup_mask & (adj_mask | file_mask) != 0
+            } else {
+                false
+            };
+            (ph, sup)
+        } else {
+            (
+                pawns
+                    .iter()
+                    .any(|&(nx, ny, nw)| nw == is_white && ny == y && (nx - x).abs() == 1),
+                pawns
+                    .iter()
+                    .any(|&(nx, ny, nw)| nw == is_white && ny == support_y && (nx - x).abs() <= 1),
+            )
+        };
         if phalanx || supported {
             let rank = if is_white { y } else { 9 - y };
             let rank_idx = (rank as usize).clamp(0, 7);
@@ -575,9 +624,13 @@ pub fn evaluate(game: &GameState) -> i32 {
         // Backward: no friendly pawn behind it on an adjacent file and an enemy pawn
         // contesting its stop square. Skipped when isolated, to avoid double-counting.
         if !supported && !phalanx && has_neighbor {
-            let no_support_behind = !pawns.iter().any(|&(nx, ny, nw)| {
-                nw == is_white && (nx - x).abs() == 1 && if is_white { ny < y } else { ny > y }
-            });
+            let no_support_behind = if pawns_in_window {
+                own_bb & adj_mask & behind == 0
+            } else {
+                !pawns.iter().any(|&(nx, ny, nw)| {
+                    nw == is_white && (nx - x).abs() == 1 && if is_white { ny < y } else { ny > y }
+                })
+            };
             let enemy_stop_file = (f > 0 && (enemy_files & (1 << (f - 1))) != 0)
                 || (f < 7 && (enemy_files & (1 << (f + 1))) != 0);
             if no_support_behind && enemy_stop_file {
@@ -586,9 +639,13 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
         }
 
-        let is_passed = !pawns.iter().any(|&(nx, ny, nw)| {
-            nw != is_white && (nx - x).abs() <= 1 && if is_white { ny > y } else { ny < y }
-        });
+        let is_passed = if pawns_in_window {
+            enemy_bb & (adj_mask | file_mask) & ahead == 0
+        } else {
+            !pawns.iter().any(|&(nx, ny, nw)| {
+                nw != is_white && (nx - x).abs() <= 1 && if is_white { ny > y } else { ny < y }
+            })
+        };
 
         if is_passed {
             let rel_rank = if is_white { y } else { 9 - y };
