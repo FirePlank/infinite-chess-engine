@@ -4714,6 +4714,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
 
 
+                // Stockfish reduces more when the TT move is a capture (r += 1079):
+                // the quiet alternatives are competing against a tactical refutation.
+                if tt_capture {
+                    reduction += 1;
+                }
+
                 // A cut node is expected to fail high on an early move, so the moves
                 // after it are far likelier to be refutations than real candidates.
                 if cut_node {
