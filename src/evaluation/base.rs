@@ -2993,9 +2993,23 @@ fn safe_check_units(
     king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     pieces: &[(i64, i64, Piece)],
 ) -> i32 {
-    use crate::attacks::{DIAG_MASK, KNIGHT_MASK, KNIGHT_OFFSETS, ORTHO_MASK, matches_mask};
+    use crate::attacks::{
+        CAMEL_MASK, CAMEL_OFFSETS, DIAG_MASK, GIRAFFE_MASK, GIRAFFE_OFFSETS, HAWK_MASK,
+        HAWK_OFFSETS, KNIGHT_MASK, KNIGHT_OFFSETS, ORTHO_MASK, ZEBRA_MASK, ZEBRA_OFFSETS,
+        matches_mask,
+    };
     // [knight, bishop, rook, queen] x [one square, several].
     const UNITS: [[i32; 2]; 4] = [[50, 80], [40, 60], [68, 119], [48, 70]];
+    // Finite leapers, scored with the knight's units. King-steps are absent on
+    // purpose: a royal cannot check from an adjacent square, and a guard's would
+    // stand next to the king, so safe() discards it anyway.
+    const LEAPERS: &[(crate::attacks::PieceTypeMask, &[(i64, i64)])] = &[
+        (KNIGHT_MASK, &KNIGHT_OFFSETS),
+        (CAMEL_MASK, &CAMEL_OFFSETS),
+        (GIRAFFE_MASK, &GIRAFFE_OFFSETS),
+        (ZEBRA_MASK, &ZEBRA_OFFSETS),
+        (HAWK_MASK, &HAWK_OFFSETS),
+    ];
     type Squares = arrayvec::ArrayVec<(i64, i64), 32>;
 
     let them = us.opponent();
@@ -3126,13 +3140,25 @@ fn safe_check_units(
             }
         }
 
-        let leaps_in = (px - kx).abs() <= 4 && (py - ky).abs() <= 4;
-        if matches_mask(pt, KNIGHT_MASK) && (leaps_in || ortho || diag) {
-            for &(ox, oy) in &KNIGHT_OFFSETS {
+        // Reversing a leaper's offsets from the royal gives its checking squares
+        // as a finite set, whatever the coordinates.
+        for &(mask, offsets) in LEAPERS {
+            if !matches_mask(pt, mask) {
+                continue;
+            }
+            let span = offsets.iter().map(|(a, b)| a.abs().max(b.abs())).max().unwrap_or(0);
+            let leaps_in = (px - kx).abs() <= 2 * span && (py - ky).abs() <= 2 * span;
+            if !(leaps_in || ortho || diag) {
+                continue;
+            }
+            for &(ox, oy) in offsets {
                 let (sx, sy) = (kx + ox, ky + oy);
+                let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
+                let leaps_there = offsets.iter().any(|&(a, b)| (a.abs(), b.abs()) == (ddx, ddy))
+                    && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them);
                 if !knight.is_full()
                     && !knight.contains(&(sx, sy))
-                    && reaches(pt, px, py, sx, sy)
+                    && (leaps_there || reaches(pt, px, py, sx, sy))
                     && safe(sx, sy)
                 {
                     knight.push((sx, sy));
@@ -4507,6 +4533,23 @@ mod tests {
             leap_to_slider_check > 0,
             "chancellor leap-to-rook-check must be counted, got {leap_to_slider_check}"
         );
+    }
+
+    /// Camel, zebra, giraffe and hawk check from squares no knight offset covers.
+    /// Their checking squares are found by reversing their own offsets from the
+    /// royal, which stays finite however far from the origin the position sits.
+    #[test]
+    fn finite_leapers_deliver_safe_checks() {
+        // Camel (1,3): from (2,6) it leaps to (3,3)... reversing from the king at
+        // (0,0) the checking squares are the camel offsets themselves.
+        for (code, sq) in [("ca", (2, 6)), ("ze", (4, 6)), ("gi", (2, 8)), ("ha", (4, 4))] {
+            let icn = format!("w (8;q|1;q) K0,0|k0,50|{code}{},{}", sq.0, sq.1);
+            assert!(
+                white_safe_check_units(&icn) > 0,
+                "{code} at {sq:?} must have a safe check, got {}",
+                white_safe_check_units(&icn)
+            );
+        }
     }
 
     /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an
