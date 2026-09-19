@@ -80,8 +80,14 @@ pub fn evaluate(game: &GameState) -> i32 {
         }
     }
 
-    // Create a hash set of white pawn coordinates for fast (constant amortized time) neighbor checks.
-    let mut pawn_set: FxHashSet<Coordinate> = FxHashSet::default();
+    // Reused across evals: a fresh set here was the only per-eval heap allocation
+    // in the evaluator.
+    thread_local! {
+        static PAWN_SET: std::cell::Cell<FxHashSet<Coordinate>> =
+            std::cell::Cell::new(FxHashSet::default());
+    }
+    let mut pawn_set = PAWN_SET.with(|c| c.take());
+    pawn_set.clear();
     pawn_set.reserve(white_pawns.len());
     for pawn in &white_pawns {
         pawn_set.insert(*pawn);
@@ -249,6 +255,8 @@ pub fn evaluate(game: &GameState) -> i32 {
         // King is dangerously close to the front
         score += taper(MG_KING_NEAR_FRONT_PENALTY, EG_KING_NEAR_FRONT_PENALTY); // Penalty for Black (positive score)
     }
+
+    PAWN_SET.with(|c| c.set(pawn_set));
 
     // Return perspective
     if game.turn == PlayerColor::Black {
