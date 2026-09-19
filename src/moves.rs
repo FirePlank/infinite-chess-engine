@@ -1052,6 +1052,126 @@ pub fn get_quiescence_captures(
     }
 }
 
+/// Best enemy piece `piece` could capture standing on `from`, as (value, square).
+/// Skips the capture generator: slider victims are the nearest occupant on each
+/// line, which `neighbors()` returns already decoded, so no Move is ever built
+/// and no square is probed twice. Returns None for piece types whose rays need
+/// the full generator (knightrider, rose, huygen).
+pub(crate) fn best_capture_victim(
+    board: &Board,
+    piece: &Piece,
+    from: &Coordinate,
+    indices: &SpatialIndices,
+    value_of: &dyn Fn(PieceType, PlayerColor) -> i32,
+) -> Option<(i32, Option<Coordinate>)> {
+    use crate::attacks::{
+        CAMEL_OFFSETS, GIRAFFE_OFFSETS, KNIGHT_OFFSETS, ZEBRA_OFFSETS,
+    };
+    let us = piece.color();
+    let mut best_v = 0;
+    let mut best_sq = None;
+
+    let consider = |x: i64, y: i64, vic: Piece, best_v: &mut i32, best_sq: &mut Option<Coordinate>| {
+        let vt = vic.piece_type();
+        if vic.color() == us || vic.color() == PlayerColor::Neutral || vt.is_uncapturable() {
+            return;
+        }
+        let v = value_of(vt, vic.color());
+        if v > *best_v {
+            *best_v = v;
+            *best_sq = Some(Coordinate::new(x, y));
+        }
+    };
+
+    let lines = |ortho: bool, diag: bool, best_v: &mut i32, best_sq: &mut Option<Coordinate>| {
+        if ortho {
+            if let Some(l) = indices.rows.get(&from.y) {
+                let (f, b) = l.neighbors(from.x);
+                for e in [f, b].into_iter().flatten() {
+                    consider(e.0, from.y, Piece::from_packed(e.1), best_v, best_sq);
+                }
+            }
+            if let Some(l) = indices.cols.get(&from.x) {
+                let (f, b) = l.neighbors(from.y);
+                for e in [f, b].into_iter().flatten() {
+                    consider(from.x, e.0, Piece::from_packed(e.1), best_v, best_sq);
+                }
+            }
+        }
+        if diag {
+            let k1 = from.x - from.y;
+            if let Some(l) = indices.diag1.get(&k1) {
+                let (f, b) = l.neighbors(from.x);
+                for e in [f, b].into_iter().flatten() {
+                    consider(e.0, e.0 - k1, Piece::from_packed(e.1), best_v, best_sq);
+                }
+            }
+            let k2 = from.x + from.y;
+            if let Some(l) = indices.diag2.get(&k2) {
+                let (f, b) = l.neighbors(from.x);
+                for e in [f, b].into_iter().flatten() {
+                    consider(e.0, k2 - e.0, Piece::from_packed(e.1), best_v, best_sq);
+                }
+            }
+        }
+    };
+
+    let offsets = |offs: &[(i64, i64)], best_v: &mut i32, best_sq: &mut Option<Coordinate>| {
+        for &(ox, oy) in offs {
+            let (x, y) = (from.x + ox, from.y + oy);
+            if let Some(vic) = board.get_piece(x, y) {
+                consider(x, y, vic, best_v, best_sq);
+            }
+        }
+    };
+    let compass = |r: i64| -> [(i64, i64); 8] {
+        [(-r, r), (0, r), (r, r), (-r, 0), (r, 0), (-r, -r), (0, -r), (r, -r)]
+    };
+
+    match piece.piece_type() {
+        PieceType::Void | PieceType::Obstacle => {}
+        PieceType::Pawn => {
+            let dir = if us == PlayerColor::White { 1 } else { -1 };
+            offsets(&[(-1, dir), (1, dir)], &mut best_v, &mut best_sq);
+        }
+        PieceType::Knight => offsets(&KNIGHT_OFFSETS, &mut best_v, &mut best_sq),
+        PieceType::Camel => offsets(&CAMEL_OFFSETS, &mut best_v, &mut best_sq),
+        PieceType::Giraffe => offsets(&GIRAFFE_OFFSETS, &mut best_v, &mut best_sq),
+        PieceType::Zebra => offsets(&ZEBRA_OFFSETS, &mut best_v, &mut best_sq),
+        PieceType::King | PieceType::Guard => {
+            offsets(&compass(1), &mut best_v, &mut best_sq)
+        }
+        PieceType::Centaur | PieceType::RoyalCentaur => {
+            offsets(&compass(1), &mut best_v, &mut best_sq);
+            offsets(&KNIGHT_OFFSETS, &mut best_v, &mut best_sq);
+        }
+        PieceType::Hawk => {
+            offsets(&compass(2), &mut best_v, &mut best_sq);
+            offsets(&compass(3), &mut best_v, &mut best_sq);
+        }
+        PieceType::Rook => lines(true, false, &mut best_v, &mut best_sq),
+        PieceType::Bishop => lines(false, true, &mut best_v, &mut best_sq),
+        PieceType::Queen | PieceType::RoyalQueen => {
+            lines(true, true, &mut best_v, &mut best_sq)
+        }
+        PieceType::Chancellor => {
+            lines(true, false, &mut best_v, &mut best_sq);
+            offsets(&KNIGHT_OFFSETS, &mut best_v, &mut best_sq);
+        }
+        PieceType::Archbishop => {
+            lines(false, true, &mut best_v, &mut best_sq);
+            offsets(&KNIGHT_OFFSETS, &mut best_v, &mut best_sq);
+        }
+        PieceType::Amazon => {
+            lines(true, true, &mut best_v, &mut best_sq);
+            offsets(&KNIGHT_OFFSETS, &mut best_v, &mut best_sq);
+        }
+        // Knightrider / Rose / Huygen paths need the real generator.
+        _ => return None,
+    }
+    Some((best_v, best_sq))
+}
+
 // Helper to avoid duplicating the switch logic
 pub(crate) fn generate_captures_for_piece(
     board: &Board,

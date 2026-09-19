@@ -702,36 +702,56 @@ impl StagedMoveGen {
         // unlike dest-hashed history this signal does not alias at deep nodes. Gated to
         // depth >= 4, since the shallow nodes are the bulk of the tree.
         if self.depth >= 4 {
-            let empty_pins = rustc_hash::FxHashMap::default();
-            let ctx = crate::moves::MoveGenContext {
-                special_rights: &game.special_rights,
-                en_passant: &game.en_passant,
-                game_rules: &game.game_rules,
-                indices: &game.spatial_indices,
-                enemy_king_pos: game.enemy_king_pos(),
-                pinned: &empty_pins,
-            };
             let mover = m
                 .promotion
                 .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
                 .unwrap_or(m.piece);
-            let mut caps = MoveList::new();
-            crate::moves::generate_captures_for_piece(&game.board, &mover, &m.to, &ctx, &mut caps);
-            let mut best_vv = 0;
-            let mut best_sq = None;
-            for c in caps.iter() {
-                if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
-                    && vic.color() != m.piece.color()
-                    && vic.color() != PlayerColor::Neutral
-                    && !vic.piece_type().is_uncapturable()
-                {
-                    let vv = game.get_piece_value(vic.piece_type(), vic.color());
-                    if vv > best_vv {
-                        best_vv = vv;
-                        best_sq = Some(c.to);
+            let value_of = |pt: PieceType, c: PlayerColor| game.get_piece_value(pt, c);
+            let (best_vv, best_sq) = match crate::moves::best_capture_victim(
+                &game.board,
+                &mover,
+                &m.to,
+                &game.spatial_indices,
+                &value_of,
+            ) {
+                Some(found) => found,
+                None => {
+                    // Knightrider, rose and huygen rays still need the generator.
+                    let empty_pins = rustc_hash::FxHashMap::default();
+                    let ctx = crate::moves::MoveGenContext {
+                        special_rights: &game.special_rights,
+                        en_passant: &game.en_passant,
+                        game_rules: &game.game_rules,
+                        indices: &game.spatial_indices,
+                        enemy_king_pos: game.enemy_king_pos(),
+                        pinned: &empty_pins,
+                    };
+                    let mut caps = MoveList::new();
+                    crate::moves::generate_captures_for_piece(
+                        &game.board,
+                        &mover,
+                        &m.to,
+                        &ctx,
+                        &mut caps,
+                    );
+                    let mut bv = 0;
+                    let mut bs = None;
+                    for c in caps.iter() {
+                        if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
+                            && vic.color() != m.piece.color()
+                            && vic.color() != PlayerColor::Neutral
+                            && !vic.piece_type().is_uncapturable()
+                        {
+                            let vv = game.get_piece_value(vic.piece_type(), vic.color());
+                            if vv > bv {
+                                bv = vv;
+                                bs = Some(c.to);
+                            }
+                        }
                     }
+                    (bv, bs)
                 }
-            }
+            };
             if best_vv > 0 {
                 let mut q = best_vv * 6;
                 // Undefended victim: no piece of the victim's color covers its square.
