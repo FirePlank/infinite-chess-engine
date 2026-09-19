@@ -2967,18 +2967,24 @@ fn generate_sliding_moves_impl(
             };
             let cache_key = (from.x, from.y, dir_index);
 
-            // Check cache first. Value is Arc<[i64]>: a hit is a refcount bump,
-            // not a Vec copy, and per-thread game clones share the arc too.
             let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
-            let cached = if bypass_cache {
+
+            // A hit hands out the slice from inside the borrow: cloning the
+            // handle cost a refcount bump and drop on every ray.
+            let hit = if bypass_cache {
                 None
             } else {
-                indices.slider_cache.borrow().get(&cache_key).cloned()
+                std::cell::Ref::filter_map(indices.slider_cache.borrow(), |m| {
+                    m.get(&cache_key).map(|a| &**a)
+                })
+                .ok()
             };
 
-            let target_dists: Arc<[i64]> = if let Some(cached_dists) = cached {
-                cached_dists
+            let computed: Arc<[i64]>;
+            let target_dists: &[i64] = if let Some(d) = hit.as_deref() {
+                d
             } else {
+                computed = {
                 dist_counts.clear();
                 royal_dists.clear();
                 knight_dists.clear();
@@ -3349,14 +3355,16 @@ fn generate_sliding_moves_impl(
                 shared_targets.sort_unstable();
                 shared_targets.dedup();
 
-                let arc: Arc<[i64]> = Arc::from(shared_targets);
+                    let arc: Arc<[i64]> = Arc::from(shared_targets);
                 if !bypass_cache {
                     indices
                         .slider_cache
                         .borrow_mut()
                         .insert(cache_key, arc.clone());
                 }
-                arc
+                    arc
+                };
+                &computed
             };
 
             // Generate moves from target_dists (sorted ascending, so a per-ray
