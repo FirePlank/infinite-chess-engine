@@ -18,6 +18,9 @@ const SUPPORT_BONUS_PER_PAWN: i32 = 6;
 const KING_ATTACK_BONUS: i32 = 20; // Pawns near enemy king
 
 // Black (Pieces) Bonuses/Penalties
+/// Per distinct horde pawn Black actually attacks, by whether a pawn defends it.
+const BREACH_LOOSE_BONUS: i32 = 22;
+const BREACH_SUPPORTED_BONUS: i32 = 7;
 const BREAKTHROUGH_BONUS: i32 = 45; // Major piece behind the pawn wall
 const ATTACKING_PAWN_BONUS: i32 = 25; // Attacking a pawn
 const MG_KING_NEAR_FRONT_PENALTY: i32 = 40;
@@ -148,6 +151,71 @@ pub fn evaluate(game: &GameState) -> i32 {
         ((mg * b_phase.min(MAX_B_PHASE)) + (eg * (MAX_B_PHASE - b_phase.min(MAX_B_PHASE))))
             / MAX_B_PHASE
     };
+    // Which horde pawns Black can actually hit. Proximity alone rates a bishop on
+    // the wrong colour and one bearing down an open file the same, and Black wins
+    // by eating the horde, so the entry point is the whole plan.
+    let mut hit: arrayvec::ArrayVec<Coordinate, 32> = arrayvec::ArrayVec::new();
+    let idx = &game.spatial_indices;
+    let note = |c: Coordinate, hit: &mut arrayvec::ArrayVec<Coordinate, 32>| {
+        if pawn_set.contains(&c) && !hit.is_full() && !hit.contains(&c) {
+            hit.push(c);
+        }
+    };
+    for (pos, ptype) in &black_pieces {
+        let (px, py) = (pos.x, pos.y);
+        if crate::attacks::is_ortho_slider(*ptype) {
+            if let Some(l) = idx.rows.get(&py) {
+                let (f, b) = l.neighbors(px);
+                for e in [f, b].into_iter().flatten() {
+                    note(Coordinate::new(e.0, py), &mut hit);
+                }
+            }
+            if let Some(l) = idx.cols.get(&px) {
+                let (f, b) = l.neighbors(py);
+                for e in [f, b].into_iter().flatten() {
+                    note(Coordinate::new(px, e.0), &mut hit);
+                }
+            }
+        }
+        if crate::attacks::is_diag_slider(*ptype) {
+            let k1 = px - py;
+            if let Some(l) = idx.diag1.get(&k1) {
+                let (f, b) = l.neighbors(px);
+                for e in [f, b].into_iter().flatten() {
+                    note(Coordinate::new(e.0, e.0 - k1), &mut hit);
+                }
+            }
+            let k2 = px + py;
+            if let Some(l) = idx.diag2.get(&k2) {
+                let (f, b) = l.neighbors(px);
+                for e in [f, b].into_iter().flatten() {
+                    note(Coordinate::new(e.0, k2 - e.0), &mut hit);
+                }
+            }
+        }
+        if crate::attacks::matches_mask(*ptype, crate::attacks::KNIGHT_MASK) {
+            for (ox, oy) in crate::attacks::KNIGHT_OFFSETS {
+                note(Coordinate::new(px + ox, py + oy), &mut hit);
+            }
+        }
+        if crate::attacks::matches_mask(*ptype, crate::attacks::KING_MASK) {
+            for (ox, oy) in crate::attacks::KING_OFFSETS {
+                note(Coordinate::new(px + ox, py + oy), &mut hit);
+            }
+        }
+    }
+    for c in &hit {
+        // An unsupported pawn is a base Black can actually take; a supported one
+        // costs material to win, so it is worth much less as an entry point.
+        let supported = pawn_set.contains(&Coordinate::new(c.x - 1, c.y - 1))
+            || pawn_set.contains(&Coordinate::new(c.x + 1, c.y - 1));
+        score -= if supported {
+            BREACH_SUPPORTED_BONUS
+        } else {
+            BREACH_LOOSE_BONUS
+        };
+    }
+
     for (pos, ptype) in &black_pieces {
         // Breakthrough: Are we behind the pawn wall?
         if pos.y < min_pawn_y && *ptype == PieceType::Queen {

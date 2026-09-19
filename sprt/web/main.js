@@ -452,7 +452,7 @@ document.addEventListener('keydown', (e) => {
 // between these two.
 const BOUNDS = {
     gainer: [0, 5],
-    nonreg: [-2, 0],
+    nonreg: [-10, 0],
 };
 
 function getStandardPosition() {

@@ -75,6 +75,17 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--variants <LIST\|PRESET>` | `base_only` | Comma-separated variants, or a preset: `base_only` (15), `base_full` (19), `site` (17), `multi_king` (3), `coaip_set` (4), `all` (23) |
 | `--verbose` | off | Print detailed game info |
 
+### Bounds
+
+| Scenario | Bounds |
+|----------|--------|
+| Gainer, short TC | `--elo0 0 --elo1 5` |
+| Gainer, long TC | `--elo0 1 --elo1 6` |
+| Non-regression / simplification | `--elo0="-10" --elo1 0` |
+| Risky rewrite, tiny loss unacceptable | `--elo0="-8" --elo1 0` |
+
+Negative bounds need `="..."` so clap does not read them as flags.
+
 ### Example: Small regression test
 
 ```bash

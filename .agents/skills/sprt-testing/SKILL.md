@@ -92,10 +92,10 @@ bounds are draw-rate/TC independent — pick them by the change's intent:
 
 | Scenario | Bounds | Meaning |
 |----------|--------|---------|
-| Gainer, short TC (default new feature/tune) | `--elo0 0 --elo1 2` | prove a real gain |
-| Gainer, long TC | `--elo0 0.5 --elo1 2.5` | gain that survives depth |
-| Simplification / refactor / cleanup (prove NOT a regression) | `--elo0 -1.75 --elo1 0.25` | accept small losses, reject real ones |
-| Risky rewrite where a tiny loss is unacceptable | `--elo0 -0.5 --elo1 1.5` | tight non-regression |
+| Gainer, short TC (default new feature/tune) | `--elo0 0 --elo1 5` | prove a real gain |
+| Gainer, long TC | `--elo0 1 --elo1 6` | gain that survives depth |
+| Simplification / refactor / cleanup (prove NOT a regression) | `--elo0="-10" --elo1 0` | accept small losses, reject real ones |
+| Risky rewrite where a tiny loss is unacceptable | `--elo0="-8" --elo1 0` | tight non-regression |
 
 Keep α=β=0.05 (⇒ LLR decision bounds ≈ **[−2.94, +2.94]**). Adjudication stays OFF.
 Use `--model logistic` only to reproduce old-style raw-Elo bounds — do not mix scales.
@@ -139,8 +139,8 @@ Extend only when it pays off — decide from |LLR| at the end of a batch (§8). 
 - **Let the run FINISH (or `--resume` it to completion) before quoting numbers** — the
   `Final Summary` block and the `--results` JSON are only written at the end. Killing early leaves
   you with no per-variant breakdown to paste into the commit (§9).
-- **Negative bounds MUST use `="..."` syntax** (`--elo0="-1.75"`), else clap parses `-1.75` as a
-  flag (`unexpected argument '-1'`) AND the shell can mangle it. Always quote: `--elo0="-1.75" --elo1="0.25"`.
+- **Negative bounds MUST use `="..."` syntax** (`--elo0="-10"`), else clap parses `-10` as a
+  flag (`unexpected argument '-1'`) AND the shell can mangle it. Always quote: `--elo0="-10" --elo1 0`.
 - Standard invocation:
   ```
   ./target/release/sprt.exe run \
@@ -162,23 +162,23 @@ scaled to risk, while rejecting is cheap (you just don't ship), so abandon loser
 
 | Change type | Accept when LLR ≥ |
 |-------------|-------------------|
-| Simple / low-risk / trivially reversible (cleanup, small tweak, obvious speedup) | **+1.0** |
-| Normal | **+2.94** |
+| Simple / low-risk / trivially reversible (cleanup, small tweak, obvious speedup) | **+1.5** |
+| Normal | **+2.0** |
 | Risky / has revert history / hard to verify (search reworks, multi-royal, TT) | **+2.94** AND clean per-variant breakdown |
 
-**Reject threshold (any gainer test):** LLR ≤ **−0.5** → revert. No need to prove a loss to
-95%; stop burning games on it. (Simplification tests use their own `[-1.75, 0.25]` bounds)
+**Reject threshold (any gainer test):** LLR ≤ **−1.0** → revert. No need to prove a loss to
+95%; stop burning games on it. (Simplification tests use their own `[-10, 0]` bounds)
 
 **Extend vs stop — from |LLR| at end of a batch:**
 
-- **|LLR| ≥ 1.0**, heading toward a bound → almost there; let it finish / one small follow-up.
-  If a follow-up finishes and LLR is STILL ≥ +1.0 (even short of +2.94), accept — it has
+- **|LLR| ≥ 1.5**, heading toward a bound → almost there; let it finish / one small follow-up.
+  If a follow-up finishes and LLR is STILL ≥ +1.5 (even short of +2.94), accept — it has
   already survived more games without dropping below the accept line.
-- **0.5 ≤ |LLR| < 1.0** → genuinely undecided; this is where games pay off → run a full follow-up.
-- **|LLR| < 0.5** after the initial batch, still < 0.5 after one follow-up → effectively
+- **0.75 ≤ |LLR| < 1.5** → genuinely undecided; this is where games pay off → run a full follow-up.
+- **|LLR| < 0.75** after the initial batch, still < 0.75 after one follow-up → effectively
   **neutral** (a flat LLR won't move with more games — stop). Decide by intent: **accept
   simplifications** (free simplicity), **reject gainers** (complexity for no gain).
-- **Neutrality cap:** stop chasing after ~2 follow-ups with |LLR| < 1.0.
+- **Neutrality cap:** stop chasing after ~2 follow-ups with |LLR| < 1.5.
 
 **Large-sample override:** at **≥4000 total games**, a solidly positive point estimate is
 enough on its own — accept if nElo/Elo is clearly positive (e.g. ≥ +5 Elo-equivalent) and its
