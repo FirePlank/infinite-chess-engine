@@ -25,7 +25,7 @@ use crate::search::params::{
     piece_cloud_cheb_max_excess, piece_cloud_cheb_radius,
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
-    slider_threat_div, zebra,
+    pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
 min_fairy_development_penalty,
 };
 
@@ -339,6 +339,9 @@ pub const DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT: i32 = 100;
 pub const DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT: i32 = 44;
 pub const DEFAULT_EVAL_SLIDER_THREAT_DIV: i32 = 5;
 pub const DEFAULT_EVAL_SLIDER_THREAT_CAP: i32 = 100;
+/// Cost of a piece frozen by a real absolute pin, per tied_defender_ref_value.
+pub const DEFAULT_EVAL_PIN_OPPORTUNITY_COST: i32 = 26;
+pub const DEFAULT_EVAL_PIN_OPPORTUNITY_CAP: i32 = 70;
 pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0: i32 = 2;
 pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1: i32 = 0;
 pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2: i32 = 12;
@@ -530,6 +533,9 @@ pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
 // Pieces beyond this distance have their position clamped for centroid calculation.
 
 // Shared constants for ray detection
+/// Nearest occupant per direction around one royal, plus its ring-cover flag.
+type RoyalRayEntry = ([(i32, i32, PlayerColor, PieceType); 8], bool);
+
 const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 const ORTHO_DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
@@ -789,9 +795,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
     // Shelter is per-royal: the merged arrays below answer "is any royal exposed
     // along this line", which is a different question.
-    type RoyalRays = ([(i32, i32, PlayerColor, PieceType); 8], bool);
-    let mut w_royal_rays: SmallVec<[RoyalRays; 1]> = SmallVec::new();
-    let mut b_royal_rays: SmallVec<[RoyalRays; 1]> = SmallVec::new();
+    let mut w_royal_rays: SmallVec<[RoyalRayEntry; 1]> = SmallVec::new();
+    let mut b_royal_rays: SmallVec<[RoyalRayEntry; 1]> = SmallVec::new();
 
     let mut w_king_ring_covered = false;
     let mut b_king_ring_covered = false;
@@ -2376,8 +2381,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     black_pawns: &[(i64, i64)],
     w_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
-    w_royal_rays: &[([(i32, i32, PlayerColor, PieceType); 8], bool)],
-    b_royal_rays: &[([(i32, i32, PlayerColor, PieceType); 8], bool)],
+    w_royal_rays: &[RoyalRayEntry],
+    b_royal_rays: &[RoyalRayEntry],
     w_ring_covered: bool,
     b_ring_covered: bool,
     pieces: &[(i64, i64, Piece)],
@@ -3264,6 +3269,39 @@ fn evaluate_king_shelter(
 
     let mut total_ray_penalty: i32 = 0;
     let mut tied_defender_penalty: i32 = 0;
+    let mut pin_penalty: i32 = 0;
+
+    // A friendly first blocker is only PINNED if an enemy slider of the matching
+    // kind stands behind it; the tied-defender term never checks that.
+    let idx = &game.spatial_indices;
+    let pinned_cost = |bx: i64, by: i64, dx: i64, dy: i64, val: i32, bpt: PieceType| -> i32 {
+        let behind = if dx == 0 {
+            idx.cols.get(&bx).and_then(|l| l.find_nearest(by, dy)).map(|(_, pk)| pk)
+        } else if dy == 0 {
+            idx.rows.get(&by).and_then(|l| l.find_nearest(bx, dx)).map(|(_, pk)| pk)
+        } else if dx == dy {
+            idx.diag1.get(&(bx - by)).and_then(|l| l.find_nearest(bx, dx)).map(|(_, pk)| pk)
+        } else {
+            idx.diag2.get(&(bx + by)).and_then(|l| l.find_nearest(bx, dx)).map(|(_, pk)| pk)
+        };
+        let Some(packed) = behind else {
+            return 0;
+        };
+        let pinner = Piece::from_packed(packed);
+        let diagonal = dx != 0 && dy != 0;
+        let mask = if diagonal {
+            crate::attacks::DIAG_MASK
+        } else {
+            crate::attacks::ORTHO_MASK
+        };
+        if pinner.color() == color || !crate::attacks::matches_mask(pinner.piece_type(), mask) {
+            return 0;
+        }
+        // A piece that slides along the pin line keeps most of its job; anything
+        // else is frozen, so the cost scales with what it can no longer do.
+        let cost = pin_opportunity_cost() * val / tied_defender_ref_value();
+        if crate::attacks::matches_mask(bpt, mask) { cost / 3 } else { cost }
+    };
 
     let blocker_reduction_pct = |v: i32, d: i32| {
         // Continuous linear: 80% at v=100, 60% at v=300, 40% at v=500, 20% at v=700, 0% at v>=900
@@ -3312,6 +3350,11 @@ fn evaluate_king_shelter(
             } else if c == color {
                 blocker = Some((val, dist));
                 tied_defender_penalty += 10 * val / tied_defender_ref_value();
+                pin_penalty += pinned_cost(
+                    king.x + dx * dist as i64,
+                    king.y + dy * dist as i64,
+                    dx, dy, val, pt,
+                );
             } else if c == PlayerColor::Neutral {
                 // Neutral pieces (Void/Obstacle)
                 // Void -> Perfect blocker (dist 1) like world border
@@ -3354,6 +3397,11 @@ fn evaluate_king_shelter(
             } else if c == color {
                 blocker = Some((val, dist));
                 tied_defender_penalty += 12 * val / tied_defender_ref_value();
+                pin_penalty += pinned_cost(
+                    king.x + dx * dist as i64,
+                    king.y + dy * dist as i64,
+                    dx, dy, val, pt,
+                );
             } else if c == PlayerColor::Neutral {
                 if pt == PieceType::Void {
                     blocker = Some((0, 1));
@@ -3387,6 +3435,7 @@ fn evaluate_king_shelter(
     };
     let mut total_danger = total_ray_penalty
         + tied_defender_penalty
+        + pin_penalty.min(pin_opportunity_cap())
         + safe_check_units(game, king, color, check_rays, pieces);
     if !has_enemy_queen_possible {
         total_danger = total_danger * 70 / 100;

@@ -240,6 +240,8 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("eg_far_slider_penalty_mult", crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT as i64, 0, 150, 2.0, 0.002, "Endgame far-slider penalty scale (%)"),
     EvalParamSpec::new("slider_threat_div", crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV as i64, 2, 40, 2.0, 0.002, "Divisor for slider-threat scoring"),
     EvalParamSpec::new("slider_threat_cap", crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP as i64, 5, 150, 2.0, 0.002, "Cap on slider-threat scoring"),
+    EvalParamSpec::new("pin_opportunity_cost", crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_COST as i64, 0, 80, 2.0, 0.002, "Cost of an absolutely pinned piece"),
+    EvalParamSpec::new("pin_opportunity_cap", crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_CAP as i64, 0, 300, 2.0, 0.002, "Cap on total pin opportunity cost"),
     EvalParamSpec::new("candidate_passer_bonus_0", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [0]"),
     EvalParamSpec::new("candidate_passer_bonus_1", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [1]"),
     EvalParamSpec::new("candidate_passer_bonus_2", crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2 as i64, 0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [2]"),
@@ -379,6 +381,8 @@ pub struct EvalParams {
     pub eg_far_slider_penalty_mult: i32,
     pub slider_threat_div: i32,
     pub slider_threat_cap: i32,
+    pub pin_opportunity_cost: i32,
+    pub pin_opportunity_cap: i32,
     pub candidate_passer_bonus_0: i32,
     pub candidate_passer_bonus_1: i32,
     pub candidate_passer_bonus_2: i32,
@@ -520,6 +524,8 @@ impl Default for EvalParams {
             eg_far_slider_penalty_mult: crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT,
             slider_threat_div: crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV,
             slider_threat_cap: crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP,
+            pin_opportunity_cost: crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_COST,
+            pin_opportunity_cap: crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_CAP,
             candidate_passer_bonus_0: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0,
             candidate_passer_bonus_1: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1,
             candidate_passer_bonus_2: crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2,
@@ -827,6 +833,8 @@ define_eval_accessor!(mg_far_slider_penalty_mult, crate::evaluation::base::DEFAU
 define_eval_accessor!(eg_far_slider_penalty_mult, crate::evaluation::base::DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT);
 define_eval_accessor!(slider_threat_div, crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_DIV);
 define_eval_accessor!(slider_threat_cap, crate::evaluation::base::DEFAULT_EVAL_SLIDER_THREAT_CAP);
+define_eval_accessor!(pin_opportunity_cost, crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_COST);
+define_eval_accessor!(pin_opportunity_cap, crate::evaluation::base::DEFAULT_EVAL_PIN_OPPORTUNITY_CAP);
 define_eval_accessor!(candidate_passer_bonus_0, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0);
 define_eval_accessor!(candidate_passer_bonus_1, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1);
 define_eval_accessor!(candidate_passer_bonus_2, crate::evaluation::base::DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2);
