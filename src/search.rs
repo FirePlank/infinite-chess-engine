@@ -5592,12 +5592,14 @@ fn quiescence(
 
         if !captures_royal_for_win && !in_check && !is_loss(best_value) && !is_recapture {
             // A slightly losing capture can still be the point of a combination, so
-            // the floor sits below zero rather than at it.
-            let see_gain = static_exchange_eval(game, m);
-            if see_gain < -37 {
-                continue;
-            }
-            if best_value + see_gain + delta_margin < alpha {
+            // the floor sits below zero rather than at it. Both tests are
+            // thresholds, so one see_ge early-outs where a full swap would not.
+            let need = (-37).max(
+                alpha
+                    .saturating_sub(best_value)
+                    .saturating_sub(delta_margin),
+            );
+            if !see_ge(game, m, need) {
                 continue;
             }
         }
