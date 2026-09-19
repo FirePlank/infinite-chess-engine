@@ -985,7 +985,9 @@ pub struct Searcher {
     pub helper_epoch: u64,
 
     // Per-ply reusable move buffers using Stack/Heap-allocated MoveList (SmallVec)
-    pub move_buffers: Vec<MoveList>,
+    /// Boxed so qsearch can take one out with an 8-byte move; swapping the
+    /// 8 KB inline SmallVec cost four memcpys on half the nodes.
+    pub move_buffers: Vec<Option<Box<MoveList>>>,
 
     // Move history stack for continuation history (move at each ply)
     pub move_history: Vec<Option<Move>>,
@@ -1074,9 +1076,9 @@ impl Searcher {
             killers.push([None, None]);
         }
 
-        let mut move_buffers: Vec<MoveList> = Vec::with_capacity(MAX_PLY);
+        let mut move_buffers: Vec<Option<Box<MoveList>>> = Vec::with_capacity(MAX_PLY);
         for _ in 0..MAX_PLY {
-            move_buffers.push(MoveList::new());
+            move_buffers.push(Some(Box::new(MoveList::new())));
         }
 
         Searcher {
@@ -5497,8 +5499,7 @@ fn quiescence(
         return best_value; // stand-pat
     }
 
-    let mut tactical_moves: MoveList = MoveList::new();
-    std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
+    let mut tactical_moves = searcher.move_buffers[ply].take().unwrap_or_default();
     tactical_moves.clear();
 
     if tactical_check {
@@ -5558,7 +5559,7 @@ fn quiescence(
         None
     };
 
-    for m in &tactical_moves {
+    for m in tactical_moves.iter() {
         // Compute essential move properties
         let captured = game.board.get_piece(m.to.x, m.to.y);
         let is_capture =
@@ -5668,7 +5669,7 @@ fn quiescence(
         searcher.pop_move_context(ply, qs_ctx);
 
         if searcher.hot.stopped {
-            std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
+            searcher.move_buffers[ply] = Some(tactical_moves);
             return best_value;
         }
 
@@ -5690,12 +5691,12 @@ fn quiescence(
         let checkmate = tactical_check;
         let no_pieces = !game.has_pieces(game.turn);
         if checkmate || no_pieces {
-            std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
+            searcher.move_buffers[ply] = Some(tactical_moves);
             return -MATE_VALUE + ply as i32;
         }
     }
 
-    std::mem::swap(&mut tactical_moves, &mut searcher.move_buffers[ply]);
+    searcher.move_buffers[ply] = Some(tactical_moves);
 
     if !is_decisive(best_value) && best_value > beta {
         best_value = (best_value + beta) / 2;
