@@ -1462,50 +1462,39 @@ pub fn is_square_attacked(
         }
     }
 
-    // Slider check using spatial indices (O(log n) per direction)
-    #[inline(always)]
-    fn check_slider_ray(
-        indices: &SpatialIndices,
-        target: &Coordinate,
-        dx: i64,
-        dy: i64,
-        attacker_color: PlayerColor,
-        type_mask: PieceTypeMask,
-    ) -> bool {
-        let line_vec = if dx == 0 {
-            indices.cols.get(&target.x)
-        } else if dy == 0 {
-            indices.rows.get(&target.y)
-        } else if dx == dy {
-            indices.diag1.get(&(target.x - target.y))
-        } else {
-            indices.diag2.get(&(target.x + target.y))
-        };
-
-        if let Some(vec) = line_vec {
-            let val = if dx == 0 { target.y } else { target.x };
-            let step_dir = if dx == 0 { dy } else { dx };
-
-            if let Some((_, packed)) = vec.find_nearest(val, step_dir) {
-                let piece = Piece::from_packed(packed);
-                if piece.color() == attacker_color && matches_mask(piece.piece_type(), type_mask) {
-                    return true;
-                }
+    // One scan per line answers both of its directions; this is the most-called
+    // function in the engine and it used to hash each line twice.
+    let hits = |end: LineEnd, mask: PieceTypeMask| -> bool {
+        match end {
+            Some((_, packed)) => {
+                let p = Piece::from_packed(packed);
+                p.color() == attacker_color && matches_mask(p.piece_type(), mask)
             }
+            None => false,
         }
-        false
-    }
+    };
 
-    // Orthogonal sliders
-    for &(dx, dy) in &ORTHO_DIRS {
-        if check_slider_ray(indices, target, dx, dy, attacker_color, ORTHO_MASK) {
+    if let Some(l) = indices.rows.get(&target.y) {
+        let (f, b) = l.neighbors(target.x);
+        if hits(f, ORTHO_MASK) || hits(b, ORTHO_MASK) {
             return true;
         }
     }
-
-    // Diagonal sliders
-    for &(dx, dy) in &DIAG_DIRS {
-        if check_slider_ray(indices, target, dx, dy, attacker_color, DIAG_MASK) {
+    if let Some(l) = indices.cols.get(&target.x) {
+        let (f, b) = l.neighbors(target.y);
+        if hits(f, ORTHO_MASK) || hits(b, ORTHO_MASK) {
+            return true;
+        }
+    }
+    if let Some(l) = indices.diag1.get(&(target.x - target.y)) {
+        let (f, b) = l.neighbors(target.x);
+        if hits(f, DIAG_MASK) || hits(b, DIAG_MASK) {
+            return true;
+        }
+    }
+    if let Some(l) = indices.diag2.get(&(target.x + target.y)) {
+        let (f, b) = l.neighbors(target.x);
+        if hits(f, DIAG_MASK) || hits(b, DIAG_MASK) {
             return true;
         }
     }
