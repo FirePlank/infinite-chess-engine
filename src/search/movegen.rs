@@ -61,6 +61,28 @@ struct ScoredMove {
 /// (idx, prev_cap, prev_ic, prev_piece, prev_to_h)
 type ContHistoryIndex = (usize, usize, usize, usize, usize);
 
+// Scored-move buffers returned on drop: the picker is built once per interior
+// node, and a fresh Vec there is a malloc/free per node.
+thread_local! {
+    static PICKER_VECS: std::cell::RefCell<Vec<Vec<ScoredMove>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Drop for StagedMoveGen {
+    fn drop(&mut self) {
+        let mut v = std::mem::take(&mut self.moves);
+        if v.capacity() > 0 {
+            v.clear();
+            PICKER_VECS.with(|p| {
+                let mut p = p.borrow_mut();
+                if p.len() < 64 {
+                    p.push(v);
+                }
+            });
+        }
+    }
+}
+
 /// Staged move generator
 pub struct StagedMoveGen {
     stage: MoveStage,
@@ -229,7 +251,9 @@ impl StagedMoveGen {
         Self {
             stage,
             tt_move,
-            moves: Vec::with_capacity(64),
+            moves: PICKER_VECS
+                .with(|p| p.borrow_mut().pop())
+                .unwrap_or_else(|| Vec::with_capacity(64)),
             cur: 0,
             end_bad_captures: 0,
             end_bad_quiets: 0,
