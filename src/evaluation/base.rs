@@ -783,6 +783,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // Stores: (distance, piece_value, piece_color, piece_type)
     let mut w_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
     let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    // Shelter is per-royal: the merged arrays below answer "is any royal exposed
+    // along this line", which is a different question.
+    type RoyalRays = ([(i32, i32, PlayerColor, PieceType); 8], bool);
+    let mut w_royal_rays: SmallVec<[RoyalRays; 1]> = SmallVec::new();
+    let mut b_royal_rays: SmallVec<[RoyalRays; 1]> = SmallVec::new();
 
     let mut w_king_ring_covered = false;
     let mut b_king_ring_covered = false;
@@ -1369,6 +1374,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     w_king_rays[i] = r[i];
                                 }
                             }
+                            w_royal_rays.push((r, ring));
                             w_king_ring_covered |= ring;
                         }
                         for &bk in black_royals {
@@ -1383,6 +1389,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     b_king_rays[i] = r[i];
                                 }
                             }
+                            b_royal_rays.push((r, ring));
                             b_king_ring_covered |= ring;
                         }
 
@@ -1613,6 +1620,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             black_pawns,
                             &w_king_rays,
                             &b_king_rays,
+                            &w_royal_rays,
+                            &b_royal_rays,
                             w_king_ring_covered,
                             b_king_ring_covered,
                             style,
@@ -2362,6 +2371,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     black_pawns: &[(i64, i64)],
     w_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
     b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    w_royal_rays: &[([(i32, i32, PlayerColor, PieceType); 8], bool)],
+    b_royal_rays: &[([(i32, i32, PlayerColor, PieceType); 8], bool)],
     w_ring_covered: bool,
     b_ring_covered: bool,
     style: EvalStyle,
@@ -2372,7 +2383,10 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     let mut b_attack: i32 = 0;
 
     // Defense penalty (Shelter)
-    for &wk in white_royals {
+    for (i, &wk) in white_royals.iter().enumerate() {
+        let (rays, ring) = w_royal_rays
+            .get(i)
+            .map_or((w_king_rays, w_ring_covered), |(r, c)| (r, *c));
         w_safety += evaluate_king_shelter(
             game,
             &wk,
@@ -2381,11 +2395,14 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             metrics.urgency.0,
             metrics.has_enemy_queen.0,
             white_pawns,
-            w_king_rays,
-            w_ring_covered,
+            rays,
+            ring,
         );
     }
-    for &bk in black_royals {
+    for (i, &bk) in black_royals.iter().enumerate() {
+        let (rays, ring) = b_royal_rays
+            .get(i)
+            .map_or((b_king_rays, b_ring_covered), |(r, c)| (r, *c));
         b_safety += evaluate_king_shelter(
             game,
             &bk,
@@ -2394,8 +2411,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             metrics.urgency.1,
             metrics.has_enemy_queen.1,
             black_pawns,
-            b_king_rays,
-            b_ring_covered,
+            rays,
+            ring,
         );
     }
 
