@@ -3866,10 +3866,10 @@ impl GameState {
         // border token must reset it, not silently inherit the previous position's
         // border — absence has to mean unbounded, same as every other explicit field.
         crate::moves::set_world_bounds(
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
+            -crate::moves::PLAY_BORDER_CAP,
+            crate::moves::PLAY_BORDER_CAP,
+            -crate::moves::PLAY_BORDER_CAP,
+            crate::moves::PLAY_BORDER_CAP,
         );
 
         let mut content = position_icn.trim();
@@ -4568,10 +4568,10 @@ mod tests {
     /// Helper to reset world bounds to defaults
     fn reset_world_bounds() {
         crate::moves::set_world_bounds(
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
-            -1_000_000_000_000_000,
-            1_000_000_000_000_000,
+            -crate::moves::PLAY_BORDER_CAP,
+            crate::moves::PLAY_BORDER_CAP,
+            -crate::moves::PLAY_BORDER_CAP,
+            crate::moves::PLAY_BORDER_CAP,
         );
     }
 

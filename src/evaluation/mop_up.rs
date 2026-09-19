@@ -577,8 +577,10 @@ fn bounded_lone_king_mop_up(
     let ey = enemy_king.y;
 
     // push_to_edge: the closer the bare king is to an edge/corner, the better.
-    let ed_x_raw = (ex - min_x).min(max_x - ex).max(0);
-    let ed_y_raw = (ey - min_y).min(max_y - ey).max(0);
+    // Saturating: at the real play border these differences exceed i64, and a
+    // wrapped negative clamps to 0, reading a king in open space as cornered.
+    let ed_x_raw = ex.saturating_sub(min_x).min(max_x.saturating_sub(ex)).max(0);
+    let ed_y_raw = ey.saturating_sub(min_y).min(max_y.saturating_sub(ey)).max(0);
     let ed_x = ed_x_raw.min(EDGE_DIST_CAP);
     let ed_y = ed_y_raw.min(EDGE_DIST_CAP);
     let mut bonus = EDGE_CORNER_BONUS - ((ed_x * ed_x + ed_y * ed_y) as i32) * EDGE_FALLOFF;

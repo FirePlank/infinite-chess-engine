@@ -67,10 +67,15 @@ pub struct MoveGenContext<'a> {
 // World border for infinite chess.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-static COORD_MIN_X: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
-static COORD_MAX_X: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
-static COORD_MIN_Y: AtomicI64 = AtomicI64::new(-1_000_000_000_000_000);
-static COORD_MAX_Y: AtomicI64 = AtomicI64::new(1_000_000_000_000_000);
+/// The border every engine game on the site is played inside: infinitechess.org's
+/// `PLAY_BORDER.cap`. Matching it here means our tests exercise the same
+/// saturating arithmetic real games do.
+pub const PLAY_BORDER_CAP: i64 = i64::MAX - 1000;
+
+static COORD_MIN_X: AtomicI64 = AtomicI64::new(-PLAY_BORDER_CAP);
+static COORD_MAX_X: AtomicI64 = AtomicI64::new(PLAY_BORDER_CAP);
+static COORD_MIN_Y: AtomicI64 = AtomicI64::new(-PLAY_BORDER_CAP);
+static COORD_MAX_Y: AtomicI64 = AtomicI64::new(PLAY_BORDER_CAP);
 
 struct CrossRayContext<'a> {
     board: &'a Board,
@@ -2387,39 +2392,35 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
 
     const MAX_INF_DISTANCE: i64 = 256;
 
-    if dir_x == 0 {
-        let raw = if dir_y > 0 {
-            max_y - from.y
+    // Saturating: at the real play border these differences exceed i64 for any
+    // piece past +/-1000, and a wrapped negative reads as "no room", silently
+    // deleting every move along the ray. Far escapes land out at +/-4032.
+    let room_x = |dir: i64| -> i64 {
+        if dir > 0 {
+            max_x.saturating_sub(from.x)
         } else {
-            from.y - min_y
-        };
-        let limit = raw.min(MAX_INF_DISTANCE);
-        if limit > 0 { Some(limit) } else { None }
+            from.x.saturating_sub(min_x)
+        }
+    };
+    let room_y = |dir: i64| -> i64 {
+        if dir > 0 {
+            max_y.saturating_sub(from.y)
+        } else {
+            from.y.saturating_sub(min_y)
+        }
+    };
+
+    let raw = if dir_x == 0 {
+        room_y(dir_y)
     } else if dir_y == 0 {
-        let raw = if dir_x > 0 {
-            max_x - from.x
-        } else {
-            from.x - min_x
-        };
-        let limit = raw.min(MAX_INF_DISTANCE);
-        if limit > 0 { Some(limit) } else { None }
+        room_x(dir_x)
     } else if dir_x.abs() == dir_y.abs() {
-        let raw_x = if dir_x > 0 {
-            max_x - from.x
-        } else {
-            from.x - min_x
-        };
-        let raw_y = if dir_y > 0 {
-            max_y - from.y
-        } else {
-            from.y - min_y
-        };
-        let raw = raw_x.min(raw_y);
-        let limit = raw.min(MAX_INF_DISTANCE);
-        if limit > 0 { Some(limit) } else { None }
+        room_x(dir_x).min(room_y(dir_y))
     } else {
-        None
-    }
+        return None;
+    };
+    let limit = raw.min(MAX_INF_DISTANCE);
+    if limit > 0 { Some(limit) } else { None }
 }
 
 /// Clear room a ray needs before a slider gets its one far escape move. Bounded

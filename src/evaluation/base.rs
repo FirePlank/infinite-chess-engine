@@ -4628,6 +4628,33 @@ mod tests {
         assert_eq!(near, far, "remote bounds must not change the geometry context");
     }
 
+    /// Two encodings of "effectively unbounded" must generate the same moves. At
+    /// the real play border, `from.y - min_y` overflows for any piece past the
+    /// border's headroom and the wrapped negative deleted every move along that
+    /// ray. The engine's own far escape parks pieces out at +/-4032, so this fired
+    /// in ordinary games.
+    #[test]
+    fn far_piece_generates_the_same_moves_under_either_remote_border() {
+        const CAP: i64 = i64::MAX - 1000;
+        const SMALL: i64 = 1_000_000_000_000_000;
+        let icn = "w (8;q|1;q) K5,1|Q4055,4063|k5,18";
+        let mut lists = Vec::new();
+        for b in [SMALL, CAP] {
+            let mut g = GameState::new();
+            g.setup_position_from_icn(icn);
+            crate::moves::set_world_bounds(-b, b, -b, b);
+            crate::moves::set_slider_cache_bypass(true);
+            let ml = g.get_pseudo_legal_moves();
+            crate::moves::set_slider_cache_bypass(false);
+            lists.push(ml.len());
+        }
+        crate::moves::set_world_bounds(-SMALL, SMALL, -SMALL, SMALL);
+        assert_eq!(
+            lists[0], lists[1],
+            "a remote border must not delete a far piece's rays: {lists:?}"
+        );
+    }
+
     /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an
     /// absolute board position rather than one derived from the pieces -- an 8x8
     /// assumption that also fires arbitrarily once play drifts from the origin.
