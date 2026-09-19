@@ -1559,11 +1559,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Sliders lose value only where rays are genuinely open;
                         // leapers lose their jump immunity only to a permanent Void.
-                        let (slider_geometry_ctx, leaper_geometry_ctx) = {
+                        let (slider_geometry_ctx, leaper_geometry_ctx) = (|| {
                             let (bmin_x, bmax_x, bmin_y, bmax_y) =
                                 crate::moves::get_coord_bounds();
                             let world_size = (bmax_x.saturating_sub(bmin_x))
                                 .max(bmax_y.saturating_sub(bmin_y));
+                            // Both products below overflow on a world that saturates i64,
+                            // and the wrap turned an infinite board into an 8x8 one.
+                            if world_size >= 30 {
+                                return (0, 0);
+                            }
                             // 100 on 8x8-class boards, 0 once the world exceeds 30.
                             let size_ctx = ((30 - world_size) * 100 / 20).clamp(0, 100) as i32;
                             let total_squares = (bmax_x - bmin_x + 1) * (bmax_y - bmin_y + 1);
@@ -1585,7 +1590,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 size_ctx * slider_openness / 100,
                                 size_ctx * leaper_openness / 100,
                             )
-                        };
+                        })();
 
                         score += evaluate_pieces_processed(
                             game,
@@ -4599,6 +4604,28 @@ mod tests {
                 white_safe_check_units(&icn)
             );
         }
+    }
+
+    /// Two encodings of "effectively unbounded" must score the same. At i64::MAX
+    /// the size product wrapped to 3100, so size_ctx read 100 and an infinite
+    /// board got the confined-board slider/leaper geometry. Asymmetric material
+    /// is required: equal armies cancel the term and hide it.
+    #[test]
+    fn remote_bounds_do_not_turn_on_confined_geometry() {
+        let icn = "w (8;q|1;q) K5,1|R1,1|N2,1|B3,1|k5,8|r1,8|n2,8|b3,8|q4,8";
+        let mut a = GameState::new();
+        a.setup_position_from_icn(icn);
+        crate::moves::set_world_bounds(-1_000_000_000_000_000, 1_000_000_000_000_000, -1_000_000_000_000_000, 1_000_000_000_000_000);
+        let near = evaluate(&a);
+
+        let mut b = GameState::new();
+        b.setup_position_from_icn(icn);
+        let huge = i64::MAX / 2;
+        crate::moves::set_world_bounds(-huge, huge, -huge, huge);
+        let far = evaluate(&b);
+
+        crate::moves::set_world_bounds(-1_000_000_000_000_000, 1_000_000_000_000_000, -1_000_000_000_000_000, 1_000_000_000_000_000);
+        assert_eq!(near, far, "remote bounds must not change the geometry context");
     }
 
     /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an

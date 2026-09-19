@@ -119,6 +119,7 @@ own — the batch size is just the cap for the undecided case.
 
 | Scope | Initial `--max-games` | Follow-up (`--resume`, if still undecided) |
 |-------|----------------------|--------------------------------------------|
+| Single variant | 1000 | +1000 |
 | Scoped (few variants) | 1500 | +1500 |
 | Whole engine (`site`) | 2500 | +2500 |
 
