@@ -399,6 +399,10 @@ pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5: i32 = 238;
 /// Nearest piece along each of the king's 8 rays, plus whether the ring is covered.
 /// Index map matches the per-piece form it replaces: 0=NE 1=SE 2=NW 3=SW 4=E 5=W 6=N 7=S.
 /// One index lookup per line replaces a scan of every piece on the board.
+/// Royals within this Chebyshev distance stand behind the same cover. Measured
+/// against the variants: paired kings start 1 apart, maze kings 26.
+const SHELTER_SHARE_DIST: i64 = 2;
+
 fn king_rays_from_indices(
     indices: &crate::moves::SpatialIndices,
     kx: i64,
@@ -2382,6 +2386,16 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     let mut w_attack: i32 = 0;
     let mut b_attack: i32 = 0;
 
+    // Royals close enough to stand behind the same cover share it, so their
+    // shelter is averaged; distant ones hold independent posts and still sum.
+    let share_count = |royals: &[Coordinate], k: &Coordinate| -> i32 {
+        royals
+            .iter()
+            .filter(|r| (r.x - k.x).abs().max((r.y - k.y).abs()) <= SHELTER_SHARE_DIST)
+            .count()
+            .max(1) as i32
+    };
+
     // Defense penalty (Shelter)
     for (i, &wk) in white_royals.iter().enumerate() {
         let (rays, ring) = w_royal_rays
@@ -2397,7 +2411,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             white_pawns,
             rays,
             ring,
-        );
+        ) / share_count(white_royals, &wk);
     }
     for (i, &bk) in black_royals.iter().enumerate() {
         let (rays, ring) = b_royal_rays
@@ -2413,7 +2427,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
             black_pawns,
             rays,
             ring,
-        );
+        ) / share_count(black_royals, &bk);
     }
 
     // Attack bonuses (using counts)
