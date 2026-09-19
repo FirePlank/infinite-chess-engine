@@ -106,6 +106,10 @@ pub struct StagedMoveGen {
     prev_to_hash: usize,
 
     // Killers (scored in score_quiet, not separate stages)
+    /// Last (square, attacked) answers for this node. Generation groups moves by
+    /// piece, so one queen's 30 quiets asked the same question 30 times.
+    memo_from: std::cell::Cell<Option<(i64, i64, bool)>>,
+    memo_victim: std::cell::Cell<Option<(i64, i64, bool)>>,
     killer1: Option<Move>,
     killer2: Option<Move>,
 
@@ -264,6 +268,8 @@ impl StagedMoveGen {
             threshold,
             prev_from_hash,
             prev_to_hash,
+            memo_from: std::cell::Cell::new(None),
+            memo_victim: std::cell::Cell::new(None),
             killer1,
             killer2,
             skip_quiets: false,
@@ -730,12 +736,7 @@ impl StagedMoveGen {
                 let mut q = best_vv * 6;
                 // Undefended victim: no piece of the victim's color covers its square.
                 if let Some(sq) = best_sq
-                    && !crate::moves::is_square_attacked(
-                        &game.board,
-                        &sq,
-                        m.piece.color().opponent(),
-                        &game.spatial_indices,
-                    )
+                    && !self.square_attacked_memo(game, &sq, &self.memo_victim, m.piece.color())
                 {
                     q *= 2;
                 }
@@ -746,12 +747,7 @@ impl StagedMoveGen {
             // it early or LMR and LMP bury the defensive resource.
             let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
             if mover_val >= 250
-                && crate::moves::is_square_attacked(
-                    &game.board,
-                    &m.from,
-                    m.piece.color().opponent(),
-                    &game.spatial_indices,
-                )
+                && self.square_attacked_memo(game, &m.from, &self.memo_from, m.piece.color())
                 && !crate::moves::is_square_attacked(
                     &game.board,
                     &m.to,
@@ -764,6 +760,32 @@ impl StagedMoveGen {
         }
 
         score
+    }
+
+    /// `is_square_attacked` against a one-entry memo. The picker scores a single
+    /// position, so a repeated square always has the same answer.
+    #[inline]
+    fn square_attacked_memo(
+        &self,
+        game: &GameState,
+        sq: &crate::board::Coordinate,
+        memo: &std::cell::Cell<Option<(i64, i64, bool)>>,
+        mover: PlayerColor,
+    ) -> bool {
+        if let Some((x, y, v)) = memo.get()
+            && x == sq.x
+            && y == sq.y
+        {
+            return v;
+        }
+        let v = crate::moves::is_square_attacked(
+            &game.board,
+            sq,
+            mover.opponent(),
+            &game.spatial_indices,
+        );
+        memo.set(Some((sq.x, sq.y, v)));
+        v
     }
 
     /// Score evasion move
