@@ -3040,6 +3040,25 @@ fn safe_check_units(
             }
         }
     };
+    let knight_step = |dx: i64, dy: i64| -> bool {
+        let (a, b) = (dx.abs(), dy.abs());
+        (a == 1 && b == 2) || (a == 2 && b == 1)
+    };
+    // A compound reaches the square with one component and checks from it with
+    // another: an archbishop slides to a knight-check square the bishop half can
+    // never occupy, since king and bishop sit on opposite colours.
+    let reaches = |pt: PieceType, px: i64, py: i64, sx: i64, sy: i64| -> bool {
+        let (dx, dy) = (sx - px, sy - py);
+        if matches_mask(pt, KNIGHT_MASK)
+            && knight_step(dx, dy)
+            && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+        {
+            return true;
+        }
+        let lines = (matches_mask(pt, ORTHO_MASK) && (dx == 0 || dy == 0))
+            || (matches_mask(pt, DIAG_MASK) && dx.abs() == dy.abs());
+        lines && slides_to(px, py, sx, sy)
+    };
     let safe = |sx: i64, sy: i64| -> bool {
         (min_x..=max_x).contains(&sx)
             && (min_y..=max_y).contains(&sy)
@@ -3099,7 +3118,7 @@ fn safe_check_units(
                     && !set.is_full()
                     && !set.contains(&(sx, sy))
                     && king_sees(sx, sy)
-                    && slides_to(px, py, sx, sy)
+                    && reaches(pt, px, py, sx, sy)
                     && safe(sx, sy)
                 {
                     set.push((sx, sy));
@@ -3107,14 +3126,13 @@ fn safe_check_units(
             }
         }
 
-        if matches_mask(pt, KNIGHT_MASK) && (px - kx).abs() <= 4 && (py - ky).abs() <= 4 {
+        let leaps_in = (px - kx).abs() <= 4 && (py - ky).abs() <= 4;
+        if matches_mask(pt, KNIGHT_MASK) && (leaps_in || ortho || diag) {
             for &(ox, oy) in &KNIGHT_OFFSETS {
                 let (sx, sy) = (kx + ox, ky + oy);
-                let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
-                if ((ddx == 1 && ddy == 2) || (ddx == 2 && ddy == 1))
-                    && !knight.is_full()
+                if !knight.is_full()
                     && !knight.contains(&(sx, sy))
-                    && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+                    && reaches(pt, px, py, sx, sy)
                     && safe(sx, sy)
                 {
                     knight.push((sx, sy));
@@ -4470,6 +4488,25 @@ mod tests {
         assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|n4,4|P4,2|P6,2"), 80);
         // A far queen crosses the king's rank, file and diagonal at many open squares.
         assert_eq!(white_safe_check_units("w (8;q|1;q) K0,0|k0,50|q7,20"), 70);
+    }
+
+    /// A compound must be allowed to reach a check square with one of its
+    /// movement modes and check with another. The archbishop slides (4,5)->(1,2)
+    /// and checks as a knight; the bishop half can never stand on a knight-check
+    /// square here, because king and archbishop sit on opposite colours.
+    #[test]
+    fn compound_reaches_a_check_square_with_either_movement_mode() {
+        let slide_to_knight_check = white_safe_check_units("w (8;q|1;q) K0,0|k0,50|ar4,5");
+        assert!(
+            slide_to_knight_check > 0,
+            "archbishop slide-to-knight-check must be counted, got {slide_to_knight_check}"
+        );
+        // A chancellor leaps to a square from which the rook half checks.
+        let leap_to_slider_check = white_safe_check_units("w (8;q|1;q) K0,0|k0,50|ch3,1");
+        assert!(
+            leap_to_slider_check > 0,
+            "chancellor leap-to-rook-check must be counted, got {leap_to_slider_check}"
+        );
     }
 
     /// A colour mirror must evaluate to exactly 0. Any gap means a term reads an
