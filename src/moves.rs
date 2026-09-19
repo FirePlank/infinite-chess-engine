@@ -2628,6 +2628,24 @@ fn is_critical_target(
     })
 }
 
+/// Steps along a direction component to cover `num`, or None if it does not land
+/// exactly or runs the wrong way. Slider and rider components are only ever +-1 or
+/// +-2, so the division the general form needs is a shift.
+#[inline(always)]
+fn ray_steps(num: i64, dir: i64) -> Option<i64> {
+    if num.signum() != dir.signum() {
+        return None;
+    }
+    match dir {
+        1 => Some(num),
+        -1 => Some(-num),
+        2 => (num & 1 == 0).then_some(num >> 1),
+        -2 => (num & 1 == 0).then_some(-(num >> 1)),
+        0 => None,
+        _ => (num % dir == 0).then_some(num / dir),
+    }
+}
+
 /// Find cross-ray attack targets for sliders - optimized for infinite chess.
 #[inline]
 fn find_cross_ray_targets_into(
@@ -2707,9 +2725,10 @@ fn find_cross_ray_targets_into(
             // Vertical cross: S.x = px
             if dir_x != 0 {
                 let num = px - from.x;
-                if num.signum() == dir_x.signum() && num % dir_x == 0 {
-                    let d = num / dir_x;
-                    if d > 0 && d <= max_dist {
+                if let Some(d) = ray_steps(num, dir_x)
+                    && d > 0
+                    && d <= max_dist
+                {
                         let sy = from.y + d * dir_y;
                         if py != sy
                             && let Some((_nearest_y, _)) = indices
@@ -2771,15 +2790,15 @@ fn find_cross_ray_targets_into(
                             }
                         }
                     }
-                }
             }
 
             // Horizontal cross: S.y = py
             if dir_y != 0 {
                 let num = py - from.y;
-                if num.signum() == dir_y.signum() && num % dir_y == 0 {
-                    let d = num / dir_y;
-                    if d > 0 && d <= max_dist {
+                if let Some(d) = ray_steps(num, dir_y)
+                    && d > 0
+                    && d <= max_dist
+                {
                         let sx = from.x + d * dir_x;
                         if px != sx
                             && let Some((_nearest_x, _)) = indices
@@ -2838,7 +2857,6 @@ fn find_cross_ray_targets_into(
                             }
                         }
                     }
-                }
             }
         }
 
