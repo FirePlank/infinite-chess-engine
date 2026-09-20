@@ -3018,13 +3018,29 @@ fn safe_check_units(
     // Finite leapers, scored with the knight's units. King-steps are absent on
     // purpose: a royal cannot check from an adjacent square, and a guard's would
     // stand next to the king, so safe() discards it anyway.
-    const LEAPERS: &[(crate::attacks::PieceTypeMask, &[(i64, i64)])] = &[
-        (KNIGHT_MASK, &KNIGHT_OFFSETS),
-        (CAMEL_MASK, &CAMEL_OFFSETS),
-        (GIRAFFE_MASK, &GIRAFFE_OFFSETS),
-        (ZEBRA_MASK, &ZEBRA_OFFSETS),
-        (HAWK_MASK, &HAWK_OFFSETS),
+    // `span` is the offsets' max axis reach and `steps` their distinct |dx|,|dy|
+    // pairs, both fixed per kind: recomputing them per piece was the whole cost.
+    /// (type mask, offsets, max axis reach, distinct |dx|,|dy| steps).
+    type Leaper = (
+        crate::attacks::PieceTypeMask,
+        &'static [(i64, i64)],
+        i64,
+        &'static [(i64, i64)],
+    );
+    const LEAPERS: &[Leaper] = &[
+        (KNIGHT_MASK, &KNIGHT_OFFSETS, 2, &[(1, 2), (2, 1)]),
+        (CAMEL_MASK, &CAMEL_OFFSETS, 3, &[(1, 3), (3, 1)]),
+        (GIRAFFE_MASK, &GIRAFFE_OFFSETS, 4, &[(1, 4), (4, 1)]),
+        (ZEBRA_MASK, &ZEBRA_OFFSETS, 3, &[(2, 3), (3, 2)]),
+        (
+            HAWK_MASK,
+            &HAWK_OFFSETS,
+            3,
+            &[(2, 0), (0, 2), (3, 0), (0, 3), (2, 2), (3, 3)],
+        ),
     ];
+    const ANY_LEAPER_MASK: crate::attacks::PieceTypeMask =
+        KNIGHT_MASK | CAMEL_MASK | GIRAFFE_MASK | ZEBRA_MASK | HAWK_MASK;
     type Squares = arrayvec::ArrayVec<(i64, i64), 32>;
 
     let them = us.opponent();
@@ -3157,11 +3173,13 @@ fn safe_check_units(
 
         // Reversing a leaper's offsets from the royal gives its checking squares
         // as a finite set, whatever the coordinates.
-        for &(mask, offsets) in LEAPERS {
+        if !matches_mask(pt, ANY_LEAPER_MASK) {
+            continue;
+        }
+        for &(mask, offsets, span, steps) in LEAPERS {
             if !matches_mask(pt, mask) {
                 continue;
             }
-            let span = offsets.iter().map(|(a, b)| a.abs().max(b.abs())).max().unwrap_or(0);
             let leaps_in = (px - kx).abs() <= 2 * span && (py - ky).abs() <= 2 * span;
             if !(leaps_in || ortho || diag) {
                 continue;
@@ -3169,7 +3187,7 @@ fn safe_check_units(
             for &(ox, oy) in offsets {
                 let (sx, sy) = (kx + ox, ky + oy);
                 let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
-                let leaps_there = offsets.iter().any(|&(a, b)| (a.abs(), b.abs()) == (ddx, ddy))
+                let leaps_there = steps.contains(&(ddx, ddy))
                     && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them);
                 if !knight.is_full()
                     && !knight.contains(&(sx, sy))
