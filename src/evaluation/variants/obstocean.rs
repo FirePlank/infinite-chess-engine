@@ -639,7 +639,10 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
                                 continue;
                             }
-                            let mut bits = tile.occ_all;
+                            // Obstacles are the bulk of this board and every one of them
+                            // was decoded just to be skipped; the colour planes hold
+                            // exactly the pieces this loop keeps.
+                            let mut bits = tile.occ_white | tile.occ_black;
                             while bits != 0 {
                                 let idx = bits.trailing_zeros() as usize;
                                 bits &= bits - 1;
