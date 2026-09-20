@@ -1738,39 +1738,49 @@ pub fn is_square_attacked(
         }
     }
 
-    // Rose check - O(1) early exit if no Roses exist
-    // For attack detection, we need to find any Rose that can reach target via an unblocked spiral.
-    // We check all positions that could host a Rose and verify if any spiral reaches target unblocked.
+    // Walk forward from the real Roses instead of probing the 112 squares one could sit
+    // on: the tile type mask finds them, and ROSE_REACH turns the spiral walk into a lookup.
     if indices.has_rose[attacker_idx] {
-        // Check every possible Rose position: positions on any spiral endpoint from target
-        // A Rose at position P can attack target T if T is on one of P's spirals, unblocked.
-        // Equivalently: there exists a spiral from some P that reaches T.
-
-        // Iterate over all spiral endpoints from target (reverse direction)
-        for spiral_dirs in &ROSE_SPIRALS {
-            for spiral in spiral_dirs {
-                // Check each position along this spiral from target
-                for hop in 0..7 {
-                    let (cum_dx, cum_dy) = spiral[hop];
-                    // This is where a Rose would need to be to reach target at hop=hop
-                    let rose_x = target.x - cum_dx;
-                    let rose_y = target.y - cum_dy;
-                    if board.get_piece(rose_x, rose_y).is_some_and(|p| {
-                        p.color() == attacker_color && p.piece_type() == PieceType::Rose
-                    }) {
-                        // Found a Rose! Check if path to target is unblocked
-                        let mut blocked = false;
-                        for &(prev_dx, prev_dy) in spiral.iter().take(hop) {
-                            let check_x = target.x - cum_dx + prev_dx;
-                            let check_y = target.y - cum_dy + prev_dy;
-                            if board.is_occupied(check_x, check_y) {
-                                blocked = true;
-                                break;
-                            }
+        const ROSE_BIT: u32 = 1u32 << (PieceType::Rose as u8);
+        let white = attacker_color == PlayerColor::White;
+        for (cx, cy, tile) in board.tiles.iter() {
+            let mask = if white {
+                tile.type_mask_white
+            } else {
+                tile.type_mask_black
+            };
+            if mask & ROSE_BIT == 0 {
+                continue;
+            }
+            let mut bits = if white { tile.occ_white } else { tile.occ_black };
+            while bits != 0 {
+                let idx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if Piece::from_packed(tile.piece[idx]).piece_type() != PieceType::Rose {
+                    continue;
+                }
+                let rose_x = cx * 8 + (idx % 8) as i64;
+                let rose_y = cy * 8 + (idx / 8) as i64;
+                let dx = target.x - rose_x;
+                let dy = target.y - rose_y;
+                if dx.abs() > ROSE_SPAN || dy.abs() > ROSE_SPAN {
+                    continue;
+                }
+                let mut reach = ROSE_REACH[(dx + ROSE_SPAN) as usize][(dy + ROSE_SPAN) as usize];
+                while reach != 0 {
+                    let bit = reach.trailing_zeros() as usize;
+                    reach &= reach - 1;
+                    let spiral = &ROSE_SPIRALS[bit / 14][(bit % 14) / 7];
+                    let hop = bit % 7;
+                    let mut blocked = false;
+                    for &(prev_dx, prev_dy) in spiral.iter().take(hop) {
+                        if board.is_occupied(rose_x + prev_dx, rose_y + prev_dy) {
+                            blocked = true;
+                            break;
                         }
-                        if !blocked {
-                            return true;
-                        }
+                    }
+                    if !blocked {
+                        return true;
                     }
                 }
             }
@@ -4032,7 +4042,9 @@ const ROSE_KNIGHT_DELTAS: [(i64, i64); 8] = [
 /// Cumulative hop offsets for the 16 Rose spirals, indexed
 /// `[start_dir][rotation_dir][hop]` with rotation 0 counter-clockwise. A spiral stops
 /// at the first blocked intermediate square.
-pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
+pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = ROSE_SPIRALS_CONST;
+
+const ROSE_SPIRALS_CONST: [[[(i64, i64); 7]; 2]; 8] = {
     // Build at compile time
     let mut spirals = [[[(0i64, 0i64); 7]; 2]; 8];
     let deltas = ROSE_KNIGHT_DELTAS;
@@ -4070,6 +4082,33 @@ pub static ROSE_SPIRALS: [[[(i64, i64); 7]; 2]; 8] = {
         start += 1;
     }
     spirals
+};
+
+/// Max |cumulative offset| over 7 knight hops, so a 29x29 window covers every spiral square.
+pub const ROSE_SPAN: i64 = 14;
+
+/// For each reachable offset, a bitmask of the spirals that land there at
+/// `bit = dir * 14 + rot * 7 + hop`. Lets attack detection skip the 112-square walk.
+pub static ROSE_REACH: [[u128; 29]; 29] = {
+    let mut t = [[0u128; 29]; 29];
+    let spirals = ROSE_SPIRALS_CONST;
+    let mut dir = 0usize;
+    while dir < 8 {
+        let mut rot = 0usize;
+        while rot < 2 {
+            let mut hop = 0usize;
+            while hop < 7 {
+                let (dx, dy) = spirals[dir][rot][hop];
+                let ix = (dx + ROSE_SPAN) as usize;
+                let iy = (dy + ROSE_SPAN) as usize;
+                t[ix][iy] |= 1u128 << (dir * 14 + rot * 7 + hop);
+                hop += 1;
+            }
+            rot += 1;
+        }
+        dir += 1;
+    }
+    t
 };
 
 /// Generate rose moves directly into an output buffer.
