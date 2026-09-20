@@ -1631,23 +1631,46 @@ pub fn is_square_attacked(
     } else {
         1
     };
+    // Same inversion as the Rose scan below: find the real Knightriders through the
+    // tile type mask rather than probing 160 squares they could be sliding in from.
     if indices.has_knightrider[attacker_idx] {
-        for &(dx, dy) in &KNIGHTRIDER_DIRS {
-            let mut k = 1i64;
-            loop {
-                let x = target.x + dx * k;
-                let y = target.y + dy * k;
-                if let Some(piece) = board.get_piece(x, y) {
-                    if piece.color() == attacker_color
-                        && piece.piece_type() == PieceType::Knightrider
-                    {
-                        return true;
-                    }
-                    break;
+        const KR_BIT: u32 = 1u32 << (PieceType::Knightrider as u8);
+        let white = attacker_color == PlayerColor::White;
+        for (cx, cy, tile) in board.tiles.iter() {
+            let mask = if white {
+                tile.type_mask_white
+            } else {
+                tile.type_mask_black
+            };
+            if mask & KR_BIT == 0 {
+                continue;
+            }
+            let mut bits = if white { tile.occ_white } else { tile.occ_black };
+            while bits != 0 {
+                let idx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if Piece::from_packed(tile.piece[idx]).piece_type() != PieceType::Knightrider {
+                    continue;
                 }
-                k += 1;
-                if k > 20 {
-                    break;
+                let kx = cx * 8 + (idx % 8) as i64;
+                let ky = cy * 8 + (idx / 8) as i64;
+                let dx = target.x - kx;
+                let dy = target.y - ky;
+                let (ax, ay) = (dx.abs(), dy.abs());
+                let k = if ax == 2 * ay { ay } else if ay == 2 * ax { ax } else { 0 };
+                if !(1..=20).contains(&k) {
+                    continue;
+                }
+                let (sx, sy) = (dx / k, dy / k);
+                let mut blocked = false;
+                for i in 1..k {
+                    if board.is_occupied(kx + sx * i, ky + sy * i) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if !blocked {
+                    return true;
                 }
             }
         }
