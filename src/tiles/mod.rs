@@ -572,7 +572,8 @@ impl TileTable {
                 SlotState::Occupied => {
                     if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
                         self.states[idx] = SlotState::Tombstone;
-                        self.tiles[idx].clear();
+                        // No clear() here: a non-Occupied slot is unreachable, and
+                        // get_or_create/insert_fresh zero the tile on reuse anyway.
                         self.count -= 1;
                         self.occ_mask[idx / 64] &= !(1u64 << (idx % 64));
                         // A tombstone run ending at an Empty can be freed: any probe crossing
