@@ -3657,6 +3657,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
 ) -> PawnCoreOut {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    // This result is cached under the pawn hash alone, so every input has to be a
+    // pawn: a piece blocker made a quarter of cache hits disagree with a fresh call.
+    let stop_blocked = |x: i64, y: i64| {
+        white_pawns.binary_search(&(x, y)).is_ok() || black_pawns.binary_search(&(x, y)).is_ok()
+    };
     let mut w_doubled = (0, 0);
     let mut b_doubled = (0, 0);
     let mut w_connected = (0, 0);
@@ -3726,7 +3731,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             let is_behind_right = !has_right_neighbor || white_pawns[right_idx].1 > wy;
 
             if is_behind_left && is_behind_right {
-                let stop_sq_blocked = game.board.is_occupied(wx, wy + 1);
+                let stop_sq_blocked = stop_blocked(wx, wy + 1);
                 let stop_sq_attacked = black_pawns.binary_search(&(wx - 1, wy + 2)).is_ok()
                     || black_pawns.binary_search(&(wx + 1, wy + 2)).is_ok();
 
@@ -3765,7 +3770,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             // Candidate passer: not passed, but pushing it reaches a square our side
             // defends at least as heavily as the enemy attacks, so the pawn can force
             // a passer by trading.
-            let can_advance = !game.board.is_occupied(wx, wy + 1);
+            let can_advance = !stop_blocked(wx, wy + 1);
             let push_support = white_pawns.binary_search(&(wx - 1, wy)).is_ok() as i32
                 + white_pawns.binary_search(&(wx + 1, wy)).is_ok() as i32;
             let push_threats = black_pawns.binary_search(&(wx - 1, wy + 2)).is_ok() as i32
@@ -3835,7 +3840,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             }
 
             if is_behind_left && is_behind_right {
-                let stop_sq_blocked = game.board.is_occupied(bx, by - 1);
+                let stop_sq_blocked = stop_blocked(bx, by - 1);
                 let stop_sq_attacked = white_pawns.binary_search(&(bx - 1, by - 2)).is_ok()
                     || white_pawns.binary_search(&(bx + 1, by - 2)).is_ok();
 
@@ -3868,7 +3873,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             b_passed.push((bx, by));
         } else {
             // Candidate passer at the push square (see white candidate branch).
-            let can_advance = !game.board.is_occupied(bx, by - 1);
+            let can_advance = !stop_blocked(bx, by - 1);
             let push_support = black_pawns.binary_search(&(bx - 1, by)).is_ok() as i32
                 + black_pawns.binary_search(&(bx + 1, by)).is_ok() as i32;
             let push_threats = white_pawns.binary_search(&(bx - 1, by - 2)).is_ok() as i32
