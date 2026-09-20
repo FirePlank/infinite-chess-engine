@@ -2310,6 +2310,11 @@ fn spread_gate(pawn_min_y: i64, pawn_max_y: i64) -> i32 {
 #[inline(always)]
 fn tropism_contribution(numerator: i32, d: i64, addend: i32) -> i32 {
     let denom = saturating_dist_i32(d).saturating_add(addend).max(1);
+    // Integer division is exactly zero once the divisor passes the numerator, and
+    // on an unbounded board most pieces are that far from a royal.
+    if denom > numerator.abs() {
+        return 0;
+    }
     numerator / denom
 }
 
@@ -3552,30 +3557,35 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     // cached; taper and passed-pawn scoring happen live so phase, king positions
     // and blockers are always current.
     let idx = (pawn_hash as usize) & (PAWN_CACHE_SIZE - 1);
-    let cached = PAWN_CACHE.with(|cache| {
+    // Scored inside the borrow: cloning the entry copied two passer lists per hit,
+    // and score_passed_pawns never touches this cache.
+    let hit = PAWN_CACHE.with(|cache| {
         let bucket = unsafe { &(&*cache.get())[idx] };
-        if bucket.entries[0].hash == pawn_hash {
-            Some(bucket.entries[0].clone())
+        let entry = if bucket.entries[0].hash == pawn_hash {
+            &bucket.entries[0]
         } else if bucket.entries[1].hash == pawn_hash {
-            Some(bucket.entries[1].clone())
+            &bucket.entries[1]
         } else {
-            None
-        }
+            return None;
+        };
+        Some(
+            taper(entry.mg, entry.eg)
+                + score_passed_pawns(
+                    game,
+                    phase,
+                    white_royals,
+                    black_royals,
+                    white_pawns,
+                    black_pawns,
+                    &entry.w_passed,
+                    &entry.b_passed,
+                    tracer,
+                ),
+        )
     });
 
-    if let Some(entry) = cached {
-        return taper(entry.mg, entry.eg)
-            + score_passed_pawns(
-                game,
-                phase,
-                white_royals,
-                black_royals,
-                white_pawns,
-                black_pawns,
-                &entry.w_passed,
-                &entry.b_passed,
-                tracer,
-            );
+    if let Some(v) = hit {
+        return v;
     }
 
     // Cache miss - compute pawn structure
