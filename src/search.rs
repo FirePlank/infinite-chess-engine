@@ -281,7 +281,7 @@ pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
 
 // Pawn History constants:
 // Tracks successful moves under specific pawn structures.
-pub const PAWN_HISTORY_SIZE: usize = 2048;
+pub const PAWN_HISTORY_SIZE: usize = 1024;
 pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
 
 /// [pawn_hash % SIZE][piece_type][to_hash] -> history score.
