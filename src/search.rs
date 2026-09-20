@@ -226,6 +226,17 @@ pub(crate) fn aggregate_search_nodes() -> u64 {
 /// Transposition table size in MB used when (re)creating searchers and the shared TT.
 pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
 
+/// Helper threads route every probe and store to the shared table, so their own
+/// table is pure waste: 16 wasm threads held 1 GB of it at the 64 MB wasm cap.
+#[inline]
+fn local_tt_size_mb() -> usize {
+    #[cfg(feature = "multithreading")]
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed) {
+        return 1;
+    }
+    TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Sets the TT size for future searcher/shared-TT creations, and resizes the
 /// current thread's persistent searcher's local TT immediately if one exists.
 /// An already-initialized shared TT cannot be resized; respawn the worker for that.
@@ -235,7 +246,7 @@ pub fn set_tt_size_mb(mb: usize) {
     TT_SIZE_MB.store(mb.clamp(1, 4096), std::sync::atomic::Ordering::Relaxed);
     GLOBAL_SEARCHER.with(|cell| {
         if let Some(searcher) = cell.borrow_mut().as_mut() {
-            searcher.tt = LocalTranspositionTable::new(mb);
+            searcher.tt = LocalTranspositionTable::new(local_tt_size_mb());
         }
     });
 }
@@ -1196,7 +1207,7 @@ impl Searcher {
             },
             #[cfg(not(feature = "multithreading"))]
             pawn_history: zeroed_box(),
-            tt: LocalTranspositionTable::new(TT_SIZE_MB.load(std::sync::atomic::Ordering::Relaxed)),
+            tt: LocalTranspositionTable::new(local_tt_size_mb()),
 
             #[cfg(feature = "nnue")]
             nnue_stack: {
