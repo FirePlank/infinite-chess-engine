@@ -689,7 +689,7 @@ impl StagedMoveGen {
         }
 
         if self.ply < LOW_PLY_HISTORY_SIZE {
-            let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
+            let move_hash = idx & LOW_PLY_HISTORY_MASK;
             unsafe {
                 if let Some(row) = searcher.low_ply_history.get(self.ply) {
                     let val = *row.get_unchecked(move_hash);
