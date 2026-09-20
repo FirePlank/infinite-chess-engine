@@ -3079,7 +3079,7 @@ impl GameState {
             to: Coordinate::new(to_x, to_y),
             piece,
             promotion: promotion.and_then(PieceType::parse_promotion_code),
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
 
         // Detect if this is a castling move to populate partner_coord
@@ -3102,7 +3102,7 @@ impl GameState {
                             && !partner.piece_type().is_royal()
                             && self.special_rights.contains(&partner_coord)
                         {
-                            m.partner_coord = Some(partner_coord);
+                            m.partner_x = partner_coord.x;
                         }
                     }
                 }
@@ -3383,7 +3383,8 @@ impl GameState {
         if piece.piece_type().is_royal()
             && (m.to.x - m.from.x).abs() == 2
             && m.to.y == m.from.y
-            && let Some(partner_coord) = &m.partner_coord
+            && m.partner_x != crate::moves::NO_PARTNER
+            && let partner_coord = Coordinate::new(m.partner_x, m.from.y)
             && let Some(rook) = self.board.remove_piece(&partner_coord.x, &partner_coord.y)
         {
             let dx = m.to.x - m.from.x;
@@ -3415,8 +3416,8 @@ impl GameState {
             self.spatial_indices.remove(partner_coord.x, partner_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
 
-            if self.special_rights.remove(partner_coord) {
-                undo_info.special_rights_removed.push(*partner_coord);
+            if self.special_rights.remove(&partner_coord) {
+                undo_info.special_rights_removed.push(partner_coord);
                 castling_state_dirty = true;
             }
         }
@@ -3730,7 +3731,8 @@ impl GameState {
             // never moved and the board silently diverges.
             if dx.abs() == 2 && m.to.y == m.from.y {
                 // Castling was performed. Move rook back.
-                if let Some(partner_coord) = &m.partner_coord {
+                if m.partner_x != crate::moves::NO_PARTNER {
+                    let partner_coord = Coordinate::new(m.partner_x, m.from.y);
                     let direction = if dx > 0 { 1 } else { -1 };
                     let rook_to_x = m.to.x - direction;
                     if let Some(rook) = self.board.remove_piece(&rook_to_x, &m.from.y) {
@@ -4378,7 +4380,7 @@ mod tests {
             .into_iter()
             .find(|m| m.to.x == 7 && m.to.y == 2)
             .expect("royal centaur can leap to 7,2");
-        assert!(m.partner_coord.is_none(), "a knight leap is not a castle");
+        assert!(m.partner_x == crate::moves::NO_PARTNER, "a knight leap is not a castle");
 
         let undo = game.make_move(&m);
         assert_eq!(
@@ -5055,7 +5057,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
 
         game.halfmove_clock = 10;
@@ -5073,7 +5075,7 @@ mod tests {
             to: Coordinate::new(4, 3),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
 
         game.halfmove_clock = 50;
@@ -5091,7 +5093,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
 
         game.halfmove_clock = 50;
@@ -5109,7 +5111,7 @@ mod tests {
             to: Coordinate::new(5, 6),
             piece: Piece::new(PieceType::Knight, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
 
         game.halfmove_clock = 42;
@@ -5430,7 +5432,7 @@ mod tests {
             to: Coordinate::new(6, 4),
             piece: rook,
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
         // (5,4) is off every ray from the first royal (1,1).
         assert_eq!(

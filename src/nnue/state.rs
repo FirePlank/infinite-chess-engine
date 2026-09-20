@@ -203,7 +203,8 @@ impl NnueState {
             }
 
             if (m.to.x - m.from.x).abs() > 1
-                && let Some(rook_from) = m.partner_coord
+                && m.partner_x != crate::moves::NO_PARTNER
+                && let rook_from = crate::board::Coordinate::new(m.partner_x, m.from.y)
                 && let Some(rook) = gs.board.get_piece(rook_from.x, rook_from.y)
             {
                 let _is_friendly = true; // Rook is same color as King
@@ -320,7 +321,8 @@ impl NnueState {
             // From ENEMY perspective, the Rook also moved.
             // We must update the Rook's position in the enemy accumulator too.
             if (m.to.x - m.from.x).abs() > 1
-                && let Some(rook_from) = m.partner_coord
+                && m.partner_x != crate::moves::NO_PARTNER
+                && let rook_from = crate::board::Coordinate::new(m.partner_x, m.from.y)
                 && let Some(rook) = gs.board.get_piece(rook_from.x, rook_from.y)
             {
                 // Remove Rook from old pos

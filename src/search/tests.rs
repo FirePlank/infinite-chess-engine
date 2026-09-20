@@ -333,7 +333,7 @@ fn thread_result(
             to: Coordinate::new(to.0, to.1),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: promo,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         },
         score,
         completed_depth: depth,

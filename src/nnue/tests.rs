@@ -44,7 +44,7 @@ fn test_incremental_vs_scratch() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -86,7 +86,7 @@ fn test_incremental_capture() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -126,7 +126,7 @@ fn test_incremental_king_move() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -166,7 +166,7 @@ fn test_incremental_king_move_black() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -203,7 +203,7 @@ fn test_incremental_king_capture_white() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -242,7 +242,7 @@ fn test_incremental_king_capture_black() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -322,7 +322,7 @@ fn test_incremental_en_passant() {
         to,
         piece,
         promotion: None,
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -357,7 +357,7 @@ fn test_incremental_promotion() {
         to,
         piece,
         promotion: Some(promo),
-        partner_coord: None,
+        partner_x: crate::moves::NO_PARTNER,
     };
 
     state.update_for_move(&game, m);
@@ -393,7 +393,7 @@ fn test_incremental_castling() {
         to,
         piece,
         promotion: None,
-        partner_coord: Some(rook_from),
+        partner_x: rook_from.x,
     };
 
     state.update_for_move(&game, m);

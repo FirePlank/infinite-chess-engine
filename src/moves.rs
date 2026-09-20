@@ -922,13 +922,19 @@ impl Default for SpatialIndices {
 
 /// Compact move representation - Copy-able for zero-allocation cloning in hot loops.
 /// Uses Option<PieceType> instead of Option<String> for promotion.
+/// Sentinel for `Move::partner_x` when the move is not a castle.
+pub const NO_PARTNER: i64 = i64::MIN;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Move {
     pub from: Coordinate,
     pub to: Coordinate,
     pub piece: Piece,
     pub promotion: Option<PieceType>,
-    pub partner_coord: Option<Coordinate>, // For castling: stores the rook's coordinate
+    /// Castling partner's FILE, or `NO_PARTNER`. Castling is same-rank in every
+    /// path that sets this, so the rank is always `from.y` and storing the pair
+    /// cost 24 bytes of every Move.
+    pub partner_x: i64,
 }
 
 impl Move {
@@ -938,7 +944,7 @@ impl Move {
             to,
             piece,
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         }
     }
 }
@@ -2008,7 +2014,7 @@ fn generate_castling_moves(
                         let to_x = from.x + (dir * 2);
                         let mut castling_move =
                             Move::new(*from, Coordinate::new(to_x, from.y), *piece);
-                        castling_move.partner_coord = Some(*coord);
+                        castling_move.partner_x = coord.x;
                         moves.push(castling_move);
                     }
                 }
@@ -4328,7 +4334,7 @@ fn generate_castling_moves_into(
                 {
                     let mut castling_move =
                         Move::new(*from, Coordinate::new(from.x + dir * 2, from.y), *piece);
-                    castling_move.partner_coord = Some(*coord);
+                    castling_move.partner_x = coord.x;
                     out.push(castling_move);
                 }
             }
@@ -4374,6 +4380,16 @@ pub fn generate_knightrider_moves_into(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore]
+    fn print_move_size() {
+        println!(
+            "Move={} MoveList={}",
+            std::mem::size_of::<super::Move>(),
+            std::mem::size_of::<super::MoveList>()
+        );
+    }
+
     use super::*;
     use crate::game::GameState;
     use std::sync::Mutex;
@@ -4559,7 +4575,7 @@ mod tests {
         assert_eq!(m.to.x, 3);
         assert_eq!(m.to.y, 4);
         assert!(m.promotion.is_none());
-        assert!(m.partner_coord.is_none());
+        assert!(m.partner_x == crate::moves::NO_PARTNER);
     }
 
     #[test]

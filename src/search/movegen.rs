@@ -321,7 +321,7 @@ impl StagedMoveGen {
     /// move fails pseudo-legality and is then skipped as already-tried when generation
     /// produces it. Rebuild the partner by the same nearest-eligible rule.
     fn reconstruct_castling_partner(game: &GameState, mut m: Move) -> Move {
-        if m.partner_coord.is_some() || !m.piece.piece_type().is_royal() {
+        if m.partner_x != crate::moves::NO_PARTNER || !m.piece.piece_type().is_royal() {
             return m;
         }
         let dx = m.to.x - m.from.x;
@@ -339,7 +339,7 @@ impl StagedMoveGen {
                 && !partner.piece_type().is_royal()
                 && game.special_rights.contains(&partner_coord)
             {
-                m.partner_coord = Some(partner_coord);
+                m.partner_x = partner_coord.x;
             }
         }
         m
@@ -409,9 +409,10 @@ impl StagedMoveGen {
         if piece.piece_type().is_royal() {
             let dx = m.to.x - m.from.x;
             if m.to.y == m.from.y && dx.abs() > 1 {
-                let Some(partner) = &m.partner_coord else {
+                if m.partner_x == crate::moves::NO_PARTNER {
                     return false;
-                };
+                }
+                let partner = crate::board::Coordinate::new(m.partner_x, m.from.y);
                 if !game
                     .board
                     .is_occupied_by_color(partner.x, partner.y, game.turn)
@@ -421,7 +422,7 @@ impl StagedMoveGen {
                 // Both ends need their rights, and the pair must stand at least three
                 // apart, or the king would land on or past its partner.
                 if !game.special_rights.contains(&m.from)
-                    || !game.special_rights.contains(partner)
+                    || !game.special_rights.contains(&partner)
                     || partner.y != m.from.y
                     || (partner.x - m.from.x).abs() < 3
                     || (partner.x - m.from.x).signum() != (m.to.x - m.from.x).signum()
@@ -1485,13 +1486,13 @@ mod tests {
             .find(|m| m.piece.piece_type() == PieceType::King && (m.to.x - m.from.x).abs() == 2)
             .expect("kingside castling should be legal");
         assert!(
-            castle.partner_coord.is_some(),
+            castle.partner_x != crate::moves::NO_PARTNER,
             "generated castling has a partner"
         );
 
         // Simulate the TT/killer round-trip, which drops the rook partner.
         let tt_decoded = Move {
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
             ..castle
         };
 
@@ -1503,7 +1504,7 @@ mod tests {
             if m.from == castle.from && m.to == castle.to {
                 found = true;
                 assert!(
-                    m.partner_coord.is_some(),
+                    m.partner_x != crate::moves::NO_PARTNER,
                     "emitted castling move lost its rook partner"
                 );
             }

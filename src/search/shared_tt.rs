@@ -94,7 +94,7 @@ impl TTEntry {
                     } else {
                         Some(PieceType::from_u8(pr))
                     },
-                    partner_coord: None,
+                    partner_x: crate::moves::NO_PARTNER,
                 })
             };
 
@@ -529,7 +529,7 @@ mod tests {
             to: Coordinate::new(4, 4),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
         tt.store(&TTStoreParams {
             hash,
@@ -569,7 +569,7 @@ mod tests {
             to: Coordinate::new(3, 3),
             piece: Piece::new(PieceType::Pawn, PlayerColor::White),
             promotion: None,
-            partner_coord: None,
+            partner_x: crate::moves::NO_PARTNER,
         };
         tt.store(&TTStoreParams {
             hash,
