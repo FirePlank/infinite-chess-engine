@@ -666,10 +666,8 @@ impl SpatialLine {
         } else {
             None
         };
-        let mut hi = lo;
-        while hi < len && self.coords[hi] <= from {
-            hi += 1;
-        }
+        // Coordinates are unique, so at most the one entry equal to `from` is skipped.
+        let hi = lo + (lo < len && self.coords[lo] == from) as usize;
         let fwd = if hi < len {
             Some((self.coords[hi], self.pieces[hi]))
         } else {
