@@ -4352,7 +4352,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && captured_type == Some(PieceType::Obstacle);
 
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
-        let gives_check = StagedMoveGen::move_gives_check_fast(game, &m);
+        let gives_check = movegen
+            .cached_gives_check()
+            .unwrap_or_else(|| StagedMoveGen::move_gives_check_fast(game, &m));
 
         // In-move pruning at shallow depths. A PV node is prunable once it has left
         // the previous iteration's PV; only the believed line is protected.

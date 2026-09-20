@@ -56,6 +56,9 @@ pub enum MoveStage {
 struct ScoredMove {
     m: Move,
     score: i32,
+    /// Set only where quiet scoring already computed it; negamax reuses it
+    /// instead of running a second `move_gives_check_fast` on the same move.
+    gives_check: Option<bool>,
 }
 
 /// (idx, prev_cap, prev_ic, prev_piece, prev_to_h)
@@ -93,6 +96,7 @@ pub struct StagedMoveGen {
     cur: usize,
     end_bad_captures: usize,
     end_bad_quiets: usize,
+    cached_gives_check: Option<bool>,
     end_captures: usize,
     end_generated: usize,
 
@@ -261,6 +265,7 @@ impl StagedMoveGen {
             cur: 0,
             end_bad_captures: 0,
             end_bad_quiets: 0,
+            cached_gives_check: None,
             end_captures: 0,
             end_generated: 0,
             ply,
@@ -608,7 +613,7 @@ impl StagedMoveGen {
     }
 
     /// Score quiet move using history heuristics (includes killer/countermove bonuses)
-    fn score_quiet(&self, game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
+    fn score_quiet(&self, game: &GameState, searcher: &Searcher, m: &Move) -> (i32, Option<bool>) {
         let mut score: i32 = DEFAULT_SORT_QUIET;
 
         // Killer bonus (integrated into scoring, not separate stages)
@@ -618,21 +623,21 @@ impl StagedMoveGen {
             && m.to == k1.to
             && m.promotion == k1.promotion
         {
-            return sort_killer1();
+            return (sort_killer1(), None);
         }
         if let Some(k2) = self.killer2
             && m.from == k2.from
             && m.to == k2.to
             && m.promotion == k2.promotion
         {
-            return sort_killer2();
+            return (sort_killer2(), None);
         }
 
         // A run to the far shell is a last resort, so it belongs behind every other
         // quiet: full-width searching it costs ~20% nodes, and returning here also
         // skips the attack scan below for a move that almost never attacks anything.
         if crate::moves::is_far_escape_move(m) {
-            return GOOD_QUIET_THRESHOLD - 1;
+            return (GOOD_QUIET_THRESHOLD - 1, None);
         }
 
         // Countermove bonus
@@ -685,7 +690,8 @@ impl StagedMoveGen {
             score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 
-        if Self::move_gives_check_fast(game, m) && super::see_ge(game, m, -75) {
+        let gives_check = Self::move_gives_check_fast(game, m);
+        if gives_check && super::see_ge(game, m, -75) {
             score += 16384;
         }
 
@@ -780,7 +786,7 @@ impl StagedMoveGen {
             }
         }
 
-        score
+        (score, Some(gives_check))
     }
 
     /// `is_square_attacked` against a one-entry memo. The picker scores a single
@@ -810,7 +816,12 @@ impl StagedMoveGen {
     }
 
     /// Score evasion move
-    fn score_evasion(&self, game: &GameState, searcher: &Searcher, m: &Move) -> i32 {
+    fn score_evasion(
+        &self,
+        game: &GameState,
+        searcher: &Searcher,
+        m: &Move,
+    ) -> (i32, Option<bool>) {
         if Self::is_capture(game, m) {
             // Capture: PieceValue + (1 << 28)
             let captured_val = game
@@ -818,7 +829,7 @@ impl StagedMoveGen {
                 .get_piece(m.to.x, m.to.y)
                 .map(|p| game.get_piece_value(p.piece_type(), p.color()))
                 .unwrap_or(0);
-            captured_val + (1 << 28)
+            (captured_val + (1 << 28), None)
         } else {
             // Quiet: use history
             self.score_quiet(game, searcher, m)
@@ -1034,7 +1045,11 @@ impl StagedMoveGen {
                 continue;
             }
             let score = Self::score_capture(game, searcher, &m);
-            self.moves.push(ScoredMove { m, score });
+            self.moves.push(ScoredMove {
+                m,
+                score,
+                gives_check: None,
+            });
         }
     }
 
@@ -1072,8 +1087,12 @@ impl StagedMoveGen {
             {
                 continue;
             }
-            let score = self.score_quiet(game, searcher, &m);
-            self.moves.push(ScoredMove { m, score });
+            let (score, gives_check) = self.score_quiet(game, searcher, &m);
+            self.moves.push(ScoredMove {
+                m,
+                score,
+                gives_check,
+            });
         }
     }
 
@@ -1085,13 +1104,25 @@ impl StagedMoveGen {
             if self.is_tt_move(&m) || self.is_excluded(&m) {
                 continue;
             }
-            let score = self.score_evasion(game, searcher, &m);
-            self.moves.push(ScoredMove { m, score });
+            let (score, gives_check) = self.score_evasion(game, searcher, &m);
+            self.moves.push(ScoredMove {
+                m,
+                score,
+                gives_check,
+            });
         }
     }
 
     /// Get next move using multi-stage generation
+    /// Gives-check bit for the move `next` just returned, when quiet scoring
+    /// already computed it. Valid until the next `next` call.
+    #[inline]
+    pub fn cached_gives_check(&self) -> Option<bool> {
+        self.cached_gives_check
+    }
+
     pub fn next(&mut self, game: &GameState, searcher: &Searcher) -> Option<Move> {
+        self.cached_gives_check = None;
         loop {
             match self.stage {
                 MoveStage::MainTT
@@ -1222,9 +1253,10 @@ impl StagedMoveGen {
 
                     while self.cur < self.end_generated {
                         if self.moves[self.cur].score > GOOD_QUIET_THRESHOLD {
-                            let m = self.moves[self.cur].m;
+                            let sm = self.moves[self.cur];
                             self.cur += 1;
-                            return Some(m);
+                            self.cached_gives_check = sm.gives_check;
+                            return Some(sm.m);
                         }
                         // Bad quiet - swap to the front of the quiet span for later
                         self.moves.swap(self.end_bad_quiets, self.cur);
@@ -1256,9 +1288,10 @@ impl StagedMoveGen {
                     }
 
                     if self.cur < self.end_bad_quiets {
-                        let m = self.moves[self.cur].m;
+                        let sm = self.moves[self.cur];
                         self.cur += 1;
-                        return Some(m);
+                        self.cached_gives_check = sm.gives_check;
+                        return Some(sm.m);
                     }
 
                     self.stage = MoveStage::Done;
@@ -1276,9 +1309,10 @@ impl StagedMoveGen {
 
                 MoveStage::Evasion | MoveStage::QCapture => {
                     if self.cur < self.end_generated.max(self.end_captures) {
-                        let m = self.moves[self.cur].m;
+                        let sm = self.moves[self.cur];
                         self.cur += 1;
-                        return Some(m);
+                        self.cached_gives_check = sm.gives_check;
+                        return Some(sm.m);
                     }
                     self.stage = MoveStage::Done;
                 }
@@ -1606,7 +1640,7 @@ mod tests {
 
         searcher.killers[0][0] = Some(quiet);
         let picker = StagedMoveGen::new(None, 0, 2, &searcher, &game);
-        assert_eq!(picker.score_quiet(&game, &searcher, &quiet), sort_killer1());
+        assert_eq!(picker.score_quiet(&game, &searcher, &quiet).0, sort_killer1());
 
         let mut searcher = Searcher::new(1000);
         searcher.prev_move_stack[0] = (3, 9);
@@ -1616,6 +1650,6 @@ mod tests {
             quiet.to.y as i32,
         );
         let picker = StagedMoveGen::new(None, 1, 2, &searcher, &game);
-        assert!(picker.score_quiet(&game, &searcher, &quiet) >= sort_countermove());
+        assert!(picker.score_quiet(&game, &searcher, &quiet).0 >= sort_countermove());
     }
 }
