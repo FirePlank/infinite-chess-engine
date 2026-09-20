@@ -3909,17 +3909,20 @@ fn compute_pawn_core<T: EvaluationTracer>(
 /// Scores passed pawns live (never cached): king distances, blockers and the
 /// promotion path change every move and must stay current for conversion play.
 #[allow(clippy::too_many_arguments)]
-/// Chebyshev squares an enemy piece covers per move when racing to a promotion
-/// square. `None` means a slider or rider, which crosses arbitrary distance and so
-/// is never outrun.
-fn chase_reach(pt: PieceType) -> Option<i64> {
+/// Chebyshev and Manhattan distances an enemy piece covers per move when racing to a
+/// promotion square. `None` means a slider or rider, which crosses an arbitrary
+/// distance and is never outrun.
+fn chase_reach(pt: PieceType) -> Option<(i64, i64)> {
     match pt {
-        PieceType::King | PieceType::Guard => Some(1),
-        PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => Some(2),
-        PieceType::Zebra | PieceType::Camel => Some(3),
-        PieceType::Giraffe => Some(4),
+        PieceType::King | PieceType::Guard => Some((1, 2)),
+        PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => Some((2, 3)),
+        PieceType::Camel => Some((3, 4)), // (3, 1) leaper
+        PieceType::Zebra => Some((3, 5)), // (3, 2) leaper
+        PieceType::Giraffe => Some((4, 5)), // (4, 1) leaper
+        PieceType::Hawk => Some((3, 6)), // leaps 2 or 3 spaces in any direction
+        PieceType::Rose => Some((6, 8)),
         // Pawns cannot leave their file to catch a passer on another one.
-        PieceType::Pawn | PieceType::Obstacle | PieceType::Void => Some(0),
+        PieceType::Pawn | PieceType::Obstacle | PieceType::Void => Some((0, 0)),
         // Everything else slides or rides: treat as uncatchable-by-distance.
         _ => None,
     }
@@ -3954,12 +3957,22 @@ fn passer_is_unstoppable(
         let Some(reach) = chase_reach(pc.piece_type()) else {
             return false;
         };
-        if reach == 0 {
+        if reach.0 == 0 {
             continue;
         }
-        let d = (x - promo_sq.0).abs().max((y - promo_sq.1).abs());
+
+        // Using the Chebyshev distance to check whether a piece can reach the
+        // promotion square in a certain number of moves is better for straight
+        // maneuvers, while using the Manhattan distance is better for diagonal
+        // maneuvers.
+        let dx = (x - promo_sq.0).abs();
+        let dy = (y - promo_sq.1).abs();
+        let cheb = dx.max(dy);
+        let md = dx + dy;
         // Ceiling division: moves this piece needs to reach the promotion square.
-        if (d + reach - 1) / reach <= moves_to_promo {
+        if (cheb + reach.0 - 1) / reach.0 <= moves_to_promo
+            && (md + reach.1 - 1) / reach.1 <= moves_to_promo
+        {
             return false;
         }
     }
@@ -5155,6 +5168,43 @@ mod tests {
         assert!(
             score_safe > score_unsafe,
             "Safe-to-advance passed pawn should score higher than unsafe"
+        );
+    }
+
+    #[test]
+    fn test_is_passed_pawn_unstoppable() {
+        let mut game = Box::new(GameState::new());
+
+        // Case 1: White passed pawn at (4, 5) with a black king at (2, 5)
+        let icn_1 = "w (8;q|1;q) K0,0|P4,6|k2,5";
+        game.setup_position_from_icn(icn_1);
+
+        let is_unstoppable = passer_is_unstoppable(
+            &game,
+            (4, 8),
+            2,
+            PlayerColor::Black,
+            false,
+        );
+        assert!(
+            is_unstoppable,
+            "The black king at (2, 5) cannot stop the white pawn at (4, 6) from promoting."
+        );
+
+        // Case 2: White passed pawn at (4, 6) with a black knight at (7, 5)
+        let icn_2 = "w (8;q|1;q) K0,0|k0,8|P4,6|n7,5";
+        game.setup_position_from_icn(icn_2);
+
+        let is_unstoppable = passer_is_unstoppable(
+            &game,
+            (4, 8),
+            2,
+            PlayerColor::Black,
+            false,
+        );
+        assert!(
+            !is_unstoppable,
+            "The black knight at (7, 5) can stop the white pawn at (4, 6) from promoting."
         );
     }
 
