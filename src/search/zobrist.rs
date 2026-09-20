@@ -187,99 +187,6 @@ pub fn material_key_at(piece_type: PieceType, color: PlayerColor, x: i64, y: i64
     }
 }
 
-// Secondary Zobrist keys for repetition detection (independent seed).
-// When both hash_stack and rep_hash_stack match, false positive probability ~2^-128.
-static REP_PIECE_KEYS: [[u64; NUM_COLORS]; NUM_PIECE_TYPES] = {
-    const fn splitmix64(mut x: u64) -> u64 {
-        x = x.wrapping_add(0x9e3779b97f4a7c15);
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-        x ^ (x >> 31)
-    }
-
-    let mut keys = [[0u64; NUM_COLORS]; NUM_PIECE_TYPES];
-    let mut seed = 0xFEDCBA9876543210u64; // different seed from primary
-
-    let mut i = 0;
-    while i < NUM_PIECE_TYPES {
-        let mut j = 0;
-        while j < NUM_COLORS {
-            seed = splitmix64(seed);
-            keys[i][j] = seed;
-            j += 1;
-        }
-        i += 1;
-    }
-    keys
-};
-
-pub const REP_SIDE_KEY: u64 = 0x517CC1B727220A95;
-
-const REP_EN_PASSANT_KEY_MIXER: u64 = 0x3141592653589793;
-
-const REP_PAWN_SPECIAL_RIGHT_MIXER: u64 = 0x2718281828459045;
-
-const REP_CASTLING_SPECIAL_RIGHT_MIXER: u64 = 0x9D8E7F6A5B4C3D21;
-
-const REP_CASTLING_RIGHTS_KEYS: [u64; 4] = [
-    0xA0B1C2D3E4F50607,
-    0x0817263544536271,
-    0xF1E2D3C4B5A69788,
-    0x89786756453423A1,
-];
-
-static REP_CASTLING_COMBINATIONS: [u64; 16] = {
-    let mut table = [0u64; 16];
-    let mut i = 0;
-    while i < 16 {
-        let mut h = 0u64;
-        if i & 1 != 0 {
-            h ^= REP_CASTLING_RIGHTS_KEYS[0];
-        }
-        if i & 2 != 0 {
-            h ^= REP_CASTLING_RIGHTS_KEYS[1];
-        }
-        if i & 4 != 0 {
-            h ^= REP_CASTLING_RIGHTS_KEYS[2];
-        }
-        if i & 8 != 0 {
-            h ^= REP_CASTLING_RIGHTS_KEYS[3];
-        }
-        table[i] = h;
-        i += 1;
-    }
-    table
-};
-
-/// Secondary hash for a piece at a position.
-#[inline(always)]
-pub fn rep_piece_key(piece_type: PieceType, color: PlayerColor, x: i64, y: i64) -> u64 {
-    (hash_coordinate(x, y) ^ REP_PIECE_KEYS[piece_type as usize][color as usize])
-        .wrapping_mul(0xBF58476D1CE4E5B9)
-}
-
-/// Secondary hash for en passant.
-#[inline(always)]
-pub fn rep_en_passant_key(x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ REP_EN_PASSANT_KEY_MIXER
-}
-
-/// Secondary hash for pawn double-push right.
-#[inline(always)]
-pub fn rep_pawn_special_right_key(x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ REP_PAWN_SPECIAL_RIGHT_MIXER
-}
-
-#[inline(always)]
-pub fn rep_castling_special_right_key(x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ REP_CASTLING_SPECIAL_RIGHT_MIXER
-}
-
-/// Secondary hash for castling rights from a 4-bit bitfield.
-#[inline(always)]
-pub fn rep_castling_rights_key_from_bitfield(bits: u8) -> u64 {
-    REP_CASTLING_COMBINATIONS[(bits & 0xF) as usize]
-}
 
 #[cfg(test)]
 mod tests {
@@ -353,36 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rep_piece_keys_unique() {
-        let mut keys = Vec::new();
-        for row in REP_PIECE_KEYS {
-            for key in row {
-                keys.push(key);
-            }
-        }
-        keys.sort();
-        keys.dedup();
-        assert_eq!(keys.len(), NUM_PIECE_TYPES * NUM_COLORS);
-    }
-
-    #[test]
-    fn test_rep_keys_independent_from_primary() {
-        use crate::board::PlayerColor;
-        // Verify secondary keys differ from primary keys for the same inputs
-        let pt = PieceType::Pawn;
-        assert_ne!(
-            piece_key(pt, PlayerColor::White, 3, 4),
-            rep_piece_key(pt, PlayerColor::White, 3, 4)
-        );
-        assert_ne!(en_passant_key(3, 5), rep_en_passant_key(3, 5));
-        assert_ne!(
-            castling_rights_key_from_bitfield(0b0011),
-            rep_castling_rights_key_from_bitfield(0b0011)
-        );
-        assert_ne!(SIDE_KEY, REP_SIDE_KEY);
-    }
-
-    #[test]
     fn test_piece_key_different_types() {
         use crate::board::PlayerColor;
 
@@ -401,10 +278,6 @@ mod tests {
         let a = piece_key(PieceType::Rook, w, 3, 0) ^ piece_key(PieceType::Queen, w, 4, 0);
         let b = piece_key(PieceType::Queen, w, 3, 0) ^ piece_key(PieceType::Rook, w, 4, 0);
         assert_ne!(a, b, "primary piece keys are XOR-separable");
-
-        let ra = rep_piece_key(PieceType::Rook, w, 3, 0) ^ rep_piece_key(PieceType::Queen, w, 4, 0);
-        let rb = rep_piece_key(PieceType::Queen, w, 3, 0) ^ rep_piece_key(PieceType::Rook, w, 4, 0);
-        assert_ne!(ra, rb, "secondary (rep) piece keys are XOR-separable");
     }
 
     #[test]

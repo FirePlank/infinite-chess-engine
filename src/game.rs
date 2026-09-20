@@ -151,7 +151,6 @@ pub struct UndoMove {
     pub old_en_passant: Option<EnPassantState>,
     pub old_halfmove_clock: u32,
     pub old_hash: u64,     // Hash before the move was made
-    pub old_rep_hash: u64, // Secondary hash before the move was made
     pub special_rights_removed: ArrayVec<Coordinate, 4>, // Track which special rights were removed (re-insert on undo)
     /// If this move caused a piece to leave its original starting square,
     /// we remove that coordinate from starting_squares. Store it here so
@@ -194,11 +193,7 @@ pub struct GameState {
     #[serde(skip)]
     pub hash: u64, // Incrementally maintained Zobrist hash
     #[serde(skip)]
-    pub rep_hash: u64, // Secondary hash for repetition verification
-    #[serde(skip)]
     pub hash_stack: Vec<u64>, // Position hashes for repetition detection
-    #[serde(skip)]
-    pub rep_hash_stack: Vec<u64>, // Secondary hash history
     #[serde(skip)]
     pub null_moves: u8, // Counter for null moves (for repetition detection)
     #[serde(skip)]
@@ -382,14 +377,10 @@ impl GameState {
     }
 
     #[inline]
-    fn castling_hash_pair(&self) -> (u64, u64) {
-        use crate::search::zobrist::{
-            castling_rights_key_from_bitfield, castling_special_right_key,
-            rep_castling_rights_key_from_bitfield, rep_castling_special_right_key,
-        };
+    fn castling_hash(&self) -> u64 {
+        use crate::search::zobrist::{castling_rights_key_from_bitfield, castling_special_right_key};
 
         let mut h = castling_rights_key_from_bitfield(self.effective_castling_rights);
-        let mut rh = rep_castling_rights_key_from_bitfield(self.effective_castling_rights);
 
         if self.needs_precise_castling_rights_hash() {
             for coord in &self.special_rights {
@@ -397,12 +388,11 @@ impl GameState {
                     && piece.piece_type() != PieceType::Pawn
                 {
                     h ^= castling_special_right_key(coord.x, coord.y);
-                    rh ^= rep_castling_special_right_key(coord.x, coord.y);
                 }
             }
         }
 
-        (h, rh)
+        h
     }
 }
 
@@ -428,9 +418,7 @@ impl GameState {
             variant: None,
             eval_kind: crate::evaluation::eval_kind::EvalKind::default(),
             hash: 0,
-            rep_hash: 0,
             hash_stack: Vec::with_capacity(128),
-            rep_hash_stack: Vec::with_capacity(128),
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
@@ -484,9 +472,7 @@ impl GameState {
             variant: None,
             eval_kind: crate::evaluation::eval_kind::EvalKind::default(),
             hash: 0,
-            rep_hash: 0,
             hash_stack: Vec::with_capacity(128),
-            rep_hash_stack: Vec::with_capacity(128),
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
@@ -1416,20 +1402,17 @@ impl GameState {
 
     /// Make a null move (just flip turn, for null move pruning)
     pub fn make_null_move(&mut self) {
-        use crate::search::zobrist::{REP_SIDE_KEY, SIDE_KEY, en_passant_key, rep_en_passant_key};
+        use crate::search::zobrist::{SIDE_KEY, en_passant_key};
 
         // Push hashes and update for null move
         self.hash_stack.push(self.hash);
-        self.rep_hash_stack.push(self.rep_hash);
 
         if let Some(ep) = &self.en_passant {
             self.hash ^= en_passant_key(ep.square.x, ep.square.y);
-            self.rep_hash ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
         self.en_passant = None;
 
         self.hash ^= SIDE_KEY;
-        self.rep_hash ^= REP_SIDE_KEY;
 
         // Flip turn
         self.turn = self.turn.opponent();
@@ -1446,9 +1429,6 @@ impl GameState {
         if let Some(old_hash) = self.hash_stack.pop() {
             self.hash = old_hash;
         }
-        if let Some(old_rep_hash) = self.rep_hash_stack.pop() {
-            self.rep_hash = old_rep_hash;
-        }
 
         // Flip turn back
         self.turn = self.turn.opponent();
@@ -1464,13 +1444,9 @@ impl GameState {
 
     /// Recompute the hash from scratch (slow, use sparingly)
     pub fn recompute_hash(&mut self) {
-        use crate::search::zobrist::{
-            REP_SIDE_KEY, SIDE_KEY, en_passant_key, pawn_special_right_key, piece_key,
-            rep_en_passant_key, rep_pawn_special_right_key, rep_piece_key,
-        };
+        use crate::search::zobrist::{SIDE_KEY, en_passant_key, pawn_special_right_key, piece_key};
 
         let mut h: u64 = 0;
-        let mut rh: u64 = 0;
 
         // Hash all pieces (excluding obstacles/voids for performance)
         // Every piece, neutrals included: make_move xors a captured obstacle out, so
@@ -1478,12 +1454,9 @@ impl GameState {
         // and made two boards differing only by an obstacle hash the same.
         for (x, y, piece) in self.board.iter() {
             h ^= piece_key(piece.piece_type(), piece.color(), x, y);
-            rh ^= rep_piece_key(piece.piece_type(), piece.color(), x, y);
         }
 
-        let (castle_h, castle_rh) = self.castling_hash_pair();
-        h ^= castle_h;
-        rh ^= castle_rh;
+        h ^= self.castling_hash();
 
         // Hash individual PAWN special rights (double-push rights)
         for coord in &self.special_rights {
@@ -1491,24 +1464,20 @@ impl GameState {
                 && piece.piece_type() == PieceType::Pawn
             {
                 h ^= pawn_special_right_key(coord.x, coord.y);
-                rh ^= rep_pawn_special_right_key(coord.x, coord.y);
             }
         }
 
         // Hash en passant
         if let Some(ep) = &self.en_passant {
             h ^= en_passant_key(ep.square.x, ep.square.y);
-            rh ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
 
         // Hash side to move
         if self.turn == PlayerColor::Black {
             h ^= SIDE_KEY;
-            rh ^= REP_SIDE_KEY;
         }
 
         self.hash = h;
-        self.rep_hash = rh;
     }
 
     /// Recompute pawn_hash, nonpawn_hash, and material_hash from scratch.
@@ -3127,21 +3096,19 @@ impl GameState {
 
     pub fn make_move(&mut self, m: &Move) -> UndoMove {
         use crate::search::zobrist::{
-            REP_SIDE_KEY, SIDE_KEY, en_passant_key, material_key, material_key_at, pawn_key,
-            pawn_special_right_key, piece_key, rep_en_passant_key, rep_pawn_special_right_key,
-            rep_piece_key,
+            SIDE_KEY, en_passant_key, material_key, material_key_at, pawn_key,
+            pawn_special_right_key, piece_key,
         };
 
         // Push hashes before move (for repetition detection)
         self.hash_stack.push(self.hash);
-        self.rep_hash_stack.push(self.rep_hash);
 
         let from_coord = Coordinate::new(m.from.x, m.from.y);
 
         // Snapshot the castling hash before the mover leaves the board: precise mode
         // skips empty rights-squares, so computing it after removal would never XOR
         // out the mover's own key.
-        let (old_castle_hash, old_castle_rep_hash) = self.castling_hash_pair();
+        let old_castle_hash = self.castling_hash();
 
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
         // Update spatial indices: remove moving piece from source square
@@ -3149,7 +3116,6 @@ impl GameState {
 
         // Remove piece from source
         self.hash ^= piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
-        self.rep_hash ^= rep_piece_key(piece.piece_type(), piece.color(), m.from.x, m.from.y);
 
         // Update correction hashes incrementally
         if piece.piece_type() == PieceType::Pawn {
@@ -3172,7 +3138,6 @@ impl GameState {
             old_en_passant: self.en_passant,
             old_halfmove_clock: self.halfmove_clock,
             old_hash: self.hash_stack.last().copied().unwrap_or(0),
-            old_rep_hash: self.rep_hash_stack.last().copied().unwrap_or(0),
             special_rights_removed: ArrayVec::new(),
             starting_square_restored: None,
             old_white_royals: self.white_royals.clone(),
@@ -3213,7 +3178,6 @@ impl GameState {
         if let Some(captured) = &undo_info.captured_piece {
             // Remove captured piece (XOR works for both neutral and non-neutral)
             self.hash ^= piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
-            self.rep_hash ^= rep_piece_key(captured.piece_type(), captured.color(), m.to.x, m.to.y);
 
             // Update correction hashes incrementally for captured piece
             if captured.piece_type() == PieceType::Pawn {
@@ -3304,12 +3268,6 @@ impl GameState {
                 ep.pawn_square.x,
                 ep.pawn_square.y,
             );
-            self.rep_hash ^= rep_piece_key(
-                captured_pawn.piece_type(),
-                captured_pawn.color(),
-                ep.pawn_square.x,
-                ep.pawn_square.y,
-            );
             self.spatial_indices
                 .remove(ep.pawn_square.x, ep.pawn_square.y);
             self.ep_victim_bookkeeping(captured_pawn, ep.pawn_square.x, ep.pawn_square.y, true);
@@ -3346,12 +3304,10 @@ impl GameState {
         // Remove old en passant
         if let Some(ep) = &self.en_passant {
             self.hash ^= en_passant_key(ep.square.x, ep.square.y);
-            self.rep_hash ^= rep_en_passant_key(ep.square.x, ep.square.y);
         }
 
         // (old_castle_hash pair snapshotted before the mover was removed)
         self.hash ^= old_castle_hash;
-        self.rep_hash ^= old_castle_rep_hash;
         let mut castling_state_dirty = false;
 
         // Update rights for the moving piece
@@ -3360,7 +3316,6 @@ impl GameState {
 
             if piece.piece_type() == PieceType::Pawn {
                 self.hash ^= pawn_special_right_key(m.from.x, m.from.y);
-                self.rep_hash ^= rep_pawn_special_right_key(m.from.x, m.from.y);
             } else {
                 castling_state_dirty = true;
             }
@@ -3373,7 +3328,6 @@ impl GameState {
 
             if captured.piece_type() == PieceType::Pawn {
                 self.hash ^= pawn_special_right_key(m.to.x, m.to.y);
-                self.rep_hash ^= rep_pawn_special_right_key(m.to.x, m.to.y);
             } else {
                 castling_state_dirty = true;
             }
@@ -3392,10 +3346,7 @@ impl GameState {
             let rook_to_x = m.to.x - direction;
             // Move rook in castling
             self.hash ^= piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
-            self.rep_hash ^=
-                rep_piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
-            self.rep_hash ^= rep_piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
 
             if rook.color() == PlayerColor::White {
                 self.white_nonpawn_hash ^=
@@ -3431,12 +3382,6 @@ impl GameState {
 
         // Add piece at destination
         self.hash ^= piece_key(
-            final_piece.piece_type(),
-            final_piece.color(),
-            m.to.x,
-            m.to.y,
-        );
-        self.rep_hash ^= rep_piece_key(
             final_piece.piece_type(),
             final_piece.color(),
             m.to.x,
@@ -3478,9 +3423,8 @@ impl GameState {
             self.recompute_castling_state();
         }
 
-        let (new_castle_hash, new_castle_rep_hash) = self.castling_hash_pair();
+        let new_castle_hash = self.castling_hash();
         self.hash ^= new_castle_hash;
-        self.rep_hash ^= new_castle_rep_hash;
 
         // Update En Passant state
         self.en_passant = None;
@@ -3494,7 +3438,6 @@ impl GameState {
                 });
                 // Add new en passant
                 self.hash ^= en_passant_key(m.from.x, ep_y);
-                self.rep_hash ^= rep_en_passant_key(m.from.x, ep_y);
             }
         }
 
@@ -3511,7 +3454,6 @@ impl GameState {
 
         // Flip side to move
         self.hash ^= SIDE_KEY;
-        self.rep_hash ^= REP_SIDE_KEY;
         self.turn = self.turn.opponent();
 
         // Track move for repetition detection.
@@ -3530,15 +3472,11 @@ impl GameState {
         let end = (self.halfmove_clock as usize).min(self.hash_stack.len());
         if end >= 4 {
             let current_hash = self.hash;
-            let current_rep_hash = self.rep_hash;
             let mut i = 4usize;
             let mut first_match: Option<i32> = None;
             while i <= end {
                 let idx = self.hash_stack.len().saturating_sub(i);
-                if idx < self.hash_stack.len()
-                    && self.hash_stack[idx] == current_hash
-                    && self.rep_hash_stack.get(idx) == Some(&current_rep_hash)
-                {
+                if idx < self.hash_stack.len() && self.hash_stack[idx] == current_hash {
                     if first_match.is_none() {
                         // First match: store distance as positive (twofold)
                         first_match = Some(i as i32);
@@ -3568,8 +3506,6 @@ impl GameState {
         // Restore hashes
         self.hash_stack.pop();
         self.hash = undo.old_hash;
-        self.rep_hash_stack.pop();
-        self.rep_hash = undo.old_rep_hash;
 
         // Revert turn
         self.turn = self.turn.opponent();
@@ -3836,7 +3772,6 @@ impl GameState {
         // History and the move-rule limit are not part of a position; a reused
         // state must come out identical to a freshly constructed one.
         self.hash_stack.clear();
-        self.rep_hash_stack.clear();
         self.move_history.clear();
         self.game_rules.move_rule_limit = None;
         self.special_rights.clear();
@@ -4461,7 +4396,6 @@ mod tests {
             for ply in 0..24usize {
                 let snapshot = (
                     game.hash,
-                    game.rep_hash,
                     game.pawn_hash,
                     game.white_nonpawn_hash,
                     game.black_nonpawn_hash,
@@ -4488,16 +4422,12 @@ mod tests {
 
                 let undo = game.make_move(&m);
 
-                // Primary key and repetition key, checked against a full rebuild.
-                let (inc_hash, inc_rep) = (game.hash, game.rep_hash);
+                // Primary key, checked against a full rebuild.
+                let inc_hash = game.hash;
                 game.recompute_hash();
                 assert_eq!(
                     inc_hash, game.hash,
                     "{variant:?} ply {ply}: hash drifted on {m:?}"
-                );
-                assert_eq!(
-                    inc_rep, game.rep_hash,
-                    "{variant:?} ply {ply}: rep_hash drifted on {m:?}"
                 );
                 assert_incremental_state_matches_scratch(
                     &mut game,
@@ -4510,7 +4440,6 @@ mod tests {
                     snapshot,
                     (
                         game.hash,
-                        game.rep_hash,
                         game.pawn_hash,
                         game.white_nonpawn_hash,
                         game.black_nonpawn_hash,
@@ -5017,33 +4946,11 @@ mod tests {
         }
 
         let incremental_hash = game.hash;
-        let incremental_rep_hash = game.rep_hash;
         game.recompute_hash();
         assert_eq!(
             game.hash, incremental_hash,
             "Recomputed hash should match incremental"
         );
-        assert_eq!(
-            game.rep_hash, incremental_rep_hash,
-            "Recomputed rep_hash should match incremental rep_hash"
-        );
-    }
-
-    #[test]
-    fn test_rep_hash_restored_on_unmake() {
-        let mut game = GameState::new();
-        game.setup_standard_chess();
-        let initial_rep_hash = game.rep_hash;
-
-        let moves = game.get_pseudo_legal_moves();
-        if let Some(m) = moves.first() {
-            let undo = game.make_move(m);
-            game.undo_move(m, undo);
-            assert_eq!(
-                game.rep_hash, initial_rep_hash,
-                "rep_hash should be restored after undo"
-            );
-        }
     }
 
     #[test]

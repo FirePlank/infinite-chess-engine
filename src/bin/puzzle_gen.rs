@@ -974,7 +974,6 @@ fn apply_icn_move(st: &mut GameState, mv: &str) -> Option<(Coordinate, bool)> {
 fn forget_history(st: &mut GameState) {
     st.halfmove_clock = 0;
     st.hash_stack.clear();
-    st.rep_hash_stack.clear();
     st.null_moves = 0;
 }
 
