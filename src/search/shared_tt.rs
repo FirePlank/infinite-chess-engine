@@ -310,8 +310,12 @@ impl SharedTranspositionTable {
                 // concurrent store's score and depth cannot be reverted by the refresh.
                 let r#gen = self.generation.load(REL);
                 let gb = e.gen_bound8.load(REL);
-                e.gen_bound8
-                    .store((r#gen & GENERATION_MASK) | (gb & 0x07), REL);
+                let refreshed = (r#gen & GENERATION_MASK) | (gb & 0x07);
+                // Already current: the store would rewrite the same byte, and under
+                // wasm threads every atomic store is a full seq_cst exchange.
+                if refreshed != gb {
+                    e.gen_bound8.store(refreshed, REL);
+                }
                 let score = value_from_tt(
                     score_from_i16(score),
                     params.ply,
