@@ -227,7 +227,6 @@ struct Cfg {
     corpus: Vec<PathBuf>,
     out: PathBuf,
     skip: FxHashSet<String>,
-    per_variant: usize,
     per_game: usize,
     screen_depth: usize,
     verify_depth: usize,
@@ -240,7 +239,6 @@ struct Cfg {
     defence_window: f64,
     recook: bool,
     explain: Option<String>,
-    max_plies: usize,
     hash_mb: usize,
     threads: usize,
     dry_run: bool,
@@ -276,7 +274,6 @@ impl Default for Cfg {
             corpus: Vec::new(),
             out: PathBuf::from("puzzles.csv"),
             skip,
-            per_variant: 4_000,
             per_game: 8,
             screen_depth: 7,
             verify_depth: 11,
@@ -289,7 +286,6 @@ impl Default for Cfg {
             defence_window: 0.10,
             recook: false,
             explain: None,
-            max_plies: 15, // a mate in 8, the deepest the scanner accepts
             hash_mb: 32,
             threads: 0,
             dry_run: false,
@@ -332,7 +328,6 @@ fn parse_args() -> Cfg {
                 cfg.skip.clear();
                 skip_overridden = true;
             }
-            "--per-variant" => cfg.per_variant = val().parse().unwrap_or(cfg.per_variant),
             "--per-game" => cfg.per_game = val().parse().unwrap_or(cfg.per_game).max(1),
             "--screen-depth" => cfg.screen_depth = val().parse().unwrap_or(cfg.screen_depth),
             "--verify-depth" => cfg.verify_depth = val().parse().unwrap_or(cfg.verify_depth),
@@ -348,7 +343,6 @@ fn parse_args() -> Cfg {
                 cfg.rate_only = true;
                 cfg.refresh = true;
             }
-            "--max-plies" => cfg.max_plies = val().parse().unwrap_or(cfg.max_plies),
             "--hash" => cfg.hash_mb = val().parse().unwrap_or(cfg.hash_mb),
             "--threads" => cfg.threads = val().parse().unwrap_or(0),
             "--wide" => cfg.scan = cfg.scan.wide(),
@@ -403,7 +397,6 @@ fn print_help() {
   --out <file>          output CSV (default puzzles.csv)
   --skip-variant <name> exclude a variant (default: Chess); repeat to add more
   --keep-all-variants   do not exclude anything
-  --per-variant <n>     cap candidates per variant (default 4000)
   --per-game <n>        max spaced candidates from one game (default 4)
   --screen-depth <n>    cheap pre-screen depth (default 7)
   --verify-depth <n>    stage-2 depth (default 11)
@@ -412,7 +405,6 @@ fn print_help() {
   --rate-depth <n>      depth-to-find probe depth (default 13)
   --cap-ms <n>          per-search wall-clock cap (default 1500)
   --budget-ms <n>       per-candidate cook budget (default 20000)
-  --max-plies <n>       longest solution in plies (default 13)
   --hash <mb>           TT size per thread (default 32)
   --threads <n>         worker threads (default: all cores)
   --wide                relax the stage-0 detectors: more positions examined,
@@ -1126,8 +1118,8 @@ mod rej {
         };
         SECOND[b].fetch_add(1, Ordering::Relaxed);
     }
-    /// Why a mate line stopped short: 0 not-only-move, 1 ply cap, 2 no defence,
-    /// 3 score fell out of mate, 4 reached mate.
+    /// Why a mate line stopped short: 0 not-only-move, 1 budget ran out,
+    /// 2 no defence, 3 score fell out of mate, 4 reached mate.
     pub static MATE_STOP: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
     pub fn mate_stop(k: usize) {
         MATE_STOP[k].fetch_add(1, Ordering::Relaxed);
@@ -1136,7 +1128,7 @@ mod rej {
     pub fn report() {
         const STOP: [&str; 5] = [
             "not an only-move",
-            "hit ply cap",
+            "budget ran out",
             "no defence found",
             "mate score lost",
             "delivered mate",
@@ -1227,8 +1219,8 @@ fn cook(
     let mut seen: FxHashSet<u64> = FxHashSet::default();
     seen.insert(st.hash);
 
-    let mut stop = 1usize; // assume the ply cap until something else ends the walk
-    while line.len() < cfg.max_plies {
+    let mut stop = 1usize; // assume the budget ran out until something else ends the walk
+    loop {
         if std::time::Instant::now() >= deadline {
             break;
         }
@@ -1306,8 +1298,8 @@ fn cook(
         rej::mate_stop(stop);
     }
 
-    // The while-loop also exits on the ply cap, so the terminal test has to run here
-    // too or a mate delivered on the last allowed ply is missed.
+    // The loop can also exit on the budget deadline right after a mating move, so
+    // the terminal test has to run here too or that mate is missed.
     if !ends_in_mate {
         ends_in_mate = legal_moves(st).is_empty() && st.is_in_check();
     }
@@ -1328,7 +1320,7 @@ fn cook(
         }
         break;
     }
-    if line.is_empty() {
+    if line.is_empty() || line_uses_huygen(&line) {
         return None;
     }
     Some(Cooked {
@@ -1369,7 +1361,7 @@ fn cook_draw(st: &mut GameState, defender: PlayerColor, cfg: &Cfg) -> Option<Coo
     seen.insert(st.hash);
     let mut drew = false;
 
-    while line.len() < cfg.max_plies {
+    loop {
         if std::time::Instant::now() >= deadline {
             break;
         }
@@ -1416,7 +1408,7 @@ fn cook_draw(st: &mut GameState, defender: PlayerColor, cfg: &Cfg) -> Option<Coo
             seen.insert(st.hash);
         }
     }
-    if !drew || line.is_empty() {
+    if !drew || line.is_empty() || line_uses_huygen(&line) {
         return None;
     }
     debug_assert!(!line.len().is_multiple_of(2));
@@ -3041,6 +3033,15 @@ fn move_to_icn(m: &Move) -> String {
 
 // ---------------------------------------------------------------------------
 
+/// A Huygen's move list is generated at fixed prime-distance stops, so "the only
+/// move" is often an artifact of which prime the movegen happened to enumerate --
+/// a neighbouring prime usually achieves the same thing. Any Huygen move by
+/// either side makes the "only one move works" claim unreliable, so the whole
+/// line is rejected rather than just that move.
+fn line_uses_huygen(line: &[Move]) -> bool {
+    line.iter().any(|m| m.piece.piece_type() == PieceType::Huygen)
+}
+
 /// Last line of defence before a puzzle is written: position legal (a side that
 /// can capture the enemy royal means replay desynced), every move actually legal
 /// where played, and a claimed mate really ends in one.
@@ -3595,9 +3596,6 @@ fn main() {
         let mut cands: Vec<Candidate> = games.par_iter().flat_map(replay).collect();
         let mut seen: FxHashSet<u64> = FxHashSet::default();
         cands.retain(|c| seen.insert(c.hash));
-        cands.truncate(cfg.per_variant);
-        // Truncate first, then drop the resumed ones, so the cap always selects the
-        // same candidate set whether or not this is a resume.
         cands.retain(|c| !already.contains(&c.hash));
         if cands.is_empty() {
             continue;
