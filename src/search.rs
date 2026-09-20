@@ -4292,6 +4292,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // a set of null-window bounds, and storing it evicts a move a real search learned.
     // Kept separate because `best_move` also feeds the futility margin and tt history.
     let mut tt_best_move: Option<Move> = None;
+    // Four atomic loads, constant for the node: both pruning gates read it per move.
+    let world_size = crate::moves::get_world_size();
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
 
@@ -4364,7 +4366,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // the latter lets too many quiets through. Excludes Obstocean: its main
             // tactic IS a quiet pawn-takes-obstacle, so pruning sooner discards it.
             let mut lmp_count = (lmp_base() + depth * depth * lmp_depth_mult()) / improving_div;
-            if crate::moves::get_world_size() <= LMP_BOUNDED_WORLD
+            if world_size <= LMP_BOUNDED_WORLD
                 && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
             {
                 lmp_count = (lmp_count * LMP_BOUNDED_NUM / LMP_BOUNDED_DEN).max(1);
@@ -4422,7 +4424,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Bounded boards only: with an edge to work against, a far quiet
                 // slider aim is usually junk; on an open plane it is manoeuvring.
                 if !is_obstocean_breakout
-                    && crate::moves::get_world_size() <= FAR_SLIDER_PRUNE_MAX_WORLD
+                    && world_size <= FAR_SLIDER_PRUNE_MAX_WORLD
                     && depth <= FAR_SLIDER_PRUNE_MAX_DEPTH
                     && history < FAR_SLIDER_PRUNE_HIST
                     && (crate::attacks::is_ortho_slider(p_type)
