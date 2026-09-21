@@ -5077,13 +5077,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Checkmate, stalemate, or loss by capture-based variants
     if legal_moves == 0 {
-        let checkmate = in_check && game.must_escape_check();
-        let no_pieces = !game.has_pieces(game.turn);
-        if checkmate || no_pieces {
-            best_score = -MATE_VALUE + ply as i32;
+        // An exclusion search with no moves left only proves the excluded move was the
+        // only legal one. Scoring that 0 reads as a draw: a negative beta turns it into
+        // a multi-cut for the whole node, and 0 < singular_beta into extreme singularity.
+        best_score = if excluded_move.is_some() {
+            alpha
+        } else if (in_check && game.must_escape_check()) || !game.has_pieces(game.turn) {
+            -MATE_VALUE + ply as i32
         } else {
-            best_score = 0; // Stalemate
-        }
+            0 // Stalemate
+        };
         best_move = None;
         tt_best_move = None;
     }

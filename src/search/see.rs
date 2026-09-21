@@ -86,64 +86,6 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         None => (0, game.get_piece_value(m.piece.piece_type(), mover_color)),
     };
 
-    /// Helper function to determine if a piece can attack the target legally.
-    /// Accounts for pinned pieces.
-    #[inline(always)]
-    fn can_piece_legally_attack(
-        game: &GameState,
-        pos: &Coordinate,
-        target: &Coordinate,
-        color: PlayerColor,
-    ) -> bool {
-        // If the opponent's win condition does not require check evasion, then the piece can attack freely.
-        let opponent_win_condition = if color == PlayerColor::White {
-            game.game_rules.black_win_condition
-        } else {
-            game.game_rules.white_win_condition
-        };
-        if !opponent_win_condition.requires_check_evasion() {
-            return true;
-        }
-
-        // Is there a king of the same color on the board?
-        let king_pos = if color == PlayerColor::White {
-            game.white_royals.first().copied()
-        } else {
-            game.black_royals.first().copied()
-        };
-        let Some(king) = king_pos else {
-            // No king - can't be pinned
-            return true;
-        };
-
-        // Is piece on a slider ray from king?
-        let dx = pos.x - king.x;
-        let dy = pos.y - king.y;
-
-        let on_slider_ray = dx == 0  // Vertical (same file)
-            || dy == 0               // Horizontal (same rank)  
-            || dx.abs() == dy.abs(); // Diagonal
-
-        if !on_slider_ray {
-            // Cannot be pinned
-            return true;
-        }
-
-        // If it's not pinned, it can attack, otherwise, check if the attack
-        // direction is on the same line with the pinned direction.
-        let pin_direction = if color == PlayerColor::White {
-            game.pinned_white.get(&(pos.x, pos.y))
-        } else {
-            game.pinned_black.get(&(pos.x, pos.y))
-        };
-
-        if let Some(&(pdx, pdy)) = pin_direction {
-            (target.x - pos.x) * pdy == (target.y - pos.y) * pdx
-        } else {
-            true
-        }
-    }
-
     /// Represents an attacker looking on the target square.
     #[derive(Clone, Copy, Debug)]
     struct Attacker {
@@ -375,34 +317,12 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             }
         }
 
-        if let Some(mut i) = best_i {
+        if let Some(i) = best_i {
             // A royal cannot recapture into a defended square. Being the most valuable,
             // it is only ever picked last, so any remaining enemy attacker ends the
             // exchange here.
             if attackers[i].is_royal && attackers.iter().any(|a| a.color == side.opponent()) {
                 break;
-            }
-
-            // If the piece is pinned, do a full rescan of the best attacker that is not pinned
-            if !can_piece_legally_attack(game, &attackers[i].pos, &m.to, attackers[i].color) {
-                let mut found_nothing = true;
-                best_val = i32::MAX;
-
-                for j in 0..attackers.len() {
-                    let a = &attackers[j];
-                    if a.color == side
-                        && a.value < best_val
-                        && can_piece_legally_attack(game, &a.pos, &m.to, a.color)
-                    {
-                        found_nothing = false;
-                        best_val = a.value;
-                        i = j;
-                    }
-                }
-
-                if found_nothing {
-                    break;
-                }
             }
 
             let chosen = attackers.swap_remove(i);
@@ -708,9 +628,10 @@ mod tests {
     }
 
     #[test]
-    fn test_see_pinned_piece_cannot_recapture() {
-        // The white rook eyeing the black bishop is pinned to its king, so it cannot
-        // recapture. Without pin detection SEE plays that illegal rook capture.
+    fn test_see_ignores_pins() {
+        // SEE is deliberately pin-blind: the pin maps it used to consult are built at
+        // setup and never maintained by make/undo, so inside the tree they described
+        // the root position. The white rook here is pinned and SEE still counts it.
         let mut game = create_test_game_from_icn("w (8;q|1;q) K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6");
         game.turn = PlayerColor::White;
 
@@ -720,17 +641,16 @@ mod tests {
             Piece::new(PieceType::Bishop, PlayerColor::White),
         );
 
-        assert_eq!(
+        assert_ne!(
             static_exchange_eval_impl(&game, &m),
             0,
-            "The white rook is pinned to the white king; the black queen should take the bishop."
+            "pins are ignored, so the pinned white rook still defends the bishop"
         );
     }
 
     #[test]
     fn test_see_piece_is_not_pinned_in_all_pieces_captured() {
-        // Same condition as the test above but this time, the rook is not pinned
-        // since the king can be captured in AllRoyalsCaptured win condition.
+        // The rook is not pinned under AllRoyalsCaptured, where the king is capturable.
         let mut game = create_test_game_from_icn(
             "w (8;q|1;q) allroyalscaptured K1,1|R3,3|B1,5|b3,7|q3,8|k1,10|b6,6",
         );
@@ -751,8 +671,8 @@ mod tests {
 
     #[test]
     fn test_see_pinned_piece_can_recapture_on_same_line() {
-        // The same shape, but the pin runs along the capture direction, so the pinned
-        // white bishop may still recapture and the exchange is sound.
+        // The pin runs along the capture direction, so the white bishop may recapture
+        // and the exchange is sound whether or not pins are modelled.
         let mut game = create_test_game_from_icn("w 1 (8;q|1;q) K0,4|R3,3|B1,5|b3,7|q3,8|k1,10");
         game.turn = PlayerColor::White;
 
