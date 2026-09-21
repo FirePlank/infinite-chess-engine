@@ -1667,10 +1667,15 @@ impl GameState {
 
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
         // When not in check, only (King, Pinned, EP) moves can be illegal.
+        // One scratch state serves every strict verification below: a per-move clone copied
+        // the tile table and four spatial-line maps once per legal move in rider variants.
+        // Built lazily, so a position that needs no strict check still clones nothing.
+        let mut scratch: Option<GameState> = None;
         let mut i = 0;
         while i < out.len() {
             let m = out[i];
             let mut illegal = false;
+            let mut strict = false;
             let pt = m.piece.piece_type();
 
             if pt.is_royal() {
@@ -1694,11 +1699,7 @@ impl GameState {
                     illegal = true;
                 }
             } else if rider_pins_possible {
-                let mut s_mut = self.clone();
-                let _undo = s_mut.make_move(&m);
-                if s_mut.is_move_illegal() {
-                    illegal = true;
-                }
+                strict = true;
             } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
                 // Pinned piece: must move along the pin ray
                 let dx = m.to.x - m.from.x;
@@ -1712,11 +1713,7 @@ impl GameState {
                 {
                     // A collinear jumping piece can still leap past the king or the
                     // pinner along the ray, so verify strictly.
-                    let mut s_mut = self.clone();
-                    let _undo = s_mut.make_move(&m);
-                    if s_mut.is_move_illegal() {
-                        illegal = true;
-                    }
+                    strict = true;
                 }
             } else if let Some(ep) = &self.en_passant
                 && pt == PieceType::Pawn
@@ -1724,11 +1721,14 @@ impl GameState {
             {
                 // En passant: double removal can reveal horizontal check.
                 // Strict check for this rare case.
-                let mut s_mut = self.clone();
-                let _undo = s_mut.make_move(&m);
-                if s_mut.is_move_illegal() {
-                    illegal = true;
-                }
+                strict = true;
+            }
+
+            if strict {
+                let s_mut = scratch.get_or_insert_with(|| self.clone());
+                let undo = s_mut.make_move(&m);
+                illegal = s_mut.is_move_illegal();
+                s_mut.undo_move(&m, undo);
             }
 
             if illegal {
