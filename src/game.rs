@@ -2860,17 +2860,11 @@ impl GameState {
             return true;
         };
 
-        // Knightriders pin along knight-rays, which the queen-ray fast test
-        // below cannot see. (Rose spiral pins are rare enough that the full
-        // verify on every move costs more than the legality risk.)
         let them = if self.turn == PlayerColor::White {
             1
         } else {
             0
         };
-        if self.spatial_indices.has_knightrider[them] {
-            return false;
-        }
 
         // 5. FAST CHECK: Is piece on a slider ray from king?
         // Only arithmetic - no hash lookups!
@@ -2887,7 +2881,14 @@ impl GameState {
             || dy == 0               // Horizontal (same rank)  
             || dx.abs() == dy.abs(); // Diagonal
 
-        if on_slider_ray {
+        // A knightrider rides one knight step repeatedly, so it can only pin a piece whose
+        // offset from the royal is a whole multiple of (1,2) or (2,1). Huygens pin along
+        // orthogonals, which on_slider_ray already covers; rose spirals stay with the exact
+        // list, since verifying every move to catch them costs more than it saves.
+        let on_rider_ray = self.spatial_indices.has_knightrider[them]
+            && (dx.abs() * 2 == dy.abs() || dy.abs() * 2 == dx.abs());
+
+        if on_slider_ray || on_rider_ray {
             // Piece MIGHT be pinned - fall back to full is_move_illegal check
             false
         } else {
