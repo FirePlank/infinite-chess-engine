@@ -1654,9 +1654,8 @@ impl GameState {
 
         get_pseudo_legal_moves_into(&self.board, self.turn, &ctx, out);
 
-        // Riders pin outside the queen rays, so the pin map cannot clear a move and
-        // every non-royal move needs a strict check. Rose spiral pins are rare enough
-        // that a blanket verify is not worth its cost.
+        // Riders pin outside the queen rays, so the pin map cannot clear a move and every
+        // non-royal move needs a strict check.
         let them_idx = if self.turn == PlayerColor::White {
             1
         } else {
@@ -1664,6 +1663,32 @@ impl GameState {
         };
         let rider_pins_possible = self.spatial_indices.has_knightrider[them_idx]
             || self.spatial_indices.has_huygen[them_idx];
+
+        // A rose pins along a spiral, which no queen-ray test can see. Rather than verify
+        // every move, name the only squares that CAN be rose-pinned: an enemy rose standing
+        // on our royal reaches exactly the first blocker down each spiral.
+        let mut rose_pin_candidates: smallvec::SmallVec<[Coordinate; 8]> =
+            smallvec::SmallVec::new();
+        if let Some(kp) = king_pos.filter(|_| self.spatial_indices.has_rose[them_idx]) {
+            let probe = Piece::new(PieceType::Rose, self.turn.opponent());
+            let mut reach = MoveList::new();
+            crate::moves::generate_rose_moves_into(
+                &self.board,
+                &kp,
+                &probe,
+                crate::moves::MoveGenType::Captures,
+                &mut reach,
+            );
+            for m in reach.iter() {
+                if self
+                    .board
+                    .get_piece(m.to.x, m.to.y)
+                    .is_some_and(|p| p.color() == self.turn)
+                {
+                    rose_pin_candidates.push(m.to);
+                }
+            }
+        }
 
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
         // When not in check, only (King, Pinned, EP) moves can be illegal.
@@ -1698,7 +1723,7 @@ impl GameState {
                 {
                     illegal = true;
                 }
-            } else if rider_pins_possible {
+            } else if rider_pins_possible || rose_pin_candidates.contains(&m.from) {
                 strict = true;
             } else if let Some(&(pdx, pdy)) = pinned.get(&m.from) {
                 // Pinned piece: must move along the pin ray
@@ -5318,6 +5343,33 @@ mod tests {
         game.recompute_piece_counts();
 
         assert!(!game.has_non_pawn_material(PlayerColor::White));
+    }
+
+    #[test]
+    fn test_exact_move_list_excludes_rose_pinned_moves() {
+        // A rose pins along a spiral, so a pinned piece can sit off every queen ray and
+        // pass the pin-map test. The exact list must still not offer its moves.
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w (8;q|1;q) CH0,1|GU1,1|N2,1|N7,1|P0,2|P1,2|P3,2|P4,2|P5,2|P6,2|P7,2|P2,3|ro4,4|p1,5|p2,6|p3,6|p0,7|p4,7|p5,7|p6,7|p7,7|CH9,0|R10,0|GU8,1|P11,1|P10,2|P9,3|P8,4|p8,7|p9,7|p10,7|ro-1,9|gu8,8|ch9,8|r10,8|p11,8|Q-3,-18|RO9,-7|gu1,8|n2,8|b3,8|k5,8|b6,8|n5,9|P-2,1|R-1,1|P-1,2|ch-1,6|p-2,7|p-1,7|q1,21|r-6,-6|P-4,-6|P-1,-5|P-2,-4|RO-1,-4|P-3,-3|P0,-5|B5,-1|K6,-1");
+        game.recompute_piece_counts();
+
+        let mut moves = crate::moves::MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut moves);
+
+        for m in moves.iter() {
+            if m.from != Coordinate::new(7, 1) {
+                continue;
+            }
+            let mut probe = game.clone();
+            let undo = probe.make_move(m);
+            let illegal = probe.is_move_illegal();
+            probe.undo_move(m, undo);
+            assert!(
+                !illegal,
+                "exact list offered an illegal rose-pinned knight move to ({},{})",
+                m.to.x, m.to.y
+            );
+        }
     }
 
     #[test]
