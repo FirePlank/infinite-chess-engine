@@ -879,3 +879,13 @@ fn test_move_rule_limit() {
     let searcher = Box::new(Searcher::new(1000));
     assert_eq!(searcher.move_rule_limit, 100); // Default 50-move rule
 }
+
+#[test]
+fn test_new_search_ages_capture_history() {
+    // The node oracle builds a fresh Searcher per position, so it cannot see any
+    // between-search decay; assert the aging directly instead.
+    let mut searcher = Searcher::new(5000);
+    searcher.capture_history[3][7] = 1024;
+    searcher.new_search();
+    assert_eq!(searcher.capture_history[3][7], 729);
+}

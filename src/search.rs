@@ -1397,6 +1397,14 @@ impl Searcher {
             }
         }
 
+        // Capture history has the same staleness problem and is only 4 KB, so the
+        // pass is free next to the 64 KB main table above.
+        for victim in self.capture_history.iter_mut() {
+            for v in victim.iter_mut() {
+                *v = *v * 729 / 1024;
+            }
+        }
+
         // Fill lowPlyHistory with 97 at the start of iterative deepening
         // (not 0, to give a small positive bias to moves that haven't been seen)
         for row in self.low_ply_history.iter_mut() {
