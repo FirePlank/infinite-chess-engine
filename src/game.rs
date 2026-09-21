@@ -2924,29 +2924,17 @@ impl GameState {
             return false;
         }
 
-        // Fast path: use cached king positions
-        if royals.len() == 1 {
-            let king_pos = royals[0];
+        for &king_pos in royals {
             if is_square_attacked(&self.board, &king_pos, self.turn, indices) {
                 return true;
             }
-            // For standard variants with just a King, we're done
-            if self
-                .board
-                .get_piece(king_pos.x, king_pos.y)
-                .is_some_and(|p| p.piece_type() == PieceType::King)
-            {
-                return false;
-            }
-        } else {
-            for &king_pos in royals {
-                if is_square_attacked(&self.board, &king_pos, self.turn, indices) {
-                    return true;
-                }
-            }
         }
 
-        // Fallback: full scan for variants with dynamic royals that bypass cache
+        // The cache is built in full at setup and maintained by make/undo, but make_move
+        // stops pushing at 8, so only a list sitting AT the cap can be missing a royal.
+        if royals.len() < 8 {
+            return false;
+        }
         self.is_move_illegal_full_scan(moved_color, indices)
     }
 
@@ -3170,8 +3158,9 @@ impl GameState {
             old_total_phase: self.total_phase,
         };
 
-        // Track royal position updates
-        if piece.piece_type().is_royal() {
+        // Track royal position updates. Keyed on the post-promotion type: a pawn
+        // promoting to a royal is a royal arriving at m.to, and m.from holds no royal.
+        if m.promotion.unwrap_or(piece.piece_type()).is_royal() {
             if piece.color() == PlayerColor::White {
                 if let Some(idx) = self.white_royals.iter().position(|&p| p == m.from) {
                     self.white_royals[idx] = m.to;
