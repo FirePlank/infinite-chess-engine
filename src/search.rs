@@ -3536,6 +3536,16 @@ fn negamax_root(
         #[cfg(feature = "nnue")]
         searcher.nnue_push_move(game, 0, *m);
 
+        // Slot 0's context, exactly as the interior loop fills its own ply. Without it
+        // every reply to a root move is ordered and reduced with no continuation history,
+        // the fail-low credit never reaches the root move, and qsearch sees no recapture.
+        let root_is_capture = game.is_en_passant(m)
+            || game
+                .board
+                .get_piece(m.to.x, m.to.y)
+                .is_some_and(|p| !p.piece_type().is_neutral_type());
+        let root_piece = m.piece.piece_type();
+
         let undo = game.make_move(m);
 
         // At the root, this move becomes the previous move for child ply 1,
@@ -3545,6 +3555,16 @@ fn negamax_root(
         let prev_to_hash = hash_move_dest(m);
         searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
         searcher.root_played = Some(*m);
+
+        let move_history_backup = searcher.move_history[0].take();
+        let piece_history_backup = searcher.moved_piece_history[0];
+        let in_check_backup = searcher.in_check_history[0];
+        let capture_backup = searcher.capture_history_stack[0];
+
+        searcher.move_history[0] = Some(*m);
+        searcher.moved_piece_history[0] = root_piece as u8;
+        searcher.in_check_history[0] = in_check;
+        searcher.capture_history_stack[0] = root_is_capture;
 
         legal_moves += 1;
 
@@ -3598,6 +3618,10 @@ fn negamax_root(
 
         // Restore previous-move stack entry for root after returning from child.
         searcher.prev_move_stack[0] = prev_entry_backup;
+        searcher.move_history[0] = move_history_backup;
+        searcher.moved_piece_history[0] = piece_history_backup;
+        searcher.in_check_history[0] = in_check_backup;
+        searcher.capture_history_stack[0] = capture_backup;
 
         if searcher.hot.stopped {
             return best_score;
