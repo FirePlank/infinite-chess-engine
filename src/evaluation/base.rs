@@ -139,8 +139,13 @@ use std::sync::RwLock;
 /// Tracer trait for evaluation components.
 /// Uses zero-cost abstraction with NoTrace for production.
 pub trait EvaluationTracer {
+    /// Set by the eval-net collector so the raw-inputs handoff below compiles
+    /// to nothing for every other tracer.
+    const WANTS_INPUTS: bool = false;
     fn record(&mut self, term: &str, white: i32, black: i32);
     fn is_active(&self) -> bool;
+    #[inline(always)]
+    fn record_inputs(&mut self, _inputs: &crate::eval_net::EvalNetInputs) {}
 }
 
 /// No-op tracer for production use.
@@ -682,14 +687,39 @@ fn tile_local_probe(
 }
 
 // Main Evaluation
+#[cfg(not(feature = "eval_net"))]
 pub fn evaluate(game: &GameState) -> i32 {
     evaluate_inner(game)
+}
+
+/// HCE plus the Stage-A net residual. Added after the complexity damping so the
+/// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
+#[cfg(feature = "eval_net")]
+pub fn evaluate(game: &GameState) -> i32 {
+    if !crate::eval_net::enabled() {
+        return evaluate_inner(game);
+    }
+    let mut fc = crate::eval_net::FeatureCollector::default();
+    let score = evaluate_inner_traced(game, &mut fc);
+    let residual = crate::eval_net::residual_white(game, &fc);
+    if game.turn == PlayerColor::Black {
+        score - residual
+    } else {
+        score + residual
+    }
 }
 
 /// Perform a full evaluation with detailed tracing.
 pub fn debug_evaluate(game: &GameState) -> ActiveTrace {
     let mut tracer = ActiveTrace::default();
     evaluate_inner_traced(game, &mut tracer);
+    #[cfg(feature = "eval_net")]
+    if crate::eval_net::enabled() {
+        let mut fc = crate::eval_net::FeatureCollector::default();
+        evaluate_inner_traced(game, &mut fc);
+        let residual = crate::eval_net::residual_white(game, &fc);
+        tracer.record("Net Residual", residual, 0);
+    }
     tracer
 }
 
@@ -1730,6 +1760,83 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         tracer.record("King: Pawn Storm", w_storm, b_storm);
                         score += w_storm - b_storm;
+
+                        if T::WANTS_INPUTS {
+                            use crate::eval_net::summarize_rays;
+                            let (w_open, w_emin, w_eval, w_cover) =
+                                summarize_rays(&w_king_rays, PlayerColor::White);
+                            let (b_open, b_emin, b_eval, b_cover) =
+                                summarize_rays(&b_king_rays, PlayerColor::Black);
+                            let royal_units = |t: &SmallVec<[RoyalTropismMetrics; 1]>| {
+                                t.first()
+                                    .map_or((0, 0), |k| (k.attacking_units, k.defender_units))
+                            };
+                            let (w_att, w_def) = royal_units(&white_royal_tropisms);
+                            let (b_att, b_def) = royal_units(&black_royal_tropisms);
+                            let w_pd = if white_max_y != i64::MIN {
+                                (w_promo - white_max_y).clamp(1, 100) as i32
+                            } else {
+                                100
+                            };
+                            let b_pd = if black_min_y != i64::MAX {
+                                (black_min_y - b_promo).clamp(1, 100) as i32
+                            } else {
+                                100
+                            };
+                            let pawn_span = if pawn_max_y >= pawn_min_y {
+                                (pawn_max_y - pawn_min_y).min(255) as i32
+                            } else {
+                                0
+                            };
+                            let pair = |c: (bool, bool)| i32::from(c.0 && c.1);
+                            tracer.record_inputs(&crate::eval_net::EvalNetInputs {
+                                phase: final_phase,
+                                spread,
+                                pawn_span,
+                                wall_count: wall_count.min(255) as i32,
+                                void_count: void_count.min(255) as i32,
+                                slider_geometry_ctx,
+                                leaper_geometry_ctx,
+                                cloud_avg_spread,
+                                cloud_count: cloud_count.min(255) as i32,
+                                counterplay: [white_cp, black_cp],
+                                undeveloped: [white_undeveloped, black_undeveloped],
+                                bishops: [white_bishops, black_bishops],
+                                bishop_pair: [pair(white_bishop_colors), pair(black_bishop_colors)],
+                                diag_sliders: [w_diag_count, b_diag_count],
+                                ortho_sliders: [w_ortho_count, b_ortho_count],
+                                threat_points: [w_threat_points, black_threat_points],
+                                queen_threat: [
+                                    i32::from(w_has_queen_threat),
+                                    i32::from(b_has_queen_threat),
+                                ],
+                                sliders_in_zone: [w_sliders_in_zone, b_sliders_in_zone],
+                                extra_attack_units: [
+                                    w_additional_attack_units,
+                                    b_additional_attack_units,
+                                ],
+                                attacking_tropism: [w_attacking_tropism, b_attacking_tropism],
+                                defensive_tropism: [w_defensive_tropism, b_defensive_tropism],
+                                storm_count: [w_storm_count, b_storm_count],
+                                attack_ready: [w_attack_ready, b_attack_ready],
+                                urgency: [w_urgency, b_urgency],
+                                ray_open: [w_open, b_open],
+                                ray_enemy_min_dist: [w_emin, b_emin],
+                                ray_enemy_value: [w_eval, b_eval],
+                                ray_cover: [w_cover, b_cover],
+                                ring_covered: [
+                                    i32::from(w_king_ring_covered),
+                                    i32::from(b_king_ring_covered),
+                                ],
+                                royal_attackers: [w_att, b_att],
+                                royal_defenders: [w_def, b_def],
+                                promo_dist: [w_pd, b_pd],
+                                non_pawn_non_royal: [
+                                    white_non_pawn_non_royal,
+                                    black_non_pawn_non_royal,
+                                ],
+                            });
+                        }
                     }
                 }
             }); // bp

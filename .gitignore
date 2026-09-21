@@ -107,3 +107,6 @@ flake.lock
 .nnue-worktree/
 
 games/
+
+# Stage-A eval-net weights are embedded via include_bytes! and must be tracked.
+!src/eval_net/eval_net.bin

@@ -41,6 +41,10 @@ name = "data_gen"
 required-features = ["data_gen"]
 
 [[bin]]
+name = "export_eval_features"
+required-features = ["data_gen"]
+
+[[bin]]
 name = "texel"
 required-features = ["eval_tuning"]
 
@@ -84,7 +88,7 @@ ratatui = { version = "0.29", optional = true }
 [features]
 # MT (Lazy SMP) is on by default so a bare `wasm-pack build` ships the threaded engine.
 # Build a single-threaded engine with `--no-default-features`.
-default = ["multithreading"]
+default = ["multithreading", "eval_net"]
 param_tuning = ["serde_json", "rand", "rayon", "clap", "ctrlc"]
 eval_tuning = ["param_tuning"]
 search_tuning = ["param_tuning"]
@@ -99,6 +103,8 @@ multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
 puzzle_gen = ["csv", "serde_json", "rayon", "indicatif"]
 nnue = []
+# Stage-A hybrid eval net: residual MLP over HCE scalars (docs/hybrid-eval-design.md).
+eval_net = []
 debug = ["console_error_panic_hook"]
 
 

@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 pub mod attacks;
 pub mod board;
+pub mod eval_net;
 pub mod evaluation;
 pub mod game;
 pub mod moves;
