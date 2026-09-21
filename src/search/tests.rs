@@ -223,18 +223,6 @@ fn test_searcher_new() {
 }
 
 #[test]
-fn test_searcher_decay_history() {
-    let mut searcher = Searcher::new(5000);
-    searcher.history[0][0][0] = 100;
-    searcher.history[0][1][1] = 200;
-
-    searcher.decay_history();
-
-    assert_eq!(searcher.history[0][0][0], 90); // 100 * 9/10
-    assert_eq!(searcher.history[0][1][1], 180); // 200 * 9/10
-}
-
-#[test]
 fn test_searcher_update_history() {
     let mut searcher = Searcher::new(5000);
 

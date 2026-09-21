@@ -1336,18 +1336,6 @@ impl Searcher {
         false
     }
 
-    /// Decay history scores at the start of each iteration
-    #[inline]
-    pub fn decay_history(&mut self) {
-        for side in self.history.iter_mut() {
-            for row in side.iter_mut() {
-                for val in row.iter_mut() {
-                    *val = *val * 9 / 10; // Decay by 10%
-                }
-            }
-        }
-    }
-
     /// Start a new search: reset per-search state and increment TT age (or clear if requested).
     pub fn new_search(&mut self) {
         // Only the coordinating thread (thread_id 0) bumps the shared generation.
@@ -3438,7 +3426,6 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
 
     let mut searcher = Searcher::new(u128::MAX);
     searcher.reset_for_iteration();
-    searcher.decay_history();
     searcher.tt.clear();
 
     // Generate and filter legal moves (exact: bypasses the stale slider cache)
@@ -4190,9 +4177,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
             // Fast legality check (skips is_move_illegal for non-pinned pieces)
             let fast_legal = game.is_legal_fast(&m, in_check);
-            if let Ok(false) = fast_legal {
-                continue;
-            }
 
             // Incremental NNUE accumulator update for the child position.
             // Must be called BEFORE make_move.
@@ -4214,7 +4198,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             let undo = game.make_move(&m);
 
-            if fast_legal.is_err() && game.is_move_illegal() {
+            if !fast_legal && game.is_move_illegal() {
                 game.undo_move(&m, undo);
                 searcher.pop_move_context(ply, pc_ctx);
                 continue;
@@ -4472,12 +4456,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
-        // Check legality BEFORE make_move (Pin Detection)
-        // returns Ok(true) if legal, Ok(false) if illegal, Err if unsure
+        // Check legality BEFORE make_move (Pin Detection).
+        // True proves the move legal; false only means "unproven", never "illegal".
         let fast_legal = game.is_legal_fast(&m, in_check);
-        if let Ok(false) = fast_legal {
-            continue; // Definitely illegal (pinned piece moving off ray)
-        }
 
         // Prefetch the child's TT entry before making the move, so the probe in
         // the recursive call is already warm.
@@ -4520,7 +4501,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Check if move is illegal (leaves our king in check)
         // Only check if fast check was inconclusive (Err)
-        if fast_legal.is_err() && game.is_move_illegal() {
+        if !fast_legal && game.is_move_illegal() {
             game.undo_move(&m, undo);
             continue;
         }
@@ -4626,10 +4607,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if se_value < singular_beta {
                 // TT move is singular - calculate extension level
-                let pv_bonus = if is_pv { (depth as i32) * 2 } else { 0 };
-                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) + pv_bonus;
-                let triple_margin =
-                    (depth as i32) * 4 - (tt_capture as i32 * 10) + pv_bonus * 2;
+                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5);
+                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10);
 
                 extension = 1;
                 if se_value < singular_beta - double_margin {
@@ -4641,7 +4620,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // Depth++ after detecting singularity
                 depth += 1;
-            } else if se_value >= beta && !is_pv && !is_decisive(se_value) {
+            } else if se_value >= beta && !is_decisive(se_value) {
                 // Multi-cut: alternatives also beat beta, prune the whole subtree
                 let penalty = (-400 - 100 * depth as i32).max(-4000);
                 searcher.tt_move_history +=
@@ -5030,7 +5009,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     searcher.killers[ply][0] = Some(m);
                 }
 
-                // Countermove heuristic
+                // Countermove heuristic. The destination is truncated to i32 here and
+                // at the read site alike, so a false match needs a 2^32 coordinate gap,
+                // which the far-escape shell (+/-4063) keeps out of reach.
                 if ply > 0 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
@@ -5621,9 +5602,6 @@ fn quiescence(
         }
 
         let fast_legal = game.is_legal_fast(m, in_check);
-        if let Ok(false) = fast_legal {
-            continue;
-        }
 
         // Quiescence probes the table at every node and is about half of them, so
         // it wants the same prefetch the main loop already issues.
@@ -5658,7 +5636,7 @@ fn quiescence(
 
         let undo = game.make_move(m);
 
-        if fast_legal.is_err() && game.is_move_illegal() {
+        if !fast_legal && game.is_move_illegal() {
             game.undo_move(m, undo);
             continue;
         }

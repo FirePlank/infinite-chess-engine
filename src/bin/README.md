@@ -34,21 +34,14 @@ A match-based SPSA tuner that runs self-play directly from the CLI and can also 
 cargo run --release --bin spsa --features param_tuning -- run
 ```
 
-### 5. Magic Bitboard Generator (`generate_magics.rs`)
-Computes magic number constants for sliding piece attack generation. Currently unused.
-
-```bash
-cargo run --release --bin generate_magics
-```
-
-### 6. Game Generator (`game_gen.rs`)
+### 5. Game Generator (`game_gen.rs`)
 Generates sample games for use in puzzle generation.
 
 ```bash
 cargo run --release --bin game_gen --features puzzle_gen,rand
 ```
 
-### 7. Puzzle Generator (`puzzle_gen.rs`)
+### 6. Puzzle Generator (`puzzle_gen.rs`)
 Mines a self-play game corpus (the `games*.json` files an SPRT run's `--pgn`/game
 logging produces) for sound tactical puzzles: a position where one move wins (or
 saves a lost game, or forces a draw) and every alternative provably does not.
@@ -79,7 +72,7 @@ new, and `--recook`/`--deep-verify` each keep their own checkpoint too. Pass
 difficulty breakdown behind a puzzle's rating. Run with `--help` for the full
 flag list.
 
-### 8. UCI Protocol Bridge (`uci.rs`)
+### 7. UCI Protocol Bridge (`uci.rs`)
 A UCI-compliant chess engine interface for standard 8×8 chess. Accepts UCI commands on stdin and outputs moves/info to stdout. Compatible with any UCI GUI (Cutechess, Arena, Lichess, etc.).
 
 ```bash
@@ -87,7 +80,7 @@ cargo build --bin uci --release
 ./target/release/uci.exe
 ```
 
-### 9. Texel Tuner (texel.rs)
+### 8. Texel Tuner (texel.rs)
 
 A static-eval Texel tuner for `src/evaluation/base.rs` constants. Fits eval parameters to a `data_gen` corpus and applies the tuned values back to the source. Use one bounds-group corpus (the `data_gen` default `base_only` preset is the usual choice).
 

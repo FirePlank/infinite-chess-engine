@@ -1,7 +1,6 @@
 //! Sparse 8x8 tiled bitboards. Each tile holds u64 occupancy bitboards alongside
 //! packed piece arrays.
 
-pub mod magic;
 pub mod masks;
 
 use crate::board::{Piece, PlayerColor};

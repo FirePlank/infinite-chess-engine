@@ -404,8 +404,6 @@ impl Default for GameState {
 
 impl GameState {
     pub fn new() -> Self {
-        // crate::tiles::magic::init();
-
         GameState {
             board: Board::new(),
             turn: PlayerColor::White,
@@ -458,8 +456,6 @@ impl GameState {
     }
 
     pub fn new_with_rules(game_rules: GameRules) -> Self {
-        // crate::tiles::magic::init();
-
         GameState {
             board: Board::new(),
             turn: PlayerColor::White,
@@ -1344,7 +1340,8 @@ impl GameState {
         !white_has_non_king || !black_has_non_king
     }
 
-    /// Returns true if the position is a draw for any reason (50-move rule, repetition, insufficient material)
+    /// Returns true if the position is a draw by the 50-move rule or by repetition.
+/// Insufficient material is NOT tested here; the evaluator handles it separately.
     #[inline]
     pub fn is_draw(&mut self, ply: usize, in_check: bool) -> bool {
         // Don't check during null move search
@@ -2796,20 +2793,19 @@ impl GameState {
         }
     }
 
-    /// Arithmetic-only legality check, with no spatial index lookups. `Ok(true)` means
-    /// definitely legal; `Err(())` means the caller must fall back to
-    /// `is_move_illegal`.
+    /// Arithmetic-only legality check, with no spatial index lookups. `true` means
+    /// definitely legal; `false` means "unproven", so the caller must fall back to
+    /// `is_move_illegal`. It never proves a move ILLEGAL, only legal.
     #[inline(always)]
-    #[allow(clippy::result_unit_err)]
-    pub fn is_legal_fast(&self, m: &Move, in_check: bool) -> Result<bool, ()> {
+    pub fn is_legal_fast(&self, m: &Move, in_check: bool) -> bool {
         // 1. If currently in check, any move could be illegal or fail to escape check.
         if in_check {
-            return Err(());
+            return false;
         }
 
         // 2. King moves: always need full check (must check for attacked squares)
         if m.piece.piece_type().is_royal() {
-            return Err(());
+            return false;
         }
 
         // 3. En Passant: always need full check (rank clearing can expose king behind)
@@ -2817,7 +2813,7 @@ impl GameState {
             let dx = (m.to.x - m.from.x).abs();
             let dy = (m.to.y - m.from.y).abs();
             if dx != 0 && dy != 0 && !self.board.is_occupied(m.to.x, m.to.y) {
-                return Err(());
+                return false;
             }
         }
 
@@ -2831,12 +2827,12 @@ impl GameState {
         // only, so a move clear of that royal's rays can still expose another.
         // Force the full verifier.
         if royals.len() > 1 {
-            return Err(());
+            return false;
         }
 
         let Some(&king) = royals.first() else {
             // No royal - nothing can be left in check.
-            return Ok(true);
+            return true;
         };
 
         // Knightriders pin along knight-rays, which the queen-ray fast test
@@ -2848,7 +2844,7 @@ impl GameState {
             0
         };
         if self.spatial_indices.has_knightrider[them] {
-            return Err(());
+            return false;
         }
 
         // 5. FAST CHECK: Is piece on a slider ray from king?
@@ -2858,7 +2854,7 @@ impl GameState {
 
         // Same square as king (shouldn't happen for non-king piece)
         if dx == 0 && dy == 0 {
-            return Err(());
+            return false;
         }
 
         // Check if on a slider ray (vertical, horizontal, or diagonal)
@@ -2868,12 +2864,12 @@ impl GameState {
 
         if on_slider_ray {
             // Piece MIGHT be pinned - fall back to full is_move_illegal check
-            Err(())
+            false
         } else {
             // Piece is NOT on any slider ray from king - CANNOT be pinned!
             // Side is NOT in check (verified above), and it's NOT a king move/EP.
             // Therefore, this move is DEFINITELY LEGAL. Skip is_move_illegal entirely.
-            Ok(true)
+            true
         }
     }
 
@@ -5342,9 +5338,8 @@ mod tests {
             partner_x: crate::moves::NO_PARTNER,
         };
         // (5,4) is off every ray from the first royal (1,1).
-        assert_eq!(
-            multi.is_legal_fast(&m, false),
-            Err(()),
+        assert!(
+            !multi.is_legal_fast(&m, false),
             "multi-royal must defer to the full legality check"
         );
 
@@ -5352,7 +5347,7 @@ mod tests {
         let mut single = GameState::new();
         single.setup_position_from_icn("w (8;q|1;q) K1,1|R5,4|k8,8");
         single.recompute_piece_counts();
-        assert_eq!(single.is_legal_fast(&m, false), Ok(true));
+        assert!(single.is_legal_fast(&m, false));
     }
 
     #[test]
