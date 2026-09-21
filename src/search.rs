@@ -1063,18 +1063,6 @@ pub struct Searcher {
     pub plies_from_null: Box<[u8; MAX_PLY]>,
     pub tt: LocalTranspositionTable,
 
-    /// Accumulator for the position at each ply, after the parent's move. Sized
-    /// `MAX_PLY + 2` so the deepest ply still has a child slot, and only maintained
-    /// while `nnue_active`.
-    #[cfg(feature = "nnue")]
-    pub nnue_stack: Box<[crate::nnue::NnueState; MAX_PLY + 2]>,
-    /// Scratch buffer used by singular extension to save/restore
-    /// `nnue_stack[ply+1]` across the singular verification search.
-    #[cfg(feature = "nnue")]
-    pub nnue_scratch: Box<crate::nnue::NnueState>,
-    /// Whether NNUE evaluation is currently active for this search.
-    #[cfg(feature = "nnue")]
-    pub nnue_active: bool,
 }
 
 impl Searcher {
@@ -1209,96 +1197,6 @@ impl Searcher {
             pawn_history: zeroed_box(),
             tt: LocalTranspositionTable::new(local_tt_size_mb()),
 
-            #[cfg(feature = "nnue")]
-            nnue_stack: {
-                let v: Vec<crate::nnue::NnueState> = (0..MAX_PLY + 2)
-                    .map(|_| crate::nnue::NnueState::default())
-                    .collect();
-                unsafe {
-                    Box::from_raw(Box::into_raw(v.into_boxed_slice())
-                        as *mut [crate::nnue::NnueState; MAX_PLY + 2])
-                }
-            },
-            #[cfg(feature = "nnue")]
-            nnue_scratch: Box::new(crate::nnue::NnueState::default()),
-            #[cfg(feature = "nnue")]
-            nnue_active: false,
-        }
-    }
-
-    // NNUE accumulator stack helpers. The accumulator for the position at
-    // `ply` lives in `self.nnue_stack[ply]`. Helpers here update child slot
-    // `ply+1` before recursion without heap allocation.
-
-    /// Initialize `nnue_stack[0]` from the root position and mark NNUE as
-    /// active for the remainder of this search. Call once per top-level
-    /// search if NNUE applies; otherwise set `nnue_active = false`.
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_init_root(&mut self, game: &GameState) {
-        if crate::nnue::is_applicable(game) {
-            self.nnue_stack[0] = crate::nnue::NnueState::from_position(game);
-            self.nnue_active = true;
-        } else {
-            self.nnue_active = false;
-        }
-    }
-
-    /// Copies `nnue_stack[ply]` forward and applies the feature delta for `m`. Must be
-    /// called while `game` is still in the pre-move state.
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_push_move(&mut self, game: &GameState, ply: usize, m: Move) {
-        if !self.nnue_active || ply + 1 >= self.nnue_stack.len() {
-            return;
-        }
-        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-        right[0].clone_from(&left[ply]);
-        right[0].update_for_move(game, m);
-    }
-
-    /// Copy `nnue_stack[ply]` into `nnue_stack[ply+1]` unchanged (used for
-    /// null-move search: a null move does not change piece positions, so
-    /// the accumulator is identical).
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_push_null(&mut self, ply: usize) {
-        if !self.nnue_active || ply + 1 >= self.nnue_stack.len() {
-            return;
-        }
-        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-        right[0].clone_from(&left[ply]);
-    }
-
-    /// Save `nnue_stack[ply]` to scratch (for singular extension, before
-    /// the inner verification search clobbers it).
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_save_scratch(&mut self, ply: usize) {
-        if !self.nnue_active || ply >= self.nnue_stack.len() {
-            return;
-        }
-        (*self.nnue_scratch).clone_from(&self.nnue_stack[ply]);
-    }
-
-    /// Restore `nnue_stack[ply]` from scratch (after singular verification).
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_restore_scratch(&mut self, ply: usize) {
-        if !self.nnue_active || ply >= self.nnue_stack.len() {
-            return;
-        }
-        self.nnue_stack[ply].clone_from(&*self.nnue_scratch);
-    }
-
-    /// Borrow the NNUE accumulator for a given ply if active.
-    #[cfg(feature = "nnue")]
-    #[inline]
-    pub fn nnue_at(&self, ply: usize) -> Option<&crate::nnue::NnueState> {
-        if self.nnue_active {
-            self.nnue_stack.get(ply)
-        } else {
-            None
         }
     }
 
@@ -2242,16 +2140,9 @@ fn search_with_searcher(
     });
     crate::moves::set_wall_targets(bare_conversion, &game.spatial_indices);
 
-    // Initialize NNUE accumulator stack for this search (stored on searcher).
-    #[cfg(feature = "nnue")]
-    searcher.nnue_init_root(game);
-
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
-        #[cfg(feature = "nnue")]
-        let score = searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0);
-        #[cfg(not(feature = "nnue"))]
         let score = searcher.adjusted_eval(game, evaluate(game), 0);
         return Some((single, score));
     }
@@ -2985,10 +2876,6 @@ pub(crate) fn get_best_moves_multipv_impl(
         reset_search_nodes();
     }
 
-    // Initialize NNUE accumulator stack (stored on searcher).
-    #[cfg(feature = "nnue")]
-    searcher.nnue_init_root(game);
-
     // Get all legal moves upfront (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
     game.get_pseudo_legal_moves_into(&mut moves);
@@ -3038,9 +2925,6 @@ pub(crate) fn get_best_moves_multipv_impl(
         return MultiPVResult {
             lines: vec![PVLine {
                 mv: single,
-                #[cfg(feature = "nnue")]
-                score: searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(0)), 0),
-                #[cfg(not(feature = "nnue"))]
                 score: searcher.adjusted_eval(game, evaluate(game), 0),
                 depth: 0,
                 pv: vec![single],
@@ -3146,11 +3030,6 @@ pub(crate) fn get_best_moves_multipv_impl(
                 searcher.hot.stopped = true;
                 break;
             }
-
-            // Incremental NNUE accumulator update for the child position (ply 1).
-            // Must be called BEFORE make_move.
-            #[cfg(feature = "nnue")]
-            searcher.nnue_push_move(game, 0, *m);
 
             let undo = game.make_move(m);
 
@@ -3507,9 +3386,6 @@ fn negamax_root(
     // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
     // improving tests compare against a zero root eval, i.e. against the score's sign.
     if !in_check {
-        #[cfg(feature = "nnue")]
-        let root_raw = evaluate(game, searcher.nnue_at(0));
-        #[cfg(not(feature = "nnue"))]
         let root_raw = evaluate(game);
         searcher.eval_stack[0] = searcher.adjusted_eval(game, root_raw, 0);
     } else {
@@ -3538,11 +3414,6 @@ fn negamax_root(
         // Note: All threads search all moves. Thread variation comes from:
         // 1. Shared TT - threads benefit from each other's entries
         // 2. Slight timing differences - threads finish at different points
-
-        // Incremental NNUE accumulator update for the child position (ply 1).
-        // Must be called BEFORE make_move.
-        #[cfg(feature = "nnue")]
-        searcher.nnue_push_move(game, 0, *m);
 
         // Slot 0's context, exactly as the interior loop fills its own ply. Without it
         // every reply to a root move is ordered and reduced with no continuation history,
@@ -3744,9 +3615,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             0
         };
-        #[cfg(feature = "nnue")]
-        return searcher.adjusted_eval(game, evaluate(game, searcher.nnue_at(ply)), prev_move_idx);
-        #[cfg(not(feature = "nnue"))]
         return searcher.adjusted_eval(game, evaluate(game), prev_move_idx);
     }
 
@@ -3897,11 +3765,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let mut raw = tt_data_static_eval;
         if raw == INFINITY + 1 {
             raw = {
-                #[cfg(feature = "nnue")]
-                {
-                    evaluate(game, searcher.nnue_at(ply))
-                }
-                #[cfg(not(feature = "nnue"))]
                 {
                     evaluate(game)
                 }
@@ -4104,11 +3967,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 game.make_null_move();
 
-                // Null-move NNUE: child accumulator at ply+1 equals parent at ply
-                // because a null move changes no piece positions.
-                #[cfg(feature = "nnue")]
-                searcher.nnue_push_null(ply);
-
                 let r = nmp_reduction_base() + depth / nmp_reduction_div();
                 let null_score = -negamax(&mut NegamaxContext {
                     searcher,
@@ -4141,8 +3999,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // search without the null move permission. This helps identify zugzwang
                     // positions or cases where NMP was too optimistic.
                     if depth >= 16 {
-                        // Verification re-search at current ply: nnue_stack[ply]
-                        // is already valid for this position (no move was made).
+                        // Verification re-search at the current ply (no move was made).
                         let verify_score = negamax(&mut NegamaxContext {
                             searcher,
                             game,
@@ -4209,11 +4066,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
             // Fast legality check (skips is_move_illegal for non-pinned pieces)
             let fast_legal = game.is_legal_fast(&m, in_check);
-
-            // Incremental NNUE accumulator update for the child position.
-            // Must be called BEFORE make_move.
-            #[cfg(feature = "nnue")]
-            searcher.nnue_push_move(game, ply, m);
 
             // Install this node's context for the child search, matching the main
             // loop. Without it a sibling's stale context corrupts continuation and
@@ -4518,12 +4370,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.tt.prefetch_entry(child_hash);
         }
 
-        // Incremental NNUE accumulator update for the child position (ply+1).
-        // Must be called BEFORE make_move. If singular extension below runs and
-        // clobbers nnue_stack[ply+1], we re-push after the singular verification.
-        #[cfg(feature = "nnue")]
-        searcher.nnue_push_move(game, ply, m);
-
         // Pawn history is keyed on the position where the move is chosen (the
         // parent). Capture it before make_move so the LMR/HLP reductions read
         // the same slot the cutoff updates write, instead of the child's hash.
@@ -4591,11 +4437,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.in_check_history[ply] = in_check_backup;
             searcher.capture_history_stack[ply] = capture_backup;
 
-            // Singular recursion clobbers stack[ply+1] while exploring other moves, so
-            // stash the child accumulator computed for `m` and restore it afterwards.
-            #[cfg(feature = "nnue")]
-            searcher.nnue_save_scratch(ply + 1);
-
             // Search every move but the TT move at reduced depth: if none comes near
             // the TT score, the TT move is singular.
             let se_value = negamax(&mut NegamaxContext {
@@ -4614,10 +4455,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 was_null_move: false,
                 excluded_move: Some(m),
             });
-
-            // Restore the child accumulator for `m`
-            #[cfg(feature = "nnue")]
-            searcher.nnue_restore_scratch(ply + 1);
 
             // Re-make the TT move and restore state for child search
             undo = game.make_move(&m);
@@ -5305,9 +5142,6 @@ fn quiescence(
 ) -> i32 {
     let is_pv = node_type == NodeType::PV;
     if ply >= MAX_PLY - 1 {
-        #[cfg(feature = "nnue")]
-        return evaluate(game, searcher.nnue_at(ply));
-        #[cfg(not(feature = "nnue"))]
         return evaluate(game);
     }
 
@@ -5433,11 +5267,6 @@ fn quiescence(
         if tt_hit {
             unadjusted_static_eval = tt_data_static_eval;
             if unadjusted_static_eval == INFINITY + 1 {
-                #[cfg(feature = "nnue")]
-                {
-                    unadjusted_static_eval = evaluate(game, searcher.nnue_at(ply));
-                }
-                #[cfg(not(feature = "nnue"))]
                 {
                     unadjusted_static_eval = evaluate(game);
                 }
@@ -5459,11 +5288,6 @@ fn quiescence(
                 }
             }
         } else {
-            #[cfg(feature = "nnue")]
-            {
-                unadjusted_static_eval = evaluate(game, searcher.nnue_at(ply));
-            }
-            #[cfg(not(feature = "nnue"))]
             {
                 unadjusted_static_eval = evaluate(game);
             }
@@ -5663,11 +5487,6 @@ fn quiescence(
             }
             searcher.tt.prefetch_entry(child_hash);
         }
-
-        // Incremental NNUE accumulator update for the child position (ply+1).
-        // Must be called BEFORE make_move.
-        #[cfg(feature = "nnue")]
-        searcher.nnue_push_move(game, ply, *m);
 
         let undo = game.make_move(m);
 

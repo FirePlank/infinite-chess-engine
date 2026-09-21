@@ -21,10 +21,6 @@ name = "helpmate_solver"
 required-features = ["parallel_solver"]
 
 [[bin]]
-name = "gen_nnue_data"
-required-features = ["parallel_solver"]
-
-[[bin]]
 name = "puzzle_gen"
 required-features = ["puzzle_gen"]
 
@@ -102,7 +98,6 @@ data_gen = ["serde_json", "rayon", "clap", "ctrlc", "indicatif", "num_cpus"]
 multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
 puzzle_gen = ["csv", "serde_json", "rayon", "indicatif"]
-nnue = []
 # Stage-A hybrid eval net: residual MLP over HCE scalars (docs/hybrid-eval-design.md).
 eval_net = []
 debug = ["console_error_panic_hook"]

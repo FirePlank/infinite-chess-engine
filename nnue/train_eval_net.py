@@ -133,13 +133,13 @@ def targets(static, teacher, wdl, source, lam_by_source, k):
     return lam * torch.sigmoid(teacher / k) + (1.0 - lam) * wdl
 
 
-def batch_loss(model, x, static, tgt, k):
-    out = model(x.float() / IN_SCALE) * OUT_SCALE
+def batch_loss(model, x, static, tgt, k, cap):
+    out = (model(x.float() / IN_SCALE) * OUT_SCALE).clamp(-cap, cap)
     p = torch.sigmoid((static + out) / k)
     return ((p - tgt) ** 2).mean(), out
 
 
-def evaluate_split(model, data, lam_by_source, k, batch=65536):
+def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
     x, static, teacher, wdl, source, variant = data
     model.eval()
     n = x.shape[0]
@@ -152,14 +152,15 @@ def evaluate_split(model, data, lam_by_source, k, batch=65536):
         for i in range(0, n, batch):
             sl = slice(i, i + batch)
             tgt = targets(static[sl], teacher[sl], wdl[sl], source[sl], lam_by_source, k)
-            out = model(x[sl].float() / IN_SCALE) * OUT_SCALE
+            raw = model(x[sl].float() / IN_SCALE) * OUT_SCALE
+            out = raw.clamp(-cap, cap)
             p = torch.sigmoid((static[sl] + out) / k)
             p0 = torch.sigmoid(static[sl] / k)
             l = (p - tgt) ** 2
             l0 = (p0 - tgt) ** 2
             loss_sum += l.sum().item()
             base_sum += l0.sum().item()
-            big += (out.abs() > 250).sum().item()
+            big += (raw.abs() >= cap).sum().item()
             for key, store in ((variant[sl], per_variant), (source[sl], per_source)):
                 for v in torch.unique(key).tolist():
                     m = key == v
@@ -187,6 +188,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--qat-from", type=int, default=4, help="epoch from which fake quantization is on")
+    ap.add_argument("--cap", type=float, default=250.0, help="residual cap applied in the loss (must match RESIDUAL_CAP)")
     ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
     args = ap.parse_args()
 
@@ -221,7 +223,7 @@ def main():
         opt, max_lr=args.lr, total_steps=args.epochs * steps_per_epoch, pct_start=0.1
     )
 
-    v_loss, v_base, v_big, _, _ = evaluate_split(model, val, lam_by_source, args.k)
+    v_loss, v_base, v_big, _, _ = evaluate_split(model, val, lam_by_source, args.k, args.cap)
     print(f"epoch 0  val {v_loss:.6f}  baseline {v_base:.6f}  (zero-residual gain 0.00%)")
     best = float("inf")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -237,18 +239,20 @@ def main():
         for i in range(0, n_train, args.batch):
             idx = perm[i : i + args.batch]
             tgt = targets(static[idx], teacher[idx], wdl[idx], source[idx], lam_by_source, args.k)
-            loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k)
+            loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k, args.cap)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
             sched.step()
             model.clamp_weights()
             run += loss.item() * idx.shape[0]
-        v_loss, v_base, v_big, per_variant, per_source = evaluate_split(model, val, lam_by_source, args.k)
+        v_loss, v_base, v_big, per_variant, per_source = evaluate_split(
+            model, val, lam_by_source, args.k, args.cap
+        )
         gain = 100.0 * (1.0 - v_loss / v_base)
         print(
             f"epoch {epoch:2d}  train {run / n_train:.6f}  val {v_loss:.6f}  baseline {v_base:.6f}"
-            f"  gain {gain:5.2f}%  |out|>250: {100 * v_big:.2f}%  ({time.time() - t0:.0f}s)"
+            f"  gain {gain:5.2f}%  |out|>=cap: {100 * v_big:.2f}%  ({time.time() - t0:.0f}s)"
         )
         if v_loss < best:
             best = v_loss
@@ -261,6 +265,7 @@ def main():
                     "in_scale": IN_SCALE,
                     "out_scale": OUT_SCALE,
                     "k": args.k,
+                    "cap": args.cap,
                     "val_loss": v_loss,
                     "val_baseline": v_base,
                 },

@@ -39,7 +39,7 @@ pub enum EvalKind {
     /// Obstocean: a not-too-large bounded board whose otherwise-empty squares
     /// are almost entirely obstacles, orthodox pieces only.
     Obstocean,
-    /// Everything else, routed to NNUE when applicable and the base HCE otherwise.
+    /// Everything else: the base HCE plus the eval-net residual.
     #[default]
     Generic,
 }

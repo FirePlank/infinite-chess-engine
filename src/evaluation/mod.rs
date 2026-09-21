@@ -186,42 +186,8 @@ fn apply_rule50_damping(game: &GameState, raw_eval: i32, mop_up_active: bool) ->
     }
 }
 
-/// Main evaluation entry point - NNUE Enabled
+/// Main evaluation entry point.
 #[inline]
-#[cfg(feature = "nnue")]
-pub fn evaluate(game: &GameState, nnue_state: Option<&crate::nnue::NnueState>) -> i32 {
-    if insufficient_material::evaluate_insufficient_material(game) {
-        return 0;
-    }
-    let raw_eval = match game.eval_kind {
-        EvalKind::Chess => variants::chess::evaluate(game),
-        EvalKind::Obstocean => variants::obstocean::evaluate(game),
-        EvalKind::PawnHorde => variants::pawn_horde::evaluate(game),
-        EvalKind::Generic => {
-            // Try NNUE first if applicable (standard pieces, kings present, weights loaded)
-            if crate::nnue::is_applicable(game) {
-                if let Some(state) = nnue_state {
-                    crate::nnue::evaluate_with_state(game, state)
-                } else {
-                    crate::nnue::evaluate(game)
-                }
-            } else {
-                base::evaluate(game)
-            }
-        }
-    };
-    let mop_up = compute_mop_up_term(game);
-
-    apply_rule50_damping(
-        game,
-        apply_pawnless_scale(game, apply_bounded_drawish_scale(game, raw_eval + mop_up)),
-        mop_up != 0,
-    )
-}
-
-/// Main evaluation entry point - NNUE Disabled
-#[inline]
-#[cfg(not(feature = "nnue"))]
 pub fn evaluate(game: &GameState) -> i32 {
     if insufficient_material::evaluate_insufficient_material(game) {
         return 0;
@@ -259,10 +225,7 @@ mod tests {
 
     #[inline]
     fn evaluate_wrapper(game: &GameState) -> i32 {
-        #[cfg(feature = "nnue")]
-        return evaluate(game, None);
-        #[cfg(not(feature = "nnue"))]
-        return evaluate(game);
+        evaluate(game)
     }
 
     /// With no royals the cloud reference fell back to the absolute origin, and

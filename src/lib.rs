@@ -7,7 +7,6 @@ pub mod eval_net;
 pub mod evaluation;
 pub mod game;
 pub mod moves;
-pub mod nnue;
 pub mod search;
 pub mod simd;
 pub mod tiles;
@@ -575,9 +574,6 @@ impl Engine {
     #[wasm_bindgen]
     pub fn evaluate_with_features(&mut self) -> JsValue {
         crate::evaluation::reset_eval_features();
-        #[cfg(feature = "nnue")]
-        let eval = crate::evaluation::evaluate(&self.game, None);
-        #[cfg(not(feature = "nnue"))]
         let eval = crate::evaluation::evaluate(&self.game);
         let features = crate::evaluation::snapshot_eval_features();
         serde_wasm_bindgen::to_value(&JsEvalWithFeatures { eval, features }).unwrap()
@@ -1065,10 +1061,7 @@ impl Engine {
     /// Return the engine's static evaluation of the current position in centipawns,
     /// from the side-to-move's perspective (positive = advantage for side to move).
     pub fn evaluate_position(game: &GameState) -> i32 {
-        #[cfg(feature = "nnue")]
-        return crate::evaluation::evaluate(game, None);
-        #[cfg(not(feature = "nnue"))]
-        return crate::evaluation::evaluate(game);
+        crate::evaluation::evaluate(game)
     }
 }
 

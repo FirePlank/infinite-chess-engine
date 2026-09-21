@@ -362,10 +362,7 @@ impl Dataset {
 
 #[inline]
 fn static_eval(game: &GameState) -> i32 {
-    #[cfg(feature = "nnue")]
-    return apeiron::evaluation::evaluate(game, None);
-    #[cfg(not(feature = "nnue"))]
-    return apeiron::evaluation::evaluate(game);
+    apeiron::evaluation::evaluate(game)
 }
 
 /// Get/set an `EvalParams` field by name through its JSON encoding: 132

@@ -1381,12 +1381,8 @@ fn play_game(
     let mut old_engine: Option<ServeEngine> = None;
     let termination_reason;
 
-    let get_eval = |g: &GameState| {
-        #[cfg(feature = "nnue")]
-        return with_variant_bounds(variant, || apeiron::evaluation::evaluate(g, None));
-        #[cfg(not(feature = "nnue"))]
-        return with_variant_bounds(variant, || apeiron::evaluation::evaluate(g));
-    };
+    let get_eval =
+        |g: &GameState| with_variant_bounds(variant, || apeiron::evaluation::evaluate(g));
 
     /// Helper to create an outcome return value
     macro_rules! game_outcome {

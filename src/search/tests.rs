@@ -434,10 +434,6 @@ fn test_evaluate_with_search() {
     // Balanced position
     game.setup_position_from_icn("w K0,0|k7,7|R4,2|r4,7");
 
-    // Get static eval
-    #[cfg(feature = "nnue")]
-    let static_eval = evaluate(&game, None);
-    #[cfg(not(feature = "nnue"))]
     let static_eval = evaluate(&game);
     // Should be close to 0 (roughly balanced)
     assert!(

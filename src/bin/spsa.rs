@@ -479,11 +479,6 @@ fn play_game(
     let mut moves = Vec::new();
 
     let eval_fn = |g: &GameState| {
-        #[cfg(feature = "nnue")]
-        {
-            apeiron::evaluation::evaluate(g, None)
-        }
-        #[cfg(not(feature = "nnue"))]
         {
             apeiron::evaluation::evaluate(g)
         }

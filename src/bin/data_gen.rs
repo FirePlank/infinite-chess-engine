@@ -555,10 +555,7 @@ fn total_phase(game: &GameState) -> i32 {
 
 #[inline]
 fn static_eval(game: &GameState) -> i32 {
-    #[cfg(feature = "nnue")]
-    return apeiron::evaluation::evaluate(game, None);
-    #[cfg(not(feature = "nnue"))]
-    return apeiron::evaluation::evaluate(game);
+    apeiron::evaluation::evaluate(game)
 }
 
 /// Convert a side-to-move-relative score to White-ahead.

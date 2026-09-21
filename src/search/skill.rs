@@ -442,14 +442,6 @@ fn is_deep_only_tactic(result: &MultiPVResult, mv: Move, final_score: i32) -> bo
     deep_tactic_surprise_permille(result, mv, final_score) >= DEEP_TACTIC_SURPRISE_PERMILLE
 }
 
-#[cfg(feature = "nnue")]
-#[inline]
-fn static_position_eval(game: &GameState) -> i32 {
-    // No accumulator: this is a one-off read outside the search's NNUE stack.
-    evaluate(game, None)
-}
-
-#[cfg(not(feature = "nnue"))]
 #[inline]
 fn static_position_eval(game: &GameState) -> i32 {
     evaluate(game)
@@ -896,13 +888,6 @@ mod tests {
         }
     }
 
-    /// Weak levels stop recognizing an attack, and over-value sitting still. The
-    /// scaling has to move a real position's score, not just exist.
-    #[cfg(feature = "nnue")]
-    fn eval_g(game: &GameState) -> i32 {
-        evaluate(game, None)
-    }
-    #[cfg(not(feature = "nnue"))]
     fn eval_g(game: &GameState) -> i32 {
         evaluate(game)
     }

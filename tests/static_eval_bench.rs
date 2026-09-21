@@ -3,10 +3,7 @@ use std::time::Instant;
 
 #[inline]
 fn eval_helper(game: &GameState) -> i32 {
-    #[cfg(feature = "nnue")]
-    return evaluation::evaluate(game, None);
-    #[cfg(not(feature = "nnue"))]
-    return evaluation::evaluate(game);
+    evaluation::evaluate(game)
 }
 
 #[test]
