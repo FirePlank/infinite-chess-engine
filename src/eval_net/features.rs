@@ -9,10 +9,10 @@ use crate::game::GameState;
 
 /// Bump whenever `feature_vector`'s layout or scaling changes, so stale weight
 /// files are rejected at load instead of silently misreading features.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
-pub const NUM_ROWS: usize = 15;
-pub const NUM_FEATURES: usize = 99;
+pub const NUM_ROWS: usize = 14;
+pub const NUM_FEATURES: usize = 129;
 
 /// Eval-term rows captured from `tracer.record` calls, by exact name.
 pub const ROW_NAMES: [&str; NUM_ROWS] = [
@@ -29,7 +29,6 @@ pub const ROW_NAMES: [&str; NUM_ROWS] = [
     "King: Shelter",
     "King: Attack",
     "Pawn: King Pawn Tropism",
-    "Pawn: Core",
     "Pawn: Passed",
 ];
 
@@ -61,12 +60,24 @@ pub struct EvalNetInputs {
     pub storm_count: [i32; 2],
     pub attack_ready: [i32; 2],
     pub urgency: [i32; 2],
-    /// Rays around that side's own first royal with no piece on them at all.
+    /// Diagonal rays around that side's royals with no piece on them at all.
     pub ray_open: [i32; 2],
     pub ray_enemy_min_dist: [i32; 2],
     pub ray_enemy_value: [i32; 2],
     pub ray_cover: [i32; 2],
+    /// Same four summaries over the orthogonal rays.
+    pub ortho_open: [i32; 2],
+    pub ortho_enemy_min_dist: [i32; 2],
+    pub ortho_enemy_value: [i32; 2],
+    pub ortho_cover: [i32; 2],
     pub ring_covered: [i32; 2],
+    /// First royal's defender units at distance 1-2, 3-4, 5-7.
+    pub defender_hist: [[i32; 3]; 2],
+    /// Chebyshev distance between the first royals (255 when a side has none).
+    pub king_dist: i32,
+    /// Each side's first royal's distance to the piece-cloud centre.
+    pub king_cloud_dist: [i32; 2],
+    pub halfmove_clock: i32,
     /// Units attacking / defending that side's first royal.
     pub royal_attackers: [i32; 2],
     pub royal_defenders: [i32; 2],
@@ -75,10 +86,21 @@ pub struct EvalNetInputs {
     pub non_pawn_non_royal: [i32; 2],
 }
 
-/// Summarize one royal's 8-ray array into (open rays, nearest enemy distance,
+/// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
+/// Indexed [0]=White, [1]=Black explicitly.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct PawnNetInputs {
+    /// Tapered doubled, candidate, connected, isolated, backward terms.
+    pub terms: [[i32; 5]; 2],
+    pub passers: [i32; 2],
+    /// Nearest passer's distance to promotion (100 when none).
+    pub passer_min_dist: [i32; 2],
+}
+
+/// Summarize one ray class (4 rays) into (open rays, nearest enemy distance,
 /// clamped enemy value sum on rays, rays covered by a friendly at dist <= 2).
 pub fn summarize_rays(
-    rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    rays: &[(i32, i32, PlayerColor, PieceType)],
     own: PlayerColor,
 ) -> (i32, i32, i32, i32) {
     let mut open = 0;
@@ -108,12 +130,15 @@ pub fn summarize_rays(
 pub struct FeatureCollector {
     pub rows: [(i32, i32); NUM_ROWS],
     pub inputs: EvalNetInputs,
+    pub pawn: PawnNetInputs,
 }
 
 impl EvaluationTracer for FeatureCollector {
     const WANTS_INPUTS: bool = true;
 
-    #[inline]
+    // Always inlined so each call site's literal `term` folds the match to one
+    // store instead of a runtime string comparison chain.
+    #[inline(always)]
     fn record(&mut self, term: &str, white: i32, black: i32) {
         let idx = match term {
             "Material (net)" => 0,
@@ -129,8 +154,7 @@ impl EvaluationTracer for FeatureCollector {
             "King: Shelter" => 10,
             "King: Attack" => 11,
             "Pawn: King Pawn Tropism" => 12,
-            "Pawn: Core" => 13,
-            "Pawn: Passed" => 14,
+            "Pawn: Passed" => 13,
             _ => return,
         };
         self.rows[idx] = (white, black);
@@ -144,6 +168,11 @@ impl EvaluationTracer for FeatureCollector {
     #[inline]
     fn record_inputs(&mut self, inputs: &EvalNetInputs) {
         self.inputs = *inputs;
+    }
+
+    #[inline]
+    fn record_pawn_inputs(&mut self, pawn: &PawnNetInputs) {
+        self.pawn = *pawn;
     }
 }
 
@@ -204,7 +233,9 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
     push!(ct(game.black_royals.len() as i32));
     push!(win_condition_code(game.game_rules.white_win_condition));
     push!(win_condition_code(game.game_rules.black_win_condition));
-    push!(ct(64 - crate::moves::get_world_size().leading_zeros() as i32));
+    // Saturates at the 1e15 border every unbounded preset uses, so any larger
+    // encoding of "unbounded" is the same input and cannot move the eval.
+    push!(ct((64 - crate::moves::get_world_size().leading_zeros() as i32).min(50)));
 
     // Raw eval-pass scalars.
     let n = &fc.inputs;
@@ -217,6 +248,12 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
     push!(ct(n.leaper_geometry_ctx));
     push!(ct(n.cloud_avg_spread));
     push!(ct(n.cloud_count));
+    push!(ct(n.king_dist));
+    // Clock slot held at 0: the exporter drops positions past 40 plies, so the
+    // net has no trained response there, and rule50 damping owns the clock.
+    push!(0);
+    let _ = n.halfmove_clock;
+    let p = &fc.pawn;
     for side in 0..2 {
         push!(ct(n.counterplay[side]));
         push!(ct(n.undeveloped[side]));
@@ -237,7 +274,20 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
         push!(ct(n.ray_enemy_min_dist[side]));
         push!(cp(n.ray_enemy_value[side]));
         push!(ct(n.ray_cover[side]));
+        push!(ct(n.ortho_open[side]));
+        push!(ct(n.ortho_enemy_min_dist[side]));
+        push!(cp(n.ortho_enemy_value[side]));
+        push!(ct(n.ortho_cover[side]));
         push!(ct(n.ring_covered[side]));
+        for h in 0..3 {
+            push!(ct(n.defender_hist[side][h] / 10));
+        }
+        push!(ct(n.king_cloud_dist[side]));
+        for t in 0..5 {
+            push!(cp(p.terms[side][t]));
+        }
+        push!(ct(p.passers[side]));
+        push!(ct(p.passer_min_dist[side]));
         push!(ct(n.royal_attackers[side] / 10));
         push!(ct(n.royal_defenders[side] / 10));
         push!(ct(n.promo_dist[side]));

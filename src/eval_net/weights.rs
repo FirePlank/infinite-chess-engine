@@ -6,20 +6,60 @@ use std::io::{Cursor, Read};
 
 const MAGIC: &[u8; 8] = b"AEVNET01";
 
+/// i16 buffer whose payload starts on a 64-byte boundary, so every 32-byte
+/// weight load stays inside one cache line.
+pub struct AlignedI16 {
+    data: Box<[i16]>,
+    off: usize,
+}
+
+impl AlignedI16 {
+    pub fn zeroed(len: usize) -> Self {
+        let data: Box<[i16]> = vec![0i16; len + 32].into_boxed_slice();
+        let off = (64 - (data.as_ptr() as usize % 64)) % 64 / 2;
+        AlignedI16 { data, off }
+    }
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[i16] {
+        &self.data[self.off..]
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [i16] {
+        &mut self.data[self.off..]
+    }
+    pub fn from_rows(rows: &[i16], n_in: usize, stride: usize, n_rows: usize) -> Self {
+        let mut out = Self::zeroed(stride * n_rows);
+        for r in 0..n_rows {
+            out.as_mut_slice()[r * stride..r * stride + n_in]
+                .copy_from_slice(&rows[r * n_in..(r + 1) * n_in]);
+        }
+        out
+    }
+}
+
+/// Row strides are padded to 32 i16 (64 bytes) so aligned rows stay aligned.
+pub const fn pad32(n: usize) -> usize {
+    n.div_ceil(32) * 32
+}
+
 pub struct EvalNetWeights {
     pub n_in: usize,
     pub h1: usize,
     pub h2: usize,
+    /// Padded row strides of `l1_w` (inputs) and `l2_w` (layer-1 outputs).
+    pub stride1: usize,
+    pub stride2: usize,
     /// Right-shifts applied to the layer-1/2 accumulators before the CReLU.
     pub s1: u32,
     pub s2: u32,
     /// Converts the raw integer output to centipawns.
     pub out_scale: f32,
-    pub l1_w: Box<[i8]>,
+    /// Weights are i8 on disk but widened to i16 at load: pmaddwd then needs no
+    /// sign-extension step, and the 66 KB of layer 1 streams fine from L2.
+    pub l1_w: AlignedI16,
     pub l1_b: Box<[i32]>,
-    pub l2_w: Box<[i8]>,
+    pub l2_w: AlignedI16,
     pub l2_b: Box<[i32]>,
-    pub l3_w: Box<[i8]>,
+    pub l3_w: AlignedI16,
     pub l3_b: i32,
 }
 
@@ -41,10 +81,10 @@ fn read_f32(c: &mut Cursor<&[u8]>) -> Result<f32, &'static str> {
     Ok(f32::from_le_bytes(b))
 }
 
-fn read_i8s(c: &mut Cursor<&[u8]>, n: usize) -> Result<Box<[i8]>, &'static str> {
+fn read_i8s(c: &mut Cursor<&[u8]>, n: usize) -> Result<Box<[i16]>, &'static str> {
     let mut buf = vec![0u8; n];
     c.read_exact(&mut buf).map_err(|_| "short read (i8[])")?;
-    Ok(buf.into_iter().map(|b| b as i8).collect())
+    Ok(buf.into_iter().map(|b| b as i8 as i16).collect())
 }
 
 fn read_i32s(c: &mut Cursor<&[u8]>, n: usize) -> Result<Box<[i32]>, &'static str> {
@@ -83,19 +123,28 @@ impl EvalNetWeights {
             return Err("bad hidden dims");
         }
 
+        let (stride1, stride2) = (pad32(n_in), pad32(h1));
+        let l1 = read_i8s(&mut c, h1 * n_in)?;
+        let l1_b = read_i32s(&mut c, h1)?;
+        let l2 = read_i8s(&mut c, h2 * h1)?;
+        let l2_b = read_i32s(&mut c, h2)?;
+        let l3 = read_i8s(&mut c, h2)?;
+        let l3_b = read_i32s(&mut c, 1)?[0];
         Ok(EvalNetWeights {
             n_in,
             h1,
             h2,
+            stride1,
+            stride2,
             s1,
             s2,
             out_scale,
-            l1_w: read_i8s(&mut c, h1 * n_in)?,
-            l1_b: read_i32s(&mut c, h1)?,
-            l2_w: read_i8s(&mut c, h2 * h1)?,
-            l2_b: read_i32s(&mut c, h2)?,
-            l3_w: read_i8s(&mut c, h2)?,
-            l3_b: read_i32s(&mut c, 1)?[0],
+            l1_w: AlignedI16::from_rows(&l1, n_in, stride1, h1),
+            l1_b,
+            l2_w: AlignedI16::from_rows(&l2, h1, stride2, h2),
+            l2_b,
+            l3_w: AlignedI16::from_rows(&l3, h2, pad32(h2), 1),
+            l3_b,
         })
     }
 }

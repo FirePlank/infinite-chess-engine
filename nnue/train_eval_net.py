@@ -58,13 +58,15 @@ def record_dtype(n_feat, rec_size):
     return dt
 
 
-def load(path, max_records=0):
+def load(path, max_records=0, stride=1):
     h = read_header(path)
     dt = record_dtype(h["n_features"], h["record_size"])
     count = h["count"]
     if max_records:
         count = min(count, max_records)
     arr = np.memmap(path, dtype=dt, mode="r", offset=HEADER.size, shape=(count,))
+    if stride > 1:
+        arr = arr[::stride]
     return h, arr
 
 
@@ -76,22 +78,29 @@ def fake_quant(t, scale, fn=torch.round):
 class EvalNet(nn.Module):
     """Quantization-aware once `qat` is set: weights snap to the i8 grids the
     exporter uses and activations to the 0..127 CReLU grid, with the floor that
-    `acc >> shift` applies, so the integer net reproduces the float one."""
+    `acc >> shift` applies, so the integer net reproduces the float one.
+    `n_out=2` gives an (mg, eg) pair tapered by the record's phase (screening only)."""
 
-    def __init__(self, n_in, h1=32, h2=32):
+    def __init__(self, n_in, h1=32, h2=32, n_out=1):
         super().__init__()
         self.l1 = nn.Linear(n_in, h1)
         self.l2 = nn.Linear(h1, h2)
-        self.l3 = nn.Linear(h2, 1)
+        self.l3 = nn.Linear(h2, n_out)
         nn.init.zeros_(self.l3.weight)
         nn.init.zeros_(self.l3.bias)
         self.qat = False
+        self.n_out = n_out
 
-    def forward(self, x):
+    def head(self, y, phase):
+        if self.n_out == 1:
+            return y.squeeze(-1)
+        return (y[:, 0] * phase + y[:, 1] * (24.0 - phase)) / 24.0
+
+    def forward(self, x, phase=None):
         if not self.qat:
             h = torch.clamp(self.l1(x), 0.0, 1.0)
             h = torch.clamp(self.l2(h), 0.0, 1.0)
-            return self.l3(h).squeeze(-1)
+            return self.head(self.l3(h), phase)
         w1 = fake_quant(self.l1.weight, 127.0)
         b1 = fake_quant(self.l1.bias, 127.0 * 64.0)
         w2 = fake_quant(self.l2.weight, 64.0)
@@ -100,7 +109,7 @@ class EvalNet(nn.Module):
         b3 = fake_quant(self.l3.bias, 64.0 * 127.0)
         h = torch.clamp(fake_quant(nn.functional.linear(x, w1, b1), 127.0, torch.floor), 0.0, 1.0)
         h = torch.clamp(fake_quant(nn.functional.linear(h, w2, b2), 127.0, torch.floor), 0.0, 1.0)
-        return nn.functional.linear(h, w3, b3).squeeze(-1)
+        return self.head(nn.functional.linear(h, w3, b3), phase)
 
     def clamp_weights(self):
         with torch.no_grad():
@@ -109,23 +118,27 @@ class EvalNet(nn.Module):
             self.l3.weight.clamp_(-L23_WMAX, L23_WMAX)
 
 
-def to_tensors(arr, mask, device, chunk=1_000_000):
+def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
     """Moves the masked records to `device` chunk by chunk: fancy-indexing the
     whole memmap at once materializes a 2GB+ host copy that small boxes lack."""
-    parts = {k: [] for k in ("x", "static", "teacher", "wdl", "source", "variant")}
+    parts = {k: [] for k in ("x", "static", "teacher", "wdl", "source", "variant", "phase")}
     for i in range(0, len(arr), chunk):
         m = mask[i : i + chunk]
         if not m.any():
             continue
         a = arr[i : i + chunk][m]
-        parts["x"].append(torch.from_numpy(np.ascontiguousarray(a["x"])).to(device))
+        xa = np.ascontiguousarray(a["x"])
+        if x_mult != 1:
+            xa = (xa.astype(np.int32) * x_mult).clip(-32767, 32767).astype(np.int16)
+        parts["x"].append(torch.from_numpy(xa).to(device))
         parts["static"].append(torch.from_numpy(a["static"].astype(np.float32)).to(device))
         parts["teacher"].append(torch.from_numpy(a["teacher"].astype(np.float32)).to(device))
         parts["wdl"].append(torch.from_numpy(a["wdl"].astype(np.float32) / 2.0).to(device))
         parts["source"].append(torch.from_numpy(a["source"].astype(np.int64)).to(device))
         parts["variant"].append(torch.from_numpy(a["variant"].astype(np.int64)).to(device))
+        parts["phase"].append(torch.from_numpy(a["phase"].astype(np.float32)).to(device))
         del a
-    return tuple(torch.cat(parts[k]) for k in ("x", "static", "teacher", "wdl", "source", "variant"))
+    return tuple(torch.cat(parts[k]) for k in ("x", "static", "teacher", "wdl", "source", "variant", "phase"))
 
 
 def targets(static, teacher, wdl, source, lam_by_source, k):
@@ -133,14 +146,17 @@ def targets(static, teacher, wdl, source, lam_by_source, k):
     return lam * torch.sigmoid(teacher / k) + (1.0 - lam) * wdl
 
 
-def batch_loss(model, x, static, tgt, k, cap):
-    out = (model(x.float() / IN_SCALE) * OUT_SCALE).clamp(-cap, cap)
+def batch_loss(model, x, static, tgt, k, cap, weight=None, phase=None):
+    out = (model(x.float() / IN_SCALE, phase) * OUT_SCALE).clamp(-cap, cap)
     p = torch.sigmoid((static + out) / k)
-    return ((p - tgt) ** 2).mean(), out
+    l = (p - tgt) ** 2
+    if weight is not None:
+        l = l * weight
+    return l.mean(), out
 
 
 def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
-    x, static, teacher, wdl, source, variant = data
+    x, static, teacher, wdl, source, variant, phase = data
     model.eval()
     n = x.shape[0]
     loss_sum = 0.0
@@ -152,7 +168,7 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
         for i in range(0, n, batch):
             sl = slice(i, i + batch)
             tgt = targets(static[sl], teacher[sl], wdl[sl], source[sl], lam_by_source, k)
-            raw = model(x[sl].float() / IN_SCALE) * OUT_SCALE
+            raw = model(x[sl].float() / IN_SCALE, phase[sl]) * OUT_SCALE
             out = raw.clamp(-cap, cap)
             p = torch.sigmoid((static[sl] + out) / k)
             p0 = torch.sigmoid(static[sl] / k)
@@ -179,22 +195,28 @@ def main():
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
-    ap.add_argument("--hidden", type=int, default=32)
+    ap.add_argument("--hidden", type=int, default=32, help="layer-1 width")
+    ap.add_argument("--hidden2", type=int, default=32, help="layer-2 width")
     ap.add_argument("--k", type=float, default=531.9, help="logistic scale, texel DEFAULT_K_SCALE")
     ap.add_argument("--lambda-texel", type=float, default=0.7)
     ap.add_argument("--lambda-sprt", type=float, default=0.5)
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of GAMES held out")
     ap.add_argument("--max-records", type=int, default=0)
+    ap.add_argument("--stride", type=int, default=1, help="keep every Nth record")
+    ap.add_argument("--x-mult", type=int, default=1, help="integer input pre-scale (Stage B uses 32)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--qat-from", type=int, default=4, help="epoch from which fake quantization is on")
     ap.add_argument("--cap", type=float, default=250.0, help="residual cap applied in the loss (must match RESIDUAL_CAP)")
+    ap.add_argument("--texel-weight", type=float, default=1.0, help="loss weight of fixed-depth (source 0) records")
+    ap.add_argument("--phase-split", action="store_true", help="(mg, eg) output pair tapered by phase; screening only")
+    ap.add_argument("--max-resid", type=float, default=0.0, help="drop training records with |teacher-static| above this (0 = keep all)")
     ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    header, arr = load(args.data, args.max_records)
+    header, arr = load(args.data, args.max_records, args.stride)
     n_feat = header["n_features"]
     print(f"records={len(arr):,} features={n_feat} schema={header['schema']:#x} device={args.device}")
 
@@ -206,16 +228,16 @@ def main():
 
     dev = torch.device(args.device)
     try:
-        train = to_tensors(arr, ~val_mask, dev)
-        val = to_tensors(arr, val_mask, dev)
+        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
     except RuntimeError as e:  # out of GPU memory: fall back to CPU tensors
         print("GPU load failed, using CPU:", e)
         dev = torch.device("cpu")
-        train = to_tensors(arr, ~val_mask, dev)
-        val = to_tensors(arr, val_mask, dev)
+        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
 
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
-    model = EvalNet(n_feat, args.hidden, args.hidden).to(dev)
+    model = EvalNet(n_feat, args.hidden, args.hidden2, 2 if args.phase_split else 1).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     n_train = train[0].shape[0]
     steps_per_epoch = math.ceil(n_train / args.batch)
@@ -228,7 +250,15 @@ def main():
     best = float("inf")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
 
-    x, static, teacher, wdl, source, _ = train
+    x, static, teacher, wdl, source, _, phase = train
+    if args.max_resid > 0:
+        keep = (teacher - static).abs() <= args.max_resid
+        x, static, teacher, wdl, source, phase = (
+            x[keep], static[keep], teacher[keep], wdl[keep], source[keep], phase[keep]
+        )
+        n_train = x.shape[0]
+        print(f"max-resid filter keeps {n_train:,} training records")
+    src_weight = torch.tensor([args.texel_weight, 1.0], device=dev)
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         if epoch == args.qat_from:
@@ -239,7 +269,8 @@ def main():
         for i in range(0, n_train, args.batch):
             idx = perm[i : i + args.batch]
             tgt = targets(static[idx], teacher[idx], wdl[idx], source[idx], lam_by_source, args.k)
-            loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k, args.cap)
+            w = src_weight[source[idx]] if args.texel_weight != 1.0 else None
+            loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k, args.cap, w, phase[idx])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -261,11 +292,13 @@ def main():
                     "state_dict": model.state_dict(),
                     "n_features": n_feat,
                     "hidden": args.hidden,
+                    "hidden2": args.hidden2,
                     "schema": header["schema"],
                     "in_scale": IN_SCALE,
                     "out_scale": OUT_SCALE,
                     "k": args.k,
                     "cap": args.cap,
+                    "x_mult": args.x_mult,
                     "val_loss": v_loss,
                     "val_baseline": v_base,
                 },
