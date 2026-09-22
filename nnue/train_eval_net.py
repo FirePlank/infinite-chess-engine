@@ -232,6 +232,8 @@ def main():
     ap.add_argument("--max-resid", type=float, default=0.0, help="drop training records with |teacher-static| above this (0 = keep all)")
     ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
     ap.add_argument("--init", default=None, help="warm-start weights from this checkpoint")
+    ap.add_argument("--distill", default=None, help="teacher checkpoint whose outputs are blended into targets")
+    ap.add_argument("--distill-alpha", type=float, default=0.8, help="weight of the teacher in the target")
     ap.add_argument("--eval-only", nargs="*", default=None, metavar="CKPT",
                     help="score these checkpoints on --data (whole file as test set) and exit")
     args = ap.parse_args()
@@ -286,6 +288,15 @@ def main():
         n_train = x.shape[0]
         print(f"max-resid filter keeps {n_train:,} training records")
     src_weight = torch.tensor([args.texel_weight, 1.0], device=dev)
+    teacher_net = None
+    if args.distill:
+        tck = torch.load(args.distill, map_location=dev)
+        teacher_net = EvalNet(tck["n_features"], tck["hidden"], tck.get("hidden2", tck["hidden"])).to(dev)
+        teacher_net.load_state_dict(tck["state_dict"])
+        teacher_net.qat = True
+        teacher_net.eval()
+        t_cap = float(tck.get("cap", args.cap))
+        print(f"distilling from {args.distill} (alpha {args.distill_alpha})")
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         if epoch == args.qat_from:
@@ -296,6 +307,11 @@ def main():
         for i in range(0, n_train, args.batch):
             idx = perm[i : i + args.batch]
             tgt = targets(static[idx], teacher[idx], wdl[idx], source[idx], lam_by_source, args.k)
+            if teacher_net is not None:
+                with torch.no_grad():
+                    t_out = (teacher_net(x[idx].float() / IN_SCALE, phase[idx]) * OUT_SCALE).clamp(-t_cap, t_cap)
+                    t_p = torch.sigmoid((static[idx] + t_out) / args.k)
+                tgt = args.distill_alpha * t_p + (1.0 - args.distill_alpha) * tgt
             w = src_weight[source[idx]] if args.texel_weight != 1.0 else None
             loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k, args.cap, w, phase[idx])
             opt.zero_grad(set_to_none=True)

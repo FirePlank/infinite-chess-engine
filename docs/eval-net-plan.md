@@ -157,3 +157,11 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   ~half the net cost; seed 2 (+ relabel fine-tune) is the size-vs-speed SPRT candidate.
 - 2026-09-23 128×64 seed 2 + relabel fine-tune: **19.7%** on the holdout (A2 19.4) at ~half
   the net cost → SPRT candidate right after A4 (`h128_64_ft.pt`).
+- 2026-09-23 **A4 committed (0151969): +11.6 ± 12.6 vs A2 over 2040 games** (LLR 0.97).
+  Layer-2 vpmaddubsw kernel: checksum/nodes identical but 6% SLOWER (u8 repack of h1
+  per call outweighs halved MACs); rejected. Next: 128×64 distilled from A4 vs A4.
+- 2026-09-23 128×64 path: from-scratch + relabel pass 19.7%; distilled from A4 (α 0.5/0.8/1.0)
+  18.8/19.1/18.6, distilled + relabel pass 19.6 → distillation adds nothing. h128x64 net is
+  ~12% cheaper per eval (5.2 vs 5.9 µs); SPRT vs A4 running (games_evalnet_a5h128).
+  Next: joint pawn-king test = A inputs (129) + dense king-relative pawn cells (310) in ONE
+  net, exported together, screened on the fresh holdout against A4.
