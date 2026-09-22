@@ -14,7 +14,8 @@ use crate::game::GameState;
 use eval_kind::EvalKind;
 
 pub use base::{
-    EvalStyle, calculate_initial_material, get_piece_phase, get_piece_value_base, set_eval_style,
+    EvalStyle, calculate_initial_material, get_piece_phase, get_piece_value_base, get_piece_value_endgame,
+    set_eval_style,
 };
 
 /// Largest slice of the evaluation halfmove-clock damping may remove. Big enough to
@@ -349,6 +350,7 @@ mod tests {
         let mut game = create_test_game();
         game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|R0,0|R1,0");
         game.material_score = 1000;
+        game.eg_material_score = 1000;
         game.turn = PlayerColor::White;
         game.game_rules.move_rule_limit = Some(100);
 

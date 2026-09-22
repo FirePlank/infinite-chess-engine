@@ -26,6 +26,8 @@ use crate::search::params::{
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
+    eg_archbishop, eg_amazon, eg_bishop, eg_camel, eg_centaur, eg_chancellor, eg_giraffe, eg_guard,
+    eg_hawk, eg_huygen, eg_knight, eg_knightrider, eg_queen, eg_rook, eg_rose, eg_zebra,
 min_fairy_development_penalty,
 };
 
@@ -277,6 +279,23 @@ pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
 pub const DEFAULT_EVAL_ROSE: i32 = 997;
 pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
 pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1125;
+pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
+pub const DEFAULT_EVAL_EG_KNIGHT: i32 = 315;
+pub const DEFAULT_EVAL_EG_BISHOP: i32 = 450;
+pub const DEFAULT_EVAL_EG_ROOK: i32 = 618;
+pub const DEFAULT_EVAL_EG_GUARD: i32 = 232;
+pub const DEFAULT_EVAL_EG_CENTAUR: i32 = 640;
+pub const DEFAULT_EVAL_EG_QUEEN: i32 = 1380;
+pub const DEFAULT_EVAL_EG_CAMEL: i32 = 195;
+pub const DEFAULT_EVAL_EG_GIRAFFE: i32 = 165;
+pub const DEFAULT_EVAL_EG_ZEBRA: i32 = 180;
+pub const DEFAULT_EVAL_EG_KNIGHTRIDER: i32 = 800;
+pub const DEFAULT_EVAL_EG_HAWK: i32 = 540;
+pub const DEFAULT_EVAL_EG_ARCHBISHOP: i32 = 1080;
+pub const DEFAULT_EVAL_EG_ROSE: i32 = 997;
+pub const DEFAULT_EVAL_EG_HUYGEN: i32 = 330;
+pub const DEFAULT_EVAL_EG_CHANCELLOR: i32 = 1125;
+pub const DEFAULT_EVAL_EG_AMAZON: i32 = 1793;
 /// Amazon was the only compound priced at the bare sum of its parts, while the
 /// chancellor carries +245 over rook+knight and the archbishop +371.
 pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 10;
@@ -289,7 +308,6 @@ pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 19;
 pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 56;
-pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
 pub const DEFAULT_EVAL_SLIDER_NET_BONUS: i32 = 21;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS: i32 = 18;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS: i32 = 40;
@@ -493,6 +511,43 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
         // special infinite-board pieces
         PieceType::Rose => rose(),
         PieceType::Huygen => huygen(),
+    }
+}
+
+pub fn get_piece_value_endgame(piece_type: PieceType) -> i32 {
+    match piece_type {
+        // neutral/blocking pieces - no material value
+        PieceType::Void => 0,
+        PieceType::Obstacle => 0,
+
+        // orthodox - adjusted for infinite chess where sliders dominate
+        PieceType::Pawn => pawn(),         // Fixed at 100
+        PieceType::Knight => eg_knight(),     // Weak in infinite chess
+        PieceType::Bishop => eg_bishop(),     // Strong slider
+        PieceType::Rook => eg_rook(),         // Very strong in infinite chess
+        PieceType::Queen => eg_queen(),
+        PieceType::Guard => eg_guard(),
+
+        // short / medium range
+        PieceType::Camel => eg_camel(),     // (1,3) leaper
+        PieceType::Giraffe => eg_giraffe(), // (1,4) leaper
+        PieceType::Zebra => eg_zebra(),     // (2,3) leaper
+
+        // riders / compounds
+        PieceType::Knightrider => eg_knightrider(),
+        PieceType::Amazon => eg_amazon(),
+        PieceType::Hawk => eg_hawk(),
+        PieceType::Chancellor => eg_chancellor(),
+        PieceType::Archbishop => eg_archbishop(),
+        PieceType::Centaur => eg_centaur(),
+
+        PieceType::King => eg_guard(),
+        PieceType::RoyalQueen => eg_queen(),
+        PieceType::RoyalCentaur => eg_centaur(),
+
+        // special infinite-board pieces
+        PieceType::Rose => eg_rose(),
+        PieceType::Huygen => eg_huygen(),
     }
 }
 
@@ -733,9 +788,6 @@ pub fn evaluate_inner(game: &GameState) -> i32 {
 pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
     // Read once per evaluation, then threaded to each term it weights.
     let style = eval_style();
-    let mut score = game.material_score;
-    // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
-    tracer.record("Material (net)", game.material_score, 0);
 
     let (white_royals, black_royals) = (game.white_royals.as_slice(), game.black_royals.as_slice());
     let white_king = white_royals.first().copied();
@@ -745,6 +797,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let taper = |mg: i32, eg: i32| -> i32 {
         ((mg * eff_phase) + (eg * (MAX_PHASE - eff_phase))) / MAX_PHASE
     };
+    let mut score = taper(game.material_score, game.eg_material_score);
+    // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
+    tracer.record("Material (net)", score, 0);
 
     // Single-Pass Collection and Scoring
     let mut phase = 0; // decreases with fewer pieces

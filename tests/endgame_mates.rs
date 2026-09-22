@@ -40,15 +40,24 @@ fn create_endgame(
 
     // Recalculate material score
     let mut score = 0;
+    let mut eg_score = 0;
     for (_, _, piece) in game.board.iter() {
         let val = apeiron::evaluation::get_piece_value_base(piece.piece_type());
+        let eg_val = apeiron::evaluation::get_piece_value_endgame(piece.piece_type());
         match piece.color() {
-            PlayerColor::White => score += val,
-            PlayerColor::Black => score -= val,
+            PlayerColor::White => {
+                score += val;
+                eg_score += eg_val;
+            }
+            PlayerColor::Black => {
+                score -= val;
+                eg_score -= eg_val;
+            }
             PlayerColor::Neutral => {}
         }
     }
     game.material_score = score;
+    game.eg_material_score = eg_score;
 
     game
 }
