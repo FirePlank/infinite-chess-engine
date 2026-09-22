@@ -165,3 +165,91 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   ~12% cheaper per eval (5.2 vs 5.9 µs); SPRT vs A4 running (games_evalnet_a5h128).
   Next: joint pawn-king test = A inputs (129) + dense king-relative pawn cells (310) in ONE
   net, exported together, screened on the fresh holdout against A4.
+- 2026-09-23 **A5 committed (ba92e3e): 128×64, +27.9 ± 16.0 vs A4 over 1160 games** (speed win).
+- 2026-09-23 Joint pawn-king screen (129 scalars + 310 king-relative pawn cells in ONE net,
+  matched data, stride 2): joint 13.4/13.8% vs scalars-only 18.1/18.6% at 128/256 wide.
+  Pawn cells lower train loss but hurt the holdout: memorization. Second pawn-king design
+  to fail (after the stacked residual at 0.00%); runtime capture reverted.
+- 2026-09-23 **A5 loss map** (holdout): 55% of remaining loss is in material-balanced
+  positions (net gain there only 12%), 44% in the top phase band (13.5%); Standarch gains
+  0.6% (compound pieces invisible to aggregate inputs), CoaIP 9.8%, Knightline 12.6%.
+- 2026-09-23 **Sparse piece-king embedding** (every piece: 9 fairy-aware movement bits ×
+  65 king-relative buckets × own/enemy king frame + pawn promo bins = 2356 features),
+  warm-started from A5 by net surgery, trained on the archive mix: control 19.0, joint
+  17.4 (falls to 7.1 by epoch 20), branch 19.4 (falls to 14.4) vs A5 start 20.2 on the
+  report half. Holdout gain DROPS as training fit rises: archive piece-placement patterns
+  do not transfer to the net engine's own games (distribution shift, not memorization —
+  in-distribution val improved). Scalar inputs transfer; positional ones need on-policy
+  data. Testing on 2.17M on-policy positions (net-engine SPRT games + fresh depth-9).
+- 2026-09-23 **Game-result fingerprinting.** Sparse nets on 2.17M on-policy positions with the
+  usual WDL-mixed targets collapsed to −25% on the holdout (control 18.0): piece-placement
+  vectors identify the game, and half of every target is that game's result. With
+  engine-eval-only targets (λ=1) the collapse disappears: control 18.0, branch 17.9, joint
+  17.2. RULE: any positional/high-cardinality input must train on eval-only or relabelled
+  targets. Explains the earlier pawn-cell failures too. Next: sparse on the 898k depth-9
+  relabels (clean, diverse, no WDL) via a feature-vector join.
+- 2026-09-23 Exporter: `--human` (infinitechess.org games, needs --relabel-depth),
+  `--exclude-variants` (default Abundance), loader accepts older append-only layouts
+  (A5 runs unchanged in a v3 build: identical checksum −1925464).
+- 2026-09-23 **Human-game referee** (88.5k positions from ~14k infinitechess.org human games,
+  engine variants only, Abundance/custom-evaluator/disconnects excluded, depth-9 labels):
+  A2 34.8%, A4 33.2%, A5 40.7% error reduction vs HCE — the gains transfer to human play
+  styles, more strongly than on self-play (~20%).
+- 2026-09-23 Clean-label screen (1.0M depth-9 relabels, eval-only targets, from A5):
+  self-play / human = A5 20.2/40.7, control 18.0/42.4, sparse branch 18.9/42.7, sparse joint
+  18.5/42.0, 36 movement-class scalars (A6 layout) 18.2/42.4. New inputs within noise of the
+  control; relabel fine-tuning trades self-play for human accuracy.
+- 2026-09-23 Sparse-branch net in Rust (`src/eval_net/branch.rs`, 2356×32 embedding +
+  32→32→1 head, int vs float 1.2 cp): eval 7.2 µs vs A5 5.2 µs. SPRT vs A5 running
+  (games_evalnet_a6branch). Untested directions queued: search-tree position sampling,
+  material-signature output buckets, net-driven search margins, depth-12 labels.
+- 2026-09-23 Sparse-branch SPRT vs A5: −38.0 ± 37.4 after 266 games (LLR −0.49), stopped:
+  worse in self-play as predicted (38% more eval cost, lower self-play accuracy). Shelved;
+  its only upside is on human positions (+2.0 on the human referee).
+- 2026-09-23 Priority order set by the user: material buckets, search-tree positions
+  (`--perturb`), net inside search (uncertainty head); deeper labels only as background.
+- 2026-09-23 **Uncertainty head** (frozen A5, predict |depth-9 − eval|): full head on
+  h2+inputs rank-corr 0.29 (top/bottom decile error 96/37 cp) vs 0.23 for |eval| alone;
+  cheap h2-only head 0.24 ≈ |eval|. Too little over a free proxy to wire into margins now.
+- 2026-09-23 **Material/stage buckets** (warm-started copies of A5's layers, quantile edges,
+  mixed data; control 18.82 self-play / 38.75 human): phase8 head 19.14/39.02, count8 head
+  19.15/38.65, pawns3x3 head 18.98/38.31; layer stacks (per-bucket L2+L3) 18.4–19.0 and hurt
+  the human referee badly (32.9–38.7). Output-bucket gains +0.3 = seed noise. Closed.
+- 2026-09-23 Perturbed ("search-tree") positions: 300,545 relabelled at depth 9 (1–3 random
+  legal moves off the game line), 2.9 h. Fine-tune screen running.
+- 2026-09-23 Aspiration W2 (SF19-style: ±25 cp, recentre on failing bound, ×1.37, 8 retries)
+  SPRT vs A5 running, 1000 games (games_asp_w2).
+- 2026-09-23 **Perturbed-position fine-tunes of A5** (eval-only targets): relabels 18.2/42.4,
+  perturbed 300k **18.4/44.7**, both 18.3/44.1 (self-play/human; A5 19.7/40.7). With the
+  standard mixed labels: control 18.6/37.8, +perturbed 18.5–18.7/38.2–38.9. Every A5
+  fine-tune loses ~1.3 on the self-play holdout, likely selection bias (A5 was picked on
+  that holdout); the human referee is unbiased. SPRT of the perturbed net running.
+- 2026-09-23 **Aspiration W2 vs A5: −9.4 ± 17.4 over 1000 games (LLR −0.59)**. Not clearly
+  bad; parked behind the perturbed-net SPRT, consistent with the earlier rejection.
+- 2026-09-23 **Perturbed-position net vs A5: −24.1 ± 13.5 over 1818 games (LLR −2.33), REJECTED.**
+  Engine-eval-only fine-tuning trades self-play accuracy for human-position accuracy on one
+  curve (5 ep 18.8/42.3 … 40 ep 18.1/45.3); the self-play referee predicted the SPRT, so
+  the WDL part of the label is load-bearing for Elo. The human referee alone does not
+  predict self-play Elo.
+- 2026-09-23 A5 fine-tune on the A4 mix + 5,160 new fresh games (standard labels): 19.19/39.05
+  vs matched old-mix control 19.02/38.78 → noise; no candidate beats A5 (19.72).
+- 2026-09-23 **Aspiration W1 (initial window 30, ×4 kept) vs A5: −63 ± 47 after 128 games**,
+  stopped. Both aspiration variants lose; the ±60/×4 form stays.
+- 2026-09-23 Depth-12 relabel of the 250k key subset started (`nnue/relabel_d12.bin`).
+- 2026-09-23 **M75 (eval-trust margins ×0.75) vs A5: +1.4 ± 15.8 at 1240 games**, shelved.
+- 2026-09-23 **Colour symmetry.** A5 start-position bias up to ±69 cp (never saw plies <12;
+  (White,Black)+stm inputs). Openings in training cut it to ≤31; lockstep mirror augmentation
+  to ≤23 at equal accuracy; perspective (us, them) encoding makes it exactly 0 and costs no
+  accuracy vs a matched White/Black net. Found an A2 input bug: king-to-cloud distance mixed
+  doubled and single units (not translation-invariant). Fixed in the v4 schema; Rust port of
+  the perspective transform done (blob v2 = perspective). A5-recipe retrains on v4 data in both
+  encodings running; stage-scale SPRT running.
+- 2026-09-23 Development term: calibrated at population level (unexplained score vs undeveloped
+  difference ≈ 0 up to ±2 pieces). CoaIP hawks start ~10 squares from the cloud centre, inside
+  the 16-square cohesion radius, so only the one-move starting-square penalty pushes them.
+  Proposed fix: smaller cloud radius for leapers (~8), not a development redesign.
+- 2026-09-23 **v4 retrains (A5 recipe, corrected input):** White/Black 19.29/36.97, perspective
+  **19.63/38.42** (self-play/human). Perspective candidate built clean on A5 + 3 changes; start-
+  position colour bias exactly 0.000 in every symmetric variant. SPRT vs A5 running
+  (games_a6persp). Stage scale 1.4× stopped at −11 ± 39 (184 games) on request.
+- Queued: leaper cloud radius 16 → 8 (hawks), via the retrain-both-sides workflow.

@@ -118,3 +118,4 @@ nnue/*.jsonl
 # Scratch benchmark binaries built for old/new comparisons.
 /*_new.exe
 /*_old.exe
+nnue/*.progress

@@ -84,7 +84,8 @@ def main():
 
     with open(args.out, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<IIIIII", VERSION, n_in, hidden, hidden2, S1, S2))
+        version = 2 if ck.get("perspective") else VERSION
+        f.write(struct.pack("<IIIIII", version, n_in, hidden, hidden2, S1, S2))
         f.write(struct.pack("<Q", ck["schema"]))
         f.write(struct.pack("<f", float(net["out_scale"])))
         f.write(net["l1_w"].tobytes(order="C"))
@@ -101,7 +102,7 @@ def main():
     except FileNotFoundError:
         print("no data file for the int/float check; skipped")
         return
-    x_int = np.asarray(arr["x"]).astype(np.int32) * int(ck.get("x_mult", 1))
+    x_int = np.asarray(arr["x"])[:, :n_in].astype(np.int32) * int(ck.get("x_mult", 1))
     x_int = x_int.clip(-32767, 32767).astype(np.int16)
     with torch.no_grad():
         f_out = (model(torch.from_numpy(x_int.astype(np.float32)) / IN_SCALE) * out_scale_f).numpy()
