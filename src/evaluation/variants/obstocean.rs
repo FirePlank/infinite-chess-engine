@@ -615,8 +615,9 @@ pub fn evaluate(game: &GameState) -> i32 {
 
 #[inline]
 fn evaluate_inner(game: &GameState) -> i32 {
-    let mut score = (game.material_score * game.total_phase
-        + game.eg_material_score * (base::MAX_PHASE - game.total_phase))
+    let material_scores = base::calculate_initial_material(game);
+    let mut score = (material_scores.0 * game.total_phase
+        + material_scores.1 * (base::MAX_PHASE - game.total_phase))
         / base::MAX_PHASE;
     let white_royals = game.white_royals.as_slice();
     let black_royals = game.black_royals.as_slice();

@@ -797,7 +797,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let taper = |mg: i32, eg: i32| -> i32 {
         ((mg * eff_phase) + (eg * (MAX_PHASE - eff_phase))) / MAX_PHASE
     };
-    let mut score = taper(game.material_score, game.eg_material_score);
+    let material_scores = calculate_initial_material(game);
+    let mut score = taper(material_scores.0, material_scores.1);
     // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
     tracer.record("Material (net)", score, 0);
 
@@ -3115,10 +3116,8 @@ fn evaluate_leaper_positioning(
     cloud_center: Option<&Coordinate>,
     piece_type: PieceType,
     cloud_avg_spread: i32,
-    phase: i32,
+    _phase: i32,
 ) -> i32 {
-    let taper =
-        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let piece_value = get_piece_value_base(piece_type);
     let mut bonus: i32 = 0;
 
@@ -3144,18 +3143,6 @@ fn evaluate_leaper_positioning(
     };
     let density_adj = (8_i32 - cloud_avg_spread).clamp(-8, 8);
     bonus += density_adj * density_sensitivity / 10;
-
-    // 3. PHASE TAPER
-    let (mg_bonus, eg_bonus): (i32, i32) = match piece_type {
-        PieceType::Knight | PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => (0, 30),
-        PieceType::Guard => (0, 20),
-        PieceType::Hawk => (0, 10),
-        PieceType::Centaur | PieceType::RoyalCentaur => (0, 20),
-        PieceType::Huygen => (0, 0),
-        PieceType::Rose => (0, 0),
-        _ => (0, 10),
-    };
-    bonus += taper(mg_bonus, eg_bonus);
 
     bonus
 }
@@ -4695,11 +4682,13 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     w_activity - b_activity
 }
 
-pub fn calculate_initial_material(board: &Board) -> i32 {
-    let mut score: i32 = 0;
+#[cfg(feature = "eval_tuning")]
+#[inline]
+pub fn calculate_initial_material(game: &GameState) -> (i32, i32) {
+    let mut score = (0, 0);
 
     // BITBOARD: Use tile-based CTZ iteration for O(popcount) scan
-    for (cx, cy, tile) in board.tiles.iter() {
+    for (cx, cy, tile) in game.board.tiles.iter() {
         // SIMD: Fast skip empty tiles
         if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
             continue;
@@ -4714,7 +4703,8 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score += get_piece_value_base(piece.piece_type());
+                score.0 += game.get_piece_value(piece.piece_type(), piece.color());
+                score.1 += game.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
 
@@ -4727,7 +4717,8 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score -= get_piece_value_base(piece.piece_type());
+                score.0 -= game.get_piece_value(piece.piece_type(), piece.color());
+                score.1 -= game.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
 
@@ -4735,6 +4726,15 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
         let _ = (cx, cy);
     }
     score
+}
+
+/// When the eval tuning feature is disabled, it outputs the stored middlegame and
+/// endgame material scores. Otherwise, it recomputes the middlegame and endgame
+/// material scores.
+#[cfg(not(feature = "eval_tuning"))]
+#[inline(always)]
+pub fn calculate_initial_material(game: &GameState) -> (i32, i32) {
+    (game.material_score, game.eg_material_score)
 }
 
 #[cfg(test)]
@@ -5044,11 +5044,11 @@ mod tests {
         let mut game = GameState::new();
 
         // Empty board = 0
-        assert_eq!(calculate_initial_material(&game.board), 0);
+        assert_eq!(calculate_initial_material(&game), (0, 0));
 
         let icn2 = "w (8;q|1|q) Q4,1|q4,8";
         game.setup_position_from_icn(icn2);
-        assert_eq!(calculate_initial_material(&game.board), 0);
+        assert_eq!(calculate_initial_material(&game), (0, 0));
     }
 
     #[test]
