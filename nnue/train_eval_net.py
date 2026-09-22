@@ -58,13 +58,15 @@ def record_dtype(n_feat, rec_size):
     return dt
 
 
-def load(path, max_records=0):
+def load(path, max_records=0, stride=1):
     h = read_header(path)
     dt = record_dtype(h["n_features"], h["record_size"])
     count = h["count"]
     if max_records:
         count = min(count, max_records)
     arr = np.memmap(path, dtype=dt, mode="r", offset=HEADER.size, shape=(count,))
+    if stride > 1:
+        arr = arr[::stride]
     return h, arr
 
 
@@ -116,7 +118,7 @@ class EvalNet(nn.Module):
             self.l3.weight.clamp_(-L23_WMAX, L23_WMAX)
 
 
-def to_tensors(arr, mask, device, chunk=1_000_000):
+def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
     """Moves the masked records to `device` chunk by chunk: fancy-indexing the
     whole memmap at once materializes a 2GB+ host copy that small boxes lack."""
     parts = {k: [] for k in ("x", "static", "teacher", "wdl", "source", "variant", "phase")}
@@ -125,7 +127,10 @@ def to_tensors(arr, mask, device, chunk=1_000_000):
         if not m.any():
             continue
         a = arr[i : i + chunk][m]
-        parts["x"].append(torch.from_numpy(np.ascontiguousarray(a["x"])).to(device))
+        xa = np.ascontiguousarray(a["x"])
+        if x_mult != 1:
+            xa = (xa.astype(np.int32) * x_mult).clip(-32767, 32767).astype(np.int16)
+        parts["x"].append(torch.from_numpy(xa).to(device))
         parts["static"].append(torch.from_numpy(a["static"].astype(np.float32)).to(device))
         parts["teacher"].append(torch.from_numpy(a["teacher"].astype(np.float32)).to(device))
         parts["wdl"].append(torch.from_numpy(a["wdl"].astype(np.float32) / 2.0).to(device))
@@ -197,6 +202,8 @@ def main():
     ap.add_argument("--lambda-sprt", type=float, default=0.5)
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of GAMES held out")
     ap.add_argument("--max-records", type=int, default=0)
+    ap.add_argument("--stride", type=int, default=1, help="keep every Nth record")
+    ap.add_argument("--x-mult", type=int, default=1, help="integer input pre-scale (Stage B uses 32)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--qat-from", type=int, default=4, help="epoch from which fake quantization is on")
@@ -209,7 +216,7 @@ def main():
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    header, arr = load(args.data, args.max_records)
+    header, arr = load(args.data, args.max_records, args.stride)
     n_feat = header["n_features"]
     print(f"records={len(arr):,} features={n_feat} schema={header['schema']:#x} device={args.device}")
 
@@ -221,13 +228,13 @@ def main():
 
     dev = torch.device(args.device)
     try:
-        train = to_tensors(arr, ~val_mask, dev)
-        val = to_tensors(arr, val_mask, dev)
+        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
     except RuntimeError as e:  # out of GPU memory: fall back to CPU tensors
         print("GPU load failed, using CPU:", e)
         dev = torch.device("cpu")
-        train = to_tensors(arr, ~val_mask, dev)
-        val = to_tensors(arr, val_mask, dev)
+        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
 
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
     model = EvalNet(n_feat, args.hidden, args.hidden2, 2 if args.phase_split else 1).to(dev)
@@ -291,6 +298,7 @@ def main():
                     "out_scale": OUT_SCALE,
                     "k": args.k,
                     "cap": args.cap,
+                    "x_mult": args.x_mult,
                     "val_loss": v_loss,
                     "val_baseline": v_base,
                 },

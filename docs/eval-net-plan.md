@@ -96,3 +96,22 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
 - 2026-09-22 A2 (h256/64, 30 ep) vs A1: +23 ± 18 over 1000 games (LLR 1.03).
   Net forward 1.9 µs of a 6.2 µs eval; MAC count is not the limit (i8→i16 widening
   and 4-row kernels changed <5%), pointing at misaligned 258-byte row strides.
+- 2026-09-22 A2 (60 ep) vs A1: **+43.3 ± 15.0** over 1452 games, LLR 2.95, committed 5fea1cf.
+  Pawndard −21/−67 and CoaIP_NO −58/−52 in both A2 runs (gating watch).
+- 2026-09-22 λ 1.0/0.7 (teacher-heavier targets) vs A2: **−29.9 ± 13.1**, LLR −2.96, REJECTED.
+  Offline "gain" is not comparable across target changes; game results carry real
+  signal, so the next target test goes the other way (λ 0.5/0.3), then K 400.
+- 2026-09-22 λ 0.5/0.3 vs A2: +1.7 ± 11.5 over 2500 games, LLR −0.06, neutral → λ axis
+  closed at 0.7/0.5. Pawndard negative for the third net-vs-net run (−51): running the
+  A2-vs-A1 Pawndard-only gating check before K 400.
+- 2026-09-22 Pawndard-only check, A2 vs A1: **+27.5 ± 17.4** over 1000 games. The three
+  negative Pawndard lines were per-variant noise; no gating. Next: K 400 vs A2.
+- 2026-09-22 K 400 vs A2: −1.5 ± 11.6 at 2296 games (LLR −0.41), neutral, stopped. Target
+  axis closed (λ 0.7/0.5, K 532). Chess/Obstocean/PawnHorde nets shelved by decision: the
+  base evaluator is the priority. Next: fixed-depth data_gen with the A2 engine
+  (`games/texel_corpus_a2.jsonl`, depth 9), retrain on all sources, SPRT; then Stage B.
+- 2026-09-22 Stage B screen (dense king-relative pawn histograms, 310 inputs, 64x32 net
+  trained on A2's remaining residual, 5.1M records): **0.00% held-out gain**, train loss falls
+  while validation does not. The residual A2 leaves is label noise at this data quality, so
+  inputs cannot help; only better labels can. Stage-B code dropped (it would cost eval time).
+  Lever now = label quality: fixed-depth data_gen with the A2 engine (running), then retrain.

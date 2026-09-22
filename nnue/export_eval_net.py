@@ -101,7 +101,8 @@ def main():
     except FileNotFoundError:
         print("no data file for the int/float check; skipped")
         return
-    x_int = np.asarray(arr["x"])
+    x_int = np.asarray(arr["x"]).astype(np.int32) * int(ck.get("x_mult", 1))
+    x_int = x_int.clip(-32767, 32767).astype(np.int16)
     with torch.no_grad():
         f_out = (model(torch.from_numpy(x_int.astype(np.float32)) / IN_SCALE) * out_scale_f).numpy()
     i_out = int_forward(net, x_int)
