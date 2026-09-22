@@ -115,3 +115,45 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   while validation does not. The residual A2 leaves is label noise at this data quality, so
   inputs cannot help; only better labels can. Stage-B code dropped (it would cost eval time).
   Lever now = label quality: fixed-depth data_gen with the A2 engine (running), then retrain.
+- 2026-09-22 **Fresh-data referee.** 86k positions from the first 851 depth-9 games of the
+  A2 engine (never trained on) rank the nets in the SPRT order: A2 (r_ep60) 17.5%,
+  h128/32 15.9%, λ0.5/0.3 15.8% (SPRT neutral), texel×3 15.3%, K400 14.1% (neutral),
+  λ1.0/0.7 13.7% (−30 Elo), texel-only nets 3–4% (overfit the small off-policy corpus).
+  Rule from here: screen on fresh on-policy fixed-depth data, never on a split of the
+  training corpus. `train_eval_net.py --eval-only` does this.
+- 2026-09-22 Data composition on the fresh referee: archives-only 16.4%, archives at 2×
+  sample 16.6%, low-LR fine-tune of A2 17.4%, vs A2 17.5%/16.7% (two seeds). Nothing in
+  the existing sources moves the fresh metric; the old texel corpus neither helps nor hurts.
+  Only fresh on-policy fixed-depth data remains as a lever; data_gen (depth 9) runs at
+  ~400 games/h.
+- 2026-09-22 A3 (A2 recipe + first 2000 fresh depth-9 games ≈ 200k records) on a 113k
+  fresh holdout: ×1 18.3%, ×3 17.1%, ×8 15.2% vs A2 seeds 19.4%/17.9%. Fresh data is 2% of
+  the corpus and cannot move the net yet; up-weighting a small set overfits. Continue
+  data_gen; retrain at ≥1M fresh records. Seed spread (1.5 pt) is exploitable: keep the
+  best of N seeds on the holdout.
+- 2026-09-22 A3 seed sweep (seeds 3-6) on the holdout: 18.4/19.1/19.1/18.4; committed A2
+  = 19.4. No candidate clears the incumbent; waiting on more fresh data (4.3k games).
+- 2026-09-22 A3 with 540k fresh records (5% of corpus), seeds 1/4/5: 18.9/18.6/18.4,
+  ×2 fresh weight 18.3 — still inside A2's band (19.4/17.9). Testing whether the archive
+  noise now caps the net: fresh-only and fixed-depth-only trainings on the same holdout.
+- 2026-09-22 Without archives the net collapses on the fresh holdout: fresh-only 9.3/10.6%,
+  fixed-depth-only (1.6M clean records) 10.5/9.9%, A2 warm-started then tuned on fixed-depth
+  18.4% (= A2). Volume on the archive distribution is what the net learns from; clean
+  labels help only at that volume. Plan: re-label sampled archive positions with a depth-9
+  search (~200k positions/h vs ~40k/h from new games) and train on the re-labelled set.
+- 2026-09-22 `export_eval_features --relabel-depth 9`: re-labels each kept archive position
+  with a fixed-depth search of the current engine (70 positions/s on 16 threads). Full run
+  on ~1M sampled archive positions started (`nnue/relabel_d9.bin`); data_gen paused at
+  7370 games (resumable: same command appends).
+- 2026-09-23 Relabel results on the holdout: relabelled-only (898k) 16.9/15.6%, all
+  fixed-depth 14.8%, mixed+relabel fresh seeds 18.2/18.1%, **A2 warm-started and fine-tuned
+  20 epochs at lr 2e-4 on mixed+relabel: 20.05%** vs A2 19.4% from the same weights.
+  First candidate above the incumbent → SPRT (A4 = fine-tuned A2).
+- 2026-09-23 Fine-tunes from A2 on the holdout: mixed 40ep lr1e-4 19.8, mixed 20ep lr5e-4
+  20.1, relabel-only 20ep 20.3, fixed-depth-all 19.1, mixed ×2 19.2, mixed seed2 20.2.
+  Warm-start seed noise ≈0.15, so the +0.7–0.9 over A2 (19.4) is real but small; A4 (mixed
+  fine-tune, 20.05) is in SPRT, relabel-only fine-tune is the backup candidate.
+- 2026-09-23 128×64 on mixed+relabel, seeds 1/2: 18.4/19.1 on the holdout (A2 19.4) at
+  ~half the net cost; seed 2 (+ relabel fine-tune) is the size-vs-speed SPRT candidate.
+- 2026-09-23 128×64 seed 2 + relabel fine-tune: **19.7%** on the holdout (A2 19.4) at ~half
+  the net cost → SPRT candidate right after A4 (`h128_64_ft.pt`).

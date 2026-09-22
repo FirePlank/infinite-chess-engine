@@ -99,6 +99,16 @@ struct Cli {
     max_abs_cp: i32,
     #[arg(long, default_value = "nnue/eval_net_data.bin")]
     out: PathBuf,
+    /// Re-label every kept position with a fixed-depth search of the CURRENT engine
+    /// instead of the recorded eval (0 = keep recorded). Records are then tagged as
+    /// fixed-depth (source 0).
+    #[arg(long, default_value_t = 0)]
+    relabel_depth: usize,
+    /// Hard time cap per re-label search in ms.
+    #[arg(long, default_value_t = 3000)]
+    relabel_ms: u64,
+    #[arg(long, default_value_t = 8)]
+    tt_mb: usize,
     #[arg(long, default_value_t = 0)]
     threads: usize,
 }
@@ -337,7 +347,32 @@ fn replay(
             && (sample >= 1.0 || unit_interval(((game_id as u64) << 20) | ply as u64) < sample);
         if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(&g)
         {
-            let teacher = game.teacher[ply].unwrap();
+            let mut teacher = game.teacher[ply].unwrap();
+            let mut source = game.source;
+            if cli.relabel_depth > 0 {
+                let mut gs = g.clone();
+                let Some((bm, score, _)) = apeiron::search::get_best_move(
+                    &mut gs,
+                    cli.relabel_depth,
+                    cli.relabel_ms as u128,
+                    true,
+                    false,
+                ) else {
+                    g.make_move_coords(fx, fy, tx, ty, promo.as_deref());
+                    continue;
+                };
+                // Same quiet definition as data_gen: the chosen move must not capture
+                // or promote, and the score must be a real evaluation.
+                if score.abs() >= MATE_FLOOR
+                    || bm.promotion.is_some()
+                    || g.board.get_piece(bm.to.x, bm.to.y).is_some()
+                {
+                    g.make_move_coords(fx, fy, tx, ty, promo.as_deref());
+                    continue;
+                }
+                teacher = if g.turn == PlayerColor::Black { -score } else { score };
+                source = SOURCE_TEXEL;
+            }
             let mut fc = FeatureCollector::default();
             let stm_score = base::evaluate_inner_traced(&g, &mut fc);
             let static_white = if g.turn == PlayerColor::Black {
@@ -364,7 +399,7 @@ fn replay(
                     });
                     out.push(g.turn as u8);
                     out.push(vid);
-                    out.push(game.source);
+                    out.push(source);
                     out.push(fc.inputs.phase.clamp(0, 255) as u8);
                     out.push(0);
                     out.extend_from_slice(&game_id.to_le_bytes());
@@ -373,6 +408,7 @@ fn replay(
                     debug_assert_eq!(out.len() % RECORD_SIZE, 0);
                     kept_here += 1;
                     let (t, s) = (teacher as f64, static_white as f64);
+                    let _ = source;
                     corr[0] += 1.0;
                     corr[1] += t;
                     corr[2] += s;
@@ -467,6 +503,7 @@ fn main() {
     if let Some(dir) = cli.out.parent() {
         std::fs::create_dir_all(dir).unwrap();
     }
+    apeiron::search::set_tt_size_mb(cli.tt_mb);
     let mut file = File::create(&cli.out).unwrap();
     file.write_all(MAGIC).unwrap();
     file.write_all(&VERSION.to_le_bytes()).unwrap();

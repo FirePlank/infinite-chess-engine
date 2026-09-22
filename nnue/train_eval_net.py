@@ -188,6 +188,25 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
     return loss_sum / n, base_sum / n, big / n, per_variant, per_source
 
 
+def eval_only(args):
+    header, arr = load(args.data, args.max_records, args.stride)
+    dev = torch.device(args.device)
+    mask = np.ones(len(arr), dtype=bool)
+    lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
+    for ck_path in args.eval_only:
+        ck = torch.load(ck_path, map_location="cpu")
+        if ck["n_features"] != header["n_features"]:
+            print(f"{ck_path}: feature count {ck['n_features']} != data {header['n_features']}, skipped")
+            continue
+        data = to_tensors(arr, mask, dev, x_mult=int(ck.get("x_mult", 1)))
+        model = EvalNet(ck["n_features"], ck["hidden"], ck.get("hidden2", ck["hidden"])).to(dev)
+        model.load_state_dict(ck["state_dict"])
+        model.qat = True
+        cap = float(ck.get("cap", args.cap))
+        loss, base, big, _, _ = evaluate_split(model, data, lam_by_source, args.k, cap)
+        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={len(arr):,}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="nnue/eval_net_data.bin")
@@ -212,7 +231,12 @@ def main():
     ap.add_argument("--phase-split", action="store_true", help="(mg, eg) output pair tapered by phase; screening only")
     ap.add_argument("--max-resid", type=float, default=0.0, help="drop training records with |teacher-static| above this (0 = keep all)")
     ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
+    ap.add_argument("--init", default=None, help="warm-start weights from this checkpoint")
+    ap.add_argument("--eval-only", nargs="*", default=None, metavar="CKPT",
+                    help="score these checkpoints on --data (whole file as test set) and exit")
     args = ap.parse_args()
+    if args.eval_only is not None:
+        return eval_only(args)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -238,6 +262,9 @@ def main():
 
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
     model = EvalNet(n_feat, args.hidden, args.hidden2, 2 if args.phase_split else 1).to(dev)
+    if args.init:
+        model.load_state_dict(torch.load(args.init, map_location=dev)["state_dict"])
+        print(f"warm-started from {args.init}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     n_train = train[0].shape[0]
     steps_per_epoch = math.ceil(n_train / args.batch)
