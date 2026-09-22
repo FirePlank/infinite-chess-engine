@@ -84,3 +84,15 @@ Standing rules for this loop:
 Two consecutive Tier 1/2 iterations that fail to beat the incumbent offline by
 > 0.3% relative, or that pass offline and fail SPRT, mean A is saturated. Then
 build the pawn-king net on the residual that A leaves (design doc §4.2).
+
+## Log
+
+- 2026-09-22 A2 screen (129 features, offline held-out gain; A1 shape 4.6%): h32 4.79,
+  h64 5.20, h128/32 5.42, h256/32 5.64, h256/64 5.79, h512/32 5.86, h256/128 5.91.
+  Cap 250→500 +0.1 (clipping 7%→0.4%), cap 1000 no further gain. 60 epochs +0.18;
+  100 epochs, lr, batch, weight decay, phase-split head: within seed noise (~0.06).
+  Texel oversampling ×3 and |teacher−static|≤250 filtering both LOSE. λ and K
+  change the target, so they are SPRT-only questions.
+- 2026-09-22 A2 (h256/64, 30 ep) vs A1: +23 ± 18 over 1000 games (LLR 1.03).
+  Net forward 1.9 µs of a 6.2 µs eval; MAC count is not the limit (i8→i16 widening
+  and 4-row kernels changed <5%), pointing at misaligned 258-byte row strides.

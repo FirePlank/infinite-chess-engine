@@ -57,7 +57,8 @@ def main():
 
     ck = torch.load(args.checkpoint, map_location="cpu")
     n_in, hidden = ck["n_features"], ck["hidden"]
-    model = EvalNet(n_in, hidden, hidden)
+    hidden2 = ck.get("hidden2", hidden)
+    model = EvalNet(n_in, hidden, hidden2)
     model.load_state_dict(ck["state_dict"])
     model.eval()
     model.qat = True  # compare against the quantization-aware float path
@@ -83,7 +84,7 @@ def main():
 
     with open(args.out, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<IIIIII", VERSION, n_in, hidden, hidden, S1, S2))
+        f.write(struct.pack("<IIIIII", VERSION, n_in, hidden, hidden2, S1, S2))
         f.write(struct.pack("<Q", ck["schema"]))
         f.write(struct.pack("<f", float(net["out_scale"])))
         f.write(net["l1_w"].tobytes(order="C"))
@@ -93,7 +94,7 @@ def main():
         f.write(net["l3_w"].tobytes())
         f.write(struct.pack("<i", net["l3_b"]))
     params = w1.size + b1.size + w2.size + b2.size + w3.size + 1
-    print(f"wrote {args.out}: {n_in}->{hidden}->{hidden}->1, {params} params, schema {ck['schema']:#x}")
+    print(f"wrote {args.out}: {n_in}->{hidden}->{hidden2}->1, {params} params, schema {ck['schema']:#x}")
 
     try:
         _, arr = load(args.data, args.check_samples)

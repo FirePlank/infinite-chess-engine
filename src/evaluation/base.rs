@@ -39,6 +39,9 @@ struct PawnCacheEntry {
     hash: u64,
     mg: i32,
     eg: i32,
+    /// Per-side (mg, eg) of doubled/candidate/connected/isolated/backward, kept
+    /// only so the eval net can read the structure terms without a cache bypass.
+    terms: [[(i16, i16); 5]; 2],
     w_passed: SmallVec<[(i64, i64); 4]>,
     b_passed: SmallVec<[(i64, i64); 4]>,
 }
@@ -49,6 +52,7 @@ impl Default for PawnCacheEntry {
             hash: u64::MAX,
             mg: 0,
             eg: 0,
+            terms: [[(0, 0); 5]; 2],
             w_passed: SmallVec::new(),
             b_passed: SmallVec::new(),
         }
@@ -146,6 +150,8 @@ pub trait EvaluationTracer {
     fn is_active(&self) -> bool;
     #[inline(always)]
     fn record_inputs(&mut self, _inputs: &crate::eval_net::EvalNetInputs) {}
+    #[inline(always)]
+    fn record_pawn_inputs(&mut self, _pawn: &crate::eval_net::PawnNetInputs) {}
 }
 
 /// No-op tracer for production use.
@@ -1764,15 +1770,36 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         if T::WANTS_INPUTS {
                             use crate::eval_net::summarize_rays;
                             let (w_open, w_emin, w_eval, w_cover) =
-                                summarize_rays(&w_king_rays, PlayerColor::White);
+                                summarize_rays(&w_king_rays[..4], PlayerColor::White);
                             let (b_open, b_emin, b_eval, b_cover) =
-                                summarize_rays(&b_king_rays, PlayerColor::Black);
+                                summarize_rays(&b_king_rays[..4], PlayerColor::Black);
+                            let (w_oopen, w_oemin, w_oeval, w_ocover) =
+                                summarize_rays(&w_king_rays[4..], PlayerColor::White);
+                            let (b_oopen, b_oemin, b_oeval, b_ocover) =
+                                summarize_rays(&b_king_rays[4..], PlayerColor::Black);
                             let royal_units = |t: &SmallVec<[RoyalTropismMetrics; 1]>| {
                                 t.first()
                                     .map_or((0, 0), |k| (k.attacking_units, k.defender_units))
                             };
                             let (w_att, w_def) = royal_units(&white_royal_tropisms);
                             let (b_att, b_def) = royal_units(&black_royal_tropisms);
+                            let hist = |t: &SmallVec<[RoyalTropismMetrics; 1]>| {
+                                t.first().map_or([0; 3], |k| {
+                                    let d = &k.defender_units_in_distance;
+                                    [d[1] + d[2], d[3] + d[4], d[5] + d[6] + d[7]]
+                                })
+                            };
+                            let cheb = |a: Coordinate, b: Coordinate| {
+                                (a.x - b.x).abs().max((a.y - b.y).abs()).min(255) as i32
+                            };
+                            let king_dist = match (white_king, black_king) {
+                                (Some(wk), Some(bk)) => cheb(wk, bk),
+                                _ => 255,
+                            };
+                            let cloud_dist = |k: Option<Coordinate>| match (k, cloud_center) {
+                                (Some(k), Some(c)) => cheb(k, c),
+                                _ => 255,
+                            };
                             let w_pd = if white_max_y != i64::MIN {
                                 (w_promo - white_max_y).clamp(1, 100) as i32
                             } else {
@@ -1824,6 +1851,17 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 ray_enemy_min_dist: [w_emin, b_emin],
                                 ray_enemy_value: [w_eval, b_eval],
                                 ray_cover: [w_cover, b_cover],
+                                ortho_open: [w_oopen, b_oopen],
+                                ortho_enemy_min_dist: [w_oemin, b_oemin],
+                                ortho_enemy_value: [w_oeval, b_oeval],
+                                ortho_cover: [w_ocover, b_ocover],
+                                defender_hist: [
+                                    hist(&white_royal_tropisms),
+                                    hist(&black_royal_tropisms),
+                                ],
+                                king_dist,
+                                king_cloud_dist: [cloud_dist(white_king), cloud_dist(black_king)],
+                                halfmove_clock: game.halfmove_clock.min(255) as i32,
                                 ring_covered: [
                                     i32::from(w_king_ring_covered),
                                     i32::from(b_king_ring_covered),
@@ -3664,6 +3702,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     // Bypassing cache if tracer is active to ensure we get a full breakdown.
     if tracer.is_active() {
         let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
+        hand_pawn_inputs(tracer, game, phase, &core.terms, &core.w_passed, &core.b_passed);
         return taper(core.mg, core.eg)
             + score_passed_pawns(
                 game,
@@ -3693,6 +3732,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         } else {
             return None;
         };
+        hand_pawn_inputs(tracer, game, phase, &entry.terms, &entry.w_passed, &entry.b_passed);
         Some(
             taper(entry.mg, entry.eg)
                 + score_passed_pawns(
@@ -3715,6 +3755,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 
     // Cache miss - compute pawn structure
     let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
+    hand_pawn_inputs(tracer, game, phase, &core.terms, &core.w_passed, &core.b_passed);
     let score = taper(core.mg, core.eg)
         + score_passed_pawns(
             game,
@@ -3737,6 +3778,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
             hash: pawn_hash,
             mg: core.mg,
             eg: core.eg,
+            terms: core.terms,
             w_passed: core.w_passed,
             b_passed: core.b_passed,
         };
@@ -3749,8 +3791,47 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 struct PawnCoreOut {
     mg: i32,
     eg: i32,
+    terms: [[(i16, i16); 5]; 2],
     w_passed: SmallVec<[(i64, i64); 4]>,
     b_passed: SmallVec<[(i64, i64); 4]>,
+}
+
+/// Hands the eval net the tapered structure terms and passer summary; compiles
+/// to nothing unless the tracer asked for inputs.
+#[inline(always)]
+fn hand_pawn_inputs<T: EvaluationTracer>(
+    tracer: &mut T,
+    game: &GameState,
+    phase: i32,
+    terms: &[[(i16, i16); 5]; 2],
+    w_passed: &[(i64, i64)],
+    b_passed: &[(i64, i64)],
+) {
+    if !T::WANTS_INPUTS {
+        return;
+    }
+    let taper =
+        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
+    let mut p = crate::eval_net::PawnNetInputs::default();
+    for (dst, src) in p.terms.iter_mut().zip(terms) {
+        for (d, s) in dst.iter_mut().zip(src) {
+            *d = taper(s.0 as i32, s.1 as i32);
+        }
+    }
+    p.passers = [w_passed.len() as i32, b_passed.len() as i32];
+    p.passer_min_dist = [
+        w_passed
+            .iter()
+            .map(|&(_, y)| (game.white_promo_rank - y).clamp(1, 100) as i32)
+            .min()
+            .unwrap_or(100),
+        b_passed
+            .iter()
+            .map(|&(_, y)| (y - game.black_promo_rank).clamp(1, 100) as i32)
+            .min()
+            .unwrap_or(100),
+    ];
+    tracer.record_pawn_inputs(&p);
 }
 
 /// Computes the cacheable pawn terms: doubled, isolated, backward, candidate,
@@ -4036,7 +4117,13 @@ fn compute_pawn_core<T: EvaluationTracer>(
         );
     }
 
+    let t = |v: (i32, i32)| (v.0.clamp(-32000, 32000) as i16, v.1.clamp(-32000, 32000) as i16);
+    let terms = [
+        [t(w_doubled), t(w_candidate), t(w_connected), t(w_isolated), t(w_backward)],
+        [t(b_doubled), t(b_candidate), t(b_connected), t(b_isolated), t(b_backward)],
+    ];
     PawnCoreOut {
+        terms,
         mg: (w_doubled.0 + w_candidate.0 + w_connected.0 + w_isolated.0 + w_backward.0)
             - (b_doubled.0 + b_candidate.0 + b_connected.0 + b_isolated.0 + b_backward.0),
         eg: (w_doubled.1 + w_candidate.1 + w_connected.1 + w_isolated.1 + w_backward.1)

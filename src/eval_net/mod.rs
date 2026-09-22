@@ -6,7 +6,8 @@
 pub mod features;
 
 pub use features::{
-    EvalNetInputs, FeatureCollector, NUM_FEATURES, feature_vector, schema_hash, summarize_rays,
+    EvalNetInputs, FeatureCollector, NUM_FEATURES, PawnNetInputs, feature_vector, schema_hash,
+    summarize_rays,
 };
 
 #[cfg(feature = "eval_net")]
