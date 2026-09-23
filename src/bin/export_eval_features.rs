@@ -36,6 +36,8 @@ static UNPARSED_MOVES: AtomicU64 = AtomicU64::new(0);
 static MIRRORED: AtomicU64 = AtomicU64::new(0);
 static MIRROR_REJECTED: AtomicU64 = AtomicU64::new(0);
 static KEEP_KEYS: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
+static KEEP_HASHES: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
+static HASH_OUT: std::sync::OnceLock<Mutex<BufWriter<File>>> = std::sync::OnceLock::new();
 
 /// FNV-style fold over the leading feature columns and the static eval; must
 /// match `keys()` in `nnue/join_labels.py`.
@@ -149,6 +151,13 @@ struct Cli {
     /// used to re-export an earlier sample in a newer layout.
     #[arg(long)]
     keep_keys: Option<PathBuf>,
+    /// Write each record's Zobrist hash (LE u64, record order) to this sidecar, so
+    /// labels can be carried across an eval change that alters every feature key.
+    #[arg(long)]
+    hash_out: Option<PathBuf>,
+    /// Keep only positions whose Zobrist hash is in this file of LE u64s.
+    #[arg(long)]
+    keep_hashes: Option<PathBuf>,
     /// Leading feature columns the key covers (the older layout's width).
     #[arg(long, default_value_t = 129)]
     key_columns: usize,
@@ -441,6 +450,7 @@ fn replay(
     seen: &[Mutex<HashSet<u64>>],
     stats: &Stats,
     out: &mut Vec<u8>,
+    hashes: &mut Vec<u8>,
 ) {
     if g.eval_kind != EvalKind::Generic {
         return;
@@ -534,7 +544,7 @@ fn replay(
                 let keep = KEEP_KEYS.get().is_none_or(|k| {
                     let st = static_white.clamp(-20000, 20000) as i16;
                     k.contains(&record_key(&x, cli.key_columns, st))
-                });
+                }) && KEEP_HASHES.get().is_none_or(|k| k.contains(&pos.hash));
                 let fresh = keep && shard.lock().unwrap().insert(pos.hash);
                 if fresh {
                     for f in x {
@@ -557,6 +567,7 @@ fn replay(
                     out.extend_from_slice(&game_id.to_le_bytes());
                     out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
                     out.extend_from_slice(&[0u8; 2]);
+                    hashes.extend_from_slice(&pos.hash.to_le_bytes());
                     kept_here += 1;
                     if cli.perturb == 0
                         && let Some((m, _)) = mirror.as_ref()
@@ -580,6 +591,7 @@ fn replay(
                             out.extend_from_slice(&game_id.to_le_bytes());
                             out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
                             out.extend_from_slice(&[0u8; 2]);
+                            hashes.extend_from_slice(&m.hash.to_le_bytes());
                             kept_here += 1;
                             MIRRORED.fetch_add(1, Ordering::Relaxed);
                         } else {
@@ -662,19 +674,23 @@ fn run_group(
             })
             .collect();
         let base_id = first_id + (ci * SETUP_CHUNK) as u32;
-        let outputs: Vec<Vec<u8>> = chunk
+        let outputs: Vec<(Vec<u8>, Vec<u8>)> = chunk
             .par_iter()
             .zip(states.into_par_iter())
             .enumerate()
             .map(|(i, (game, (g, m)))| {
-                let mut out = Vec::new();
-                replay(game, g, m, base_id + i as u32, cli, &seen, stats, &mut out);
-                out
+                let (mut out, mut hashes) = (Vec::new(), Vec::new());
+                replay(game, g, m, base_id + i as u32, cli, &seen, stats, &mut out, &mut hashes);
+                (out, hashes)
             })
             .collect();
         let mut w = writer.lock().unwrap();
-        for c in outputs {
+        let mut hw = HASH_OUT.get().map(|h| h.lock().unwrap());
+        for (c, h) in outputs {
             w.write_all(&c).unwrap();
+            if let Some(hw) = hw.as_mut() {
+                hw.write_all(&h).unwrap();
+            }
         }
     }
 }
@@ -837,6 +853,18 @@ fn main() {
         std::fs::create_dir_all(dir).unwrap();
     }
     apeiron::search::set_tt_size_mb(cli.tt_mb);
+    if let Some(path) = &cli.keep_hashes {
+        let bytes = std::fs::read(path).unwrap();
+        let set: HashSet<u64> =
+            bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        eprintln!("keep-hashes: {} hashes", set.len());
+        let _ = KEEP_HASHES.set(set);
+    }
+    if let Some(path) = &cli.hash_out {
+        assert!(!cli.resume, "--hash-out cannot resume: the sidecar would lose alignment");
+        let f = File::create(path).unwrap();
+        let _ = HASH_OUT.set(Mutex::new(BufWriter::new(f)));
+    }
     if let Some(path) = &cli.keep_keys {
         let bytes = std::fs::read(path).unwrap();
         let set: HashSet<u64> = bytes
@@ -918,7 +946,7 @@ fn main() {
 
     if let Some(path) = cli.human.as_ref().filter(|_| !resumed_past_sources) {
         assert!(
-            cli.relabel_depth > 0 || cli.keep_keys.is_some(),
+            cli.relabel_depth > 0 || cli.keep_keys.is_some() || cli.keep_hashes.is_some(),
             "--human needs --relabel-depth (or --keep-keys to re-export labelled positions)"
         );
         let t0 = Instant::now();
@@ -1000,6 +1028,9 @@ fn main() {
     file.seek(SeekFrom::Start(HEADER_SIZE - 8)).unwrap();
     file.write_all(&kept.to_le_bytes()).unwrap();
     file.flush().unwrap();
+    if let Some(h) = HASH_OUT.get() {
+        h.lock().unwrap().flush().unwrap();
+    }
 
     eprintln!(
         "done: {} games replayed, {} records, {} zobrist dups skipped, {:.1}s",
