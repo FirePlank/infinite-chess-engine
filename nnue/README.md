@@ -10,6 +10,8 @@ to the Generic evaluator. Design: `docs/hybrid-eval-design.md`, results log:
 129 inputs -> 128 -> 64 -> 1, residual capped at 500 cp, inputs read as
 (side to move, opponent). Two stages: a base run on a large mixed set, then a
 fine-tune on positions relabelled by a depth-9 search.
+Base-run length was swept: 120 epochs beats 60/90 and 180/240 (which overfit);
+weight EMA and SWA gave no gain over six seeds. Train several seeds, keep the best.
 
 ```
 cargo build --release --features data_gen --bin export_eval_features
@@ -23,7 +25,7 @@ $X --sprt-dir games/sprt --sprt-sample 0.016 --relabel-depth 9 --out nnue/rel.bi
 python nnue/merge_data.py nnue/mixrel.bin nnue/mix.bin nnue/rel.bin
 
 T="python nnue/train_eval_net.py --perspective --keep-cloud --n-cols 129 --hidden 128 --hidden2 64 --cap 500"
-$T --data nnue/mixrel.bin --epochs 60 --out nnue/checkpoints/base.pt
+$T --data nnue/mixrel.bin --epochs 120 --out nnue/checkpoints/base.pt
 $T --data nnue/rel.bin --init nnue/checkpoints/base.pt --epochs 20 --lr 2e-4 \
    --qat-from 1 --val-frac 0.1 --out nnue/checkpoints/net.pt
 python nnue/export_eval_net.py --checkpoint nnue/checkpoints/net.pt \
