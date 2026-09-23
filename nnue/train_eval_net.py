@@ -54,6 +54,9 @@ def record_dtype(n_feat, rec_size):
         ("pad2", np.uint16),
     ]
     dt = np.dtype(fields)
+    if dt.itemsize + 2 + 2 * 320 == rec_size:
+        # `--sparse` export: the dense fields plus a count and 320 sparse indices.
+        dt = np.dtype(fields + [("n_sp", np.uint16), ("sp", np.uint16, (320,))])
     assert dt.itemsize == rec_size, (dt.itemsize, rec_size)
     return dt
 
@@ -118,6 +121,45 @@ class EvalNet(nn.Module):
             self.l3.weight.clamp_(-L23_WMAX, L23_WMAX)
 
 
+PERSPECTIVE = False
+# Set for v4 exports, where king-to-cloud distance is computed correctly.
+KEEP_CLOUD = False
+
+# v2 layout: 14 term rows as (White, Black) pairs, rows 0 (net material) and 7
+# (complexity delta) are single White-ahead values; then globals; then two 39-wide
+# per-side blocks (White at 51, Black at 90).
+_SINGLE_ROWS = (0, 7)
+_PAIR_COLS = [(2 * r, 2 * r + 1) for r in range(14) if r not in _SINGLE_ROWS]
+_PAIR_COLS += [(31, 32), (33, 34), (35, 36), (37, 38)]
+_PAIR_COLS += [(51 + i, 90 + i) for i in range(39)]
+_NEGATE_COLS = [0, 14, 29]
+
+
+def to_perspective(x, stm):
+    """Re-encode rows as (side to move, opponent): a position and its colour mirror
+    then give identical inputs. `stm` is the record's turn (1 White, 2 Black)."""
+    x = x.copy()
+    blk = stm == 2
+    for a, b in _PAIR_COLS:
+        xa = x[blk, a].copy()
+        x[blk, a] = x[blk, b]
+        x[blk, b] = xa
+    for c in _NEGATE_COLS:
+        x[blk, c] = -x[blk, c]
+    x[:, 28] = 1
+    # King-to-cloud distance mixed doubled and single units in the v2 export and is not
+    # mirror-equivariant; dropped until the Rust side computes it properly.
+    if not KEEP_CLOUD:
+        x[:, 78] = 0
+        x[:, 117] = 0
+    return x
+
+
+def stm_sign(stm):
+    """+1 when White is to move: a perspective net's output is side-to-move relative."""
+    return np.where(stm == 2, -1.0, 1.0).astype(np.float32)
+
+
 def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
     """Moves the masked records to `device` chunk by chunk: fancy-indexing the
     whole memmap at once materializes a 2GB+ host copy that small boxes lack."""
@@ -128,12 +170,19 @@ def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
             continue
         a = arr[i : i + chunk][m]
         xa = np.ascontiguousarray(a["x"])
+        sign = stm_sign(np.asarray(a["stm"])) if PERSPECTIVE else None
+        if PERSPECTIVE:
+            xa = to_perspective(xa, np.asarray(a["stm"]))
         if x_mult != 1:
             xa = (xa.astype(np.int32) * x_mult).clip(-32767, 32767).astype(np.int16)
         parts["x"].append(torch.from_numpy(xa).to(device))
-        parts["static"].append(torch.from_numpy(a["static"].astype(np.float32)).to(device))
-        parts["teacher"].append(torch.from_numpy(a["teacher"].astype(np.float32)).to(device))
-        parts["wdl"].append(torch.from_numpy(a["wdl"].astype(np.float32) / 2.0).to(device))
+        st, te, wd = a["static"].astype(np.float32), a["teacher"].astype(np.float32), a["wdl"].astype(np.float32) / 2.0
+        if sign is not None:
+            # Side-to-move relative labels: the loss is unchanged by negating everything.
+            st, te, wd = st * sign, te * sign, np.where(sign < 0, 1.0 - wd, wd)
+        parts["static"].append(torch.from_numpy(st).to(device))
+        parts["teacher"].append(torch.from_numpy(te).to(device))
+        parts["wdl"].append(torch.from_numpy(wd).to(device))
         parts["source"].append(torch.from_numpy(a["source"].astype(np.int64)).to(device))
         parts["variant"].append(torch.from_numpy(a["variant"].astype(np.int64)).to(device))
         parts["phase"].append(torch.from_numpy(a["phase"].astype(np.float32)).to(device))
@@ -188,6 +237,31 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
     return loss_sum / n, base_sum / n, big / n, per_variant, per_source
 
 
+def eval_only(args):
+    header, arr = load(args.data, args.max_records, args.stride)
+    dev = torch.device(args.device)
+    mask = np.ones(len(arr), dtype=bool)
+    lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
+    for ck_path in args.eval_only:
+        ck = torch.load(ck_path, map_location="cpu")
+        if ck["n_features"] > header["n_features"]:
+            print(f"{ck_path}: needs {ck['n_features']} features, data has {header['n_features']}, skipped")
+            continue
+        global PERSPECTIVE
+        PERSPECTIVE = bool(ck.get("perspective", False))
+        global KEEP_CLOUD
+        KEEP_CLOUD = bool(ck.get("keep_cloud", False))
+        data = to_tensors(arr, mask, dev, x_mult=int(ck.get("x_mult", 1)))
+        # Schemas only ever append, so an older net reads the leading columns.
+        data = (data[0][:, : ck["n_features"]].contiguous(),) + data[1:]
+        model = EvalNet(ck["n_features"], ck["hidden"], ck.get("hidden2", ck["hidden"])).to(dev)
+        model.load_state_dict(ck["state_dict"])
+        model.qat = True
+        cap = float(ck.get("cap", args.cap))
+        loss, base, big, _, _ = evaluate_split(model, data, lam_by_source, args.k, cap)
+        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={len(arr):,}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="nnue/eval_net_data.bin")
@@ -200,6 +274,7 @@ def main():
     ap.add_argument("--k", type=float, default=531.9, help="logistic scale, texel DEFAULT_K_SCALE")
     ap.add_argument("--lambda-texel", type=float, default=0.7)
     ap.add_argument("--lambda-sprt", type=float, default=0.5)
+    ap.add_argument("--lambda-src2", type=float, default=1.0, help="teacher weight for source 2 (perturbed positions)")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of GAMES held out")
     ap.add_argument("--max-records", type=int, default=0)
     ap.add_argument("--stride", type=int, default=1, help="keep every Nth record")
@@ -212,12 +287,25 @@ def main():
     ap.add_argument("--phase-split", action="store_true", help="(mg, eg) output pair tapered by phase; screening only")
     ap.add_argument("--max-resid", type=float, default=0.0, help="drop training records with |teacher-static| above this (0 = keep all)")
     ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
+    ap.add_argument("--init", default=None, help="warm-start weights from this checkpoint")
+    ap.add_argument("--n-cols", type=int, default=0, help="train on only the leading N feature columns")
+    ap.add_argument("--perspective", action="store_true", help="(side to move, opponent) encoding")
+    ap.add_argument("--keep-cloud", action="store_true", help="data has the fixed king-to-cloud distance (v4)")
+    ap.add_argument("--distill", default=None, help="teacher checkpoint whose outputs are blended into targets")
+    ap.add_argument("--distill-alpha", type=float, default=0.8, help="weight of the teacher in the target")
+    ap.add_argument("--eval-only", nargs="*", default=None, metavar="CKPT",
+                    help="score these checkpoints on --data (whole file as test set) and exit")
     args = ap.parse_args()
+    global PERSPECTIVE, KEEP_CLOUD
+    PERSPECTIVE = args.perspective
+    KEEP_CLOUD = args.keep_cloud
+    if args.eval_only is not None:
+        return eval_only(args)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     header, arr = load(args.data, args.max_records, args.stride)
-    n_feat = header["n_features"]
+    n_feat = args.n_cols or header["n_features"]
     print(f"records={len(arr):,} features={n_feat} schema={header['schema']:#x} device={args.device}")
 
     game = np.asarray(arr["game"])
@@ -230,14 +318,31 @@ def main():
     try:
         train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
+        train = (train[0][:, :n_feat].contiguous(),) + train[1:]
+        val = (val[0][:, :n_feat].contiguous(),) + val[1:]
     except RuntimeError as e:  # out of GPU memory: fall back to CPU tensors
         print("GPU load failed, using CPU:", e)
         dev = torch.device("cpu")
         train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
 
-    lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
+    lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt, args.lambda_src2], device=dev)
     model = EvalNet(n_feat, args.hidden, args.hidden2, 2 if args.phase_split else 1).to(dev)
+    schema_out = header["schema"]
+    if args.init:
+        init_ck = torch.load(args.init, map_location=dev)
+        if init_ck["n_features"] == n_feat:
+            schema_out = init_ck["schema"]
+        sd = init_ck["state_dict"]
+        old_in = sd["l1.weight"].shape[1]
+        if old_in < n_feat:
+            # Net surgery: layouts only append, so the old net's columns lead and
+            # the new inputs start at zero weight (the net begins exactly as before).
+            w = torch.zeros(sd["l1.weight"].shape[0], n_feat, device=dev)
+            w[:, :old_in] = sd["l1.weight"]
+            sd["l1.weight"] = w
+        model.load_state_dict(sd)
+        print(f"warm-started from {args.init} ({old_in} -> {n_feat} inputs)")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     n_train = train[0].shape[0]
     steps_per_epoch = math.ceil(n_train / args.batch)
@@ -258,7 +363,16 @@ def main():
         )
         n_train = x.shape[0]
         print(f"max-resid filter keeps {n_train:,} training records")
-    src_weight = torch.tensor([args.texel_weight, 1.0], device=dev)
+    src_weight = torch.tensor([args.texel_weight, 1.0, 1.0], device=dev)
+    teacher_net = None
+    if args.distill:
+        tck = torch.load(args.distill, map_location=dev)
+        teacher_net = EvalNet(tck["n_features"], tck["hidden"], tck.get("hidden2", tck["hidden"])).to(dev)
+        teacher_net.load_state_dict(tck["state_dict"])
+        teacher_net.qat = True
+        teacher_net.eval()
+        t_cap = float(tck.get("cap", args.cap))
+        print(f"distilling from {args.distill} (alpha {args.distill_alpha})")
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         if epoch == args.qat_from:
@@ -269,6 +383,11 @@ def main():
         for i in range(0, n_train, args.batch):
             idx = perm[i : i + args.batch]
             tgt = targets(static[idx], teacher[idx], wdl[idx], source[idx], lam_by_source, args.k)
+            if teacher_net is not None:
+                with torch.no_grad():
+                    t_out = (teacher_net(x[idx].float() / IN_SCALE, phase[idx]) * OUT_SCALE).clamp(-t_cap, t_cap)
+                    t_p = torch.sigmoid((static[idx] + t_out) / args.k)
+                tgt = args.distill_alpha * t_p + (1.0 - args.distill_alpha) * tgt
             w = src_weight[source[idx]] if args.texel_weight != 1.0 else None
             loss, _ = batch_loss(model, x[idx], static[idx], tgt, args.k, args.cap, w, phase[idx])
             opt.zero_grad(set_to_none=True)
@@ -293,11 +412,13 @@ def main():
                     "n_features": n_feat,
                     "hidden": args.hidden,
                     "hidden2": args.hidden2,
-                    "schema": header["schema"],
+                    "schema": schema_out,
                     "in_scale": IN_SCALE,
                     "out_scale": OUT_SCALE,
                     "k": args.k,
                     "cap": args.cap,
+                    "perspective": args.perspective,
+                    "keep_cloud": args.keep_cloud,
                     "x_mult": args.x_mult,
                     "val_loss": v_loss,
                     "val_baseline": v_base,

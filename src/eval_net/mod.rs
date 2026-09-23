@@ -37,6 +37,11 @@ pub fn residual_white(game: &crate::game::GameState, fc: &FeatureCollector) -> i
     let Some(net) = weights::EVAL_NET.as_ref() else {
         return 0;
     };
-    let x = feature_vector(game, fc);
-    inference::forward(net, &x).clamp(-RESIDUAL_CAP, RESIDUAL_CAP)
+    let mut x = feature_vector(game, fc);
+    let black = game.turn == crate::board::PlayerColor::Black;
+    if net.perspective {
+        features::to_perspective(&mut x, black);
+    }
+    let r = inference::forward(net, &x).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
+    if net.perspective && black { -r } else { r }
 }

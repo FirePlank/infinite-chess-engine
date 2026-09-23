@@ -9,7 +9,7 @@ use crate::game::GameState;
 
 /// Bump whenever `feature_vector`'s layout or scaling changes, so stale weight
 /// files are rejected at load instead of silently misreading features.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub const NUM_ROWS: usize = 14;
 pub const NUM_FEATURES: usize = 129;
@@ -296,6 +296,45 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
 
     debug_assert_eq!(i, NUM_FEATURES);
     v
+}
+
+/// Column pairs a perspective net reads as (side to move, opponent): the 12 two-sided
+/// term rows, piece/pawn/royal counts, win conditions, and the two 39-wide side blocks.
+const PAIR_COLS: [(usize, usize); 55] = {
+    let mut out = [(0, 0); 55];
+    let rows = [1usize, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13];
+    let mut i = 0;
+    while i < 12 {
+        out[i] = (2 * rows[i], 2 * rows[i] + 1);
+        i += 1;
+    }
+    out[12] = (31, 32);
+    out[13] = (33, 34);
+    out[14] = (35, 36);
+    out[15] = (37, 38);
+    let mut j = 0;
+    while j < 39 {
+        out[16 + j] = (51 + j, 90 + j);
+        j += 1;
+    }
+    out
+};
+
+/// White-ahead single values (net material row, complexity delta, material score).
+const NEGATE_COLS: [usize; 3] = [0, 14, 29];
+
+/// Re-encodes a vector as (side to move, opponent), matching `to_perspective` in
+/// `nnue/train_eval_net.py`: a position and its colour mirror then read identically.
+pub fn to_perspective(v: &mut [i16], black_to_move: bool) {
+    if black_to_move {
+        for &(a, b) in &PAIR_COLS {
+            v.swap(a, b);
+        }
+        for &c in &NEGATE_COLS {
+            v[c] = -v[c];
+        }
+    }
+    v[28] = 1;
 }
 
 /// FNV-1a over the row names, feature count and schema version. Weight files
