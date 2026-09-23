@@ -32,7 +32,7 @@ The contribution workflow has three stages:
 | **Bug fix** | Crash fix, move generation error | Usually no |
 | **Refactor** | Code cleanup, no behavior change | No |
 | **Search improvement** | New pruning, better move ordering | **Yes** |
-| **Evaluation change** | New eval term, tuned values | **Yes** |
+| **Evaluation change** | New eval term, tuned values | **Yes**, with the eval net retrained |
 | **New feature** | New variant, new piece type | Depends |
 
 ### Code Style
@@ -183,6 +183,7 @@ Understanding the codebase:
 | `evaluation/mop_up.rs` | Endgame evaluation for mating |
 | `evaluation/insufficient_material.rs` | Draw detection |
 | `evaluation/variants/*.rs` | Variant-specific evaluation |
+| `eval_net/` | Learned residual on top of `base.rs` (training in `nnue/`) |
 
 ### Utilities
 
@@ -200,16 +201,22 @@ Measured, not opinions - re-testing needs new evidence:
 - Narrowing history tables tends to win; widening tends to lose.
 - Move ordering is near its practical ceiling (~91% first-move cutoff rate).
 - Eval-term tweaks are extremely SPRT-fragile.
+- The eval net is trained on the HCE's terms, so it must be retrained after any eval change before testing.
 
 ---
 
 ## Common Tasks
 
-### Adding a New Evaluation Term
+### Changing the Evaluation
 
-1. Add the term in `src/evaluation/base.rs`
-2. Add tests to verify the term works correctly
-3. Run SPRT to validate it improves play
+The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. The shipped net was fit to the old terms, so the new HCE needs its own net. Screen offline first; it takes minutes where an SPRT takes hours:
+
+1. Make the change in `src/evaluation/base.rs` and add tests for it.
+2. **Screen it.** Build `export_eval_features` from HEAD and from the change, run `nnue/screen.sh` for both with the same seeds, and compare mean holdout losses (see `nnue/README.md`). Use it to pick the best of several variants of an idea, and to drop a change only when it is clearly worse (about 1% or more); anything closer goes to SPRT. Small offline deficits have not predicted SPRT losses so far.
+3. Re-export the full training data with the changed HCE, using the flags of the current net. Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
+4. Retrain the net on it with the current recipe, several seeds, and keep the best on the holdout.
+5. SPRT the new HCE with its new net against HEAD as committed.
+6. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
 
 ### Adding a New Piece Type
 

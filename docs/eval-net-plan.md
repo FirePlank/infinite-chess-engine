@@ -252,4 +252,4 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   **19.63/38.42** (self-play/human). Perspective candidate built clean on A5 + 3 changes; start-
   position colour bias exactly 0.000 in every symmetric variant. SPRT vs A5 running
   (games_a6persp). Stage scale 1.4× stopped at −11 ± 39 (184 games) on request.
-- Queued: leaper cloud radius 16 → 8 (hawks), via the retrain-both-sides workflow.
+- Queued: leaper cloud radius 16 → 8 (hawks): retrain the net on the new HCE, SPRT against HEAD.

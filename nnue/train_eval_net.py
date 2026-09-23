@@ -12,6 +12,7 @@ by GAME, not position, since plies within a game are correlated.
 """
 
 import argparse
+import copy
 import math
 import struct
 import time
@@ -160,6 +161,19 @@ def stm_sign(stm):
     return np.where(stm == 2, -1.0, 1.0).astype(np.float32)
 
 
+def bare_king_mop_up(arr, chunk=1_000_000):
+    """Full-strength mop-up (a lone king against a side with a non-pawn piece): the
+    engine skips the net there, so these records are neither trained nor scored."""
+    out = np.zeros(len(arr), dtype=bool)
+    for i in range(0, len(arr), chunk):
+        c = np.asarray(arr["x"][i : i + chunk, 31:37]).astype(np.int32)
+        pieces, pawns, royals = c[:, 0:2], c[:, 2:4], c[:, 4:6]
+        bare = (pieces == royals) & (royals == 1)
+        armed = pieces - pawns - royals >= 1
+        out[i : i + chunk] = (bare[:, 0] & armed[:, 1]) | (bare[:, 1] & armed[:, 0])
+    return out
+
+
 def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
     """Moves the masked records to `device` chunk by chunk: fancy-indexing the
     whole memmap at once materializes a 2GB+ host copy that small boxes lack."""
@@ -240,7 +254,7 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
 def eval_only(args):
     header, arr = load(args.data, args.max_records, args.stride)
     dev = torch.device(args.device)
-    mask = np.ones(len(arr), dtype=bool)
+    mask = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
     for ck_path in args.eval_only:
         ck = torch.load(ck_path, map_location="cpu")
@@ -259,7 +273,7 @@ def eval_only(args):
         model.qat = True
         cap = float(ck.get("cap", args.cap))
         loss, base, big, _, _ = evaluate_split(model, data, lam_by_source, args.k, cap)
-        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={len(arr):,}")
+        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={int(mask.sum()):,}")
 
 
 def main():
@@ -275,12 +289,16 @@ def main():
     ap.add_argument("--lambda-texel", type=float, default=0.7)
     ap.add_argument("--lambda-sprt", type=float, default=0.5)
     ap.add_argument("--lambda-src2", type=float, default=1.0, help="teacher weight for source 2 (perturbed positions)")
+    ap.add_argument("--keep-mop-up", action="store_true", help="keep bare-king mop-up records (dropped by default)")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of GAMES held out")
     ap.add_argument("--max-records", type=int, default=0)
     ap.add_argument("--stride", type=int, default=1, help="keep every Nth record")
     ap.add_argument("--x-mult", type=int, default=1, help="integer input pre-scale (Stage B uses 32)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--swa-from", type=int, default=0, help="epoch from which to hold --swa-lr and average each epoch's weights (0 = off)")
+    ap.add_argument("--swa-lr", type=float, default=1e-4)
+    ap.add_argument("--ema", type=float, default=0.0, help="per-step decay of a weight moving average to validate and save (0 = off)")
     ap.add_argument("--qat-from", type=int, default=4, help="epoch from which fake quantization is on")
     ap.add_argument("--cap", type=float, default=250.0, help="residual cap applied in the loss (must match RESIDUAL_CAP)")
     ap.add_argument("--texel-weight", type=float, default=1.0, help="loss weight of fixed-depth (source 0) records")
@@ -312,18 +330,21 @@ def main():
     # Hash the game id so the split is stable across re-exports that keep ids.
     h = (game.astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)) >> np.uint64(40)
     val_mask = (h % 1000) < int(args.val_frac * 1000)
-    print(f"train={int((~val_mask).sum()):,} val={int(val_mask.sum()):,}")
+    keep = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
+    print(f"bare-king mop-up records dropped: {int((~keep).sum()):,}")
+    train_mask, val_mask = ~val_mask & keep, val_mask & keep
+    print(f"train={int(train_mask.sum()):,} val={int(val_mask.sum()):,}")
 
     dev = torch.device(args.device)
     try:
-        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        train = to_tensors(arr, train_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
         train = (train[0][:, :n_feat].contiguous(),) + train[1:]
         val = (val[0][:, :n_feat].contiguous(),) + val[1:]
     except RuntimeError as e:  # out of GPU memory: fall back to CPU tensors
         print("GPU load failed, using CPU:", e)
         dev = torch.device("cpu")
-        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        train = to_tensors(arr, train_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
 
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt, args.lambda_src2], device=dev)
@@ -346,9 +367,15 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     n_train = train[0].shape[0]
     steps_per_epoch = math.ceil(n_train / args.batch)
+    # With --swa-from, OneCycle covers only the epochs before it and decays onto --swa-lr
+    # instead of zero; the rest hold that rate while their per-epoch average is taken.
+    cycle_epochs = args.swa_from - 1 if args.swa_from > 1 else args.epochs
+    final_div = args.lr / (25.0 * args.swa_lr) if args.swa_from > 1 else 1e4
     sched = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=args.lr, total_steps=args.epochs * steps_per_epoch, pct_start=0.1
+        opt, max_lr=args.lr, total_steps=cycle_epochs * steps_per_epoch, pct_start=0.1,
+        final_div_factor=final_div,
     )
+    swa = None
 
     v_loss, v_base, v_big, _, _ = evaluate_split(model, val, lam_by_source, args.k, args.cap)
     print(f"epoch 0  val {v_loss:.6f}  baseline {v_base:.6f}  (zero-residual gain 0.00%)")
@@ -373,11 +400,26 @@ def main():
         teacher_net.eval()
         t_cap = float(tck.get("cap", args.cap))
         print(f"distilling from {args.distill} (alpha {args.distill_alpha})")
+    # Exponential moving average of the weights: validated and saved in place of the
+    # live weights, which smooths out where the last few noisy steps happened to land.
+    ema = None
+    if args.ema > 0:
+        ema = copy.deepcopy(model)
+        for p_ema in ema.parameters():
+            p_ema.requires_grad_(False)
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         if epoch == args.qat_from:
             model.qat = True
+            if ema is not None:
+                ema.qat = True
             best = float("inf")  # only quantization-aware checkpoints are exportable
+        in_swa = args.swa_from > 1 and epoch >= args.swa_from
+        if in_swa and swa is None:
+            for g in opt.param_groups:
+                g["lr"] = args.swa_lr
+            swa = torch.optim.swa_utils.AveragedModel(model)
+            best = float("inf")
         perm = torch.randperm(n_train, device=dev)
         run = 0.0
         for i in range(0, n_train, args.batch):
@@ -393,11 +435,19 @@ def main():
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            sched.step()
+            if not in_swa:
+                sched.step()
             model.clamp_weights()
+            if ema is not None:
+                with torch.no_grad():
+                    for p_ema, p_live in zip(ema.parameters(), model.parameters()):
+                        p_ema.mul_(args.ema).add_(p_live, alpha=1.0 - args.ema)
             run += loss.item() * idx.shape[0]
+        if swa is not None:
+            swa.update_parameters(model)
+        scored = swa.module if swa is not None else ema if ema is not None else model
         v_loss, v_base, v_big, per_variant, per_source = evaluate_split(
-            model, val, lam_by_source, args.k, args.cap
+            scored, val, lam_by_source, args.k, args.cap
         )
         gain = 100.0 * (1.0 - v_loss / v_base)
         print(
@@ -408,7 +458,7 @@ def main():
             best = v_loss
             torch.save(
                 {
-                    "state_dict": model.state_dict(),
+                    "state_dict": scored.state_dict(),
                     "n_features": n_feat,
                     "hidden": args.hidden,
                     "hidden2": args.hidden2,

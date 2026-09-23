@@ -165,6 +165,10 @@ const CONFIG = {
     maxplyAdjudication: 1000,
 
     searchNoise: 50,
+    // Each pair's shared opening: the first game plays this many plies at a fixed depth,
+    // off the clock, and the second game replays them, so both colours start identically.
+    bookPlies: 8,
+    bookDepth: 7,
 };
 
 const MAX_CONCURRENCY_STORAGE_KEY = 'sprtMaxSafeConcurrency';
@@ -1095,12 +1099,25 @@ async function runSprt() {
     const sprtBaseSeed = Date.now() ^ ((Math.random() * 0xFFFFFFFF) | 0);
     const gamesDisplay = maxGames === Infinity ? 'unlimited' : maxGames + ' games (' + (maxGames / 2) + ' pairs)';
     log('Starting SPRT: ' + gamesDisplay + ', Mode=' + runConfig.tcMode + ', TC=' + displayTcString + ', Seed=' + sprtBaseSeed, 'info');
-    sprtLog('SPRT Test Started (noisy opening moves for first 8 ply, paired games)', 'info');
+    sprtLog('SPRT Test Started (paired games sharing a ' + runConfig.bookPlies + '-ply book)', 'info');
 
     const maxConcurrent = Math.max(1, runConfig.concurrency | 0);
     const workers = [];
     let activeWorkers = 0;
     let nextGameIndex = 0;
+
+    // pairIndex -> the opening the pair's first game played, awaited by its second game.
+    const pairBooks = new Map();
+    function pairBook(pairIndex) {
+        let entry = pairBooks.get(pairIndex);
+        if (!entry) {
+            let resolve;
+            const promise = new Promise((r) => { resolve = r; });
+            entry = { promise, resolve };
+            pairBooks.set(pairIndex, entry);
+        }
+        return entry;
+    }
 
     function startWorker(worker, id) {
         const gameIndex = nextGameIndex++;
@@ -1116,7 +1133,7 @@ async function runSprt() {
         // Use runConfig for TC params
         const tcParams = getTcParams(runConfig.tcMode, runConfig.timeControl, pairIndex);
 
-        worker.postMessage({
+        const gameMsg = {
             type: 'runGame',
             gameIndex,
             timePerMove: tcParams.timePerMove,
@@ -1125,6 +1142,8 @@ async function runSprt() {
             materialThreshold: runConfig.materialThreshold,
             maxplyAdjudication: runConfig.maxplyAdjudication,
             searchNoise: runConfig.searchNoise,
+            bookPlies: runConfig.bookPlies,
+            bookDepth: runConfig.bookDepth,
             seed: sprtBaseSeed + pairIndex,
             baseTimeMs: tcParams.baseTimeMs,
             incrementMs: tcParams.incrementMs,
@@ -1136,7 +1155,18 @@ async function runSprt() {
             mtThreadsNew: runConfig.mtThreadsNew,
             hashOldMb: runConfig.hashOldMb,
             hashNewMb: runConfig.hashNewMb,
-        });
+            bookMoves: null,
+        };
+        if (runConfig.bookPlies > 0 && gameIndex % 2 === 1) {
+            const entry = pairBook(pairIndex);
+            entry.promise.then((moves) => {
+                pairBooks.delete(pairIndex);
+                gameMsg.bookMoves = moves;
+                worker.postMessage(gameMsg);
+            });
+        } else {
+            worker.postMessage(gameMsg);
+        }
         return true;
     }
 
@@ -1159,6 +1189,14 @@ async function runSprt() {
 
                     worker.onmessage = (e) => {
                         const msg = e.data;
+                        if (msg.type === 'book') {
+                            pairBook(Math.floor(msg.gameIndex / 2)).resolve(msg.moves);
+                            return;
+                        }
+                        // A first game that ended inside its book frees the second to open alone.
+                        if ((msg.type === 'result' || msg.type === 'error') && msg.gameIndex % 2 === 0) {
+                            pairBook(Math.floor(msg.gameIndex / 2)).resolve([]);
+                        }
                         if (msg.type === 'result') {
                             const result = msg.result;
                             if (Array.isArray(msg.samples) && msg.samples.length) {

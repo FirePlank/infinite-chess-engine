@@ -89,3 +89,11 @@ cargo run --release --bin data_gen --features data_gen -- --games 100000
 cargo run --release --bin texel --features eval_tuning -- run
 cargo run --release --bin texel --features eval_tuning -- apply
 ```
+
+### 9. Eval-Net Feature Exporter (`export_eval_features.rs`)
+
+Replays game corpora and writes the eval net's training records: the HCE feature vector, static eval, and a teacher score for every kept position. Can relabel positions with a fixed-depth search. The full training recipe is in **[nnue/README.md](../../nnue/README.md)**.
+
+```bash
+cargo run --release --bin export_eval_features --features data_gen -- --sprt-dir games/sprt --out nnue/mix.bin
+```
