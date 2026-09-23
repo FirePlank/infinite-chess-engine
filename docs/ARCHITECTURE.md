@@ -189,7 +189,7 @@ Variants are not a bolt-on. Rule differences live in `GameRules`/`GameState`, an
 
 ### HCE and net coupling
 
-The HCE and the eval net are one evaluator. The net's inputs are the HCE's terms, so neither can be tuned in isolation: an eval change is measured with the net retrained on top of it, never against a net trained for the old eval.
+The HCE and the eval net are one evaluator. The net's inputs are the HCE's terms, so neither can be tuned in isolation: an eval change ships with a net retrained on top of it, and that pair has to beat HEAD.
 
 ### Infinite-board assumptions
 
