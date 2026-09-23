@@ -50,10 +50,11 @@ bash nnue/screen.sh head ./export_head.exe 3
 bash nnue/screen.sh change ./target/release/export_eval_features.exe 3
 ```
 
-Single seeds differ by about 0.3%, so judge means over 3 or more. A change 0.3% or
-more worse than HEAD is dropped without an SPRT; one within noise or better goes on
-to the full retrain and an SPRT. The screen is a filter, not a verdict: A6 was 0.1%
-worse offline and still won its SPRT.
+Single seeds differ by about 0.3%, so judge means over 3 or more. The screen ranks
+variants of one idea well; as a verdict on a single change it is only trusted for
+clear losses (about 1% or more worse). Closer calls go to SPRT: A6 was 0.1% worse
+offline and won +20, and dropping the development term screened 0.45% worse and
+won +13.
 
 ## After an HCE change
 

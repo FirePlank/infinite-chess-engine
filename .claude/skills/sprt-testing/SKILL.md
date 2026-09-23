@@ -81,8 +81,8 @@ inflation as the zombie incident below, without needing any zombies to cause it.
 
 An eval-term change is tested with its own retrained net, against HEAD as committed.
 Before building that, run the offline screen (`nnue/screen.sh`, see docs/CONTRIBUTING.md
-"Changing the Evaluation"): compare 3+ seed mean holdout losses with HEAD's. 0.3% or more
-worse is dropped with no SPRT; within noise or better goes on to the retrain and SPRT.
+"Changing the Evaluation"): compare 3+ seed mean holdout losses with HEAD's. Use it to pick
+between variants of an idea; drop a change unseen only when it is clearly worse (~1%+).
 
 ## 4. Scope variants to what the change touches
 

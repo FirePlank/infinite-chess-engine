@@ -75,8 +75,9 @@ huge — don't assume a bounded board or a fixed edge to scan to.
   real SPRT evidence, not just sound reasoning.
 - Screen every HCE change offline before its SPRT (`nnue/screen.sh`, minutes
   instead of hours; steps in docs/CONTRIBUTING.md "Changing the Evaluation").
-  Compare 3+ seed means against HEAD: 0.3% or more worse is dropped without
-  an SPRT. The change then ships with its own retrained net, tested vs HEAD.
+  Compare 3+ seed means against HEAD; it ranks variants of an idea, and only
+  a clear loss (~1%+ worse) is dropped without an SPRT. The change then ships
+  with its own retrained net, tested vs HEAD.
 - A piece-value/variant change can pass SPRT in one variant while being
   wrong for another if it changes that value's ordering against pieces
   actually present there — check per-variant piece inventories
