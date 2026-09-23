@@ -65,7 +65,9 @@ cargo run --release --bin sprt --features sprt -- run --old-bin target/release/s
 | `--adjudication <N>` | `0` | Eval difference (cp) to auto-adjudicate; both engines must agree for 3 consecutive plies (0 = disabled) |
 | `--maxply-adjudication <N>` | `1000` | The threshold (cp) which awards a point instead of a draw when the move cap is reached (0 = disabled) |
 | `--max-moves <N>` | `300` | Max plies before forced draw |
-| `--search-noise <N>` | `50` | Noise amplitude (cp) for first 8 ply |
+| `--search-noise <N>` | `50` | Eval noise (cp) used to vary the opening book |
+| `--book-plies <N>` | `8` | Plies of each pair's shared opening: the first game searches them off the clock in throwaway engines, the second replays them, and both then start fresh engines (0 = engines open with noise instead) |
+| `--book-depth <N>` | `7` | Fixed search depth of each book move |
 | `--new-strength <N>` | `8` | Strength level for the new engine (1-8) |
 | `--old-strength <N>` | `8` | Strength level for the old engine (1-8) |
 | `--games <PATH>` | — | Write game ICNs to a JSON; flushed every `--save-interval` games |

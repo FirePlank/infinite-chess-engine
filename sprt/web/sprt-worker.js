@@ -500,7 +500,7 @@ async function ensureInit(mtThreadsOld, mtThreadsNew, hashOldMb, hashNewMb) {
     }
 }
 
-async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed, oldStrength, maxplyAdjudication) {
+async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThreshold, baseTimeMs, incrementMs, timeControl, variantName = 'Classical', maxDepth, searchNoise, seed, oldStrength, maxplyAdjudication, bookPlies = 0, bookDepth = 7, bookMoves = null, onBook = null) {
     if (typeof wasmNew.reset_engine_state === 'function') {
         wasmNew.reset_engine_state();
     }
@@ -659,6 +659,16 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             const earlyTerminal = getTerminalResult(' (terminal state detected at start of ply)');
             if (earlyTerminal) return earlyTerminal;
 
+            // Book plies are the pair's shared opening: the first game searches them at a
+            // fixed depth, off the clock; the second replays them. Both games then clear
+            // engine state, so neither side's search starts warm.
+            const inBook = ply < bookPlies;
+            if (bookPlies > 0 && ply === bookPlies) {
+                if (typeof wasmNew.reset_engine_state === 'function') wasmNew.reset_engine_state();
+                if (typeof wasmOld.reset_engine_state === 'function') wasmOld.reset_engine_state();
+                if (onBook) onBook(moveHistory.slice());
+            }
+
             // Let the appropriate engine choose a move
             const EngineClass = isWhiteTurn
                 ? (newPlaysWhite ? EngineNew : EngineOld)
@@ -667,6 +677,12 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 ? (newPlaysWhite ? 'new' : 'old')
                 : (newPlaysWhite ? 'old' : 'new');
 
+            const replay = inBook && Array.isArray(bookMoves) && ply < bookMoves.length;
+            let move;
+            let flaggedOnTime = false;
+            if (replay) {
+                move = { ...bookMoves[ply] };
+            } else {
             let searchTimeMs = timePerMove;
 
             // Build ICN string from initial position and move history using the shared helper.
@@ -679,7 +695,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 moveHistory
             );
 
-            const engineConfig = {
+            const engineConfig = inBook ? { strength_level: 8 } : {
                 strength_level: (engineName === 'old' && oldStrength && oldStrength < 3) ? oldStrength : 8,
                 wtime: Math.floor(whiteClock),
                 btime: Math.floor(blackClock),
@@ -730,19 +746,20 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 }
             }
 
-            // For the first 8 ply, use a slight noise to create opening variety.
-            // After ply 8, use normal search.
-            const currentPly = moveHistory.length;
-            const noiseAmp = currentPly < 8 ? (typeof searchNoise === 'number' ? searchNoise : 5) : null;
+            // Noise varies the opening: through the book when there is one, otherwise
+            // on each engine's own first 8 plies.
+            const noiseAmp = (inBook || (bookPlies === 0 && ply < 8))
+                ? (typeof searchNoise === 'number' ? searchNoise : 5)
+                : null;
+            const moveTimeMs = inBook ? 600000 : (haveClocks ? 0 : searchTimeMs);
+            const moveDepth = inBook ? bookDepth : maxDepth;
 
-            let flaggedOnTime = false;
-            let move;
             try {
-                move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, seed ? BigInt(seed) : undefined);
+                move = engine.get_best_move_with_time(moveTimeMs, true, moveDepth, noiseAmp, seed ? BigInt(seed) : undefined);
             } catch (err) {
                 // Fallback for older engines that don't support BigInt seed
                 if (err instanceof TypeError || (err.message && err.message.includes('BigInt'))) {
-                    move = engine.get_best_move_with_time(haveClocks ? 0 : searchTimeMs, true, maxDepth, noiseAmp, undefined);
+                    move = engine.get_best_move_with_time(moveTimeMs, true, moveDepth, noiseAmp, undefined);
                 } else {
                     throw err;
                 }
@@ -751,7 +768,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
 
             const elapsed = Math.max(0, Math.round(nowMs() - startMs));
 
-            if (haveClocks) {
+            if (haveClocks && !inBook) {
                 if (isWhiteTurn) {
                     let next = whiteClock - elapsed;
                     if (next < 0) {
@@ -767,6 +784,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                     }
                     blackClock = next + increment;
                 }
+            }
             }
 
             if (haveClocks && flaggedOnTime) {
@@ -873,7 +891,7 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
             // Record this engine's last search evaluation (from White's POV) if
             // the engine returned an eval field. The Rust side reports eval from
             // the side-to-move's perspective.
-            if (typeof move.eval === 'number') {
+            if (!inBook && typeof move.eval === 'number') {
                 const evalSide = move.eval;
                 const evalWhite = sideToMove === 'w' ? evalSide : -evalSide;
                 if (engineName === 'new') {
@@ -930,8 +948,10 @@ async function playSingleGame(timePerMove, maxMoves, newPlaysWhite, materialThre
                 const clkMs = isWhiteTurn ? whiteClock : blackClock;
                 commands += `[%clk ${formatClock(clkMs)}]`;
             }
-            // Add eval if available
-            if (typeof move.eval === 'number') {
+            if (inBook) {
+                if (commands) commands += ' ';
+                commands += '[%book]';
+            } else if (typeof move.eval === 'number') {
                 if (commands) commands += ' ';
                 // If sideToMove is Black, negate the score so it's always from White's perspective.
                 let evalVal = move.eval;
@@ -1160,7 +1180,11 @@ self.onmessage = async (e) => {
                 msg.searchNoise,
                 msg.seed,
                 msg.oldStrength,
-                msg.maxplyAdjudication
+                msg.maxplyAdjudication,
+                msg.bookPlies || 0,
+                msg.bookDepth || 7,
+                msg.bookMoves || null,
+                (moves) => self.postMessage({ type: 'book', gameIndex: msg.gameIndex, moves })
             );
 
             // Timeout wrapper - treat timeout as draw
