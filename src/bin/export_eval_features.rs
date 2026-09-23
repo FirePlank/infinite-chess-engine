@@ -482,6 +482,13 @@ fn replay(
             && (sample >= 1.0 || unit_interval(((game_id as u64) << 20) | ply as u64) < sample);
         if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(&g)
         {
+            // A position --keep-hashes would drop later costs only its replay here, not a
+            // clone and an eval.
+            if cli.perturb == 0 && KEEP_HASHES.get().is_some_and(|k| !k.contains(&g.hash)) {
+                stats.dup.fetch_add(1, Ordering::Relaxed);
+                advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
+                continue;
+            }
             // With --perturb, step off the game line by a few random legal moves, so the
             // net also trains on the unbalanced positions the search evaluates.
             let pos = if cli.perturb > 0 {
