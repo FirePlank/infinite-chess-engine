@@ -12,6 +12,7 @@ by GAME, not position, since plies within a game are correlated.
 """
 
 import argparse
+import copy
 import math
 import struct
 import time
@@ -295,6 +296,9 @@ def main():
     ap.add_argument("--x-mult", type=int, default=1, help="integer input pre-scale (Stage B uses 32)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--swa-from", type=int, default=0, help="epoch from which to hold --swa-lr and average each epoch's weights (0 = off)")
+    ap.add_argument("--swa-lr", type=float, default=1e-4)
+    ap.add_argument("--ema", type=float, default=0.0, help="per-step decay of a weight moving average to validate and save (0 = off)")
     ap.add_argument("--qat-from", type=int, default=4, help="epoch from which fake quantization is on")
     ap.add_argument("--cap", type=float, default=250.0, help="residual cap applied in the loss (must match RESIDUAL_CAP)")
     ap.add_argument("--texel-weight", type=float, default=1.0, help="loss weight of fixed-depth (source 0) records")
@@ -363,9 +367,15 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     n_train = train[0].shape[0]
     steps_per_epoch = math.ceil(n_train / args.batch)
+    # With --swa-from, OneCycle covers only the epochs before it and decays onto --swa-lr
+    # instead of zero; the rest hold that rate while their per-epoch average is taken.
+    cycle_epochs = args.swa_from - 1 if args.swa_from > 1 else args.epochs
+    final_div = args.lr / (25.0 * args.swa_lr) if args.swa_from > 1 else 1e4
     sched = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=args.lr, total_steps=args.epochs * steps_per_epoch, pct_start=0.1
+        opt, max_lr=args.lr, total_steps=cycle_epochs * steps_per_epoch, pct_start=0.1,
+        final_div_factor=final_div,
     )
+    swa = None
 
     v_loss, v_base, v_big, _, _ = evaluate_split(model, val, lam_by_source, args.k, args.cap)
     print(f"epoch 0  val {v_loss:.6f}  baseline {v_base:.6f}  (zero-residual gain 0.00%)")
@@ -390,11 +400,26 @@ def main():
         teacher_net.eval()
         t_cap = float(tck.get("cap", args.cap))
         print(f"distilling from {args.distill} (alpha {args.distill_alpha})")
+    # Exponential moving average of the weights: validated and saved in place of the
+    # live weights, which smooths out where the last few noisy steps happened to land.
+    ema = None
+    if args.ema > 0:
+        ema = copy.deepcopy(model)
+        for p_ema in ema.parameters():
+            p_ema.requires_grad_(False)
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         if epoch == args.qat_from:
             model.qat = True
+            if ema is not None:
+                ema.qat = True
             best = float("inf")  # only quantization-aware checkpoints are exportable
+        in_swa = args.swa_from > 1 and epoch >= args.swa_from
+        if in_swa and swa is None:
+            for g in opt.param_groups:
+                g["lr"] = args.swa_lr
+            swa = torch.optim.swa_utils.AveragedModel(model)
+            best = float("inf")
         perm = torch.randperm(n_train, device=dev)
         run = 0.0
         for i in range(0, n_train, args.batch):
@@ -410,11 +435,19 @@ def main():
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            sched.step()
+            if not in_swa:
+                sched.step()
             model.clamp_weights()
+            if ema is not None:
+                with torch.no_grad():
+                    for p_ema, p_live in zip(ema.parameters(), model.parameters()):
+                        p_ema.mul_(args.ema).add_(p_live, alpha=1.0 - args.ema)
             run += loss.item() * idx.shape[0]
+        if swa is not None:
+            swa.update_parameters(model)
+        scored = swa.module if swa is not None else ema if ema is not None else model
         v_loss, v_base, v_big, per_variant, per_source = evaluate_split(
-            model, val, lam_by_source, args.k, args.cap
+            scored, val, lam_by_source, args.k, args.cap
         )
         gain = 100.0 * (1.0 - v_loss / v_base)
         print(
@@ -425,7 +458,7 @@ def main():
             best = v_loss
             torch.save(
                 {
-                    "state_dict": model.state_dict(),
+                    "state_dict": scored.state_dict(),
                     "n_features": n_feat,
                     "hidden": args.hidden,
                     "hidden2": args.hidden2,

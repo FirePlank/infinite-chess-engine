@@ -37,6 +37,22 @@ export) with `train_eval_net.py --eval-only`. It ranks nets the way SPRT does;
 splits of the training corpus and the human-game set do not. Only nets that
 beat the incumbent there go to SPRT.
 
+## Screening an HCE change
+
+`nnue/screen.sh` is the pre-filter: an export of the two self-play corpora and a
+40-epoch base run per seed, scored on the fresh holdout, about a minute per seed.
+Run it for HEAD and for the change with the same seeds and compare the mean losses:
+
+```
+bash nnue/screen.sh head ./export_head.exe 3
+bash nnue/screen.sh change ./target/release/export_eval_features.exe 3
+```
+
+Single seeds differ by about 0.3%, so judge means over 3 or more. A change 0.3% or
+more worse than HEAD is dropped without an SPRT; one within noise or better goes on
+to the full retrain and an SPRT. The screen is a filter, not a verdict: A6 was 0.1%
+worse offline and still won its SPRT.
+
 ## After an HCE change
 
 The net's inputs are HCE terms, so a changed eval needs its own retrained net,

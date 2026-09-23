@@ -209,13 +209,17 @@ Measured, not opinions - re-testing needs new evidence:
 
 ### Changing the Evaluation
 
-The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. The shipped net was fit to the old terms, so the new HCE needs its own net:
+The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. The shipped net was fit to the old terms, so the new HCE needs its own net. Screen offline first; it takes minutes where an SPRT takes hours:
 
 1. Make the change in `src/evaluation/base.rs` and add tests for it.
-2. Re-export the training data with the changed HCE, using the flags of the current net (see `nnue/README.md`). Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
-3. Retrain the net on it with the current recipe.
-4. SPRT the new HCE with its new net against HEAD as committed.
-5. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
+2. **Screen it.** Build `export_eval_features` from HEAD and from the change, run `nnue/screen.sh` for both with the same seeds, and compare mean holdout losses (see `nnue/README.md`):
+   - clearly lower than HEAD: promising, continue;
+   - within seed noise (about 0.2%): continue, the SPRT breaks the tie;
+   - 0.3% or more higher: drop it without an SPRT.
+3. Re-export the full training data with the changed HCE, using the flags of the current net. Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
+4. Retrain the net on it with the current recipe, several seeds, and keep the best on the holdout.
+5. SPRT the new HCE with its new net against HEAD as committed.
+6. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
 
 ### Adding a New Piece Type
 

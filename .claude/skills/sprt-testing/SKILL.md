@@ -77,6 +77,13 @@ each game is single-threaded, so SMT siblings only add contention, not real para
 Passing a manual `--concurrency` above physical core count reproduces the same timeout
 inflation as the zombie incident below, without needing any zombies to cause it.
 
+## 3b. HCE changes: screen offline first
+
+An eval-term change is tested with its own retrained net, against HEAD as committed.
+Before building that, run the offline screen (`nnue/screen.sh`, see docs/CONTRIBUTING.md
+"Changing the Evaluation"): compare 3+ seed mean holdout losses with HEAD's. 0.3% or more
+worse is dropped with no SPRT; within noise or better goes on to the retrain and SPRT.
+
 ## 4. Scope variants to what the change touches
 
 Testing all site variants on a change that affects a few buries the signal in noise.
