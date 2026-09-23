@@ -39,10 +39,10 @@ beat the incumbent there go to SPRT.
 
 ## After an HCE change
 
-The net's inputs are HCE terms, so a changed eval needs a retrained net on both
-sides of the test (see `docs/CONTRIBUTING.md`). Depth-9 labels are expensive and
-the change alters every feature key, so carry them over by Zobrist hash
-(`$OLD`/`$NEW` are exporters built without and with the change):
+The net's inputs are HCE terms, so a changed eval needs its own retrained net,
+tested against HEAD as committed (see `docs/CONTRIBUTING.md`). Depth-9 labels are
+expensive and the change alters every feature key, so carry them over by Zobrist
+hash (`$OLD`/`$NEW` are exporters built without and with the change):
 
 ```
 REL="--sprt-dir games/sprt --sprt-sample 1.0 --quiet-tolerance 100000"

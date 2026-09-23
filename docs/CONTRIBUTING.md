@@ -209,14 +209,13 @@ Measured, not opinions - re-testing needs new evidence:
 
 ### Changing the Evaluation
 
-The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. Testing a new HCE against the shipped net measures the mismatch, not the term. Retrain both sides the same way instead:
+The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. The shipped net was fit to the old terms, so the new HCE needs its own net:
 
 1. Make the change in `src/evaluation/base.rs` and add tests for it.
-2. Build `export_eval_features` twice, once without the change and once with it.
-3. Export the same sources with both builds, using the flags of the current net (see `nnue/README.md`). Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
-4. Train both datasets with the identical recipe and seeds, and compare each on its own holdout.
-5. SPRT the retrained new engine against the retrained old engine.
-6. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
+2. Re-export the training data with the changed HCE, using the flags of the current net (see `nnue/README.md`). Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
+3. Retrain the net on it with the current recipe.
+4. SPRT the new HCE with its new net against HEAD as committed.
+5. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
 
 ### Adding a New Piece Type
 
