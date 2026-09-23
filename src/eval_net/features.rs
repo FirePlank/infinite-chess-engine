@@ -46,7 +46,6 @@ pub struct EvalNetInputs {
     pub cloud_avg_spread: i32,
     pub cloud_count: i32,
     pub counterplay: [i32; 2],
-    pub undeveloped: [i32; 2],
     pub bishops: [i32; 2],
     pub bishop_pair: [i32; 2],
     pub diag_sliders: [i32; 2],
@@ -256,7 +255,8 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
     let p = &fc.pawn;
     for side in 0..2 {
         push!(ct(n.counterplay[side]));
-        push!(ct(n.undeveloped[side]));
+        // Slot of the removed development count, kept so later columns do not move.
+        push!(0);
         push!(ct(n.bishops[side]));
         push!(ct(n.bishop_pair[side]));
         push!(ct(n.diag_sliders[side]));

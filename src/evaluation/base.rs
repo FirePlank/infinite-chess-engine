@@ -18,15 +18,13 @@ use crate::search::params::{
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
     king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
     mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
-    mg_outpost_bonus, min_major_development_penalty,
-    minor_development_penalty_threshold, passed_enemy_king_dist, passed_friendly_king_dist,
+    mg_outpost_bonus, passed_enemy_king_dist, passed_friendly_king_dist,
     passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
     pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
     piece_cloud_cheb_max_excess, piece_cloud_cheb_radius,
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
-min_fairy_development_penalty,
 };
 
 // 2-Bucket LRU pawn structure cache
@@ -320,9 +318,6 @@ pub const DEFAULT_EVAL_CENTAUR_GUARD_SCALE: i32 = 50;
 pub const DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD: i32 = 6;
 pub const DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY: i32 = 90;
 pub const DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY: i32 = 100;
-pub const DEFAULT_EVAL_MINOR_DEVELOPMENT_PENALTY_THRESHOLD: i32 = 400;
-pub const DEFAULT_EVAL_MIN_MAJOR_DEVELOPMENT_PENALTY: i32 = 16;
-pub const DEFAULT_EVAL_MIN_FAIRY_DEVELOPMENT_PENALTY: i32 = 80;
 pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
 pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
 pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
@@ -758,8 +753,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // can harass forever on an unbounded board where four knights cannot.
     let mut white_cp = 0;
     let mut black_cp = 0;
-    let mut white_undeveloped = 0;
-    let mut black_undeveloped = 0;
     let mut white_bishops = 0;
     let mut white_bishop_colors = (false, false);
     let mut black_bishops = 0;
@@ -1254,17 +1247,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     }
                                 }
 
-                                // 8. Minor stats
-                                if (pt.is_minor() || pt == PieceType::Archbishop)
-                                    && game.starting_squares.contains(&Coordinate::new(x, y))
-                                {
-                                    if is_white {
-                                        white_undeveloped += 1;
-                                    } else {
-                                        black_undeveloped += 1;
-                                    }
-                                }
-
                                 if pt == PieceType::Bishop {
                                     if is_white {
                                         white_bishops += 1;
@@ -1636,8 +1618,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             tracer,
                             piece_list,
                             PieceMetrics {
-                                white_undeveloped,
-                                black_undeveloped,
                                 white_bishops,
                                 black_bishops,
                                 white_bishop_colors,
@@ -1833,7 +1813,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 cloud_avg_spread,
                                 cloud_count: cloud_count.min(255) as i32,
                                 counterplay: [white_cp, black_cp],
-                                undeveloped: [white_undeveloped, black_undeveloped],
                                 bishops: [white_bishops, black_bishops],
                                 bishop_pair: [pair(white_bishop_colors), pair(black_bishop_colors)],
                                 diag_sliders: [w_diag_count, b_diag_count],
@@ -1913,8 +1892,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 }
 
 struct PieceMetrics {
-    white_undeveloped: i32,
-    black_undeveloped: i32,
     white_bishops: i32,
     black_bishops: i32,
     white_bishop_colors: (bool, bool),
@@ -1974,15 +1951,6 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 
     let cloud_center = metrics.cloud_center;
     let cloud_avg_spread = metrics.cloud_avg_spread;
-
-    let white_attack_ready = {
-        let cap = (100 - metrics.white_undeveloped * 25).clamp(30, 100);
-        white_attack_ready.min(cap)
-    };
-    let black_attack_ready = {
-        let cap = (100 - metrics.black_undeveloped * 25).clamp(30, 100);
-        black_attack_ready.min(cap)
-    };
 
     // One traversal serves every rider: each would otherwise walk the whole
     // board for itself.
@@ -2293,25 +2261,6 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     piece_score -= cloud_penalty(excess, piece_val, mult);
                 }
             }
-        }
-
-        if (pt.is_minor() || pt == PieceType::Archbishop)
-            && game.starting_squares.contains(&Coordinate::new(x, y))
-        {
-            // A fairy leaper needs room for its odd leap pattern to pay off, unlike a
-            // knight/bishop at home; one shared value suited neither, so priced apart.
-            piece_score -= if pt.is_minor() {
-                if matches!(pt, PieceType::Knight | PieceType::Bishop) {
-                    // Ramped in value rather than flipped at a threshold, which paid
-                    // a bishop the full penalty and a knight none at all.
-                    min_major_development_penalty() * piece_val
-                        / minor_development_penalty_threshold().max(1)
-                } else {
-                    min_fairy_development_penalty()
-                }
-            } else {
-                min_major_development_penalty()
-            };
         }
 
         if !pt.is_royal() && pt != PieceType::Pawn {

@@ -152,10 +152,6 @@ pub struct UndoMove {
     pub old_halfmove_clock: u32,
     pub old_hash: u64,     // Hash before the move was made
     pub special_rights_removed: ArrayVec<Coordinate, 4>, // Track which special rights were removed (re-insert on undo)
-    /// If this move caused a piece to leave its original starting square,
-    /// we remove that coordinate from starting_squares. Store it here so
-    /// undo_move can restore starting_squares exactly.
-    pub starting_square_restored: Option<Coordinate>,
     /// Royal positions before move
     pub old_white_royals: SmallVec<[Coordinate; 1]>,
     pub old_black_royals: SmallVec<[Coordinate; 1]>,
@@ -226,11 +222,6 @@ pub struct GameState {
     /// Spatial indices for fast sliding move and attack queries
     #[serde(skip)]
     pub spatial_indices: SpatialIndices,
-    /// Starting squares for development: coordinates where non-pawn,
-    /// non-royal pieces began the game. Used to apply a one-time
-    /// development penalty while a piece remains on its original square.
-    #[serde(skip)]
-    pub starting_squares: FxHashSet<Coordinate>,
     /// Cached dynamic back ranks derived from promotion_ranks. These are
     /// computed once when the game is created.
     #[serde(skip)]
@@ -429,7 +420,6 @@ impl GameState {
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
-            starting_squares: FxHashSet::default(),
             white_back_rank: 1,
             black_back_rank: 8,
             white_promo_rank: i64::MIN,
@@ -481,7 +471,6 @@ impl GameState {
             white_pieces: Vec::new(),
             black_pieces: Vec::new(),
             spatial_indices: SpatialIndices::default(),
-            starting_squares: FxHashSet::default(),
             white_back_rank: 1,
             black_back_rank: 8,
             white_promo_rank: 2_000_000_000_000_000,
@@ -990,17 +979,6 @@ impl GameState {
         }
 
         result
-    }
-
-    /// Treats every non-pawn, non-royal piece's current square as its original one.
-    /// Call once on the initial position, before replaying move history.
-    pub fn init_starting_squares(&mut self) {
-        self.starting_squares.clear();
-        for (x, y, piece) in self.board.iter() {
-            if piece.piece_type() != PieceType::Pawn && !piece.piece_type().is_royal() {
-                self.starting_squares.insert(Coordinate::new(x, y));
-            }
-        }
     }
 
     /// Initialize starting piece counts for game phase calculation.
@@ -3113,7 +3091,6 @@ impl GameState {
         // Push hashes before move (for repetition detection)
         self.hash_stack.push(self.hash);
 
-        let from_coord = Coordinate::new(m.from.x, m.from.y);
 
         // Snapshot the castling hash before the mover leaves the board: precise mode
         // skips empty rights-squares, so computing it after removal would never XOR
@@ -3149,7 +3126,6 @@ impl GameState {
             old_halfmove_clock: self.halfmove_clock,
             old_hash: self.hash_stack.last().copied().unwrap_or(0),
             special_rights_removed: ArrayVec::new(),
-            starting_square_restored: None,
             old_white_royals: self.white_royals.clone(),
             old_black_royals: self.black_royals.clone(),
             old_repetition: self.repetition,
@@ -3175,12 +3151,6 @@ impl GameState {
                     self.black_royals.push(m.to);
                 }
             }
-        }
-
-        // A piece leaving its original square stops that coordinate counting as
-        // undeveloped; record it so undo_move can restore starting_squares.
-        if self.starting_squares.remove(&from_coord) {
-            undo_info.starting_square_restored = Some(from_coord);
         }
 
         // Handle captures
@@ -3729,11 +3699,6 @@ impl GameState {
         for coord in undo.special_rights_removed {
             self.special_rights.insert(coord);
         }
-        // If this move caused a piece to leave its original starting square,
-        // restore that coordinate in starting_squares.
-        if let Some(coord) = undo.starting_square_restored {
-            self.starting_squares.insert(coord);
-        }
         // Restore royal positions
         self.white_royals = undo.old_white_royals;
         self.black_royals = undo.old_black_royals;
@@ -4217,8 +4182,6 @@ impl GameState {
 
         // Cache starting non-pawn piece counts for phase detection
         self.init_starting_piece_counts();
-
-        self.init_starting_squares();
 
         self.recompute_hash();
 
@@ -5275,15 +5238,6 @@ mod tests {
             !game.has_non_pawn_material(PlayerColor::Black),
             "Black should not have non-pawn material (only king)"
         );
-    }
-
-    #[test]
-    fn test_init_starting_squares() {
-        let mut game = create_test_game_from_icn("w (8;q|1;q) K5,1|R1,1|R8,1");
-        game.init_starting_squares();
-
-        assert!(game.starting_squares.contains(&Coordinate::new(1, 1)));
-        assert!(game.starting_squares.contains(&Coordinate::new(8, 1)));
     }
 
     // TESTS FOR UNTESTED HIGH-IMPACT FUNCTIONS
