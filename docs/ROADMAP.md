@@ -33,13 +33,18 @@ Beyond just tuning numbers, the evaluation function itself needs better metrics 
 ### The Problem
 The current evaluation is an adaptation of standard chess rules with a few infinite-specific tweaks. It lacks "smart" metrics for an infinite board, such as better understanding of piece safety, long-range attacks, or unique structures in unbounded space.
 
+A small net (`src/eval_net/`) now corrects the HCE from its own terms, which covers some of this, but it can only reweigh what the HCE already measures.
+
 ### The Plan
 - Implement smarter evaluation terms in `src/evaluation/base.rs`.
 - experiment with new metrics unique to infinite chess geometry.
-- *Note*: Any logic change here **must** be verified with SPRT.
+- Improve the net's training data: deeper labels and more on-policy games.
+- *Note*: Any logic change here **must** be verified with SPRT, with the net retrained on top of it (see the Contributing Guide).
 
 ### Relevant Files
 - `src/evaluation/base.rs`
+- `src/eval_net/`
+- `nnue/`
 
 ---
 

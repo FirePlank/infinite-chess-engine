@@ -32,7 +32,7 @@ The contribution workflow has three stages:
 | **Bug fix** | Crash fix, move generation error | Usually no |
 | **Refactor** | Code cleanup, no behavior change | No |
 | **Search improvement** | New pruning, better move ordering | **Yes** |
-| **Evaluation change** | New eval term, tuned values | **Yes** |
+| **Evaluation change** | New eval term, tuned values | **Yes**, with the eval net retrained |
 | **New feature** | New variant, new piece type | Depends |
 
 ### Code Style
@@ -183,6 +183,7 @@ Understanding the codebase:
 | `evaluation/mop_up.rs` | Endgame evaluation for mating |
 | `evaluation/insufficient_material.rs` | Draw detection |
 | `evaluation/variants/*.rs` | Variant-specific evaluation |
+| `eval_net/` | Learned residual on top of `base.rs` (training in `nnue/`) |
 
 ### Utilities
 
@@ -200,16 +201,22 @@ Measured, not opinions - re-testing needs new evidence:
 - Narrowing history tables tends to win; widening tends to lose.
 - Move ordering is near its practical ceiling (~91% first-move cutoff rate).
 - Eval-term tweaks are extremely SPRT-fragile.
+- The eval net is trained on the HCE's terms, so it must be retrained after any eval change before testing.
 
 ---
 
 ## Common Tasks
 
-### Adding a New Evaluation Term
+### Changing the Evaluation
 
-1. Add the term in `src/evaluation/base.rs`
-2. Add tests to verify the term works correctly
-3. Run SPRT to validate it improves play
+The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. Testing a new HCE against the shipped net measures the mismatch, not the term. Retrain both sides the same way instead:
+
+1. Make the change in `src/evaluation/base.rs` and add tests for it.
+2. Build `export_eval_features` twice, once without the change and once with it.
+3. Export the same sources with both builds, using the flags of the current net (see `nnue/README.md`). Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
+4. Train both datasets with the identical recipe and seeds, and compare each on its own holdout.
+5. SPRT the retrained new engine against the retrained old engine.
+6. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.
 
 ### Adding a New Piece Type
 

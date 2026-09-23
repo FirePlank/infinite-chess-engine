@@ -22,7 +22,7 @@ A Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https
 
 - **Infinite Board**: Coordinate-based system supporting arbitrary board sizes.
 - **Search**: Iterative deepening PVS with aspiration windows, null move pruning, LMR, history-based move ordering, and more.
-- **Evaluation**: Modular HCE (Material, Cloud Centrality, Pawn Advancement, King Safety, etc.) with experimental NNUE support.
+- **Evaluation**: Modular HCE (Material, Cloud Centrality, Pawn Advancement, King Safety, etc.) plus a small quantized net that corrects it from the HCE's own terms.
 - **Performance**: Written in Rust with support for Lazy SMP multithreading.
 - **Variants & Fairy Pieces**: Support for all fairy pieces and unique infinite chess variants.
 
