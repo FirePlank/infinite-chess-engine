@@ -115,6 +115,7 @@ games/
 nnue/checkpoints/
 nnue/*.log
 nnue/*.jsonl
+nnue/lr/
 # Scratch benchmark binaries built for old/new comparisons.
 /*_new.exe
 /*_old.exe
