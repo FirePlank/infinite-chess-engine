@@ -64,6 +64,9 @@ struct Cfg<'a> {
     keep_keys: Option<&'a HashSet<u64>>,
     keep_hashes: Option<&'a HashSet<u64>>,
     stats: &'a Stats,
+    /// Only positions this evaluator scores: it can change mid-game (a horde whose
+    /// pawns promoted is scored by the base evaluator).
+    kind: EvalKind,
 }
 
 #[derive(Default)]
@@ -205,6 +208,16 @@ struct Cli {
     rel_keep_hashes: Option<PathBuf>,
     #[arg(long)]
     rel_hash_out: Option<PathBuf>,
+    /// Override a tunable eval parameter for this export (`name=value`, repeatable), so
+    /// an offline screen can try parameter variants without a rebuild. Needs a build
+    /// with `--features data_gen,eval_tuning`.
+    #[arg(long = "param")]
+    params: Vec<String>,
+    /// Which evaluator's positions to export: generic, chess, obstocean or pawn_horde.
+    /// A specialized evaluator's score is the static eval; the inputs stay the base
+    /// HCE's feature vector for the same position.
+    #[arg(long, default_value = "generic")]
+    eval_kind: String,
     /// Leading feature columns the key covers (the older layout's width).
     #[arg(long, default_value_t = 129)]
     key_columns: usize,
@@ -488,6 +501,36 @@ fn unit_interval(seed: u64) -> f64 {
     (splitmix(seed) >> 11) as f64 / (1u64 << 53) as f64
 }
 
+#[cfg(feature = "eval_tuning")]
+fn apply_param_overrides(overrides: &[String]) {
+    if overrides.is_empty() {
+        return;
+    }
+    let mut v: serde_json::Value =
+        serde_json::from_str(&apeiron::search::params::get_eval_params_as_json()).unwrap();
+    for kv in overrides {
+        let (k, val) = kv.split_once('=').expect("--param takes name=value");
+        assert!(v.get(k).is_some(), "unknown eval parameter {k}");
+        v[k] = serde_json::json!(val.parse::<i64>().expect("--param value must be an integer"));
+        eprintln!("param {k} = {val}");
+    }
+    assert!(apeiron::search::params::set_eval_params_from_json(&v.to_string()));
+}
+
+#[cfg(not(feature = "eval_tuning"))]
+fn apply_param_overrides(overrides: &[String]) {
+    assert!(overrides.is_empty(), "--param needs a build with --features eval_tuning");
+}
+
+fn target_kind(name: &str) -> EvalKind {
+    match name {
+        "chess" => EvalKind::Chess,
+        "obstocean" => EvalKind::Obstocean,
+        "pawn_horde" => EvalKind::PawnHorde,
+        _ => EvalKind::Generic,
+    }
+}
+
 /// Offers the position before `ply`'s move to one output, applying that output's filters
 /// exactly as a run of its own would.
 #[allow(clippy::too_many_arguments)]
@@ -540,7 +583,7 @@ fn consider(
             return;
         }
         // Positions where the engine skips the net are never trained on.
-        if base::net_off(&pos) {
+        if pos.eval_kind != c.kind || base::net_off(&pos) {
             return;
         }
         let mut teacher = game.teacher[ply].unwrap();
@@ -568,7 +611,13 @@ fn consider(
             source = SOURCE_TEXEL;
         }
         let mut fc = FeatureCollector::default();
-        let stm_score = base::evaluate_inner_traced(&pos, &mut fc);
+        let base_stm = base::evaluate_inner_traced(&pos, &mut fc);
+        let stm_score = match pos.eval_kind {
+            EvalKind::Chess => apeiron::evaluation::variants::chess::evaluate(&pos),
+            EvalKind::Obstocean => apeiron::evaluation::variants::obstocean::evaluate(&pos),
+            EvalKind::PawnHorde => apeiron::evaluation::variants::pawn_horde::evaluate(&pos),
+            EvalKind::Generic => base_stm,
+        };
         let static_white = if pos.turn == PlayerColor::Black {
             -stm_score
         } else {
@@ -660,7 +709,8 @@ fn replay(
     stats: &Stats,
     out: &mut [Vec<u8>; 4],
 ) {
-    if g.eval_kind != EvalKind::Generic {
+    let target = target_kind(&cli.eval_kind);
+    if g.eval_kind != target {
         return;
     }
     let sample = match game.source {
@@ -680,6 +730,7 @@ fn replay(
         keep_keys: KEEP_KEYS.get(),
         keep_hashes: KEEP_HASHES.get(),
         stats,
+        kind: target,
     };
     let rel = REL.get().filter(|_| game.source == SOURCE_SPRT).map(|r| {
         let cfg = Cfg {
@@ -694,6 +745,7 @@ fn replay(
             keep_keys: None,
             keep_hashes: r.keep_hashes.as_ref(),
             stats: &r.stats,
+            kind: target,
         };
         (cfg, game_id - r.id_shift.load(Ordering::Relaxed))
     });
@@ -1030,6 +1082,7 @@ fn main() {
         std::fs::create_dir_all(dir).unwrap();
     }
     apeiron::search::set_tt_size_mb(cli.tt_mb);
+    apply_param_overrides(&cli.params);
     if let Some(path) = &cli.keep_hashes {
         let bytes = std::fs::read(path).unwrap();
         let set: HashSet<u64> =

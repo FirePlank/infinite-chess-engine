@@ -30,6 +30,26 @@ pub fn residual_white(game: &crate::game::GameState, fc: &FeatureCollector) -> i
     let Some(net) = weights::EVAL_NET.as_ref() else {
         return 0;
     };
+    residual_of(net, game, fc)
+}
+
+/// The net for a specialized evaluator, if one is embedded.
+pub fn variant_net(kind: crate::evaluation::eval_kind::EvalKind) -> Option<&'static weights::EvalNetWeights> {
+    use crate::evaluation::eval_kind::EvalKind;
+    if !enabled() {
+        return None;
+    }
+    match kind {
+        EvalKind::Chess => weights::CHESS_NET.as_ref(),
+        EvalKind::Obstocean => weights::OBSTOCEAN_NET.as_ref(),
+        EvalKind::PawnHorde => weights::PAWN_HORDE_NET.as_ref(),
+        EvalKind::Generic => None,
+    }
+}
+
+/// Capped residual of `net` for a position whose base-HCE features are in `fc`, White-ahead.
+#[inline]
+pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState, fc: &FeatureCollector) -> i32 {
     let mut x = feature_vector(game, fc);
     let black = game.turn == crate::board::PlayerColor::Black;
     if net.perspective {

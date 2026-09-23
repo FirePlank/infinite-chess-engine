@@ -186,6 +186,22 @@ fn apply_rule50_damping(game: &GameState, raw_eval: i32, mop_up_active: bool) ->
     }
 }
 
+/// A specialized evaluator's net residual, side-to-move relative. Its inputs are the
+/// base HCE's features, so a variant with a net also pays for one base evaluation.
+#[inline]
+fn variant_residual(game: &GameState) -> i32 {
+    let Some(net) = crate::eval_net::variant_net(game.eval_kind) else {
+        return 0;
+    };
+    if base::net_off(game) {
+        return 0;
+    }
+    let mut fc = crate::eval_net::FeatureCollector::default();
+    base::evaluate_inner_traced(game, &mut fc);
+    let r = crate::eval_net::residual_of(net, game, &fc);
+    if game.turn == PlayerColor::Black { -r } else { r }
+}
+
 /// Main evaluation entry point.
 #[inline]
 pub fn evaluate(game: &GameState) -> i32 {
@@ -193,9 +209,9 @@ pub fn evaluate(game: &GameState) -> i32 {
         return 0;
     }
     let raw_eval = match game.eval_kind {
-        EvalKind::Chess => variants::chess::evaluate(game),
-        EvalKind::Obstocean => variants::obstocean::evaluate(game),
-        EvalKind::PawnHorde => variants::pawn_horde::evaluate(game),
+        EvalKind::Chess => variants::chess::evaluate(game) + variant_residual(game),
+        EvalKind::Obstocean => variants::obstocean::evaluate(game) + variant_residual(game),
+        EvalKind::PawnHorde => variants::pawn_horde::evaluate(game) + variant_residual(game),
         EvalKind::Generic => base::evaluate(game),
     };
     let mop_up = compute_mop_up_term(game);

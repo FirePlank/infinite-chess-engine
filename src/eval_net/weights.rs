@@ -157,11 +157,22 @@ impl EvalNetWeights {
 /// file is a valid "no net yet" state.
 static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 
-pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
-    if EVAL_NET_BYTES.is_empty() {
+pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| parse(EVAL_NET_BYTES));
+
+/// Nets for the specialized evaluators: same inputs (the base HCE's feature vector),
+/// residual added to that evaluator's own score. Empty files mean no net.
+pub static CHESS_NET: Lazy<Option<EvalNetWeights>> =
+    Lazy::new(|| parse(include_bytes!("chess_net.bin")));
+pub static OBSTOCEAN_NET: Lazy<Option<EvalNetWeights>> =
+    Lazy::new(|| parse(include_bytes!("obstocean_net.bin")));
+pub static PAWN_HORDE_NET: Lazy<Option<EvalNetWeights>> =
+    Lazy::new(|| parse(include_bytes!("pawn_horde_net.bin")));
+
+fn parse(bytes: &[u8]) -> Option<EvalNetWeights> {
+    if bytes.is_empty() {
         return None;
     }
-    match EvalNetWeights::from_bytes(EVAL_NET_BYTES) {
+    match EvalNetWeights::from_bytes(bytes) {
         Ok(w) => Some(w),
         Err(e) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -170,7 +181,7 @@ pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
             None
         }
     }
-});
+}
 
 #[cfg(test)]
 mod tests {
