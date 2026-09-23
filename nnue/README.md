@@ -11,7 +11,9 @@ to the Generic evaluator. Design: `docs/hybrid-eval-design.md`, results log:
 (side to move, opponent). Two stages: a base run on a large mixed set, then a
 fine-tune on positions relabelled by a depth-9 search.
 Base-run length was swept: 120 epochs beats 60/90 and 180/240 (which overfit);
-weight EMA and SWA gave no gain over six seeds. Train several seeds, keep the best.
+weight EMA and SWA gave no gain over six seeds. Train several seeds, keep the best:
+`nnue/train_seeds.py --seeds 1,2,3,4,5,6` trains them together on one copy of the data
+(same flags and checkpoints as `train_eval_net.py`, about 2.3x faster than one by one).
 
 ```
 cargo build --release --features data_gen --bin export_eval_features
