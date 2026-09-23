@@ -10,11 +10,6 @@ use crate::game::{GameState, WinCondition};
 /// tens of squares across. Matches the bounded cutoff used elsewhere in eval.
 const OBSTOCEAN_MAX_WORLD_SIZE: i64 = 200;
 
-/// Fraction (percent) of the otherwise-empty squares that must be obstacles for
-/// a bounded board to read as Obstocean. Obstacle boards start fully packed and
-/// only slowly open up as pawns capture through the lanes, so this stays high.
-const OBSTOCEAN_MIN_FILL_PCT: i128 = 60;
-
 /// Most pawns a Pawn-Horde side may field (an 8-wide, 7-deep wall). Also keeps
 /// the horde's pawn list within the evaluator's fixed-capacity buffer.
 const PAWN_HORDE_MAX_PAWNS: i64 = 56;
@@ -151,18 +146,11 @@ fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind 
         }
     }
 
-    // Obstocean: a bounded board packed with obstacles.
+    // Obstocean: any bounded board with obstacles, however opened up. The base
+    // evaluator's net never trained on obstacles and blows up quiescence there.
     let world_size = (max_x.saturating_sub(min_x)).max(max_y.saturating_sub(min_y));
     if obstacle_count > 0 && world_size <= OBSTOCEAN_MAX_WORLD_SIZE {
-        let width = (max_x - min_x + 1) as i128;
-        let height = (max_y - min_y + 1) as i128;
-        let total = width * height;
-        let real_pieces = (game.white_piece_count + game.black_piece_count) as i128;
-        // Squares not holding a real piece: obstacles + empty (+ any voids).
-        let non_piece = total - real_pieces;
-        if non_piece > 0 && (obstacle_count as i128) * 100 >= non_piece * OBSTOCEAN_MIN_FILL_PCT {
-            return EvalKind::Obstocean;
-        }
+        return EvalKind::Obstocean;
     }
 
     EvalKind::Generic
