@@ -84,7 +84,7 @@ ratatui = { version = "0.29", optional = true }
 [features]
 # MT (Lazy SMP) is on by default so a bare `wasm-pack build` ships the threaded engine.
 # Build a single-threaded engine with `--no-default-features`.
-default = ["multithreading", "eval_net"]
+default = ["multithreading"]
 param_tuning = ["serde_json", "rand", "rayon", "clap", "ctrlc"]
 eval_tuning = ["param_tuning"]
 search_tuning = ["param_tuning"]
@@ -98,8 +98,6 @@ data_gen = ["serde_json", "rayon", "clap", "ctrlc", "indicatif", "num_cpus"]
 multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
 puzzle_gen = ["csv", "serde_json", "rayon", "indicatif"]
-# Stage-A hybrid eval net: residual MLP over HCE scalars (docs/hybrid-eval-design.md).
-eval_net = []
 debug = ["console_error_panic_hook"]
 
 

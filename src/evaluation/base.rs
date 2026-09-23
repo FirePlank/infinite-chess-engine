@@ -693,14 +693,8 @@ fn tile_local_probe(
 }
 
 // Main Evaluation
-#[cfg(not(feature = "eval_net"))]
-pub fn evaluate(game: &GameState) -> i32 {
-    evaluate_inner(game)
-}
-
 /// HCE plus the Stage-A net residual. Added after the complexity damping so the
 /// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
-#[cfg(feature = "eval_net")]
 pub fn evaluate(game: &GameState) -> i32 {
     if !crate::eval_net::enabled() || net_off(game) {
         return evaluate_inner(game);
@@ -726,7 +720,6 @@ pub fn net_off(game: &GameState) -> bool {
 pub fn debug_evaluate(game: &GameState) -> ActiveTrace {
     let mut tracer = ActiveTrace::default();
     evaluate_inner_traced(game, &mut tracer);
-    #[cfg(feature = "eval_net")]
     if crate::eval_net::enabled() && !net_off(game) {
         let mut fc = crate::eval_net::FeatureCollector::default();
         evaluate_inner_traced(game, &mut fc);
