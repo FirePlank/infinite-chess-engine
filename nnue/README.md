@@ -61,11 +61,13 @@ expensive and the change alters every feature key, so carry them over by Zobrist
 hash (`$OLD`/`$NEW` are exporters built without and with the change):
 
 ```
-REL="--sprt-dir games/sprt --sprt-sample 1.0 --quiet-tolerance 100000"
-$OLD $REL --keep-keys nnue/relabel_keys78.bin --key-columns 78 --hash-out old.hash --out old_relpos.bin
+# once: map the labelled positions to their hashes (d9.table is reused afterwards)
+$OLD --sprt-dir games/sprt --sprt-sample 1.0 --quiet-tolerance 100000      --keep-keys nnue/relabel_keys78.bin --key-columns 78 --hash-out old.hash --out old_relpos.bin
 python nnue/hash_labels.py table nnue/relabel_d9.bin old_relpos.bin old.hash d9.table 78
-$NEW $REL --keep-hashes d9.table.keep --hash-out new.hash --out new_relpos.bin
-python nnue/hash_labels.py apply d9.table new_relpos.bin new.hash new_rel.bin
+
+# per change: both training sets from one replay of the corpora
+$NEW --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl      --sprt-dir games/sprt --sprt-sample 0.15 --out mix.bin      --rel-out relpos.bin --rel-keep-hashes d9.table.keep --rel-hash-out relpos.hash
+python nnue/hash_labels.py apply d9.table relpos.bin relpos.hash rel.bin
 ```
 
 ## Notes

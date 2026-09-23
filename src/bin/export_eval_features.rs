@@ -38,6 +38,39 @@ static MIRROR_REJECTED: AtomicU64 = AtomicU64::new(0);
 static KEEP_KEYS: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
 static KEEP_HASHES: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
 static HASH_OUT: std::sync::OnceLock<Mutex<BufWriter<File>>> = std::sync::OnceLock::new();
+static REL: std::sync::OnceLock<RelSink> = std::sync::OnceLock::new();
+
+/// The `--rel-out` output, filled from the same replay as the main one.
+struct RelSink {
+    writer: Mutex<BufWriter<File>>,
+    stats: Stats,
+    keep_hashes: Option<HashSet<u64>>,
+    hash_out: Option<Mutex<BufWriter<File>>>,
+    /// Subtracted from the shared game id, so this output numbers its games exactly
+    /// as a run over the SPRT archives alone would (ids pick the validation split).
+    id_shift: std::sync::atomic::AtomicU32,
+}
+
+/// One output's filters and counters, as `consider` applies them.
+struct Cfg<'a> {
+    min_ply: usize,
+    sample: f64,
+    max_abs_cp: i32,
+    quiet_tolerance: i32,
+    perturb: usize,
+    relabel_depth: usize,
+    relabel_ms: u64,
+    key_columns: usize,
+    keep_keys: Option<&'a HashSet<u64>>,
+    keep_hashes: Option<&'a HashSet<u64>>,
+    stats: &'a Stats,
+}
+
+#[derive(Default)]
+struct Acc {
+    kept: u64,
+    corr: [f64; 5],
+}
 
 /// FNV-style fold over the leading feature columns and the static eval; must
 /// match `keys()` in `nnue/join_labels.py`.
@@ -158,6 +191,20 @@ struct Cli {
     /// Keep only positions whose Zobrist hash is in this file of LE u64s.
     #[arg(long)]
     keep_hashes: Option<PathBuf>,
+    /// Also write the fine-tune positions from the same replay: SPRT archive games only,
+    /// with the --rel-* filters below, numbered and deduplicated as their own run.
+    #[arg(long)]
+    rel_out: Option<PathBuf>,
+    #[arg(long, default_value_t = 1.0)]
+    rel_sprt_sample: f64,
+    #[arg(long, default_value_t = 12)]
+    rel_min_ply: usize,
+    #[arg(long, default_value_t = 100000)]
+    rel_quiet_tolerance: i32,
+    #[arg(long)]
+    rel_keep_hashes: Option<PathBuf>,
+    #[arg(long)]
+    rel_hash_out: Option<PathBuf>,
     /// Leading feature columns the key covers (the older layout's width).
     #[arg(long, default_value_t = 129)]
     key_columns: usize,
@@ -441,6 +488,167 @@ fn unit_interval(seed: u64) -> f64 {
     (splitmix(seed) >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// Offers the position before `ply`'s move to one output, applying that output's filters
+/// exactly as a run of its own would.
+#[allow(clippy::too_many_arguments)]
+fn consider(
+    c: &Cfg,
+    seen: &[Mutex<HashSet<u64>>],
+    out: &mut Vec<u8>,
+    hashes: &mut Vec<u8>,
+    acc: &mut Acc,
+    game: &Game,
+    g: &GameState,
+    mirror: Option<&(GameState, i64)>,
+    ply: usize,
+    (tx, ty): (i64, i64),
+    promo: &Option<String>,
+    game_id: u32,
+    vid: u8,
+) {
+    let eligible = ply >= c.min_ply
+        && !game.skip[ply]
+        && game.teacher[ply].is_some_and(|t| t.abs() < c.max_abs_cp)
+        && g.halfmove_clock < 40
+        && (g.white_piece_count + g.black_piece_count) >= 4
+        // The played move must be quiet: no capture, no promotion.
+        && promo.is_none()
+        && g.board.get_piece(tx, ty).is_none()
+        && (c.sample >= 1.0 || unit_interval(((game_id as u64) << 20) | ply as u64) < c.sample);
+    if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(g)
+    {
+        // A position --keep-hashes would drop later costs only its replay here, not a
+        // clone and an eval.
+        if c.perturb == 0 && c.keep_hashes.is_some_and(|k| !k.contains(&g.hash)) {
+            c.stats.dup.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        // With --perturb, step off the game line by a few random legal moves, so the
+        // net also trains on the unbalanced positions the search evaluates.
+        let pos = if c.perturb > 0 {
+            let steps = 1 + (splitmix(((game_id as u64) << 24) ^ ply as u64 ^ 0xA5A5) % c.perturb as u64) as usize;
+            match perturb(g, steps, ((game_id as u64) << 20) | ply as u64) {
+                Some(p) => p,
+                None => {
+                    return;
+                }
+            }
+        } else {
+            g.clone()
+        };
+        if c.perturb > 0 && (pos.is_in_check() || insufficient_material::evaluate_insufficient_material(&pos)) {
+            return;
+        }
+        // Positions where the engine skips the net are never trained on.
+        if base::net_off(&pos) {
+            return;
+        }
+        let mut teacher = game.teacher[ply].unwrap();
+        let mut source = game.source;
+        if c.relabel_depth > 0 {
+            let mut gs = pos.clone();
+            let Some((bm, score, _)) = apeiron::search::get_best_move(
+                &mut gs,
+                c.relabel_depth,
+                c.relabel_ms as u128,
+                true,
+                false,
+            ) else {
+                return;
+            };
+            // Same quiet definition as data_gen: the chosen move must not capture
+            // or promote, and the score must be a real evaluation.
+            if score.abs() >= MATE_FLOOR
+                || bm.promotion.is_some()
+                || pos.board.get_piece(bm.to.x, bm.to.y).is_some()
+            {
+                return;
+            }
+            teacher = if pos.turn == PlayerColor::Black { -score } else { score };
+            source = SOURCE_TEXEL;
+        }
+        let mut fc = FeatureCollector::default();
+        let stm_score = base::evaluate_inner_traced(&pos, &mut fc);
+        let static_white = if pos.turn == PlayerColor::Black {
+            -stm_score
+        } else {
+            stm_score
+        };
+        if (teacher - static_white).abs() <= c.quiet_tolerance {
+            let shard = &seen[(pos.hash % seen.len() as u64) as usize];
+            let x = feature_vector(&pos, &fc);
+            let keep = c.keep_keys.is_none_or(|k| {
+                let st = static_white.clamp(-20000, 20000) as i16;
+                k.contains(&record_key(&x, c.key_columns, st))
+            }) && c.keep_hashes.is_none_or(|k| k.contains(&pos.hash));
+            let fresh = keep && shard.lock().unwrap().insert(pos.hash);
+            if fresh {
+                for f in x {
+                    out.extend_from_slice(&f.to_le_bytes());
+                }
+                out.extend_from_slice(&(static_white.clamp(-20000, 20000) as i16).to_le_bytes());
+                out.extend_from_slice(&(teacher.clamp(-20000, 20000) as i16).to_le_bytes());
+                out.push(if game.wdl > 0.75 {
+                    2
+                } else if game.wdl > 0.25 {
+                    1
+                } else {
+                    0
+                });
+                out.push(pos.turn as u8);
+                out.push(vid);
+                out.push(source);
+                out.push(fc.inputs.phase.clamp(0, 255) as u8);
+                out.push(0);
+                out.extend_from_slice(&game_id.to_le_bytes());
+                out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
+                out.extend_from_slice(&[0u8; 2]);
+                hashes.extend_from_slice(&pos.hash.to_le_bytes());
+                acc.kept += 1;
+                if c.perturb == 0
+                    && let Some((m, _)) = mirror
+                {
+                    let mut mfc = FeatureCollector::default();
+                    let m_stm = base::evaluate_inner_traced(m, &mut mfc);
+                    let m_static = if m.turn == PlayerColor::Black { -m_stm } else { m_stm };
+                    // A sound mirror scores exactly the negated static eval.
+                    if m.eval_kind == EvalKind::Generic && m_static == -static_white {
+                        for f in feature_vector(m, &mfc) {
+                            out.extend_from_slice(&f.to_le_bytes());
+                        }
+                        out.extend_from_slice(&(m_static.clamp(-20000, 20000) as i16).to_le_bytes());
+                        out.extend_from_slice(&((-teacher).clamp(-20000, 20000) as i16).to_le_bytes());
+                        out.push(if game.wdl > 0.75 { 0 } else if game.wdl > 0.25 { 1 } else { 2 });
+                        out.push(m.turn as u8);
+                        out.push(vid);
+                        out.push(source);
+                        out.push(mfc.inputs.phase.clamp(0, 255) as u8);
+                        out.push(0);
+                        out.extend_from_slice(&game_id.to_le_bytes());
+                        out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
+                        out.extend_from_slice(&[0u8; 2]);
+                        hashes.extend_from_slice(&m.hash.to_le_bytes());
+                        acc.kept += 1;
+                        MIRRORED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        MIRROR_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                let (t, s) = (teacher as f64, static_white as f64);
+                let _ = source;
+                acc.corr[0] += 1.0;
+                acc.corr[1] += t;
+                acc.corr[2] += s;
+                acc.corr[3] += t * s;
+                acc.corr[4] += t * t;
+            } else {
+                c.stats.dup.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn replay(
     game: &Game,
     mut g: GameState,
@@ -448,9 +656,9 @@ fn replay(
     game_id: u32,
     cli: &Cli,
     seen: &[Mutex<HashSet<u64>>],
+    rel_seen: &[Mutex<HashSet<u64>>],
     stats: &Stats,
-    out: &mut Vec<u8>,
-    hashes: &mut Vec<u8>,
+    out: &mut [Vec<u8>; 4],
 ) {
     if g.eval_kind != EvalKind::Generic {
         return;
@@ -460,10 +668,42 @@ fn replay(
         SOURCE_HUMAN => cli.human_sample,
         _ => cli.sprt_sample,
     };
+    let main = Cfg {
+        min_ply: cli.min_ply,
+        sample,
+        max_abs_cp: cli.max_abs_cp,
+        quiet_tolerance: cli.quiet_tolerance,
+        perturb: cli.perturb,
+        relabel_depth: cli.relabel_depth,
+        relabel_ms: cli.relabel_ms,
+        key_columns: cli.key_columns,
+        keep_keys: KEEP_KEYS.get(),
+        keep_hashes: KEEP_HASHES.get(),
+        stats,
+    };
+    let rel = REL.get().filter(|_| game.source == SOURCE_SPRT).map(|r| {
+        let cfg = Cfg {
+            min_ply: cli.rel_min_ply,
+            sample: cli.rel_sprt_sample,
+            max_abs_cp: cli.max_abs_cp,
+            quiet_tolerance: cli.rel_quiet_tolerance,
+            perturb: 0,
+            relabel_depth: 0,
+            relabel_ms: 0,
+            key_columns: cli.key_columns,
+            keep_keys: None,
+            keep_hashes: r.keep_hashes.as_ref(),
+            stats: &r.stats,
+        };
+        (cfg, game_id - r.id_shift.load(Ordering::Relaxed))
+    });
     let vid = variant_id(&game.variant);
     stats.games.fetch_add(1, Ordering::Relaxed);
-    let mut kept_here = 0u64;
-    let mut corr = [0f64; 5];
+    if let Some((r, _)) = &rel {
+        r.stats.games.fetch_add(1, Ordering::Relaxed);
+    }
+    let (mut acc, mut rel_acc) = (Acc::default(), Acc::default());
+    let [main_out, main_hashes, rel_out, rel_hashes] = out;
 
     for (ply, mv) in game.moves.iter().enumerate() {
         let Some((fx, fy, tx, ty, promo)) = parse_move(mv) else {
@@ -471,169 +711,49 @@ fn replay(
             UNPARSED_MOVES.fetch_add(1, Ordering::Relaxed);
             break;
         };
-        let eligible = ply >= cli.min_ply
-            && !game.skip[ply]
-            && game.teacher[ply].is_some_and(|t| t.abs() < cli.max_abs_cp)
-            && g.halfmove_clock < 40
-            && (g.white_piece_count + g.black_piece_count) >= 4
-            // The played move must be quiet: no capture, no promotion.
-            && promo.is_none()
-            && g.board.get_piece(tx, ty).is_none()
-            && (sample >= 1.0 || unit_interval(((game_id as u64) << 20) | ply as u64) < sample);
-        if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(&g)
-        {
-            // A position --keep-hashes would drop later costs only its replay here, not a
-            // clone and an eval.
-            if cli.perturb == 0 && KEEP_HASHES.get().is_some_and(|k| !k.contains(&g.hash)) {
-                stats.dup.fetch_add(1, Ordering::Relaxed);
-                advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                continue;
-            }
-            // With --perturb, step off the game line by a few random legal moves, so the
-            // net also trains on the unbalanced positions the search evaluates.
-            let pos = if cli.perturb > 0 {
-                let steps = 1 + (splitmix(((game_id as u64) << 24) ^ ply as u64 ^ 0xA5A5) % cli.perturb as u64) as usize;
-                match perturb(&g, steps, ((game_id as u64) << 20) | ply as u64) {
-                    Some(p) => p,
-                    None => {
-                        advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                        continue;
-                    }
-                }
-            } else {
-                g.clone()
-            };
-            if cli.perturb > 0 && (pos.is_in_check() || insufficient_material::evaluate_insufficient_material(&pos)) {
-                advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                continue;
-            }
-            // Positions where the engine skips the net are never trained on.
-            if base::net_off(&pos) {
-                advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                continue;
-            }
-            let mut teacher = game.teacher[ply].unwrap();
-            let mut source = game.source;
-            if cli.relabel_depth > 0 {
-                let mut gs = pos.clone();
-                let Some((bm, score, _)) = apeiron::search::get_best_move(
-                    &mut gs,
-                    cli.relabel_depth,
-                    cli.relabel_ms as u128,
-                    true,
-                    false,
-                ) else {
-                    advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                    continue;
-                };
-                // Same quiet definition as data_gen: the chosen move must not capture
-                // or promote, and the score must be a real evaluation.
-                if score.abs() >= MATE_FLOOR
-                    || bm.promotion.is_some()
-                    || pos.board.get_piece(bm.to.x, bm.to.y).is_some()
-                {
-                    advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
-                    continue;
-                }
-                teacher = if pos.turn == PlayerColor::Black { -score } else { score };
-                source = SOURCE_TEXEL;
-            }
-            let mut fc = FeatureCollector::default();
-            let stm_score = base::evaluate_inner_traced(&pos, &mut fc);
-            let static_white = if pos.turn == PlayerColor::Black {
-                -stm_score
-            } else {
-                stm_score
-            };
-            if (teacher - static_white).abs() <= cli.quiet_tolerance {
-                let shard = &seen[(pos.hash % seen.len() as u64) as usize];
-                let x = feature_vector(&pos, &fc);
-                let keep = KEEP_KEYS.get().is_none_or(|k| {
-                    let st = static_white.clamp(-20000, 20000) as i16;
-                    k.contains(&record_key(&x, cli.key_columns, st))
-                }) && KEEP_HASHES.get().is_none_or(|k| k.contains(&pos.hash));
-                let fresh = keep && shard.lock().unwrap().insert(pos.hash);
-                if fresh {
-                    for f in x {
-                        out.extend_from_slice(&f.to_le_bytes());
-                    }
-                    out.extend_from_slice(&(static_white.clamp(-20000, 20000) as i16).to_le_bytes());
-                    out.extend_from_slice(&(teacher.clamp(-20000, 20000) as i16).to_le_bytes());
-                    out.push(if game.wdl > 0.75 {
-                        2
-                    } else if game.wdl > 0.25 {
-                        1
-                    } else {
-                        0
-                    });
-                    out.push(pos.turn as u8);
-                    out.push(vid);
-                    out.push(source);
-                    out.push(fc.inputs.phase.clamp(0, 255) as u8);
-                    out.push(0);
-                    out.extend_from_slice(&game_id.to_le_bytes());
-                    out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
-                    out.extend_from_slice(&[0u8; 2]);
-                    hashes.extend_from_slice(&pos.hash.to_le_bytes());
-                    kept_here += 1;
-                    if cli.perturb == 0
-                        && let Some((m, _)) = mirror.as_ref()
-                    {
-                        let mut mfc = FeatureCollector::default();
-                        let m_stm = base::evaluate_inner_traced(m, &mut mfc);
-                        let m_static = if m.turn == PlayerColor::Black { -m_stm } else { m_stm };
-                        // A sound mirror scores exactly the negated static eval.
-                        if m.eval_kind == EvalKind::Generic && m_static == -static_white {
-                            for f in feature_vector(m, &mfc) {
-                                out.extend_from_slice(&f.to_le_bytes());
-                            }
-                            out.extend_from_slice(&(m_static.clamp(-20000, 20000) as i16).to_le_bytes());
-                            out.extend_from_slice(&((-teacher).clamp(-20000, 20000) as i16).to_le_bytes());
-                            out.push(if game.wdl > 0.75 { 0 } else if game.wdl > 0.25 { 1 } else { 2 });
-                            out.push(m.turn as u8);
-                            out.push(vid);
-                            out.push(source);
-                            out.push(mfc.inputs.phase.clamp(0, 255) as u8);
-                            out.push(0);
-                            out.extend_from_slice(&game_id.to_le_bytes());
-                            out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
-                            out.extend_from_slice(&[0u8; 2]);
-                            hashes.extend_from_slice(&m.hash.to_le_bytes());
-                            kept_here += 1;
-                            MIRRORED.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            MIRROR_REJECTED.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    let (t, s) = (teacher as f64, static_white as f64);
-                    let _ = source;
-                    corr[0] += 1.0;
-                    corr[1] += t;
-                    corr[2] += s;
-                    corr[3] += t * s;
-                    corr[4] += t * t;
-                } else {
-                    stats.dup.fetch_add(1, Ordering::Relaxed);
-                }
-            }
+        let m = mirror.as_ref().filter(|_| cli.mirror);
+        consider(&main, seen, main_out, main_hashes, &mut acc, game, &g, m, ply, (tx, ty), &promo, game_id, vid);
+        if let Some((r, rel_id)) = &rel {
+            consider(r, rel_seen, rel_out, rel_hashes, &mut rel_acc, game, &g, None, ply, (tx, ty), &promo, *rel_id, vid);
         }
         advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
     }
 
-    if kept_here > 0 {
-        stats.kept.fetch_add(kept_here, Ordering::Relaxed);
+    record(stats, game, &acc);
+    if let Some((r, _)) = &rel {
+        record(r.stats, game, &rel_acc);
+    }
+}
+
+fn record(stats: &Stats, game: &Game, acc: &Acc) {
+    if acc.kept > 0 {
+        stats.kept.fetch_add(acc.kept, Ordering::Relaxed);
         let mut c = stats.corr.lock().unwrap();
         let row = &mut c[usize::from(game.source != SOURCE_TEXEL)];
-        for k in 0..5 {
-            row[k] += corr[k];
+        for (r, a) in row.iter_mut().zip(acc.corr) {
+            *r += a;
         }
         *stats
             .per_variant
             .lock()
             .unwrap()
             .entry(game.variant.clone())
-            .or_default() += kept_here;
+            .or_default() += acc.kept;
     }
+}
+
+/// A set-up start position, parsed once per distinct ICN. Setting up also applies the
+/// ICN's world border, which every game of the bounds-homogeneous group shares.
+fn template(templates: &mut HashMap<String, GameState>, icn: &str) -> GameState {
+    if let Some(g) = templates.get(icn) {
+        return g.clone();
+    }
+    let mut g = GameState::new();
+    g.setup_position_from_icn(icn);
+    g.recompute_piece_counts();
+    g.recompute_hash();
+    templates.insert(icn.to_string(), g.clone());
+    g
 }
 
 /// Runs one bounds-homogeneous group in parallel and appends its records.
@@ -650,15 +770,40 @@ fn run_group(
     // `setup_position_from_icn` resets the process-global bounds to unbounded
     // before applying the ICN's token, so setups must never overlap a replay:
     // set up a chunk sequentially, then replay it in parallel.
+    // A group's games share a handful of start positions: set each up once and clone it,
+    // since parsing the ICN per game was the single-threaded bulk of an export.
+    let mut templates: HashMap<String, GameState> = HashMap::new();
     let seen: Vec<Mutex<HashSet<u64>>> = (0..64).map(|_| Mutex::new(HashSet::new())).collect();
+    let rel_seen: Vec<Mutex<HashSet<u64>>> = (0..64).map(|_| Mutex::new(HashSet::new())).collect();
     for (ci, chunk) in games.chunks(SETUP_CHUNK).enumerate() {
-        let states: Vec<(GameState, Option<(GameState, i64)>)> = chunk
+        // Without the mirror, setting up only reads the shared templates, so the clones
+        // run in parallel once every start position of the chunk has one.
+        if !cli.mirror {
+            for game in chunk {
+                if !templates.contains_key(&game.start_icn) {
+                    template(&mut templates, &game.start_icn);
+                }
+            }
+        }
+        let states: Vec<(GameState, Option<(GameState, i64)>)> = if !cli.mirror {
+            // GameState's caches are not Sync, so each job clones from its own copy.
+            let jobs = rayon::current_num_threads().max(1);
+            let per_job = chunk.len().div_ceil(jobs).max(1);
+            let copies: Vec<HashMap<String, GameState>> = (0..chunk.len().div_ceil(per_job))
+                .map(|_| templates.clone())
+                .collect();
+            chunk
+                .par_chunks(per_job)
+                .zip(copies.into_par_iter())
+                .flat_map_iter(|(games, tpl)| {
+                    games.iter().map(move |g| (tpl[&g.start_icn].clone(), None)).collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            chunk
             .iter()
             .map(|game| {
-                let mut g = GameState::new();
-                g.setup_position_from_icn(&game.start_icn);
-                g.recompute_piece_counts();
-                g.recompute_hash();
+                let g = template(&mut templates, &game.start_icn);
                 // The mirror replays the whole game reflected, so starting squares and
                 // special rights match; setup stays sequential for the global bounds.
                 let m = if cli.mirror {
@@ -679,24 +824,34 @@ fn run_group(
                 }
                 (g, m)
             })
-            .collect();
+            .collect()
+        };
         let base_id = first_id + (ci * SETUP_CHUNK) as u32;
-        let outputs: Vec<(Vec<u8>, Vec<u8>)> = chunk
+        let outputs: Vec<[Vec<u8>; 4]> = chunk
             .par_iter()
             .zip(states.into_par_iter())
             .enumerate()
             .map(|(i, (game, (g, m)))| {
-                let (mut out, mut hashes) = (Vec::new(), Vec::new());
-                replay(game, g, m, base_id + i as u32, cli, &seen, stats, &mut out, &mut hashes);
-                (out, hashes)
+                let mut out: [Vec<u8>; 4] = Default::default();
+                replay(game, g, m, base_id + i as u32, cli, &seen, &rel_seen, stats, &mut out);
+                out
             })
             .collect();
         let mut w = writer.lock().unwrap();
         let mut hw = HASH_OUT.get().map(|h| h.lock().unwrap());
-        for (c, h) in outputs {
+        let rel = REL.get();
+        let mut rw = rel.map(|r| r.writer.lock().unwrap());
+        let mut rhw = rel.and_then(|r| r.hash_out.as_ref()).map(|h| h.lock().unwrap());
+        for [c, h, rc, rh] in outputs {
             w.write_all(&c).unwrap();
             if let Some(hw) = hw.as_mut() {
                 hw.write_all(&h).unwrap();
+            }
+            if let Some(rw) = rw.as_mut() {
+                rw.write_all(&rc).unwrap();
+            }
+            if let Some(rhw) = rhw.as_mut() {
+                rhw.write_all(&rh).unwrap();
             }
         }
     }
@@ -834,6 +989,19 @@ kept {kept}
 next_id {next_id}").unwrap();
 }
 
+/// A fresh record file with its header; the count is patched in when the run ends.
+fn new_output(path: &PathBuf) -> File {
+    let mut f = File::create(path).unwrap();
+    f.write_all(MAGIC).unwrap();
+    f.write_all(&VERSION.to_le_bytes()).unwrap();
+    f.write_all(&(NUM_FEATURES as u32).to_le_bytes()).unwrap();
+    f.write_all(&schema_hash().to_le_bytes()).unwrap();
+    f.write_all(&(RECORD_SIZE as u32).to_le_bytes()).unwrap();
+    f.write_all(&0u64.to_le_bytes()).unwrap();
+    assert_eq!(f.stream_position().unwrap(), HEADER_SIZE);
+    f
+}
+
 fn group_by_variant(games: Vec<Game>) -> Vec<Vec<Game>> {
     let excluded: Vec<String> = EXCLUDED.get().map_or_else(Vec::new, |v| v.clone());
     let mut map: HashMap<String, Vec<Game>> = HashMap::new();
@@ -843,9 +1011,11 @@ fn group_by_variant(games: Vec<Game>) -> Vec<Vec<Game>> {
         }
         map.entry(canon(&g.variant)).or_default().push(g);
     }
-    let mut groups: Vec<Vec<Game>> = map.into_values().collect();
-    groups.sort_by_key(|g| std::cmp::Reverse(g.len()));
-    groups
+    // Name breaks size ties: HashMap order changes per run, and group order sets the
+    // game ids the sampling is keyed on, so an unstable order resampled every export.
+    let mut groups: Vec<(String, Vec<Game>)> = map.into_iter().collect();
+    groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    groups.into_iter().map(|(_, g)| g).collect()
 }
 
 fn main() {
@@ -888,6 +1058,26 @@ fn main() {
             .map(canon)
             .collect(),
     );
+    if let Some(path) = &cli.rel_out {
+        assert!(!cli.resume, "--rel-out cannot resume");
+        let read_set = |p: &PathBuf| -> HashSet<u64> {
+            let bytes = std::fs::read(p).unwrap();
+            bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
+        };
+        let _ = REL.set(RelSink {
+            writer: Mutex::new(BufWriter::with_capacity(1 << 24, new_output(path))),
+            stats: Stats {
+                kept: AtomicU64::new(0),
+                games: AtomicU64::new(0),
+                dup: AtomicU64::new(0),
+                corr: Mutex::new([[0.0; 5]; 2]),
+                per_variant: Mutex::new(HashMap::new()),
+            },
+            keep_hashes: cli.rel_keep_hashes.as_ref().map(read_set),
+            hash_out: cli.rel_hash_out.as_ref().map(|p| Mutex::new(BufWriter::new(File::create(p).unwrap()))),
+            id_shift: std::sync::atomic::AtomicU32::new(0),
+        });
+    }
     let progress_path = PathBuf::from(format!("{}.progress", cli.out.display()));
     let prior = if cli.resume { Progress::load(&progress_path) } else { None };
     let rec = RECORD_SIZE;
@@ -899,16 +1089,8 @@ fn main() {
         eprintln!("resume: {} records, {} archive files already done", p.kept, p.done.len());
         f
     } else {
-        let mut f = File::create(&cli.out).unwrap();
-        f.write_all(MAGIC).unwrap();
-        f.write_all(&VERSION.to_le_bytes()).unwrap();
-        f.write_all(&(NUM_FEATURES as u32).to_le_bytes()).unwrap();
-        f.write_all(&schema_hash().to_le_bytes()).unwrap();
-        f.write_all(&(rec as u32).to_le_bytes()).unwrap();
-        f.write_all(&0u64.to_le_bytes()).unwrap();
-        assert_eq!(f.stream_position().unwrap(), HEADER_SIZE);
         let _ = std::fs::remove_file(&progress_path);
-        f
+        new_output(&cli.out)
     };
     let writer = Mutex::new(BufWriter::with_capacity(1 << 24, file));
 
@@ -990,41 +1172,60 @@ fn main() {
         if !resumed_past_sources {
             checkpoint(&writer, &stats, next_id, &progress_path, "sources_done");
         }
-        let done: HashSet<String> = prior.as_ref().map_or_else(HashSet::new, |p| p.done.clone());
-        for (fi, path) in files.iter().enumerate() {
-            let fname = path.file_name().unwrap().to_string_lossy().to_string();
-            if done.contains(&fname) {
-                continue;
-            }
-            let t0 = Instant::now();
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            let Ok(entries) = serde_json::from_str::<Vec<String>>(&text) else {
-                eprintln!("[sprt] {} : not a JSON string array, skipped", path.display());
-                continue;
-            };
-            drop(text);
-            let games: Vec<Game> = entries
-                .iter()
-                .filter_map(|s| parse_sprt_game(s, cli.sprt_eval_sign))
-                .collect();
-            let n = games.len();
-            for group in group_by_variant(games) {
-                run_group(&group, next_id, &cli, &stats, &writer);
-                next_id += group.len() as u32;
-            }
-            eprintln!(
-                "[sprt {}/{}] {} : {} games, {} records total ({:.1}s)",
-                fi + 1,
-                total,
-                path.file_name().unwrap().to_string_lossy(),
-                n,
-                stats.kept.load(Ordering::Relaxed),
-                t0.elapsed().as_secs_f64()
-            );
-            checkpoint(&writer, &stats, next_id, &progress_path, &format!("done {fname}"));
+        if let Some(r) = REL.get() {
+            r.id_shift.store(next_id - 1, Ordering::Relaxed);
         }
+        let done: HashSet<String> = prior.as_ref().map_or_else(HashSet::new, |p| p.done.clone());
+        // The next archive is read and parsed on its own thread while this one replays;
+        // files still arrive in order, so game ids are unchanged.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, String, Option<Vec<Game>>)>(1);
+        let eval_sign = cli.sprt_eval_sign;
+        std::thread::scope(|scope| {
+            let files = &files;
+            let done = &done;
+            scope.spawn(move || {
+                for (fi, path) in files.iter().enumerate() {
+                    let fname = path.file_name().unwrap().to_string_lossy().to_string();
+                    if done.contains(&fname) {
+                        continue;
+                    }
+                    let games = std::fs::read_to_string(path).ok().and_then(|text| {
+                        let entries = serde_json::from_str::<Vec<String>>(&text).ok();
+                        if entries.is_none() {
+                            eprintln!("[sprt] {} : not a JSON string array, skipped", path.display());
+                        }
+                        entries
+                    });
+                    let games = games.map(|entries| {
+                        entries.par_iter().filter_map(|s| parse_sprt_game(s, eval_sign)).collect::<Vec<Game>>()
+                    });
+                    if tx.send((fi, fname, games)).is_err() {
+                        break;
+                    }
+                }
+            });
+            for (fi, fname, games) in rx {
+                let Some(games) = games else {
+                    continue;
+                };
+                let t0 = Instant::now();
+                let n = games.len();
+                for group in group_by_variant(games) {
+                    run_group(&group, next_id, &cli, &stats, &writer);
+                    next_id += group.len() as u32;
+                }
+                eprintln!(
+                    "[sprt {}/{}] {} : {} games, {} records total ({:.1}s)",
+                    fi + 1,
+                    total,
+                    fname,
+                    n,
+                    stats.kept.load(Ordering::Relaxed),
+                    t0.elapsed().as_secs_f64()
+                );
+                checkpoint(&writer, &stats, next_id, &progress_path, &format!("done {fname}"));
+            }
+        });
     }
 
     // Patch the record count into the header.
@@ -1037,6 +1238,24 @@ fn main() {
     file.flush().unwrap();
     if let Some(h) = HASH_OUT.get() {
         h.lock().unwrap().flush().unwrap();
+    }
+    if let Some(r) = REL.get() {
+        let rel_kept = r.stats.kept.load(Ordering::Relaxed);
+        let mut w = r.writer.lock().unwrap();
+        w.flush().unwrap();
+        let f = w.get_mut();
+        f.seek(SeekFrom::Start(HEADER_SIZE - 8)).unwrap();
+        f.write_all(&rel_kept.to_le_bytes()).unwrap();
+        f.flush().unwrap();
+        if let Some(h) = &r.hash_out {
+            h.lock().unwrap().flush().unwrap();
+        }
+        eprintln!(
+            "rel: {} games replayed, {} records, {} zobrist dups skipped",
+            r.stats.games.load(Ordering::Relaxed),
+            rel_kept,
+            r.stats.dup.load(Ordering::Relaxed)
+        );
     }
 
     eprintln!(
