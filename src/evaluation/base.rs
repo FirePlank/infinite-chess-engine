@@ -1796,8 +1796,14 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 (Some(wk), Some(bk)) => cheb(wk, bk),
                                 _ => 255,
                             };
+                            // The cloud centre is kept in doubled units, so the king is doubled
+                            // too and the distance halved back: translation-invariant.
                             let cloud_dist = |k: Option<Coordinate>| match (k, cloud_center) {
-                                (Some(k), Some(c)) => cheb(k, c),
+                                (Some(k), Some(c)) => ((2 * k.x - c.x)
+                                    .abs()
+                                    .max((2 * k.y - c.y).abs())
+                                    / 2)
+                                    .min(255) as i32,
                                 _ => 255,
                             };
                             let w_pd = if white_max_y != i64::MIN {

@@ -42,6 +42,9 @@ pub const fn pad32(n: usize) -> usize {
 }
 
 pub struct EvalNetWeights {
+    /// Blob version 2+: inputs are re-encoded as (side to move, opponent) and the
+    /// output is side-to-move relative.
+    pub perspective: bool,
     pub n_in: usize,
     pub h1: usize,
     pub h2: usize,
@@ -104,7 +107,7 @@ impl EvalNetWeights {
         if &magic != MAGIC {
             return Err("bad magic");
         }
-        let _version = read_u32(&mut c)?;
+        let version = read_u32(&mut c)?;
         let n_in = read_u32(&mut c)? as usize;
         let h1 = read_u32(&mut c)? as usize;
         let h2 = read_u32(&mut c)? as usize;
@@ -131,6 +134,7 @@ impl EvalNetWeights {
         let l3 = read_i8s(&mut c, h2)?;
         let l3_b = read_i32s(&mut c, 1)?[0];
         Ok(EvalNetWeights {
+            perspective: version >= 2,
             n_in,
             h1,
             h2,

@@ -557,11 +557,11 @@ fn replay(
                         && let Some((m, _)) = mirror.as_ref()
                     {
                         let mut mfc = FeatureCollector::default();
-                        let m_stm = base::evaluate_inner_traced(&m, &mut mfc);
+                        let m_stm = base::evaluate_inner_traced(m, &mut mfc);
                         let m_static = if m.turn == PlayerColor::Black { -m_stm } else { m_stm };
                         // A sound mirror scores exactly the negated static eval.
                         if m.eval_kind == EvalKind::Generic && m_static == -static_white {
-                            for f in feature_vector(&m, &mfc) {
+                            for f in feature_vector(m, &mfc) {
                                 out.extend_from_slice(&f.to_le_bytes());
                             }
                             out.extend_from_slice(&(m_static.clamp(-20000, 20000) as i16).to_le_bytes());

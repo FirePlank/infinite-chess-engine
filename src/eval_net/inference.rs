@@ -180,6 +180,7 @@ mod tests {
         use super::super::weights::{AlignedI16, pad32};
         let n_in = NUM_FEATURES;
         EvalNetWeights {
+            perspective: false,
             n_in,
             h1: 32,
             h2: 32,
