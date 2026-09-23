@@ -160,6 +160,19 @@ def stm_sign(stm):
     return np.where(stm == 2, -1.0, 1.0).astype(np.float32)
 
 
+def bare_king_mop_up(arr, chunk=1_000_000):
+    """Full-strength mop-up (a lone king against a side with a non-pawn piece): the
+    engine skips the net there, so these records are neither trained nor scored."""
+    out = np.zeros(len(arr), dtype=bool)
+    for i in range(0, len(arr), chunk):
+        c = np.asarray(arr["x"][i : i + chunk, 31:37]).astype(np.int32)
+        pieces, pawns, royals = c[:, 0:2], c[:, 2:4], c[:, 4:6]
+        bare = (pieces == royals) & (royals == 1)
+        armed = pieces - pawns - royals >= 1
+        out[i : i + chunk] = (bare[:, 0] & armed[:, 1]) | (bare[:, 1] & armed[:, 0])
+    return out
+
+
 def to_tensors(arr, mask, device, chunk=1_000_000, x_mult=1):
     """Moves the masked records to `device` chunk by chunk: fancy-indexing the
     whole memmap at once materializes a 2GB+ host copy that small boxes lack."""
@@ -240,7 +253,7 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
 def eval_only(args):
     header, arr = load(args.data, args.max_records, args.stride)
     dev = torch.device(args.device)
-    mask = np.ones(len(arr), dtype=bool)
+    mask = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
     for ck_path in args.eval_only:
         ck = torch.load(ck_path, map_location="cpu")
@@ -259,7 +272,7 @@ def eval_only(args):
         model.qat = True
         cap = float(ck.get("cap", args.cap))
         loss, base, big, _, _ = evaluate_split(model, data, lam_by_source, args.k, cap)
-        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={len(arr):,}")
+        print(f"{ck_path}: loss {loss:.6f} baseline {base:.6f} gain {100 * (1 - loss / base):5.2f}%  n={int(mask.sum()):,}")
 
 
 def main():
@@ -275,6 +288,7 @@ def main():
     ap.add_argument("--lambda-texel", type=float, default=0.7)
     ap.add_argument("--lambda-sprt", type=float, default=0.5)
     ap.add_argument("--lambda-src2", type=float, default=1.0, help="teacher weight for source 2 (perturbed positions)")
+    ap.add_argument("--keep-mop-up", action="store_true", help="keep bare-king mop-up records (dropped by default)")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of GAMES held out")
     ap.add_argument("--max-records", type=int, default=0)
     ap.add_argument("--stride", type=int, default=1, help="keep every Nth record")
@@ -312,18 +326,21 @@ def main():
     # Hash the game id so the split is stable across re-exports that keep ids.
     h = (game.astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)) >> np.uint64(40)
     val_mask = (h % 1000) < int(args.val_frac * 1000)
-    print(f"train={int((~val_mask).sum()):,} val={int(val_mask.sum()):,}")
+    keep = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
+    print(f"bare-king mop-up records dropped: {int((~keep).sum()):,}")
+    train_mask, val_mask = ~val_mask & keep, val_mask & keep
+    print(f"train={int(train_mask.sum()):,} val={int(val_mask.sum()):,}")
 
     dev = torch.device(args.device)
     try:
-        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        train = to_tensors(arr, train_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
         train = (train[0][:, :n_feat].contiguous(),) + train[1:]
         val = (val[0][:, :n_feat].contiguous(),) + val[1:]
     except RuntimeError as e:  # out of GPU memory: fall back to CPU tensors
         print("GPU load failed, using CPU:", e)
         dev = torch.device("cpu")
-        train = to_tensors(arr, ~val_mask, dev, x_mult=args.x_mult)
+        train = to_tensors(arr, train_mask, dev, x_mult=args.x_mult)
         val = to_tensors(arr, val_mask, dev, x_mult=args.x_mult)
 
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt, args.lambda_src2], device=dev)

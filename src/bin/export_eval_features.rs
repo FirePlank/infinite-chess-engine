@@ -490,6 +490,11 @@ fn replay(
                 advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
                 continue;
             }
+            // Positions where the engine skips the net are never trained on.
+            if base::net_off(&pos) {
+                advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
+                continue;
+            }
             let mut teacher = game.teacher[ply].unwrap();
             let mut source = game.source;
             if cli.relabel_depth > 0 {

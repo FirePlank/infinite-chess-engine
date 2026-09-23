@@ -702,7 +702,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 /// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 #[cfg(feature = "eval_net")]
 pub fn evaluate(game: &GameState) -> i32 {
-    if !crate::eval_net::enabled() {
+    if !crate::eval_net::enabled() || net_off(game) {
         return evaluate_inner(game);
     }
     let mut fc = crate::eval_net::FeatureCollector::default();
@@ -715,12 +715,19 @@ pub fn evaluate(game: &GameState) -> i32 {
     }
 }
 
+/// Against a bare king the net cannot see the mating geometry, so its residual is
+/// only noise on the few-cp approach gradient the mop-up term steers by.
+#[inline]
+pub fn net_off(game: &GameState) -> bool {
+    matches!(crate::evaluation::mop_up::active_mop_up(game), Some((_, 100)))
+}
+
 /// Perform a full evaluation with detailed tracing.
 pub fn debug_evaluate(game: &GameState) -> ActiveTrace {
     let mut tracer = ActiveTrace::default();
     evaluate_inner_traced(game, &mut tracer);
     #[cfg(feature = "eval_net")]
-    if crate::eval_net::enabled() {
+    if crate::eval_net::enabled() && !net_off(game) {
         let mut fc = crate::eval_net::FeatureCollector::default();
         evaluate_inner_traced(game, &mut fc);
         let residual = crate::eval_net::residual_white(game, &fc);
