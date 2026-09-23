@@ -158,7 +158,10 @@ const PAWN_KEY_MIXER: u64 = 0xABCDEF0123456789;
 
 #[inline(always)]
 pub fn pawn_key(color: PlayerColor, x: i64, y: i64) -> u64 {
-    hash_coordinate(x, y) ^ PAWN_KEY_MIXER ^ (color as u64).wrapping_mul(0x9E3779B97F4A7C15)
+    // Colour must change the key nonlinearly: an XORed colour constant survives in the
+    // position hash only as each side's pawn-count parity, so swapping whose pawns were
+    // whose kept the hash and the pawn cache served the other side's structure.
+    (hash_coordinate(x, y) ^ PAWN_KEY_MIXER).rotate_left(1 + 29 * color as u32)
 }
 
 /// Key for material configuration hash (used by correction history).
