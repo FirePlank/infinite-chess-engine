@@ -135,7 +135,22 @@ pub fn get_coord_bounds() -> (i64, i64, i64, i64) {
 
 /// Generate all pseudo-legal moves for a Knightrider.
 /// A Knightrider slides like a knight repeated along its direction until blocked or out of bounds.
+#[cfg(test)]
 fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -> MoveList {
+    let mut moves = MoveList::new();
+    generate_knightrider_moves_into(board, from, piece, MoveGenType::All, &mut moves);
+    moves
+}
+
+/// Generate knightrider moves directly into an output buffer
+/// gen_type controls which move types to generate: All, Quiets only, or Captures only
+pub fn generate_knightrider_moves_into(
+    board: &Board,
+    from: &Coordinate,
+    piece: &Piece,
+    gen_type: MoveGenType,
+    out: &mut MoveList,
+) {
     // All 8 knight directions
     const KR_DIRS: [(i64, i64); 8] = [
         (1, 2),
@@ -148,67 +163,39 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         (-2, -1),
     ];
 
-    let mut moves = MoveList::new();
-
-    // Reused across calls: this ran once per knightrider per stage and the board is
-    // walked in full each time, so a fresh allocation here is pure churn.
-    thread_local! {
-        static KR_PIECES: std::cell::RefCell<Vec<(i64, i64, bool)>> =
-            const { std::cell::RefCell::new(Vec::new()) };
-    }
-    KR_PIECES.with(|cell| {
-    let mut pieces_data = cell.borrow_mut();
-    pieces_data.clear();
-    // BITBOARD: Use tile-based CTZ iteration for O(popcount) piece enumeration
+    // One pass sorts each piece onto its ray (|ry| = 2|rx| or |rx| = 2|ry|) and keeps
+    // the nearest per ray, instead of a divisibility test per piece per direction.
+    let mut closest_k = [i64::MAX; 8];
+    let mut closest_is_enemy = [false; 8];
     for (cx, cy, tile) in board.tiles.iter() {
         let mut bits = tile.occ_all;
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            let packed = tile.piece[idx];
-            let p = Piece::from_packed(packed);
-            let lx = (idx % 8) as i64;
-            let ly = (idx / 8) as i64;
-            let px = cx * 8 + lx;
-            let py = cy * 8 + ly;
-            let is_enemy = is_enemy_piece(&p, piece.color());
-            pieces_data.push((px, py, is_enemy));
+            let rx = cx * 8 + (idx % 8) as i64 - from.x;
+            let ry = cy * 8 + (idx / 8) as i64 - from.y;
+            if rx == 0 || ry == 0 {
+                continue;
+            }
+            let (ax, ay) = (rx.abs(), ry.abs());
+            let (d, k) = if ay == 2 * ax {
+                (if rx > 0 { if ry > 0 { 0 } else { 1 } } else if ry > 0 { 4 } else { 5 }, ax)
+            } else if ax == 2 * ay {
+                (if rx > 0 { if ry > 0 { 2 } else { 3 } } else if ry > 0 { 6 } else { 7 }, ay)
+            } else {
+                continue;
+            };
+            if k < closest_k[d] {
+                closest_k[d] = k;
+                closest_is_enemy[d] = is_enemy_piece(&Piece::from_packed(tile.piece[idx]), piece.color());
+            }
         }
     }
 
-    for (dx, dy) in KR_DIRS {
-        // 1. Find closest blocker along this knight ray, in units of knight-steps (k)
-        let mut closest_k: i64 = i64::MAX;
-        let mut closest_is_enemy = false;
-
-        for &(px, py, is_enemy) in pieces_data.iter() {
-            let rx = px - from.x;
-            let ry = py - from.y;
-
-            // Solve (rx, ry) = k * (dx, dy) with integer k > 0
-            if rx == 0 && ry == 0 {
-                continue;
-            }
-
-            // dx,dy are non-zero for all knight directions
-            if rx % dx != 0 || ry % dy != 0 {
-                continue;
-            }
-
-            let kx = rx / dx;
-            let ky = ry / dy;
-            if kx <= 0 || ky <= 0 || kx != ky {
-                continue;
-            }
-
-            let k = kx; // steps along this knight ray
-            if k < closest_k {
-                closest_k = k;
-                closest_is_enemy = is_enemy;
-            }
-        }
-
-        // 2. Generate moves along this ray.
+    let quiets = gen_type != MoveGenType::Captures;
+    let captures = gen_type != MoveGenType::Quiets;
+    for (d, &(dx, dy)) in KR_DIRS.iter().enumerate() {
+        let (closest_k, closest_is_enemy) = (closest_k[d], closest_is_enemy[d]);
         // Cap at 10 for performance - captures at distance handled separately
         const KR_STEP_LIMIT: i64 = 10;
         // Open rays reach as far as blocked ones: the eval-gap audit's only
@@ -231,15 +218,24 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
         };
 
         // CRITICAL: If enemy is beyond step limit, still add the direct capture
-        if closest_k < i64::MAX && closest_is_enemy && closest_k > KR_STEP_LIMIT {
+        if captures && closest_k < i64::MAX && closest_is_enemy && closest_k > KR_STEP_LIMIT {
             let x = from.x + dx * closest_k;
             let y = from.y + dy * closest_k;
             if in_bounds(x, y) {
-                moves.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                out.push(Move::new(*from, Coordinate::new(x, y), *piece));
             }
         }
 
-        if max_steps <= 0 {
+        if !quiets {
+            // The ray's only capture is the nearest piece, when it is an enemy in reach
+            // (bounds are convex, so the target being in bounds covers the walk).
+            if closest_is_enemy && closest_k <= max_steps {
+                let x = from.x + dx * closest_k;
+                let y = from.y + dy * closest_k;
+                if in_bounds(x, y) {
+                    out.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                }
+            }
             continue;
         }
 
@@ -254,22 +250,22 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
 
             if let Some(blocker) = board.get_piece(x, y) {
                 // Enemy: can capture on this square.
-                if blocker.color() != piece.color() && blocker.piece_type() != PieceType::Void {
-                    moves.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                if captures
+                    && blocker.color() != piece.color()
+                    && blocker.piece_type() != PieceType::Void
+                {
+                    out.push(Move::new(*from, Coordinate::new(x, y), *piece));
                 }
                 // Either way, ray stops at first blocker.
                 break;
             } else {
                 // Empty square: normal quiet move (only within the window).
-                moves.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                out.push(Move::new(*from, Coordinate::new(x, y), *piece));
             }
 
             k += 1;
         }
     }
-
-    moves
-    })
 }
 
 /// Exact knightrider attack test, with no hop cap. `is_square_attacked` stops its
@@ -4412,30 +4408,6 @@ pub fn generate_sliding_moves_into(ctx: &SlidingMoveContext, out: &mut MoveList)
 #[inline]
 pub fn generate_sliding_quiets_into(ctx: &SlidingMoveContext, out: &mut MoveList) {
     generate_sliding_moves_impl(ctx, out, MoveGenType::Quiets);
-}
-
-/// Generate knightrider moves directly into an output buffer
-/// gen_type controls which move types to generate: All, Quiets only, or Captures only
-#[inline]
-pub fn generate_knightrider_moves_into(
-    board: &Board,
-    from: &Coordinate,
-    piece: &Piece,
-    gen_type: MoveGenType,
-    out: &mut MoveList,
-) {
-    let moves = generate_knightrider_moves(board, from, piece);
-    for m in moves {
-        let is_capture = board.is_occupied(m.to.x, m.to.y);
-        // Filter based on gen_type
-        if gen_type == MoveGenType::Quiets && is_capture {
-            continue;
-        }
-        if gen_type == MoveGenType::Captures && !is_capture {
-            continue;
-        }
-        out.push(m);
-    }
 }
 
 #[cfg(test)]
