@@ -497,6 +497,9 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
     }
 }
 
+/// Cloud radius beyond which a leaper counts as out of play.
+const LEAPER_CLOUD_RADIUS: i64 = 8;
+
 /// Cloud-distance penalty, scaled by the piece's value and capped as a share of
 /// it. Uncapped this reached 128% of the piece, i.e. a far piece scored worse
 /// than no piece; truncating value to hundreds also made it step at boundaries.
@@ -2226,11 +2229,21 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             let dy = (2 * y - center.y).abs() / 2;
             let cheb = dx.max(dy);
 
-            if pt != PieceType::Pawn && !pt.is_royal() && cheb > piece_cloud_cheb_radius() as i64 {
-                let is_ortho = pt == PieceType::Rook || pt == PieceType::Chancellor;
-                let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
-                let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
-
+            let is_ortho = pt == PieceType::Rook || pt == PieceType::Chancellor;
+            let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
+            let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
+            // A leaper's reach is one jump, so it must stand much closer than a slider or
+            // rider to take part; those keep the shared radius.
+            let long_reach = is_ortho
+                || is_diag
+                || is_queen
+                || matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen);
+            let radius = if long_reach {
+                piece_cloud_cheb_radius() as i64
+            } else {
+                LEAPER_CLOUD_RADIUS
+            };
+            if pt != PieceType::Pawn && !pt.is_royal() && cheb > radius {
                 let mult = taper(mg_far_slider_penalty_mult(), eg_far_slider_penalty_mult());
 
                 if is_ortho || is_diag || is_queen {
@@ -2256,7 +2269,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 } else {
                     // Leapers/Others: penalized by distance (Chebyshev)
                     // We are only in this block if cheb > RADIUS, so dist_to_radius > 0
-                    let dist_to_radius = cheb - piece_cloud_cheb_radius() as i64;
+                    let dist_to_radius = cheb - radius;
                     let excess = dist_to_radius.min(piece_cloud_cheb_max_excess() as i64) as i32;
                     piece_score -= cloud_penalty(excess, piece_val, mult);
                 }
