@@ -17,13 +17,13 @@ tgt = lam / (1 + np.exp(-te / K)) + (1 - lam) * wdl
 sig = lambda v: 1 / (1 + np.exp(-v / K))
 l = (sig(st + out) - tgt) ** 2; l0 = (sig(st) - tgt) ** 2
 X = np.asarray(arr["x"]).astype(np.int32)
-# feature index 28 = game.material_score/4, 33/34 = white/black pawn counts (A-schema order)
+# feature index 25 = game.material_score/4, 29/30 = white/black pawn counts (v5 layout)
 keys = {
     "variant": arr["variant"].astype(int),
     "phase": np.digitize(arr["phase"], [4, 8, 12, 16, 20]),
     "|static|": np.digitize(np.abs(st), [50, 150, 300, 600, 1200]),
-    "|material|": np.digitize(np.abs(X[:, 29]) * 4, [50, 150, 300, 600, 1200]),
-    "pawns": np.digitize(X[:, 33] + X[:, 34], [4, 8, 12, 16, 24]),
+    "|material|": np.digitize(np.abs(X[:, 25]) * 4, [50, 150, 300, 600, 1200]),
+    "pawns": np.digitize(X[:, 29] + X[:, 30], [4, 8, 12, 16, 24]),
     "|resid|": np.digitize(np.abs(te - st - out), [50, 100, 200, 400, 800]),
 }
 tot = l.sum()

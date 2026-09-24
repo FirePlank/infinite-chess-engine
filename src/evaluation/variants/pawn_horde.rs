@@ -3,6 +3,7 @@
 //! so it scores wall breaks, back-rank penetration and weak pawns.
 
 use crate::board::{Coordinate, PieceType, PlayerColor};
+use crate::eval_net::variant_features::{NoSink, VariantLayout, VariantSink, cp, ct};
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 use rustc_hash::FxHashSet;
@@ -44,8 +45,27 @@ fn get_pawn_advance_bonus(dist_to_promo: i32) -> i32 {
     }
 }
 
+/// Net inputs, all White-ahead: the two armies play different games, so the net is
+/// not colour-mirrored and reads the side to move directly.
+pub const NET_LAYOUT: VariantLayout = VariantLayout {
+    names: &[
+        "stm", "material", "horde pawns", "advancement", "phalanx support", "king tropism",
+        "breach loose", "breach supported", "breakthrough queens", "pieces on pawns",
+        "idle pieces", "king near front", "black phase", "black pieces", "rear pawn dist",
+        "lead pawn dist", "king front gap", "pawns near promo", "black material", "promoted",
+    ],
+    fixed: 20,
+    neg: 0,
+};
+
 pub fn evaluate(game: &GameState) -> i32 {
+    evaluate_traced(game, &mut NoSink)
+}
+
+pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
     let mut score = 0;
+    let (mut advancement, mut structure, mut tropism) = (0, 0, 0);
+    let (mut black_material, mut promoted) = (0, 0);
 
     // 1. Gather Piece Lists
     let mut white_pawns: ArrayVec<Coordinate, 64> = ArrayVec::new();
@@ -67,6 +87,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                 } else {
                     // Promoted piece! Huge value.
                     score += game.get_piece_value(piece.piece_type(), piece.color());
+                    promoted += game.get_piece_value(piece.piece_type(), piece.color());
                 }
             }
             PlayerColor::Black => {
@@ -75,6 +96,9 @@ pub fn evaluate(game: &GameState) -> i32 {
                 }
                 black_pieces.push((coord, piece.piece_type()));
                 score -= game.get_piece_value(piece.piece_type(), piece.color());
+                if !piece.piece_type().is_royal() {
+                    black_material += game.get_piece_value(piece.piece_type(), piece.color());
+                }
             }
             _ => {}
         }
@@ -112,6 +136,7 @@ pub fn evaluate(game: &GameState) -> i32 {
         // Advancement
         let dist = (promo_rank - pawn.y).max(0) as i32;
         score += get_pawn_advance_bonus(dist);
+        advancement += get_pawn_advance_bonus(dist);
 
         // Phalanx: same rank, adjacent files (x±1, y) - creates a wall of pawns
         let neighbor_left = Coordinate::new(pawn.x - 1, pawn.y);
@@ -137,17 +162,20 @@ pub fn evaluate(game: &GameState) -> i32 {
             supporting_pawns += 1;
         }
 
+        let before = score;
         if supporting_pawns > 0 {
             score += SUPPORT_BONUS;
         } else if neighbors > 0 {
             score += PHALANX_BONUS;
         }
         score += neighbors * PHALANX_BONUS_PER_PAWN + supporting_pawns * SUPPORT_BONUS_PER_PAWN;
+        structure += score - before;
 
         // King Attack Tropism
         let dist_to_king = (pawn.x - black_king_pos.x).abs() + (pawn.y - black_king_pos.y).abs();
         if dist_to_king <= 3 {
             score += KING_ATTACK_BONUS * (4 - dist_to_king) as i32;
+            tropism += KING_ATTACK_BONUS * (4 - dist_to_king) as i32;
         }
     }
 
@@ -210,11 +238,13 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
         }
     }
+    let mut breach_supported = 0;
     for c in &hit {
         // An unsupported pawn is a base Black can actually take; a supported one
         // costs material to win, so it is worth much less as an entry point.
         let supported = pawn_set.contains(&Coordinate::new(c.x - 1, c.y - 1))
             || pawn_set.contains(&Coordinate::new(c.x + 1, c.y - 1));
+        breach_supported += i32::from(supported);
         score -= if supported {
             BREACH_SUPPORTED_BONUS
         } else {
@@ -222,10 +252,12 @@ pub fn evaluate(game: &GameState) -> i32 {
         };
     }
 
+    let (mut breakthroughs, mut on_pawns, mut idle) = (0, 0, 0);
     for (pos, ptype) in &black_pieces {
         // Breakthrough: Are we behind the pawn wall?
         if pos.y < min_pawn_y && *ptype == PieceType::Queen {
             score -= BREAKTHROUGH_BONUS; // Score is absolute, so subtract for Black advantage
+            breakthroughs += 1;
         }
 
         // Attacks on Pawns
@@ -243,17 +275,58 @@ pub fn evaluate(game: &GameState) -> i32 {
 
         if min_dist_to_pawn <= 2 {
             score -= ATTACKING_PAWN_BONUS;
+            on_pawns += 1;
         } else if min_dist_to_pawn > 5 {
             // Piece inactive/far from horde penalty
             score += 10;
+            idle += 1;
         }
     }
 
     // King Safety (Black): the king should stay away from the horde's leading
     // front line (the most-advanced white pawn).
-    if max_pawn_y != i64::MIN && (black_king_pos.y - max_pawn_y).abs() < 3 {
+    let near_front = max_pawn_y != i64::MIN && (black_king_pos.y - max_pawn_y).abs() < 3;
+    if near_front {
         // King is dangerously close to the front
         score += taper(MG_KING_NEAR_FRONT_PENALTY, EG_KING_NEAR_FRONT_PENALTY); // Penalty for Black (positive score)
+    }
+
+    if S::ON {
+        let pawns = white_pawns.len() as i32;
+        let dist = |y: i64| (promo_rank - y).clamp(0, 255) as i32;
+        let (rear, lead, gap) = if pawns > 0 {
+            let gap = (black_king_pos.y - max_pawn_y).abs().min(255) as i32;
+            (dist(min_pawn_y), dist(max_pawn_y), gap)
+        } else {
+            (255, 255, 255)
+        };
+        let near_promo = white_pawns.iter().filter(|p| dist(p.y) <= 2).count() as i32;
+        let cols = [
+            if game.turn == PlayerColor::White { 1 } else { -1 },
+            cp(pawns * PAWN_VALUE + promoted - black_material),
+            ct(pawns),
+            cp(advancement),
+            cp(structure),
+            cp(tropism),
+            ct(hit.len() as i32 - breach_supported),
+            ct(breach_supported),
+            ct(breakthroughs),
+            ct(on_pawns),
+            ct(idle),
+            i16::from(near_front),
+            ct(b_phase),
+            ct(black_pieces.len() as i32),
+            ct(rear),
+            ct(lead),
+            ct(gap),
+            ct(near_promo),
+            cp(black_material),
+            cp(promoted),
+        ];
+        for (c, v) in cols.into_iter().enumerate() {
+            sink.set(c, v);
+        }
+        sink.set_phase(b_phase);
     }
 
     PAWN_SET.with(|c| c.set(pawn_set));

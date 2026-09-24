@@ -7,7 +7,7 @@ to the Generic evaluator. Design: `docs/hybrid-eval-design.md`, results log:
 
 ## Current recipe
 
-129 inputs -> 128 -> 64 -> 1, residual capped at 500 cp, inputs read as
+121 inputs -> 128 -> 64 -> 1, residual capped at 500 cp, inputs read as
 (side to move, opponent). Two stages: a base run on a large mixed set, then a
 fine-tune on positions relabelled by a depth-9 search.
 Base-run length was swept: 120 epochs beats 60/90 and 180/240 (which overfit);
@@ -26,7 +26,7 @@ $X --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl \
 $X --sprt-dir games/sprt --sprt-sample 0.016 --relabel-depth 9 --out nnue/rel.bin
 python nnue/merge_data.py nnue/mixrel.bin nnue/mix.bin nnue/rel.bin
 
-T="python nnue/train_eval_net.py --perspective --keep-cloud --n-cols 129 --hidden 128 --hidden2 64 --cap 500"
+T="python nnue/train_eval_net.py --perspective --hidden 128 --hidden2 64 --cap 500"
 $T --data nnue/mixrel.bin --epochs 120 --out nnue/checkpoints/base.pt
 $T --data nnue/rel.bin --init nnue/checkpoints/base.pt --epochs 20 --lr 2e-4 \
    --qat-from 1 --val-frac 0.1 --out nnue/checkpoints/net.pt
@@ -74,6 +74,23 @@ python nnue/hash_labels.py table nnue/relabel_d9.bin old_relpos.bin old.hash d9.
 $NEW --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl      --sprt-dir games/sprt --sprt-sample 0.15 --out mix.bin      --rel-out relpos.bin --rel-keep-hashes d9.table.keep --rel-hash-out relpos.hash
 python nnue/hash_labels.py apply d9.table relpos.bin relpos.hash rel.bin
 ```
+
+## Specialized-evaluator nets
+
+Chess, Obstocean and Pawn Horde each train on their evaluator's own layout
+(`NET_LAYOUT` in its `variants/` file). `--layout fixed,neg` tells the trainer
+how that layout mirrors: fixed columns, then White-ahead singles, then pairs.
+Pawn Horde has no colour mirror, so it trains without `--perspective`.
+
+```
+$X --eval-kind chess --min-ply 0 --sprt-dir games/sprt --sprt-sample 1.0 --out chess.bin
+python nnue/train_seeds.py --perspective --layout 1,0 --hidden 128 --hidden2 64 --cap 500 \
+   --data chess.bin --seeds 1,2,3 --epochs 120 --out chess_s{s}.pt
+```
+
+Layouts: Chess `1,0`, Obstocean `1,3`, Pawn Horde `20,0`. To see which generic
+inputs a variant net would use, export with `--generic-features` and rank the
+input groups by permutation importance.
 
 ## Notes
 

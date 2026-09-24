@@ -8,7 +8,7 @@ AdamW acts per element, so the optimisation is the same as separate runs. Each s
 is written as an ordinary checkpoint.
 
     python nnue/train_seeds.py --data mixrel.bin --seeds 1,2,3,4,5,6 --epochs 120 \\
-        --perspective --keep-cloud --n-cols 129 --out base_s{s}.pt
+        --perspective --out base_s{s}.pt
     python nnue/train_seeds.py --data rel.bin --seeds 1,2,3,4,5,6 --init base_s{s}.pt \\
         --epochs 20 --lr 2e-4 --qat-from 1 --val-frac 0.1 ... --out net_s{s}.pt
 """
@@ -102,14 +102,15 @@ def main():
     ap.add_argument("--qat-from", type=int, default=4)
     ap.add_argument("--n-cols", type=int, default=0)
     ap.add_argument("--perspective", action="store_true")
-    ap.add_argument("--keep-cloud", action="store_true")
+    ap.add_argument("--layout", default="")
     ap.add_argument("--keep-mop-up", action="store_true")
     ap.add_argument("--max-records", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     seeds = [int(s) for s in args.seeds.split(",")]
     n = len(seeds)
-    tev.PERSPECTIVE, tev.KEEP_CLOUD = args.perspective, args.keep_cloud
+    tev.PERSPECTIVE = args.perspective
+    tev.LAYOUT = tev.parse_layout(args.layout)
 
     header, arr = load(args.data, args.max_records)
     n_feat = args.n_cols or header["n_features"]
@@ -172,7 +173,8 @@ def main():
                 torch.save({"state_dict": model.state_dict_of(j), "n_features": n_feat, "hidden": args.hidden,
                             "hidden2": args.hidden2, "schema": schemas[j], "in_scale": IN_SCALE,
                             "out_scale": OUT_SCALE, "k": args.k, "cap": args.cap,
-                            "perspective": args.perspective, "keep_cloud": args.keep_cloud, "x_mult": 1,
+                            "perspective": args.perspective, "layout": list(tev.LAYOUT) if tev.LAYOUT else None,
+                            "x_mult": 1,
                             "val_loss": losses[j], "val_baseline": base}, args.out.format(s=s))
         gains = " ".join(f"{100 * (1 - l / base):5.2f}" for l in losses)
         print(f"epoch {epoch:3d}  val gain % per seed: {gains}  ({time.time() - t0:.0f}s)", flush=True)

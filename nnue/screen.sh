@@ -13,7 +13,7 @@ D=nnue/screen; mkdir -p "$D"
 "$EXE" --threads "$THREADS" $EXTRA --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl \
     --out "$D/$TAG.bin" > "$D/export_$TAG.log" 2>&1
 "$EXE" --threads "$THREADS" $EXTRA --texel nnue/fresh_holdout.jsonl --out "$D/${TAG}_ho.bin" > /dev/null 2>&1
-python -u nnue/train_seeds.py --perspective --keep-cloud --n-cols 129 --hidden 128 --hidden2 64 --cap 500 \
+python -u nnue/train_seeds.py --perspective --hidden 128 --hidden2 64 --cap 500 \
     --data "$D/$TAG.bin" --epochs 40 --qat-from 30 --seeds "$(seq -s, 1 "$SEEDS")" \
     --out "$D/${TAG}_s{s}.pt" > "$D/train_$TAG.log" 2>&1
 for s in $(seq 1 "$SEEDS"); do

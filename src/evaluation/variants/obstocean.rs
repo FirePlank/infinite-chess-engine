@@ -1,5 +1,6 @@
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::evaluation::base;
+use crate::eval_net::variant_features::{NoSink, VariantLayout, VariantSink, cp, ct};
 use crate::game::GameState;
 
 const OUTSIDE_PASSED_PAWN_BONUS: [i32; 7] = [240, 140, 75, 40, 20, 10, 0];
@@ -608,14 +609,75 @@ fn race_eval_optimized(
     s
 }
 
+/// Net inputs: the phase, three White-ahead totals, then per-side piece-type terms,
+/// counts, pawn geometry and king-pressure summaries as (White, Black) pairs.
+pub const NET_LAYOUT: VariantLayout = VariantLayout {
+    names: &[
+        "phase",
+        "material",
+        "pawn structure",
+        "race",
+        "pawn terms w",
+        "pawn terms b",
+        "knights w",
+        "knights b",
+        "bishops w",
+        "bishops b",
+        "rooks w",
+        "rooks b",
+        "queens w",
+        "queens b",
+        "psqt w",
+        "psqt b",
+        "outside structure w",
+        "outside structure b",
+        "pawn count w",
+        "pawn count b",
+        "knight count w",
+        "knight count b",
+        "bishop count w",
+        "bishop count b",
+        "rook count w",
+        "rook count b",
+        "queen count w",
+        "queen count b",
+        "outside pawns w",
+        "outside pawns b",
+        "lead pawn dist w",
+        "lead pawn dist b",
+        "attack tropism w",
+        "attack tropism b",
+        "defence tropism w",
+        "defence tropism b",
+        "threat points w",
+        "threat points b",
+        "near defenders w",
+        "near defenders b",
+        "passer dist w",
+        "passer dist b",
+        "king shelter w",
+        "king shelter b",
+    ],
+    fixed: 1,
+    neg: 3,
+};
+
 #[inline]
 pub fn evaluate(game: &GameState) -> i32 {
-    evaluate_inner(game)
+    evaluate_traced(game, &mut NoSink)
+}
+
+#[cfg(test)]
+fn evaluate_inner(game: &GameState) -> i32 {
+    evaluate(game)
 }
 
 #[inline]
-fn evaluate_inner(game: &GameState) -> i32 {
+pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
     let mut score = game.material_score;
+    // Per side: pawn terms, knight, bishop, rook, queen, psqt; only filled for a net.
+    let mut terms = [[0i32; 2]; 6];
+    let mut counts = [[0i32; 5]; 2];
     let white_royals = game.white_royals.as_slice();
     let black_royals = game.black_royals.as_slice();
 
@@ -671,8 +733,28 @@ fn evaluate_inner(game: &GameState) -> i32 {
                                     _ => 0,
                                 };
 
+                                if S::ON {
+                                    let side = usize::from(p.color() != PlayerColor::White);
+                                    let k = match pt {
+                                        PieceType::Pawn => 0,
+                                        PieceType::Knight
+                                        | PieceType::Archbishop
+                                        | PieceType::Centaur
+                                        | PieceType::RoyalCentaur => 1,
+                                        PieceType::Bishop => 2,
+                                        PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => 3,
+                                        PieceType::Queen | PieceType::RoyalQueen => 4,
+                                        _ => 5,
+                                    };
+                                    if k < 5 {
+                                        counts[side][k] += 1;
+                                    }
+                                }
                                 if pt == PieceType::Pawn {
                                     let v = eval_pawn(x, y, p.color(), game);
+                                    if S::ON {
+                                        terms[0][usize::from(p.color() != PlayerColor::White)] += v;
+                                    }
                                     if p.color() == PlayerColor::White {
                                         score += v;
                                         white_pawns.push((x, y));
@@ -762,6 +844,25 @@ fn evaluate_inner(game: &GameState) -> i32 {
 
                             let positional = psqt_value(pt, x, y, p.color(), phase);
                             let v = functional + positional;
+                            if S::ON {
+                                let side = usize::from(!is_white);
+                                let k = match pt {
+                                    PieceType::Knight
+                                    | PieceType::Archbishop
+                                    | PieceType::Centaur
+                                    | PieceType::RoyalCentaur => Some(1),
+                                    PieceType::Bishop => Some(2),
+                                    PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => {
+                                        Some(3)
+                                    }
+                                    PieceType::Queen | PieceType::RoyalQueen => Some(4),
+                                    _ => None,
+                                };
+                                if let Some(k) = k {
+                                    terms[k][side] += functional;
+                                }
+                                terms[5][side] += positional;
+                            }
 
                             if is_white {
                                 score += v;
@@ -771,7 +872,7 @@ fn evaluate_inner(game: &GameState) -> i32 {
                         }
 
                         // 4. Pawn structure
-                        score += base::evaluate_pawn_structure_traced(
+                        let structure = base::evaluate_pawn_structure_traced(
                             game,
                             phase,
                             white_royals,
@@ -780,13 +881,158 @@ fn evaluate_inner(game: &GameState) -> i32 {
                             white_pawns,
                             black_pawns,
                         );
+                        score += structure;
 
                         // 5. Outside pawn connectivity
-                        score += eval_outside_pawn_structure(white_pawns);
-                        score -= eval_outside_pawn_structure(black_pawns);
+                        let outside = [
+                            eval_outside_pawn_structure(white_pawns),
+                            eval_outside_pawn_structure(black_pawns),
+                        ];
+                        score += outside[0];
+                        score -= outside[1];
 
                         // 6. Promotion race
-                        score += race_eval_optimized(game, white_pawns, black_pawns);
+                        let race = race_eval_optimized(game, white_pawns, black_pawns);
+                        score += race;
+
+                        if S::ON {
+                            sink.set(0, ct(phase));
+                            sink.set(1, cp(game.material_score));
+                            sink.set(2, cp(structure));
+                            sink.set(3, cp(race));
+                            let mut c = 4;
+                            let mut pair = |w: i16, b: i16| {
+                                sink.set(c, w);
+                                sink.set(c + 1, b);
+                                c += 2;
+                            };
+                            for t in &terms {
+                                pair(cp(t[0]), cp(t[1]));
+                            }
+                            pair(cp(outside[0]), cp(outside[1]));
+                            for (w, b) in counts[0].iter().zip(&counts[1]) {
+                                pair(ct(*w), ct(*b));
+                            }
+                            let out = |ps: &[(i64, i64)]| {
+                                ps.iter().filter(|p| !(1..=8).contains(&p.0)).count() as i32
+                            };
+                            pair(ct(out(white_pawns)), ct(out(black_pawns)));
+                            let lead = |ps: &[(i64, i64)], promo: i64| {
+                                ps.iter().map(|p| (promo - p.1).abs()).min().unwrap_or(255) as i32
+                            };
+                            pair(
+                                ct(lead(white_pawns, game.white_promo_rank)),
+                                ct(lead(black_pawns, game.black_promo_rank)),
+                            );
+                            let royals = [white_royals, black_royals];
+                            let cheb = |x: i64, y: i64, k: &crate::board::Coordinate| {
+                                (x - k.x).abs().max((y - k.y).abs()).min(1000) as i32
+                            };
+                            let (mut att, mut def, mut threat, mut near) =
+                                ([0i32; 2], [0i32; 2], [0i32; 2], [0i32; 2]);
+                            // Distance addend as the generic tropism term sets it: more
+                            // sliders make distant pieces count for more.
+                            let mut sliders = [0i32; 2];
+                            for &(_, _, p) in heavy_pieces.iter() {
+                                let pt = p.piece_type();
+                                if crate::attacks::is_ortho_slider(pt) || crate::attacks::is_diag_slider(pt) {
+                                    sliders[usize::from(p.color() != PlayerColor::White)] += 1;
+                                }
+                            }
+                            let addend = |side: usize| 12 - sliders[side].clamp(1, 7);
+                            for &(x, y, p) in heavy_pieces.iter() {
+                                let pt = p.piece_type();
+                                if pt.is_royal() {
+                                    continue;
+                                }
+                                let side = usize::from(p.color() != PlayerColor::White);
+                                let v = base::get_piece_value_base(pt);
+                                for k in royals[1 - side] {
+                                    att[side] += v / (cheb(x, y, k) + addend(side));
+                                }
+                                for k in royals[side] {
+                                    def[side] += v.min(350) / (cheb(x, y, k) + addend(1 - side));
+                                }
+                                threat[side] += match pt {
+                                    PieceType::Queen | PieceType::Amazon => 40,
+                                    PieceType::Rook | PieceType::Chancellor => 15,
+                                    PieceType::Bishop => 10,
+                                    PieceType::Knightrider => 8,
+                                    _ => 3,
+                                };
+                            }
+                            // Nearest passed pawn's distance to promotion, 255 without one.
+                            let passer = |own: &[(i64, i64)], foe: &[(i64, i64)], dir: i64, promo: i64| {
+                                own.iter()
+                                    .filter(|&&(x, y)| {
+                                        !foe.iter().any(|&(fx, fy)| (fx - x).abs() <= 1 && (fy - y) * dir > 0)
+                                    })
+                                    .map(|&(_, y)| (promo - y).abs())
+                                    .min()
+                                    .unwrap_or(255) as i32
+                            };
+                            pair(cp(att[0]), cp(att[1]));
+                            pair(cp(def[0]), cp(def[1]));
+                            pair(ct(threat[0]), ct(threat[1]));
+                            // Cover within two squares of the first royal, weighted as the
+                            // generic defender histogram does: obstacles count too.
+                            for (side, own) in [(0, PlayerColor::White), (1, PlayerColor::Black)] {
+                                let Some(k) = royals[side].first() else { continue };
+                                for dy in -2i64..=2 {
+                                    for dx in -2i64..=2 {
+                                        let Some(p) = game.board.get_piece(k.x + dx, k.y + dy) else {
+                                            continue;
+                                        };
+                                        let far = usize::from(dx.abs().max(dy.abs()) == 2);
+                                        near[side] += if p.color() == PlayerColor::Neutral {
+                                            [25, 12][far]
+                                        } else if p.color() != own || p.piece_type().is_royal() {
+                                            0
+                                        } else if p.piece_type() == PieceType::Pawn {
+                                            [33, 16][far]
+                                        } else {
+                                            [100, 50][far]
+                                        };
+                                    }
+                                }
+                            }
+                            pair(ct(near[0] / 10), ct(near[1] / 10));
+                            pair(
+                                ct(passer(white_pawns, black_pawns, 1, game.white_promo_rank)),
+                                ct(passer(black_pawns, white_pawns, -1, game.black_promo_rank)),
+                            );
+                            // The generic king shelter of the first royal, fed the same
+                            // urgency and queen inputs the generic eval gives it.
+                            let urgency = |tp: i32| (10 + tp + tp / 4).min(100);
+                            let has_queen = |side: usize| {
+                                heavy_pieces.iter().any(|&(_, _, p)| {
+                                    usize::from(p.color() != PlayerColor::White) == side
+                                        && crate::attacks::is_ortho_slider(p.piece_type())
+                                        && crate::attacks::is_diag_slider(p.piece_type())
+                                })
+                            };
+                            let mut shelter = [0i32; 2];
+                            for (side, color) in [(0, PlayerColor::White), (1, PlayerColor::Black)] {
+                                let Some(k) = royals[side].first() else { continue };
+                                let (rays, ring) =
+                                    base::king_rays_from_indices(&game.spatial_indices, k.x, k.y, color);
+                                shelter[side] = base::evaluate_king_shelter(
+                                    game,
+                                    k,
+                                    color,
+                                    phase,
+                                    urgency(threat[1 - side]),
+                                    has_queen(1 - side),
+                                    if side == 0 { white_pawns } else { black_pawns },
+                                    &rays,
+                                    ring,
+                                    royals[side].len() > 1,
+                                    heavy_pieces,
+                                );
+                            }
+                            pair(cp(shelter[0]), cp(shelter[1]));
+                            sink.set_phase(phase);
+                        }
                     }
                 }
             });

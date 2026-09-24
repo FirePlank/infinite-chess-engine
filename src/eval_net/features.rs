@@ -9,28 +9,35 @@ use crate::game::GameState;
 
 /// Bump whenever `feature_vector`'s layout or scaling changes, so stale weight
 /// files are rejected at load instead of silently misreading features.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
-pub const NUM_ROWS: usize = 14;
-pub const NUM_FEATURES: usize = 129;
+pub const NUM_ROWS: usize = 13;
+pub const NUM_FEATURES: usize = 121;
+/// Leading rows recorded as one White-ahead value; the rest are (White, Black) pairs.
+const SINGLE_ROWS: usize = 2;
 
 /// Eval-term rows captured from `tracer.record` calls, by exact name.
 pub const ROW_NAMES: [&str; NUM_ROWS] = [
     "Material (net)",
+    "Complexity scale",
     "Pawn Advancement",
     "Threats: Pawn",
     "Threats: Minor",
     "Threats: Slider",
     "Global Tropism",
     "King: Pawn Storm",
-    "Complexity scale",
     "Piece: Activity",
     "Piece: Bishop Pair",
     "King: Shelter",
     "King: Attack",
     "Pawn: King Pawn Tropism",
-    "Pawn: Passed",
 ];
+
+/// Side-to-move column, set to 1 in the perspective encoding.
+const STM_COL: usize = 2 * NUM_ROWS - SINGLE_ROWS;
+/// Per-side blocks: White's starts at `SIDE_COL`, Black's right after it.
+const SIDE_COL: usize = STM_COL + 21;
+const SIDE_LEN: usize = 38;
 
 /// Raw scalars handed out of the eval's main pass. Pair fields are indexed
 /// [0]=White, [1]=Black explicitly, never via `PlayerColor as usize`.
@@ -44,7 +51,6 @@ pub struct EvalNetInputs {
     pub slider_geometry_ctx: i32,
     pub leaper_geometry_ctx: i32,
     pub cloud_avg_spread: i32,
-    pub cloud_count: i32,
     pub counterplay: [i32; 2],
     pub bishops: [i32; 2],
     pub bishop_pair: [i32; 2],
@@ -76,7 +82,6 @@ pub struct EvalNetInputs {
     pub king_dist: i32,
     /// Each side's first royal's distance to the piece-cloud centre.
     pub king_cloud_dist: [i32; 2],
-    pub halfmove_clock: i32,
     /// Units attacking / defending that side's first royal.
     pub royal_attackers: [i32; 2],
     pub royal_defenders: [i32; 2],
@@ -141,19 +146,18 @@ impl EvaluationTracer for FeatureCollector {
     fn record(&mut self, term: &str, white: i32, black: i32) {
         let idx = match term {
             "Material (net)" => 0,
-            "Pawn Advancement" => 1,
-            "Threats: Pawn" => 2,
-            "Threats: Minor" => 3,
-            "Threats: Slider" => 4,
-            "Global Tropism" => 5,
-            "King: Pawn Storm" => 6,
-            "Complexity scale" => 7,
+            "Complexity scale" => 1,
+            "Pawn Advancement" => 2,
+            "Threats: Pawn" => 3,
+            "Threats: Minor" => 4,
+            "Threats: Slider" => 5,
+            "Global Tropism" => 6,
+            "King: Pawn Storm" => 7,
             "Piece: Activity" => 8,
             "Piece: Bishop Pair" => 9,
             "King: Shelter" => 10,
             "King: Attack" => 11,
             "Pawn: King Pawn Tropism" => 12,
-            "Pawn: Passed" => 13,
             _ => return,
         };
         self.rows[idx] = (white, black);
@@ -214,11 +218,15 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
         }};
     }
 
-    // Eval-term rows (White, Black), cp-scaled.
-    for &(w, b) in &fc.rows {
+    // Eval-term rows, cp-scaled.
+    for &(w, _) in &fc.rows[..SINGLE_ROWS] {
+        push!(cp(w));
+    }
+    for &(w, b) in &fc.rows[SINGLE_ROWS..] {
         push!(cp(w));
         push!(cp(b));
     }
+    debug_assert_eq!(i, STM_COL);
 
     // Game-level scalars.
     push!(if game.turn == PlayerColor::White { 1 } else { -1 });
@@ -246,17 +254,11 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
     push!(ct(n.slider_geometry_ctx));
     push!(ct(n.leaper_geometry_ctx));
     push!(ct(n.cloud_avg_spread));
-    push!(ct(n.cloud_count));
     push!(ct(n.king_dist));
-    // Clock slot held at 0: the exporter drops positions past 40 plies, so the
-    // net has no trained response there, and rule50 damping owns the clock.
-    push!(0);
-    let _ = n.halfmove_clock;
+    debug_assert_eq!(i, SIDE_COL);
     let p = &fc.pawn;
     for side in 0..2 {
         push!(ct(n.counterplay[side]));
-        // Slot of the removed development count, kept so later columns do not move.
-        push!(0);
         push!(ct(n.bishops[side]));
         push!(ct(n.bishop_pair[side]));
         push!(ct(n.diag_sliders[side]));
@@ -298,30 +300,31 @@ pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEAT
     v
 }
 
-/// Column pairs a perspective net reads as (side to move, opponent): the 12 two-sided
-/// term rows, piece/pawn/royal counts, win conditions, and the two 39-wide side blocks.
-const PAIR_COLS: [(usize, usize); 55] = {
-    let mut out = [(0, 0); 55];
-    let rows = [1usize, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13];
+/// Column pairs a perspective net reads as (side to move, opponent): the two-sided
+/// term rows, piece/pawn/royal counts, win conditions, and the two side blocks.
+const PAIRED_ROWS: usize = NUM_ROWS - SINGLE_ROWS;
+const PAIR_COLS: [(usize, usize); PAIRED_ROWS + 4 + SIDE_LEN] = {
+    let mut out = [(0, 0); PAIRED_ROWS + 4 + SIDE_LEN];
     let mut i = 0;
-    while i < 12 {
-        out[i] = (2 * rows[i], 2 * rows[i] + 1);
+    while i < PAIRED_ROWS {
+        out[i] = (SINGLE_ROWS + 2 * i, SINGLE_ROWS + 1 + 2 * i);
         i += 1;
     }
-    out[12] = (31, 32);
-    out[13] = (33, 34);
-    out[14] = (35, 36);
-    out[15] = (37, 38);
+    let mut k = 0;
+    while k < 4 {
+        out[PAIRED_ROWS + k] = (STM_COL + 3 + 2 * k, STM_COL + 4 + 2 * k);
+        k += 1;
+    }
     let mut j = 0;
-    while j < 39 {
-        out[16 + j] = (51 + j, 90 + j);
+    while j < SIDE_LEN {
+        out[PAIRED_ROWS + 4 + j] = (SIDE_COL + j, SIDE_COL + SIDE_LEN + j);
         j += 1;
     }
     out
 };
 
-/// White-ahead single values (net material row, complexity delta, material score).
-const NEGATE_COLS: [usize; 3] = [0, 14, 29];
+/// White-ahead single values (net material and complexity rows, material score).
+const NEGATE_COLS: [usize; 3] = [0, 1, STM_COL + 1];
 
 /// Re-encodes a vector as (side to move, opponent), matching `to_perspective` in
 /// `nnue/train_eval_net.py`: a position and its colour mirror then read identically.
@@ -334,7 +337,7 @@ pub fn to_perspective(v: &mut [i16], black_to_move: bool) {
             v[c] = -v[c];
         }
     }
-    v[28] = 1;
+    v[STM_COL] = 1;
 }
 
 /// FNV-1a over the row names, feature count and schema version. Weight files

@@ -3,6 +3,7 @@
 //! there, verified by its integer-simulation check.
 
 use super::features::NUM_FEATURES;
+use super::variant_features::MAX_VARIANT_FEATURES;
 use super::weights::EvalNetWeights;
 
 /// Hard cap on the residual so a bad net can misjudge, never dominate. Must
@@ -148,19 +149,24 @@ fn has_avx2() -> bool {
     false
 }
 
-/// Input vector padded to the layer-1 stride.
-pub const NUM_FEATURES_PAD: usize = super::weights::pad32(NUM_FEATURES);
+/// Input buffer wide enough for every layout, padded to the layer-1 stride.
+pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if NUM_FEATURES > MAX_VARIANT_FEATURES {
+    NUM_FEATURES
+} else {
+    MAX_VARIANT_FEATURES
+});
 
-/// Raw net output in centipawns (White-ahead), before the residual cap.
-pub fn forward(net: &EvalNetWeights, x: &[i16; NUM_FEATURES]) -> i32 {
+/// Raw net output in centipawns (White-ahead), before the residual cap. `x` holds at
+/// least the net's `n_in` inputs.
+pub fn forward(net: &EvalNetWeights, x: &[i16]) -> i32 {
     debug_assert!(net.h1 <= MAX_H && net.h2 <= MAX_H);
-    debug_assert!(net.n_in == NUM_FEATURES && net.stride1 <= NUM_FEATURES_PAD);
+    debug_assert!(net.n_in <= x.len() && net.stride1 <= NUM_FEATURES_PAD);
 
     // CReLU outputs fit i16, so every layer reuses the same i16 x i16 kernel.
     // The zero padding of each buffer covers the padded weight columns.
     let avx2 = has_avx2();
     let mut xp = [0i16; NUM_FEATURES_PAD];
-    xp[..NUM_FEATURES].copy_from_slice(x);
+    xp[..net.n_in].copy_from_slice(&x[..net.n_in]);
 
     let mut h1 = [0i16; MAX_H];
     dense_layer(net.l1_w.as_slice(), &net.l1_b, net.stride1, &xp, net.s1, &mut h1[..net.h1], avx2);

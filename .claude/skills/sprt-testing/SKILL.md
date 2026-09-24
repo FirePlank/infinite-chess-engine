@@ -72,10 +72,9 @@ fills with stray `games_*.json` that later have to be swept up by hand. That
 corpus is reused by `puzzle_gen`/`texel` as training data, so keeping every run
 in one place is what makes it worth anything.
 
-`--concurrency` defaults to physical core count (`num_cpus::get_physical()`), not logical —
-each game is single-threaded, so SMT siblings only add contention, not real parallelism.
-Passing a manual `--concurrency` above physical core count reproduces the same timeout
-inflation as the zombie incident below, without needing any zombies to cause it.
+`--concurrency` defaults to the physical core count, which leaves throughput unused. Pass
+about 80% of the logical cores (`--concurrency 12` on this 16-thread box). Only go higher
+if the timeout rate stays at a few percent.
 
 ## 3b. HCE changes: screen offline first
 
@@ -152,7 +151,7 @@ Extend only when it pays off — decide from |LLR| at the end of a batch (§8). 
   to strand zombies: the wrapper returns, the match keeps running unsupervised.)
 - **NEVER set a watch/monitor/poll loop on a running SPRT, and never sleep waiting on one.** The
   background task auto-notifies on completion — just END THE TURN after launching. Extra watchers
-  burn a core (the match is already sized to the physical cores), add nothing, and a polling loop
+  burn a core (the match already fills the machine), add nothing, and a polling loop
   is the same oversubscription that fakes regressions. Same rule for the post-launch "is it really
   running" check: one glance at the output file is fine, a loop is not.
 - **Let the run FINISH (or `--resume` it to completion) before quoting numbers** — the
@@ -166,7 +165,7 @@ Extend only when it pays off — decide from |LLR| at the end of a batch (§8). 
     --old-bin "<REPO>/sprt_old.exe" [--new-bin "<REPO>/base_new.exe"] \
     --old-commit <sha> --new-commit <label> \
     --variants "<scoped,list>" \
-    --elo0 <lo> --elo1 <hi> \
+    --elo0 <lo> --elo1 <hi> --concurrency 12 \
     --games "<REPO>/games/sprt/games_<tag>.json" --results "<REPO>/games/sprt/results_<tag>.json" \
     --max-games <N>
   ```

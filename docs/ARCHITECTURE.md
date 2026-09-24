@@ -115,11 +115,11 @@ Evaluation should mostly read already-maintained state and turn it into a score.
 
 ### `src/eval_net/`
 
-This is the learned correction to the Generic evaluator.
+This is the learned correction to the evaluators.
 
-It is not NNUE. The input is a vector of 129 scalars the hand-crafted evaluation already computes on its way to a score (term values per side, material counts, king and cloud geometry), read as side to move vs. opponent. A small quantized MLP turns that into a residual, capped at ±500 cp, which `base::evaluate` adds to the HCE score. `features.rs` defines the input layout, `inference.rs` the integer forward pass, and `weights.rs` loads the blob embedded from `eval_net.bin`.
+It is not NNUE. The Generic net reads a vector of 121 scalars the hand-crafted evaluation already computes on its way to a score (term values per side, material counts, king and cloud geometry), read as side to move vs. opponent. A small quantized MLP turns that into a residual, capped at ±500 cp, which `base::evaluate` adds to the HCE score. `features.rs` defines the input layout, `inference.rs` the integer forward pass, and `weights.rs` loads the blob embedded from `eval_net.bin`.
 
-The net is off against a bare king, where mop-up owns the gradient, and in the specialized `variants/` evaluators. `APEIRON_EVAL_NET=0` disables it at runtime.
+The Chess, Obstocean and Pawn Horde evaluators each have their own smaller net (`*_net.bin`). Its inputs are that evaluator's own terms, written during its normal pass through a `VariantSink` (`variant_features.rs`), so it costs no second eval. The nets are off against a bare king, where mop-up owns the gradient. `APEIRON_EVAL_NET=0` disables them all at runtime.
 
 Because the net reads HCE terms, it is trained against one specific HCE. Changing an eval term changes its inputs, so the net has to be retrained (see the Contributing Guide). Training tooling lives in `nnue/`.
 

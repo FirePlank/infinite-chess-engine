@@ -189,17 +189,32 @@ fn apply_rule50_damping(game: &GameState, raw_eval: i32, mop_up_active: bool) ->
 /// A specialized evaluator's net residual, side-to-move relative. Its inputs are the
 /// base HCE's features, so a variant with a net also pays for one base evaluation.
 #[inline]
-fn variant_residual(game: &GameState) -> i32 {
+/// A specialized evaluator's score plus its net's residual, side-to-move relative. The
+/// evaluator's own pass writes the net's inputs, so the net costs no second eval.
+fn variant_eval(game: &GameState) -> i32 {
+    use crate::eval_net::variant_features::{VariantFeatures, VariantLayout};
+    let plain = |g: &GameState| match g.eval_kind {
+        EvalKind::Chess => variants::chess::evaluate(g),
+        EvalKind::Obstocean => variants::obstocean::evaluate(g),
+        _ => variants::pawn_horde::evaluate(g),
+    };
     let Some(net) = crate::eval_net::variant_net(game.eval_kind) else {
-        return 0;
+        return plain(game);
     };
     if base::net_off(game) {
-        return 0;
+        return plain(game);
     }
-    let mut fc = crate::eval_net::FeatureCollector::default();
-    base::evaluate_inner_traced(game, &mut fc);
-    let r = crate::eval_net::residual_of(net, game, &fc);
-    if game.turn == PlayerColor::Black { -r } else { r }
+    let mut f = VariantFeatures::default();
+    let (score, layout): (i32, &VariantLayout) = match game.eval_kind {
+        EvalKind::Chess => (variants::chess::evaluate_traced(game, &mut f), &variants::chess::NET_LAYOUT),
+        EvalKind::Obstocean => {
+            (variants::obstocean::evaluate_traced(game, &mut f), &variants::obstocean::NET_LAYOUT)
+        }
+        _ => (variants::pawn_horde::evaluate_traced(game, &mut f), &variants::pawn_horde::NET_LAYOUT),
+    };
+    let black = game.turn == PlayerColor::Black;
+    let r = crate::eval_net::variant_residual(net, layout, &f, black);
+    score + if black { -r } else { r }
 }
 
 /// Main evaluation entry point.
@@ -209,9 +224,7 @@ pub fn evaluate(game: &GameState) -> i32 {
         return 0;
     }
     let raw_eval = match game.eval_kind {
-        EvalKind::Chess => variants::chess::evaluate(game) + variant_residual(game),
-        EvalKind::Obstocean => variants::obstocean::evaluate(game) + variant_residual(game),
-        EvalKind::PawnHorde => variants::pawn_horde::evaluate(game) + variant_residual(game),
+        EvalKind::Chess | EvalKind::Obstocean | EvalKind::PawnHorde => variant_eval(game),
         EvalKind::Generic => base::evaluate(game),
     };
     let mop_up = compute_mop_up_term(game);

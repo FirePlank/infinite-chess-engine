@@ -100,7 +100,8 @@ fn read_i32s(c: &mut Cursor<&[u8]>, n: usize) -> Result<Box<[i32]>, &'static str
 }
 
 impl EvalNetWeights {
-    pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+    /// Parses a blob that must carry `want_n` inputs sealed with `want_schema`.
+    pub fn from_bytes(data: &[u8], want_n: usize, want_schema: u64) -> Result<Self, &'static str> {
         let mut c = Cursor::new(data);
         let mut magic = [0u8; 8];
         c.read_exact(&mut magic).map_err(|_| "short read (magic)")?;
@@ -116,10 +117,10 @@ impl EvalNetWeights {
         let schema = read_u64(&mut c)?;
         let out_scale = read_f32(&mut c)?;
 
-        if n_in != super::features::NUM_FEATURES {
+        if n_in != want_n {
             return Err("feature count mismatch");
         }
-        if schema != super::features::schema_hash() {
+        if schema != want_schema {
             return Err("schema hash mismatch");
         }
         if h1 == 0 || h2 == 0 || !h1.is_multiple_of(16) || !h2.is_multiple_of(16) {
@@ -157,22 +158,32 @@ impl EvalNetWeights {
 /// file is a valid "no net yet" state.
 static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 
-pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| parse(EVAL_NET_BYTES));
+pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
+    parse(EVAL_NET_BYTES, super::features::NUM_FEATURES, super::features::schema_hash())
+});
 
-/// Nets for the specialized evaluators: same inputs (the base HCE's feature vector),
-/// residual added to that evaluator's own score. Empty files mean no net.
+/// Nets for the specialized evaluators, each over its own evaluator's layout, residual
+/// added to that evaluator's score. Empty files mean no net.
 pub static CHESS_NET: Lazy<Option<EvalNetWeights>> =
-    Lazy::new(|| parse(include_bytes!("chess_net.bin")));
-pub static OBSTOCEAN_NET: Lazy<Option<EvalNetWeights>> =
-    Lazy::new(|| parse(include_bytes!("obstocean_net.bin")));
-pub static PAWN_HORDE_NET: Lazy<Option<EvalNetWeights>> =
-    Lazy::new(|| parse(include_bytes!("pawn_horde_net.bin")));
+    Lazy::new(|| parse_layout(include_bytes!("chess_net.bin"), &variants::chess::NET_LAYOUT));
+pub static OBSTOCEAN_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
+    parse_layout(include_bytes!("obstocean_net.bin"), &variants::obstocean::NET_LAYOUT)
+});
+pub static PAWN_HORDE_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
+    parse_layout(include_bytes!("pawn_horde_net.bin"), &variants::pawn_horde::NET_LAYOUT)
+});
 
-fn parse(bytes: &[u8]) -> Option<EvalNetWeights> {
+use crate::evaluation::variants;
+
+fn parse_layout(bytes: &[u8], layout: &super::variant_features::VariantLayout) -> Option<EvalNetWeights> {
+    parse(bytes, layout.len(), layout.schema_hash())
+}
+
+fn parse(bytes: &[u8], want_n: usize, want_schema: u64) -> Option<EvalNetWeights> {
     if bytes.is_empty() {
         return None;
     }
-    match EvalNetWeights::from_bytes(bytes) {
+    match EvalNetWeights::from_bytes(bytes, want_n, want_schema) {
         Ok(w) => Some(w),
         Err(e) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -189,8 +200,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic_and_short_data() {
-        assert!(EvalNetWeights::from_bytes(b"BADMAGIC").is_err());
-        assert!(EvalNetWeights::from_bytes(b"AEVNET01").is_err());
+        assert!(EvalNetWeights::from_bytes(b"BADMAGIC", 1, 0).is_err());
+        assert!(EvalNetWeights::from_bytes(b"AEVNET01", 1, 0).is_err());
     }
 
     #[test]

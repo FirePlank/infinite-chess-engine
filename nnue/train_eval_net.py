@@ -123,17 +123,18 @@ class EvalNet(nn.Module):
 
 
 PERSPECTIVE = False
-# Set for v4 exports, where king-to-cloud distance is computed correctly.
-KEEP_CLOUD = False
+# (fixed, neg) for a specialized evaluator's own layout (its `NET_LAYOUT` in Rust): fixed
+# columns, then White-ahead singles, then (White, Black) pairs. None is the generic layout.
+LAYOUT = None
 
-# v2 layout: 14 term rows as (White, Black) pairs, rows 0 (net material) and 7
-# (complexity delta) are single White-ahead values; then globals; then two 39-wide
-# per-side blocks (White at 51, Black at 90).
-_SINGLE_ROWS = (0, 7)
-_PAIR_COLS = [(2 * r, 2 * r + 1) for r in range(14) if r not in _SINGLE_ROWS]
-_PAIR_COLS += [(31, 32), (33, 34), (35, 36), (37, 38)]
-_PAIR_COLS += [(51 + i, 90 + i) for i in range(39)]
-_NEGATE_COLS = [0, 14, 29]
+# v5 layout (src/eval_net/features.rs): net material and complexity at 0-1, 11 (White,
+# Black) term rows, side to move at 24, globals, then two 38-wide per-side blocks
+# (White at 45, Black at 83).
+_STM_COL = 24
+_PAIR_COLS = [(2 + 2 * r, 3 + 2 * r) for r in range(11)]
+_PAIR_COLS += [(27, 28), (29, 30), (31, 32), (33, 34)]
+_PAIR_COLS += [(45 + i, 83 + i) for i in range(38)]
+_NEGATE_COLS = [0, 1, 25]
 
 
 def to_perspective(x, stm):
@@ -141,19 +142,26 @@ def to_perspective(x, stm):
     then give identical inputs. `stm` is the record's turn (1 White, 2 Black)."""
     x = x.copy()
     blk = stm == 2
+    if LAYOUT is not None:
+        f, n = LAYOUT
+        x[blk, f : f + n] = -x[blk, f : f + n]
+        for a in range(f + n, x.shape[1] - 1, 2):
+            xa = x[blk, a].copy()
+            x[blk, a] = x[blk, a + 1]
+            x[blk, a + 1] = xa
+        return x
     for a, b in _PAIR_COLS:
         xa = x[blk, a].copy()
         x[blk, a] = x[blk, b]
         x[blk, b] = xa
     for c in _NEGATE_COLS:
         x[blk, c] = -x[blk, c]
-    x[:, 28] = 1
-    # King-to-cloud distance mixed doubled and single units in the v2 export and is not
-    # mirror-equivariant; dropped until the Rust side computes it properly.
-    if not KEEP_CLOUD:
-        x[:, 78] = 0
-        x[:, 117] = 0
+    x[:, _STM_COL] = 1
     return x
+
+
+def parse_layout(text):
+    return tuple(int(v) for v in text.split(",")) if text else None
 
 
 def stm_sign(stm):
@@ -165,8 +173,11 @@ def bare_king_mop_up(arr, chunk=1_000_000):
     """Full-strength mop-up (a lone king against a side with a non-pawn piece): the
     engine skips the net there, so these records are neither trained nor scored."""
     out = np.zeros(len(arr), dtype=bool)
+    if LAYOUT is not None:
+        # Specialized-evaluator exports already skip every position the net is off in.
+        return out
     for i in range(0, len(arr), chunk):
-        c = np.asarray(arr["x"][i : i + chunk, 31:37]).astype(np.int32)
+        c = np.asarray(arr["x"][i : i + chunk, 27:33]).astype(np.int32)
         pieces, pawns, royals = c[:, 0:2], c[:, 2:4], c[:, 4:6]
         bare = (pieces == royals) & (royals == 1)
         armed = pieces - pawns - royals >= 1
@@ -254,7 +265,7 @@ def evaluate_split(model, data, lam_by_source, k, cap, batch=65536):
 def eval_only(args):
     header, arr = load(args.data, args.max_records, args.stride)
     dev = torch.device(args.device)
-    mask = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
+    global LAYOUT
     lam_by_source = torch.tensor([args.lambda_texel, args.lambda_sprt], device=dev)
     for ck_path in args.eval_only:
         ck = torch.load(ck_path, map_location="cpu")
@@ -263,8 +274,8 @@ def eval_only(args):
             continue
         global PERSPECTIVE
         PERSPECTIVE = bool(ck.get("perspective", False))
-        global KEEP_CLOUD
-        KEEP_CLOUD = bool(ck.get("keep_cloud", False))
+        LAYOUT = tuple(ck["layout"]) if ck.get("layout") else None
+        mask = np.ones(len(arr), dtype=bool) if args.keep_mop_up else ~bare_king_mop_up(arr)
         data = to_tensors(arr, mask, dev, x_mult=int(ck.get("x_mult", 1)))
         # Schemas only ever append, so an older net reads the leading columns.
         data = (data[0][:, : ck["n_features"]].contiguous(),) + data[1:]
@@ -308,15 +319,15 @@ def main():
     ap.add_argument("--init", default=None, help="warm-start weights from this checkpoint")
     ap.add_argument("--n-cols", type=int, default=0, help="train on only the leading N feature columns")
     ap.add_argument("--perspective", action="store_true", help="(side to move, opponent) encoding")
-    ap.add_argument("--keep-cloud", action="store_true", help="data has the fixed king-to-cloud distance (v4)")
+    ap.add_argument("--layout", default="", help="fixed,neg split of a specialized evaluator's layout")
     ap.add_argument("--distill", default=None, help="teacher checkpoint whose outputs are blended into targets")
     ap.add_argument("--distill-alpha", type=float, default=0.8, help="weight of the teacher in the target")
     ap.add_argument("--eval-only", nargs="*", default=None, metavar="CKPT",
                     help="score these checkpoints on --data (whole file as test set) and exit")
     args = ap.parse_args()
-    global PERSPECTIVE, KEEP_CLOUD
+    global PERSPECTIVE, LAYOUT
     PERSPECTIVE = args.perspective
-    KEEP_CLOUD = args.keep_cloud
+    LAYOUT = parse_layout(args.layout)
     if args.eval_only is not None:
         return eval_only(args)
 
@@ -468,7 +479,7 @@ def main():
                     "k": args.k,
                     "cap": args.cap,
                     "perspective": args.perspective,
-                    "keep_cloud": args.keep_cloud,
+                    "layout": list(LAYOUT) if LAYOUT else None,
                     "x_mult": args.x_mult,
                     "val_loss": v_loss,
                     "val_baseline": v_base,

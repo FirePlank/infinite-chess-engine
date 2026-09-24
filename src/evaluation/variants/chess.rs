@@ -1,6 +1,7 @@
 // Chess Variant Evaluation (Standard 8x8 Chess)
 
 use crate::board::{PieceType, PlayerColor};
+use crate::eval_net::variant_features::{NoSink, VariantLayout, VariantSink, cp, ct};
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 
@@ -289,10 +290,80 @@ fn cheb(ax: i64, ay: i64, bx: i64, by: i64) -> i64 {
     (ax - bx).abs().max((ay - by).abs())
 }
 
-#[allow(clippy::needless_range_loop)]
+/// Net inputs: the phase, then each term group tapered per side, piece counts and raw
+/// king-danger units, all as (White, Black) pairs.
+pub const NET_LAYOUT: VariantLayout = VariantLayout {
+    names: &[
+        "phase",
+        "material w",
+        "material b",
+        "pst w",
+        "pst b",
+        "mobility w",
+        "mobility b",
+        "outpost w",
+        "outpost b",
+        "minor behind pawn w",
+        "minor behind pawn b",
+        "rook file w",
+        "rook file b",
+        "bishop pair w",
+        "bishop pair b",
+        "isolated w",
+        "isolated b",
+        "doubled w",
+        "doubled b",
+        "connected w",
+        "connected b",
+        "backward w",
+        "backward b",
+        "passed w",
+        "passed b",
+        "shelter w",
+        "shelter b",
+        "king danger w",
+        "king danger b",
+        "pawns w",
+        "pawns b",
+        "knights w",
+        "knights b",
+        "bishops w",
+        "bishops b",
+        "rooks w",
+        "rooks b",
+        "queens w",
+        "queens b",
+        "danger units w",
+        "danger units b",
+    ],
+    fixed: 1,
+    neg: 0,
+};
+
+const TERMS: usize = 14;
+
 pub fn evaluate(game: &GameState) -> i32 {
+    evaluate_traced(game, &mut NoSink)
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
     let mut mg = [0i32; 2];
     let mut eg = [0i32; 2];
+    // Per term group: mg White, mg Black, eg White, eg Black. Only filled for a net.
+    let mut ft = [[0i32; 4]; TERMS];
+    let mut counts = [[0i32; 5]; 2];
+    macro_rules! add {
+        ($cat:expr, $ci:expr, $m:expr, $e:expr) => {{
+            let (m, e): (i32, i32) = ($m, $e);
+            mg[$ci] += m;
+            eg[$ci] += e;
+            if S::ON {
+                ft[$cat][$ci] += m;
+                ft[$cat][2 + $ci] += e;
+            }
+        }};
+    }
     let mut game_phase = 0i32;
 
     // Pawn file occupancy bitmasks (bits 0-7 = files a-h)
@@ -396,9 +467,12 @@ pub fn evaluate(game: &GameState) -> i32 {
             sq ^= 56;
         }
 
-        mg[ci] += MG_VALUES[pc_idx] + MG_PST[pc_idx][sq];
-        eg[ci] += EG_VALUES[pc_idx] + EG_PST[pc_idx][sq];
+        add!(0, ci, MG_VALUES[pc_idx], EG_VALUES[pc_idx]);
+        add!(1, ci, MG_PST[pc_idx][sq], EG_PST[pc_idx][sq]);
         game_phase += PHASE_INC[pc_idx];
+        if S::ON && pc_idx < 5 {
+            counts[ci][pc_idx] += 1;
+        }
 
         match pt {
             PieceType::Pawn => {
@@ -432,8 +506,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 
                 let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(13) as usize;
-                mg[ci] += MG_BISHOP_MOB[mob_idx];
-                eg[ci] += EG_BISHOP_MOB[mob_idx];
+                add!(2, ci, MG_BISHOP_MOB[mob_idx], EG_BISHOP_MOB[mob_idx]);
 
                 // King safety: bishop near enemy king
                 let ek = if is_white { &black_king } else { &white_king };
@@ -456,8 +529,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                     let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
                         || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
                     if pawn_protected && !enemy_can_attack {
-                        mg[ci] += MG_OUTPOST_BISHOP;
-                        eg[ci] += EG_OUTPOST_BISHOP;
+                        add!(3, ci, MG_OUTPOST_BISHOP, EG_OUTPOST_BISHOP);
                     }
                 }
             }
@@ -465,8 +537,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             PieceType::Knight => {
                 let mob = count_knight_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(8) as usize;
-                mg[ci] += MG_KNIGHT_MOB[mob_idx];
-                eg[ci] += EG_KNIGHT_MOB[mob_idx];
+                add!(2, ci, MG_KNIGHT_MOB[mob_idx], EG_KNIGHT_MOB[mob_idx]);
 
                 // King safety
                 let ek = if is_white { &black_king } else { &white_king };
@@ -489,8 +560,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                     let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
                         || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
                     if pawn_protected && !enemy_can_attack {
-                        mg[ci] += MG_OUTPOST_KNIGHT;
-                        eg[ci] += EG_OUTPOST_KNIGHT;
+                        add!(3, ci, MG_OUTPOST_KNIGHT, EG_OUTPOST_KNIGHT);
                     }
                 }
 
@@ -501,15 +571,14 @@ pub fn evaluate(game: &GameState) -> i32 {
                     && p.piece_type() == PieceType::Pawn
                     && p.color() == piece.color()
                 {
-                    mg[ci] += MG_MINOR_BEHIND_PAWN;
+                    add!(4, ci, MG_MINOR_BEHIND_PAWN, 0);
                 }
             }
 
             PieceType::Rook => {
                 let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(14) as usize;
-                mg[ci] += MG_ROOK_MOB[mob_idx];
-                eg[ci] += EG_ROOK_MOB[mob_idx];
+                add!(2, ci, MG_ROOK_MOB[mob_idx], EG_ROOK_MOB[mob_idx]);
 
                 // King safety
                 let ek = if is_white { &black_king } else { &white_king };
@@ -528,11 +597,9 @@ pub fn evaluate(game: &GameState) -> i32 {
                 let enemy_pawn = if is_white { b_pawn_files } else { w_pawn_files };
                 if own_pawn & file_bit == 0 {
                     if enemy_pawn & file_bit == 0 {
-                        mg[ci] += MG_ROOK_OPEN_FILE;
-                        eg[ci] += EG_ROOK_OPEN_FILE;
+                        add!(5, ci, MG_ROOK_OPEN_FILE, EG_ROOK_OPEN_FILE);
                     } else {
-                        mg[ci] += MG_ROOK_SEMI_OPEN_FILE;
-                        eg[ci] += EG_ROOK_SEMI_OPEN_FILE;
+                        add!(5, ci, MG_ROOK_SEMI_OPEN_FILE, EG_ROOK_SEMI_OPEN_FILE);
                     }
                 }
             }
@@ -540,8 +607,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             PieceType::Queen => {
                 let mob = count_sliding_mobility(&win, x, y, piece);
                 let mob_idx = mob.min(27) as usize;
-                mg[ci] += MG_QUEEN_MOB[mob_idx];
-                eg[ci] += EG_QUEEN_MOB[mob_idx];
+                add!(2, ci, MG_QUEEN_MOB[mob_idx], EG_QUEEN_MOB[mob_idx]);
 
                 // King safety
                 let ek = if is_white { &black_king } else { &white_king };
@@ -560,12 +626,10 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     // Bishop pair
     if w_bishop_light && w_bishop_dark {
-        mg[0] += MG_BISHOP_PAIR;
-        eg[0] += EG_BISHOP_PAIR;
+        add!(6, 0, MG_BISHOP_PAIR, EG_BISHOP_PAIR);
     }
     if b_bishop_light && b_bishop_dark {
-        mg[1] += MG_BISHOP_PAIR;
-        eg[1] += EG_BISHOP_PAIR;
+        add!(6, 1, MG_BISHOP_PAIR, EG_BISHOP_PAIR);
     }
 
     // SECOND PASS: pawn structure
@@ -580,8 +644,7 @@ pub fn evaluate(game: &GameState) -> i32 {
         let has_neighbor = (f > 0 && (own_files & (1 << (f - 1))) != 0)
             || (f < 7 && (own_files & (1 << (f + 1))) != 0);
         if !has_neighbor {
-            mg[ci] -= MG_ISOLATED_PENALTY;
-            eg[ci] -= EG_ISOLATED_PENALTY;
+            add!(7, ci, -MG_ISOLATED_PENALTY, -EG_ISOLATED_PENALTY);
         }
 
         let own_bb = if is_white { w_pawn_bb } else { b_pawn_bb };
@@ -610,8 +673,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                 .any(|(j, &(nx, _, nw))| j != i && nw == is_white && nx == x)
         };
         if is_doubled {
-            mg[ci] -= MG_DOUBLED_PENALTY;
-            eg[ci] -= EG_DOUBLED_PENALTY;
+            add!(8, ci, -MG_DOUBLED_PENALTY, -EG_DOUBLED_PENALTY);
         }
 
         // -- Connected (phalanx or supported) --
@@ -641,8 +703,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             let rank = if is_white { y } else { 9 - y };
             let rank_idx = (rank as usize).clamp(0, 7);
             let v = CONNECTED_BONUS[rank_idx];
-            mg[ci] += v;
-            eg[ci] += v * (rank_idx as i32 - 2).max(0) / 4;
+            add!(9, ci, v, v * (rank_idx as i32 - 2).max(0) / 4);
         }
 
         // Backward: no friendly pawn behind it on an adjacent file and an enemy pawn
@@ -658,8 +719,7 @@ pub fn evaluate(game: &GameState) -> i32 {
             let enemy_stop_file = (f > 0 && (enemy_files & (1 << (f - 1))) != 0)
                 || (f < 7 && (enemy_files & (1 << (f + 1))) != 0);
             if no_support_behind && enemy_stop_file {
-                mg[ci] -= MG_BACKWARD_PENALTY;
-                eg[ci] -= EG_BACKWARD_PENALTY;
+                add!(10, ci, -MG_BACKWARD_PENALTY, -EG_BACKWARD_PENALTY);
             }
         }
 
@@ -692,8 +752,7 @@ pub fn evaluate(game: &GameState) -> i32 {
                 eg_bonus += (opp_dist - own_dist) * w;
             }
 
-            mg[ci] += mg_bonus;
-            eg[ci] += eg_bonus;
+            add!(11, ci, mg_bonus, eg_bonus);
         }
     }
 
@@ -740,18 +799,18 @@ pub fn evaluate(game: &GameState) -> i32 {
             }
         }
         // Shelter applies to mg only
-        mg[color_idx] += shelter_mg;
+        add!(12, color_idx, shelter_mg, 0);
     }
 
     // King Safety: attacker danger
     // Apply as quadratic penalty (only in midgame)
     if w_king_danger > 0 {
         let penalty = w_king_danger * w_king_danger / 256;
-        mg[0] -= penalty;
+        add!(13, 0, -penalty, 0);
     }
     if b_king_danger > 0 {
         let penalty = b_king_danger * b_king_danger / 256;
-        mg[1] -= penalty;
+        add!(13, 1, -penalty, 0);
     }
 
     // Tapered score
@@ -767,6 +826,23 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     let mg_phase = game_phase.min(MAX_PHASE);
     let eg_phase = MAX_PHASE - mg_phase;
+
+    if S::ON {
+        let taper = |m: i32, e: i32| (m * mg_phase + e * eg_phase) / MAX_PHASE;
+        sink.set(0, ct(mg_phase));
+        for (t, f) in ft.iter().enumerate() {
+            sink.set(1 + 2 * t, cp(taper(f[0], f[2])));
+            sink.set(2 + 2 * t, cp(taper(f[1], f[3])));
+        }
+        let base = 1 + 2 * TERMS;
+        for k in 0..5 {
+            sink.set(base + 2 * k, ct(counts[0][k]));
+            sink.set(base + 1 + 2 * k, ct(counts[1][k]));
+        }
+        sink.set(base + 10, ct(w_king_danger));
+        sink.set(base + 11, ct(b_king_danger));
+        sink.set_phase(mg_phase);
+    }
 
     (mg_score * mg_phase + eg_score * eg_phase) / MAX_PHASE
 }

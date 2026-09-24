@@ -88,10 +88,13 @@ def scaled_elo(message: str) -> float:
 
     blocks = variant_blocks(message)
     if blocks:
-        # Use the last breakdown: for multi-test PRs it is the shipped state.
-        # Sum only canonical variants, spread the gain across all 17.
-        block = blocks[-1]
-        total = sum(elo for name, elo in block if name in CANONICAL_VARIANTS)
+        # Stacked summaries cover separate tests: merge them per variant, a later
+        # block overriding an earlier one (a re-test of the same variants is the
+        # shipped state). Sum only canonical variants, spread across all 17.
+        merged: dict[str, float] = {}
+        for block in blocks:
+            merged.update(block)
+        total = sum(elo for name, elo in merged.items() if name in CANONICAL_VARIANTS)
         return total / NUM_SITE_VARIANTS
 
     # No breakdown: fall back to a lone overall figure (rare, small in practice).

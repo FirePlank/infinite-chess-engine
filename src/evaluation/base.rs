@@ -415,7 +415,7 @@ pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5: i32 = 238;
 /// against the variants: paired kings start 1 apart, maze kings 26.
 const SHELTER_SHARE_DIST: i64 = 2;
 
-fn king_rays_from_indices(
+pub(crate) fn king_rays_from_indices(
     indices: &crate::moves::SpatialIndices,
     kx: i64,
     ky: i64,
@@ -1812,7 +1812,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 slider_geometry_ctx,
                                 leaper_geometry_ctx,
                                 cloud_avg_spread,
-                                cloud_count: cloud_count.min(255) as i32,
                                 counterplay: [white_cp, black_cp],
                                 bishops: [white_bishops, black_bishops],
                                 bishop_pair: [pair(white_bishop_colors), pair(black_bishop_colors)],
@@ -1847,7 +1846,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 ],
                                 king_dist,
                                 king_cloud_dist: [cloud_dist(white_king), cloud_dist(black_king)],
-                                halfmove_clock: game.halfmove_clock.min(255) as i32,
                                 ring_covered: [
                                     i32::from(w_king_ring_covered),
                                     i32::from(b_king_ring_covered),
@@ -3322,7 +3320,7 @@ fn safe_check_units(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_king_shelter(
+pub(crate) fn evaluate_king_shelter(
     game: &GameState,
     king: &Coordinate,
     color: PlayerColor,
