@@ -311,23 +311,24 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
 
         for i in 0..attackers.len() {
             let a = &attackers[i];
-            if a.color == side && a.value < best_val {
-                best_val = a.value;
+            // A royal goes last whatever its value: a Checkmate king is worth less than a knight.
+            let key = if a.is_royal { i32::MAX - 1 } else { a.value };
+            if a.color == side && key < best_val {
+                best_val = key;
                 best_i = Some(i);
             }
         }
 
         if let Some(i) = best_i {
-            // A royal cannot recapture into a defended square. Being the most valuable,
-            // it is only ever picked last, so any remaining enemy attacker ends the
-            // exchange here.
+            // A royal cannot recapture into a defended square, so any remaining enemy
+            // attacker ends the exchange here.
             if attackers[i].is_royal && attackers.iter().any(|a| a.color == side.opponent()) {
                 break;
             }
 
             let chosen = attackers.swap_remove(i);
             gain[depth] = occ_val - gain[depth - 1];
-            occ_val = best_val;
+            occ_val = chosen.value;
 
             // X-Ray Discovery!
             if let Some(r) = chosen.ray_idx {
