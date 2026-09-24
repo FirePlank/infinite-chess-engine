@@ -11,7 +11,7 @@ Integer contract (mirrors src/eval_net/inference.rs):
     raw    = sum(round(w3*64) * h2)     + round(b3*64*127)
     cp     = int(raw * OUT_SCALE / (64*127))
 
-    python nnue/export_eval_net.py --checkpoint nnue/checkpoints/eval_net.pt --out src/eval_net/eval_net.bin
+    python evalnet/export_eval_net.py --checkpoint evalnet/checkpoints/eval_net.pt --out src/eval_net/eval_net.bin
 """
 
 import argparse
@@ -49,9 +49,9 @@ def int_forward(net, x_int):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default="nnue/checkpoints/eval_net.pt")
+    ap.add_argument("--checkpoint", default="evalnet/checkpoints/eval_net.pt")
     ap.add_argument("--out", default="src/eval_net/eval_net.bin")
-    ap.add_argument("--data", default="nnue/eval_net_data.bin", help="records for the int-vs-float check")
+    ap.add_argument("--data", default="evalnet/eval_net_data.bin", help="records for the int-vs-float check")
     ap.add_argument("--check-samples", type=int, default=200000)
     args = ap.parse_args()
 

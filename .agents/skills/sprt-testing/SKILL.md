@@ -202,6 +202,8 @@ block **verbatim** — do NOT hand-condense it. `.github/workflows/auto-release.
 commit body with a regex that requires each variant on its own `[Name]: …, Elo: X +/- Y` line;
 a condensed multi-per-line summary (no brackets) is invisible to it and silently breaks
 auto-release. **No AI attribution / Co-Authored-By / "Generated with" trailer.**
+A commit that ships several separately tested pieces stacks their `Final Summary` blocks;
+auto-release merges them per variant, a later block overriding an earlier one.
 
 Correct — paste exactly what `sprt.exe` printed:
 ```

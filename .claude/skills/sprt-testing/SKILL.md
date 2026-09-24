@@ -79,7 +79,7 @@ if the timeout rate stays at a few percent.
 ## 3b. HCE changes: screen offline first
 
 An eval-term change is tested with its own retrained net, against HEAD as committed.
-Before building that, run the offline screen (`nnue/screen.sh`, see docs/CONTRIBUTING.md
+Before building that, run the offline screen (`evalnet/screen.sh`, see docs/CONTRIBUTING.md
 "Changing the Evaluation"): compare 3+ seed mean holdout losses with HEAD's. Use it to pick
 between variants of an idea; drop a change unseen only when it is clearly worse (~1%+).
 
@@ -220,6 +220,8 @@ block **verbatim** — do NOT hand-condense it. `.github/workflows/auto-release.
 commit body with a regex that requires each variant on its own `[Name]: …, Elo: X +/- Y` line;
 a condensed multi-per-line summary (no brackets) is invisible to it and silently breaks
 auto-release. **No AI attribution / Co-Authored-By / "Generated with" trailer.**
+A commit that ships several separately tested pieces stacks their `Final Summary` blocks;
+auto-release merges them per variant, a later block overriding an earlier one.
 
 Correct — paste exactly what `sprt.exe` printed:
 ```

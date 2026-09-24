@@ -16,7 +16,7 @@ Standing rules for this loop:
 - Keep a test running at all times; while one runs, do only non-CPU work
   (training data screening on the GPU is fine, builds are not).
 - Commit each accepted step with the Final Summary block; retrain data stays
-  out of git (`nnue/eval_net_data.bin`, `nnue/checkpoints/` are ignored).
+  out of git (`evalnet/eval_net_data.bin`, `evalnet/checkpoints/` are ignored).
 
 ## Tier 1: model capacity and inputs (net is under-fitting: train loss == val loss)
 
@@ -143,7 +143,7 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   search (~200k positions/h vs ~40k/h from new games) and train on the re-labelled set.
 - 2026-09-22 `export_eval_features --relabel-depth 9`: re-labels each kept archive position
   with a fixed-depth search of the current engine (70 positions/s on 16 threads). Full run
-  on ~1M sampled archive positions started (`nnue/relabel_d9.bin`); data_gen paused at
+  on ~1M sampled archive positions started (`evalnet/relabel_d9.bin`); data_gen paused at
   7370 games (resumable: same command appends).
 - 2026-09-23 Relabel results on the holdout: relabelled-only (898k) 16.9/15.6%, all
   fixed-depth 14.8%, mixed+relabel fresh seeds 18.2/18.1%, **A2 warm-started and fine-tuned
@@ -235,7 +235,7 @@ build the pawn-king net on the residual that A leaves (design doc §4.2).
   vs matched old-mix control 19.02/38.78 → noise; no candidate beats A5 (19.72).
 - 2026-09-23 **Aspiration W1 (initial window 30, ×4 kept) vs A5: −63 ± 47 after 128 games**,
   stopped. Both aspiration variants lose; the ±60/×4 form stays.
-- 2026-09-23 Depth-12 relabel of the 250k key subset started (`nnue/relabel_d12.bin`).
+- 2026-09-23 Depth-12 relabel of the 250k key subset started (`evalnet/relabel_d12.bin`).
 - 2026-09-23 **M75 (eval-trust margins ×0.75) vs A5: +1.4 ± 15.8 at 1240 games**, shelved.
 - 2026-09-23 **Colour symmetry.** A5 start-position bias up to ±69 cp (never saw plies <12;
   (White,Black)+stm inputs). Openings in training cut it to ≤31; lockstep mirror augmentation

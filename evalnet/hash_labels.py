@@ -2,10 +2,10 @@
 """Carry depth-N labels across an HCE change, which alters every feature key, by
 matching positions on the Zobrist hashes the exporter writes with --hash-out.
 
-    python nnue/hash_labels.py table labels.bin positions.bin positions.hash table.bin [n]
+    python evalnet/hash_labels.py table labels.bin positions.bin positions.hash table.bin [n]
         key-join positions to labels (as join_labels.py), then write (hash, teacher)
         pairs; the hashes alone (first 8 bytes of each pair) feed --keep-hashes
-    python nnue/hash_labels.py apply table.bin positions.bin positions.hash out.bin
+    python evalnet/hash_labels.py apply table.bin positions.bin positions.hash out.bin
         give each position the teacher of its hash and write the labelled records
 """
 import sys

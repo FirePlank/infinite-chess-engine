@@ -154,7 +154,7 @@ impl EvalNetWeights {
     }
 }
 
-/// Trained weights blob; regenerate with `nnue/export_eval_net.py`. An empty
+/// Trained weights blob; regenerate with `evalnet/export_eval_net.py`. An empty
 /// file is a valid "no net yet" state.
 static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 

@@ -3,7 +3,7 @@
 positions in a newer layout, matching records by their leading feature columns and
 static eval (layouts only append, so those columns are identical).
 
-    python nnue/join_labels.py labels.bin positions.bin out.bin
+    python evalnet/join_labels.py labels.bin positions.bin out.bin
 """
 import struct
 import sys

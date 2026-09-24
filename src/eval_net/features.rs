@@ -327,7 +327,7 @@ const PAIR_COLS: [(usize, usize); PAIRED_ROWS + 4 + SIDE_LEN] = {
 const NEGATE_COLS: [usize; 3] = [0, 1, STM_COL + 1];
 
 /// Re-encodes a vector as (side to move, opponent), matching `to_perspective` in
-/// `nnue/train_eval_net.py`: a position and its colour mirror then read identically.
+/// `evalnet/train_eval_net.py`: a position and its colour mirror then read identically.
 pub fn to_perspective(v: &mut [i16], black_to_move: bool) {
     if black_to_move {
         for &(a, b) in &PAIR_COLS {

@@ -112,14 +112,14 @@ games/
 !src/eval_net/*.bin
 
 # Eval-net training byproducts: checkpoints, per-run logs, exported/fresh data.
-nnue/checkpoints/
-nnue/*.log
-nnue/*.jsonl
-nnue/lr/
-nnue/screen/
+evalnet/checkpoints/
+evalnet/*.log
+evalnet/*.jsonl
+evalnet/lr/
+evalnet/screen/
 # Scratch benchmark binaries built for old/new comparisons.
 /*.exe
-nnue/*.progress
-nnue/*.hash
-nnue/*.hashes
-nnue/var/
+evalnet/*.progress
+evalnet/*.hash
+evalnet/*.hashes
+evalnet/var/

@@ -44,7 +44,7 @@ A small net (`src/eval_net/`) now corrects the HCE from its own terms, which cov
 ### Relevant Files
 - `src/evaluation/base.rs`
 - `src/eval_net/`
-- `nnue/`
+- `evalnet/`
 
 ---
 

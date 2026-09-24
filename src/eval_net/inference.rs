@@ -1,5 +1,5 @@
 //! Integer forward pass for the Stage-A residual net. Mirrors the quantization
-//! contract in `nnue/export_eval_net.py`: any change here needs the same change
+//! contract in `evalnet/export_eval_net.py`: any change here needs the same change
 //! there, verified by its integer-simulation check.
 
 use super::features::NUM_FEATURES;

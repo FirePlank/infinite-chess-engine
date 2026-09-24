@@ -7,9 +7,9 @@ initialisation (as `train_eval_net.py --seed s` would draw it) and its own shuff
 AdamW acts per element, so the optimisation is the same as separate runs. Each seed
 is written as an ordinary checkpoint.
 
-    python nnue/train_seeds.py --data mixrel.bin --seeds 1,2,3,4,5,6 --epochs 120 \\
+    python evalnet/train_seeds.py --data mixrel.bin --seeds 1,2,3,4,5,6 --epochs 120 \\
         --perspective --out base_s{s}.pt
-    python nnue/train_seeds.py --data rel.bin --seeds 1,2,3,4,5,6 --init base_s{s}.pt \\
+    python evalnet/train_seeds.py --data rel.bin --seeds 1,2,3,4,5,6 --init base_s{s}.pt \\
         --epochs 20 --lr 2e-4 --qat-from 1 --val-frac 0.1 ... --out net_s{s}.pt
 """
 import argparse

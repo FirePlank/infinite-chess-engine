@@ -21,7 +21,7 @@ small neural networks that:
 
 ## 2. Why InfNNUE-v1 failed (diagnosis)
 
-The previous attempt (`src/nnue/`, trainer in `nnue/`) was a two-stream NNUE:
+The previous attempt (`src/evalnet/`, trainer in `evalnet/`) was a two-stream NNUE:
 RelKP (25,450 → 256) + ThreatEdges (6,768 → 64), head 640→32→32→1.
 
 1. **Parameter count vs data.** The feature transformers alone hold
@@ -32,8 +32,8 @@ RelKP (25,450 → 256) + ThreatEdges (6,768 → 64), head 640→32→32→1.
    safety, passers — everything the HCE already knows — before it could add
    anything. That is precisely the most data-hungry part of the task.
 3. **Closed piece vocabulary.** One-hot piece codes for P/N/B/R/Q/K only
-   (`src/nnue/features.rs::get_piece_code`), single king per side
-   (`src/nnue/mod.rs::is_applicable`). No fairy pieces, no multi-royal, no
+   (`src/evalnet/features.rs::get_piece_code`), single king per side
+   (`src/evalnet/mod.rs::is_applicable`). No fairy pieces, no multi-royal, no
    generalization mechanism — a huygen has no representation at all.
 4. **Runtime cost.** The threat stream was rebuilt from scratch per eval and
    the accumulator refresh is O(pieces × 256).
@@ -54,7 +54,7 @@ attribute-encoded rather than identity-encoded.
 3. **Translation invariance.** The board is unbounded (`i64` coords); there are
    no absolute squares. All spatial inputs are king-relative or cloud-relative
    with log-binned distances (the `relkp_bucket` near/far scheme in
-   `src/nnue/features.rs` is the right shape and is reusable).
+   `src/evalnet/features.rs` is the right shape and is reusable).
 4. **Generalize by construction.** Where piece identity matters, describe
    pieces by *movement attributes* (ortho/diag slider, leaper class, value,
    royal, colorbound, ...) instead of one-hot identity. An unseen piece maps
@@ -65,7 +65,7 @@ attribute-encoded rather than identity-encoded.
    pawn metrics, cloud statistics, threat counts. Feeding these to a net costs
    nearly nothing.
 6. **Quantized integer inference.** The existing i8/i16 kernels in
-   `src/nnue/inference.rs` (`dot_product_i8_i16_chunked` etc.) are reusable
+   `src/evalnet/inference.rs` (`dot_product_i8_i16_chunked` etc.) are reusable
    as-is.
 7. **Bounded failure.** Output clamp (±200cp initially), cargo feature +
    runtime toggle per net, tracer row so `debug_evaluate` shows the residual,
@@ -304,7 +304,7 @@ evals; per-source λ is a training-script flag. Mate-adjacent scores
 
 ## 6. Training recipe
 
-Python/PyTorch under `nnue/` alongside the existing scripts (reuse the
+Python/PyTorch under `evalnet/` alongside the existing scripts (reuse the
 quantization/export skeleton of `export_innue.py`):
 
 - Optimizer AdamW, LR 1e-3, cosine decay, batch 8192, 20–40 epochs (minutes
@@ -316,11 +316,11 @@ quantization/export skeleton of `export_innue.py`):
   Classical is visible before SPRT.
 - Export: `export_eval_net.py` → little-endian binary with magic, dims,
   feature-schema hash, scales; embedded via `include_bytes!` like
-  `src/nnue/innue.bin`.
+  `src/evalnet/innue.bin`.
 
 ## 7. Rust integration
 
-New module `src/eval_net/` (the old `src/nnue/` stays untouched until A ships,
+New module `src/eval_net/` (the old `src/evalnet/` stays untouched until A ships,
 then can be retired):
 
 - `features.rs` — `fn stage_a_features(game, &EvalAccumulators) -> [i16; N]`.
@@ -398,9 +398,9 @@ mechanism, strongest prior art). Stage C only after at least one of A/B passes.
   texel corpus and every `games/sprt/*.json` archive, recomputes today's static
   eval + features, keeps quiet non-check positions, Generic eval kind only.
   10.3M records from 517k games in 87 s.
-- Training: `nnue/train_eval_net.py` (WDL-space residual loss, K=531.9,
+- Training: `evalnet/train_eval_net.py` (WDL-space residual loss, K=531.9,
   λ=0.7 texel / 0.5 sprt, game-level holdout, quantization-aware from epoch 4),
-  `nnue/export_eval_net.py` (AEVNET01 blob + integer/float agreement check).
+  `evalnet/export_eval_net.py` (AEVNET01 blob + integer/float agreement check).
 - First net: 99→32→32→1, 4,289 params; held-out loss −4.7% vs zero residual
   (−7.9% on the fixed-depth corpus); int vs float 0.67 cp mean; ~770 ns/eval.
 - SPRT: `games/sprt/games_evalnet_a1.json` (base_only preset, bounds [0, 5]).

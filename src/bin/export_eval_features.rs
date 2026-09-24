@@ -95,7 +95,7 @@ struct Acc {
 }
 
 /// FNV-style fold over the leading feature columns and the static eval; must
-/// match `keys()` in `nnue/join_labels.py`.
+/// match `keys()` in `evalnet/join_labels.py`.
 fn record_key(x: &[i16], n: usize, static_white: i16) -> u64 {
     let prime = 0x0000_0100_0000_01B3u64;
     let mut h = 0xCBF2_9CE4_8422_2325u64;
@@ -182,7 +182,7 @@ struct Cli {
     /// Skip positions with |teacher| above this (cp).
     #[arg(long, default_value_t = 2000)]
     max_abs_cp: i32,
-    #[arg(long, default_value = "nnue/eval_net_data.bin")]
+    #[arg(long, default_value = "evalnet/eval_net_data.bin")]
     out: PathBuf,
     /// Re-label every kept position with a fixed-depth search of the CURRENT engine
     /// instead of the recorded eval (0 = keep recorded). Records are then tagged as

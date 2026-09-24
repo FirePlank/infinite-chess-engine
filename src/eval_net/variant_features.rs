@@ -63,7 +63,7 @@ impl VariantLayout {
     }
 
     /// Re-encodes a vector as (side to move, opponent), matching `to_perspective` in
-    /// `nnue/train_eval_net.py` for a `--layout fixed,neg` net.
+    /// `evalnet/train_eval_net.py` for a `--layout fixed,neg` net.
     pub fn to_perspective(&self, x: &mut [i16], black_to_move: bool) {
         if !black_to_move {
             return;

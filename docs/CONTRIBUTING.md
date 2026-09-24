@@ -183,7 +183,7 @@ Understanding the codebase:
 | `evaluation/mop_up.rs` | Endgame evaluation for mating |
 | `evaluation/insufficient_material.rs` | Draw detection |
 | `evaluation/variants/*.rs` | Variant-specific evaluation |
-| `eval_net/` | Learned residual on top of `base.rs` (training in `nnue/`) |
+| `eval_net/` | Learned residual on top of `base.rs` (training in `evalnet/`) |
 
 ### Utilities
 
@@ -212,8 +212,8 @@ Measured, not opinions - re-testing needs new evidence:
 The eval net's inputs are the HCE's own terms, so an eval change also changes what the net sees. The shipped net was fit to the old terms, so the new HCE needs its own net. Screen offline first; it takes minutes where an SPRT takes hours:
 
 1. Make the change in `src/evaluation/base.rs` and add tests for it.
-2. **Screen it.** Build `export_eval_features` from HEAD and from the change, run `nnue/screen.sh` for both with the same seeds, and compare mean holdout losses (see `nnue/README.md`). Use it to pick the best of several variants of an idea, and to drop a change only when it is clearly worse (about 1% or more); anything closer goes to SPRT. Small offline deficits have not predicted SPRT losses so far.
-3. Re-export the full training data with the changed HCE, using the flags of the current net. Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `nnue/hash_labels.py`, since the change alters the feature keys.
+2. **Screen it.** Build `export_eval_features` from HEAD and from the change, run `evalnet/screen.sh` for both with the same seeds, and compare mean holdout losses (see `evalnet/README.md`). Use it to pick the best of several variants of an idea, and to drop a change only when it is clearly worse (about 1% or more); anything closer goes to SPRT. Small offline deficits have not predicted SPRT losses so far.
+3. Re-export the full training data with the changed HCE, using the flags of the current net. Carry the depth-9 labels over with `--hash-out`/`--keep-hashes` and `evalnet/hash_labels.py`, since the change alters the feature keys.
 4. Retrain the net on it with the current recipe, several seeds, and keep the best on the holdout.
 5. SPRT the new HCE with its new net against HEAD as committed.
 6. If it passes, commit the change together with its new `src/eval_net/eval_net.bin`.

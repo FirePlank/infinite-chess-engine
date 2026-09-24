@@ -121,7 +121,7 @@ It is not NNUE. The Generic net reads a vector of 121 scalars the hand-crafted e
 
 The Chess, Obstocean and Pawn Horde evaluators each have their own smaller net (`*_net.bin`). Its inputs are that evaluator's own terms, written during its normal pass through a `VariantSink` (`variant_features.rs`), so it costs no second eval. The nets are off against a bare king, where mop-up owns the gradient. `APEIRON_EVAL_NET=0` disables them all at runtime.
 
-Because the net reads HCE terms, it is trained against one specific HCE. Changing an eval term changes its inputs, so the net has to be retrained (see the Contributing Guide). Training tooling lives in `nnue/`.
+Because the net reads HCE terms, it is trained against one specific HCE. Changing an eval term changes its inputs, so the net has to be retrained (see the Contributing Guide). Training tooling lives in `evalnet/`.
 
 ### `tests/`
 

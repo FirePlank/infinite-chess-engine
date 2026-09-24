@@ -12,7 +12,7 @@ to the Generic evaluator. Design: `docs/hybrid-eval-design.md`, results log:
 fine-tune on positions relabelled by a depth-9 search.
 Base-run length was swept: 120 epochs beats 60/90 and 180/240 (which overfit);
 weight EMA and SWA gave no gain over six seeds. Train several seeds, keep the best:
-`nnue/train_seeds.py --seeds 1,2,3,4,5,6` trains them together on one copy of the data
+`evalnet/train_seeds.py --seeds 1,2,3,4,5,6` trains them together on one copy of the data
 (same flags and checkpoints as `train_eval_net.py`, about 2.3x faster than one by one).
 
 ```
@@ -20,36 +20,36 @@ cargo build --release --features data_gen --bin export_eval_features
 X=./target/release/export_eval_features.exe
 
 # base set: texel corpora plus a 15% sample of every SPRT archive, from ply 0
-$X --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl \
-   --sprt-dir games/sprt --sprt-sample 0.15 --out nnue/mix.bin
+$X --min-ply 0 --texel games/texel_corpus.jsonl --texel evalnet/fresh_train.jsonl \
+   --sprt-dir games/sprt --sprt-sample 0.15 --out evalnet/mix.bin
 # fine-tune set: ~1M archive positions searched to depth 9 (about 4 h on 16 threads)
-$X --sprt-dir games/sprt --sprt-sample 0.016 --relabel-depth 9 --out nnue/rel.bin
-python nnue/merge_data.py nnue/mixrel.bin nnue/mix.bin nnue/rel.bin
+$X --sprt-dir games/sprt --sprt-sample 0.016 --relabel-depth 9 --out evalnet/rel.bin
+python evalnet/merge_data.py evalnet/mixrel.bin evalnet/mix.bin evalnet/rel.bin
 
-T="python nnue/train_eval_net.py --perspective --hidden 128 --hidden2 64 --cap 500"
-$T --data nnue/mixrel.bin --epochs 120 --out nnue/checkpoints/base.pt
-$T --data nnue/rel.bin --init nnue/checkpoints/base.pt --epochs 20 --lr 2e-4 \
-   --qat-from 1 --val-frac 0.1 --out nnue/checkpoints/net.pt
-python nnue/export_eval_net.py --checkpoint nnue/checkpoints/net.pt \
-   --data nnue/holdout.bin --out src/eval_net/eval_net.bin
+T="python evalnet/train_eval_net.py --perspective --hidden 128 --hidden2 64 --cap 500"
+$T --data evalnet/mixrel.bin --epochs 120 --out evalnet/checkpoints/base.pt
+$T --data evalnet/rel.bin --init evalnet/checkpoints/base.pt --epochs 20 --lr 2e-4 \
+   --qat-from 1 --val-frac 0.1 --out evalnet/checkpoints/net.pt
+python evalnet/export_eval_net.py --checkpoint evalnet/checkpoints/net.pt \
+   --data evalnet/holdout.bin --out src/eval_net/eval_net.bin
 ```
 
 ## Judging a net
 
-Score candidates on a fresh self-play holdout (`--texel nnue/fresh_holdout.jsonl`
+Score candidates on a fresh self-play holdout (`--texel evalnet/fresh_holdout.jsonl`
 export) with `train_eval_net.py --eval-only`. It ranks nets the way SPRT does;
 splits of the training corpus and the human-game set do not. Only nets that
 beat the incumbent there go to SPRT.
 
 ## Screening an HCE change
 
-`nnue/screen.sh` is the pre-filter: an export of the two self-play corpora and a
+`evalnet/screen.sh` is the pre-filter: an export of the two self-play corpora and a
 40-epoch base run per seed, scored on the fresh holdout, about a minute per seed.
 Run it for HEAD and for the change with the same seeds and compare the mean losses:
 
 ```
-bash nnue/screen.sh head ./export_head.exe 3
-bash nnue/screen.sh change ./target/release/export_eval_features.exe 3
+bash evalnet/screen.sh head ./export_head.exe 3
+bash evalnet/screen.sh change ./target/release/export_eval_features.exe 3
 ```
 
 Single seeds differ by about 0.3%, so judge means over 3 or more. The screen ranks
@@ -67,12 +67,12 @@ hash (`$OLD`/`$NEW` are exporters built without and with the change):
 
 ```
 # once: map the labelled positions to their hashes (d9.table is reused afterwards)
-$OLD --sprt-dir games/sprt --sprt-sample 1.0 --quiet-tolerance 100000      --keep-keys nnue/relabel_keys78.bin --key-columns 78 --hash-out old.hash --out old_relpos.bin
-python nnue/hash_labels.py table nnue/relabel_d9.bin old_relpos.bin old.hash d9.table 78
+$OLD --sprt-dir games/sprt --sprt-sample 1.0 --quiet-tolerance 100000      --keep-keys evalnet/relabel_keys78.bin --key-columns 78 --hash-out old.hash --out old_relpos.bin
+python evalnet/hash_labels.py table evalnet/relabel_d9.bin old_relpos.bin old.hash d9.table 78
 
 # per change: both training sets from one replay of the corpora
-$NEW --min-ply 0 --texel games/texel_corpus.jsonl --texel nnue/fresh_train.jsonl      --sprt-dir games/sprt --sprt-sample 0.15 --out mix.bin      --rel-out relpos.bin --rel-keep-hashes d9.table.keep --rel-hash-out relpos.hash
-python nnue/hash_labels.py apply d9.table relpos.bin relpos.hash rel.bin
+$NEW --min-ply 0 --texel games/texel_corpus.jsonl --texel evalnet/fresh_train.jsonl      --sprt-dir games/sprt --sprt-sample 0.15 --out mix.bin      --rel-out relpos.bin --rel-keep-hashes d9.table.keep --rel-hash-out relpos.hash
+python evalnet/hash_labels.py apply d9.table relpos.bin relpos.hash rel.bin
 ```
 
 ## Specialized-evaluator nets
@@ -84,7 +84,7 @@ Pawn Horde has no colour mirror, so it trains without `--perspective`.
 
 ```
 $X --eval-kind chess --min-ply 0 --sprt-dir games/sprt --sprt-sample 1.0 --out chess.bin
-python nnue/train_seeds.py --perspective --layout 1,0 --hidden 128 --hidden2 64 --cap 500 \
+python evalnet/train_seeds.py --perspective --layout 1,0 --hidden 128 --hidden2 64 --cap 500 \
    --data chess.bin --seeds 1,2,3 --epochs 120 --out chess_s{s}.pt
 ```
 

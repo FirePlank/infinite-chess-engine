@@ -8,7 +8,7 @@ residual on top of the frozen static eval.
 Data comes from `export_eval_features` (AEVDAT01 records). Validation is split
 by GAME, not position, since plies within a game are correlated.
 
-    python nnue/train_eval_net.py --data nnue/eval_net_data.bin --epochs 30
+    python evalnet/train_eval_net.py --data evalnet/eval_net_data.bin --epochs 30
 """
 
 import argparse
@@ -289,7 +289,7 @@ def eval_only(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="nnue/eval_net_data.bin")
+    ap.add_argument("--data", default="evalnet/eval_net_data.bin")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -315,7 +315,7 @@ def main():
     ap.add_argument("--texel-weight", type=float, default=1.0, help="loss weight of fixed-depth (source 0) records")
     ap.add_argument("--phase-split", action="store_true", help="(mg, eg) output pair tapered by phase; screening only")
     ap.add_argument("--max-resid", type=float, default=0.0, help="drop training records with |teacher-static| above this (0 = keep all)")
-    ap.add_argument("--out", default="nnue/checkpoints/eval_net.pt")
+    ap.add_argument("--out", default="evalnet/checkpoints/eval_net.pt")
     ap.add_argument("--init", default=None, help="warm-start weights from this checkpoint")
     ap.add_argument("--n-cols", type=int, default=0, help="train on only the leading N feature columns")
     ap.add_argument("--perspective", action="store_true", help="(side to move, opponent) encoding")
