@@ -271,16 +271,16 @@ pub const DEFAULT_EVAL_BISHOP: i32 = 450;
 pub const DEFAULT_EVAL_ROOK: i32 = 618;
 pub const DEFAULT_EVAL_GUARD: i32 = 232;
 pub const DEFAULT_EVAL_CENTAUR: i32 = 640;
-pub const DEFAULT_EVAL_QUEEN: i32 = 1380;
-pub const DEFAULT_EVAL_CAMEL: i32 = 195;
+pub const DEFAULT_EVAL_QUEEN: i32 = 1518;
+pub const DEFAULT_EVAL_CAMEL: i32 = 175;
 pub const DEFAULT_EVAL_GIRAFFE: i32 = 165;
 pub const DEFAULT_EVAL_ZEBRA: i32 = 180;
-pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 800;
+pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 900;
 pub const DEFAULT_EVAL_HAWK: i32 = 540;
 pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
 pub const DEFAULT_EVAL_ROSE: i32 = 997;
 pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
-pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1125;
+pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1060;
 /// Amazon was the only compound priced at the bare sum of its parts, while the
 /// chancellor carries +245 over rook+knight and the archbishop +371.
 pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 10;
@@ -641,7 +641,7 @@ pub const DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY: i32 = 0;
 
 // Structural
 pub const DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS: i32 = 0;
-pub const DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS: i32 = 15; // Chains critical in EG
+pub const DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS: i32 = 30; // Chains critical in EG
 
 pub const DEFAULT_EVAL_MG_KING_DEFENDER_BONUS: i32 = 18;
 pub const DEFAULT_EVAL_EG_KING_DEFENDER_BONUS: i32 = 0; // Less need for defenders
