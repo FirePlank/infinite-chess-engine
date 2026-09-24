@@ -5434,10 +5434,21 @@ fn quiescence(
             && m.piece.piece_type() == PieceType::Pawn
             && captured.is_some_and(|p| p.piece_type() == PieceType::Obstacle);
 
+        // Taking any other obstacle is a quiet move: without this, checking obstacle
+        // captures chained through all 16 qsearch plies (650k nodes at depth 1).
+        let is_obstacle_take = !is_capture
+            && !is_obstocean_breakout
+            && !is_recapture
+            && game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean
+            && captured.is_some_and(|p| p.piece_type().is_neutral_type());
+        if is_obstacle_take && !in_check && qs_ply > 0 {
+            continue;
+        }
+
         // move_gives_check_fast is only needed to keep quiet checks; evaluate it
         // last so it is skipped for captures/recaptures and the first few moves.
         if !in_check
-            && legal_moves > 2
+            && (legal_moves > 2 || is_obstacle_take)
             && !is_capture
             && !is_recapture
             && !is_obstocean_breakout
