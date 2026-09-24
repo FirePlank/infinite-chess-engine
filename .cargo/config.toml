@@ -9,6 +9,8 @@ build-std = ["panic_abort", "std"]
 [target.wasm32-unknown-unknown]
 rustflags = [
     "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
+    # Drops the file/line/column strings panics embed; smaller binary, same code.
+    "-Z", "location-detail=none",
     "-C", "link-arg=--shared-memory",
     "-C", "link-arg=--max-memory=536870912",
     "-C", "link-arg=--import-memory",
