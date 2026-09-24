@@ -21,7 +21,7 @@ use crate::search::params::{
     mg_outpost_bonus, passed_enemy_king_dist, passed_friendly_king_dist,
     passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
     pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
-    piece_cloud_cheb_max_excess, piece_cloud_cheb_radius,
+    piece_cloud_cheb_max_excess, piece_cloud_cheb_radius, leaper_cloud_radius, rider_cloud_radius,
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
@@ -303,6 +303,10 @@ pub const DEFAULT_EVAL_FAR_QUEEN_PENALTY: i32 = 5;
 pub const FAR_SLIDER_PENALTY_VALUE_DIV: i32 = 8;
 pub const DEFAULT_EVAL_FAR_ROOK_PENALTY: i32 = 7;
 pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS: i32 = 16;
+/// Cloud radius beyond which a leaper counts as out of play: its reach is one jump.
+pub const DEFAULT_EVAL_LEAPER_CLOUD_RADIUS: i32 = 8;
+/// Cloud radius beyond which a rider (knightrider, rose, huygen) counts as out of play.
+pub const DEFAULT_EVAL_RIDER_CLOUD_RADIUS: i32 = 16;
 pub const DEFAULT_EVAL_SLIDER_AXIS_WIGGLE: i32 = 5;
 pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS: i32 = 64;
 pub const DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE: i32 = 2;
@@ -496,9 +500,6 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
         PieceType::Huygen => huygen(),
     }
 }
-
-/// Cloud radius beyond which a leaper counts as out of play.
-const LEAPER_CLOUD_RADIUS: i64 = 8;
 
 /// Cloud-distance penalty, scaled by the piece's value and capped as a share of
 /// it. Uncapped this reached 128% of the piece, i.e. a far piece scored worse
@@ -2233,15 +2234,13 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             let is_diag = pt == PieceType::Bishop || pt == PieceType::Archbishop;
             let is_queen = pt == PieceType::Queen || pt == PieceType::Amazon;
             // A leaper's reach is one jump, so it must stand much closer than a slider or
-            // rider to take part; those keep the shared radius.
-            let long_reach = is_ortho
-                || is_diag
-                || is_queen
-                || matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen);
-            let radius = if long_reach {
+            // rider to take part.
+            let radius = if is_ortho || is_diag || is_queen {
                 piece_cloud_cheb_radius() as i64
+            } else if matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen) {
+                rider_cloud_radius() as i64
             } else {
-                LEAPER_CLOUD_RADIUS
+                leaper_cloud_radius() as i64
             };
             if pt != PieceType::Pawn && !pt.is_royal() && cheb > radius {
                 let mult = taper(mg_far_slider_penalty_mult(), eg_far_slider_penalty_mult());

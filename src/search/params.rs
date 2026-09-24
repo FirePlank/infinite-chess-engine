@@ -210,6 +210,8 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("far_queen_penalty", crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY as i64, 0, 30, 2.0, 0.002, "Per-excess-square penalty for a far queen"),
     EvalParamSpec::new("far_rook_penalty", crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY as i64, 0, 25, 2.0, 0.002, "Per-excess-square penalty for a far rook"),
     EvalParamSpec::new("piece_cloud_cheb_radius", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS as i64, 4, 40, 2.0, 0.002, "Chebyshev radius of the piece-cloud cohesion zone"),
+    EvalParamSpec::new("leaper_cloud_radius", crate::evaluation::base::DEFAULT_EVAL_LEAPER_CLOUD_RADIUS as i64, 2, 40, 2.0, 0.002, "Cloud radius beyond which a leaper counts as out of play"),
+    EvalParamSpec::new("rider_cloud_radius", crate::evaluation::base::DEFAULT_EVAL_RIDER_CLOUD_RADIUS as i64, 2, 40, 2.0, 0.002, "Cloud radius beyond which a rider counts as out of play"),
     EvalParamSpec::new("slider_axis_wiggle", crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE as i64, 1, 20, 2.0, 0.002, "Wiggle room for a slider ray to count as passing through center"),
     EvalParamSpec::new("piece_cloud_cheb_max_excess", crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS as i64, 16, 160, 2.0, 0.002, "Max excess distance counted for the piece-cloud penalty"),
     EvalParamSpec::new("centrality_value_scale", crate::evaluation::base::DEFAULT_EVAL_CENTRALITY_VALUE_SCALE as i64, 20, 200, 4.0, 0.002, "Cloud-centre weight as a percent of piece value"),
@@ -348,6 +350,8 @@ pub struct EvalParams {
     pub far_queen_penalty: i32,
     pub far_rook_penalty: i32,
     pub piece_cloud_cheb_radius: i32,
+    pub leaper_cloud_radius: i32,
+    pub rider_cloud_radius: i32,
     pub slider_axis_wiggle: i32,
     pub piece_cloud_cheb_max_excess: i32,
     pub cloud_penalty_per_100_value: i32,
@@ -488,6 +492,8 @@ impl Default for EvalParams {
             far_queen_penalty: crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY,
             far_rook_penalty: crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY,
             piece_cloud_cheb_radius: crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS,
+            leaper_cloud_radius: crate::evaluation::base::DEFAULT_EVAL_LEAPER_CLOUD_RADIUS,
+            rider_cloud_radius: crate::evaluation::base::DEFAULT_EVAL_RIDER_CLOUD_RADIUS,
             slider_axis_wiggle: crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE,
             piece_cloud_cheb_max_excess: crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS,
             cloud_penalty_per_100_value: crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE,
@@ -785,6 +791,8 @@ define_eval_accessor!(far_slider_cheb_max_excess, crate::evaluation::base::DEFAU
 define_eval_accessor!(far_queen_penalty, crate::evaluation::base::DEFAULT_EVAL_FAR_QUEEN_PENALTY);
 define_eval_accessor!(far_rook_penalty, crate::evaluation::base::DEFAULT_EVAL_FAR_ROOK_PENALTY);
 define_eval_accessor!(piece_cloud_cheb_radius, crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS);
+define_eval_accessor!(leaper_cloud_radius, crate::evaluation::base::DEFAULT_EVAL_LEAPER_CLOUD_RADIUS);
+define_eval_accessor!(rider_cloud_radius, crate::evaluation::base::DEFAULT_EVAL_RIDER_CLOUD_RADIUS);
 define_eval_accessor!(slider_axis_wiggle, crate::evaluation::base::DEFAULT_EVAL_SLIDER_AXIS_WIGGLE);
 define_eval_accessor!(piece_cloud_cheb_max_excess, crate::evaluation::base::DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS);
 define_eval_accessor!(cloud_penalty_per_100_value, crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE);
