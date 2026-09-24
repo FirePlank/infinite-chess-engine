@@ -191,8 +191,6 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("eg_king_pawn_shield_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS as i64, 0, 100, 2.0, 0.002, "Endgame king pawn shield bonus"),
     EvalParamSpec::new("mg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Middlegame piece behind king bonus"),
     EvalParamSpec::new("eg_behind_king_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS as i64, 0, 200, 2.0, 0.002, "Endgame piece behind king bonus"),
-    EvalParamSpec::new("mg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Middlegame king tropism bonus"),
-    EvalParamSpec::new("eg_king_tropism_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS as i64, 0, 40, 2.0, 0.002, "Endgame king tropism bonus"),
     EvalParamSpec::new("mg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Middlegame connected pawn bonus"),
     EvalParamSpec::new("eg_connected_pawn_bonus", crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS as i64, 0, 60, 2.0, 0.002, "Endgame connected pawn bonus"),
     EvalParamSpec::new("mg_passed_safe_path_bonus", crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS as i64, 0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus"),
@@ -218,7 +216,6 @@ pub const TUNABLE_EVAL_PARAM_SPECS: &[EvalParamSpec] = &[
     EvalParamSpec::new("cloud_penalty_max_pct", crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT as i64, 10, 130, 4.0, 0.002, "Cloud penalty ceiling, as a percent of the piece's value"),
     EvalParamSpec::new("cloud_penalty_per_100_value", crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE as i64, 0, 6, 2.0, 0.002, "Cloud-spread penalty per 100 value of piece worth"),
     EvalParamSpec::new("cloud_center_max_skew_dist", crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST as i64, 4, 40, 2.0, 0.002, "Max skew distance for the cloud-center reference point"),
-    EvalParamSpec::new("queen_ideal_line_dist", crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST as i64, 1, 16, 2.0, 0.002, "Ideal file/rank distance for queen line pressure"),
     EvalParamSpec::new("leaper_tropism_divisor", crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR as i64, 100, 1000, 4.0, 0.002, "Divisor turning leaper value into a tropism multiplier"),
     EvalParamSpec::new("chancellor_rook_scale", crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE as i64, 20, 150, 2.0, 0.002, "Chancellor rook-component scale (% of rook eval)"),
     EvalParamSpec::new("archbishop_bishop_scale", crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE as i64, 20, 150, 2.0, 0.002, "Archbishop bishop-component scale (% of bishop eval)"),
@@ -331,8 +328,6 @@ pub struct EvalParams {
     pub eg_king_pawn_shield_bonus: i32,
     pub mg_behind_king_bonus: i32,
     pub eg_behind_king_bonus: i32,
-    pub mg_king_tropism_bonus: i32,
-    pub eg_king_tropism_bonus: i32,
     pub mg_connected_pawn_bonus: i32,
     pub eg_connected_pawn_bonus: i32,
     pub mg_passed_safe_path_bonus: i32,
@@ -358,7 +353,6 @@ pub struct EvalParams {
     pub cloud_penalty_max_pct: i32,
     pub centrality_value_scale: i32,
     pub cloud_center_max_skew_dist: i32,
-    pub queen_ideal_line_dist: i32,
     pub leaper_tropism_divisor: i32,
     pub chancellor_rook_scale: i32,
     pub archbishop_bishop_scale: i32,
@@ -473,8 +467,6 @@ impl Default for EvalParams {
             eg_king_pawn_shield_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS,
             mg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_BEHIND_KING_BONUS,
             eg_behind_king_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS,
-            mg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS,
-            eg_king_tropism_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS,
             mg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS,
             eg_connected_pawn_bonus: crate::evaluation::base::DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS,
             mg_passed_safe_path_bonus: crate::evaluation::base::DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS,
@@ -500,7 +492,6 @@ impl Default for EvalParams {
             cloud_penalty_max_pct: crate::evaluation::base::DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT,
             centrality_value_scale: crate::evaluation::base::DEFAULT_EVAL_CENTRALITY_VALUE_SCALE,
             cloud_center_max_skew_dist: crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST,
-            queen_ideal_line_dist: crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST,
             leaper_tropism_divisor: crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR,
             chancellor_rook_scale: crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE,
             archbishop_bishop_scale: crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE,
@@ -737,14 +728,6 @@ define_eval_accessor!(
     crate::evaluation::base::DEFAULT_EVAL_EG_BEHIND_KING_BONUS
 );
 define_eval_accessor!(
-    mg_king_tropism_bonus,
-    crate::evaluation::base::DEFAULT_EVAL_MG_KING_TROPISM_BONUS
-);
-define_eval_accessor!(
-    eg_king_tropism_bonus,
-    crate::evaluation::base::DEFAULT_EVAL_EG_KING_TROPISM_BONUS
-);
-define_eval_accessor!(
     mg_connected_pawn_bonus,
     crate::evaluation::base::DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS
 );
@@ -805,7 +788,6 @@ define_eval_accessor!(
     crate::evaluation::base::DEFAULT_EVAL_CENTRALITY_VALUE_SCALE
 );
 define_eval_accessor!(cloud_center_max_skew_dist, crate::evaluation::base::DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST);
-define_eval_accessor!(queen_ideal_line_dist, crate::evaluation::base::DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST);
 define_eval_accessor!(leaper_tropism_divisor, crate::evaluation::base::DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR);
 define_eval_accessor!(chancellor_rook_scale, crate::evaluation::base::DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE);
 define_eval_accessor!(archbishop_bishop_scale, crate::evaluation::base::DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE);

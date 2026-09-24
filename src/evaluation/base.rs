@@ -312,7 +312,6 @@ pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS: i32 = 64;
 pub const DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE: i32 = 2;
 pub const DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT: i32 = 50;
 pub const DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST: i32 = 16;
-pub const DEFAULT_EVAL_QUEEN_IDEAL_LINE_DIST: i32 = 4;
 pub const DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR: i32 = 400;
 pub const DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE: i32 = 90;
 pub const DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE: i32 = 90;
@@ -624,8 +623,6 @@ pub fn get_piece_phase(piece_type: PieceType) -> i32 {
 pub const DEFAULT_EVAL_MG_BEHIND_KING_BONUS: i32 = 45;
 pub const DEFAULT_EVAL_EG_BEHIND_KING_BONUS: i32 = 59; // More important to be behind king in EG
 
-pub const DEFAULT_EVAL_MG_KING_TROPISM_BONUS: i32 = 10;
-pub const DEFAULT_EVAL_EG_KING_TROPISM_BONUS: i32 = 6; // King centralized -> piece proximity matters more
 
 // Shelter / Ring
 pub const DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY: i32 = 52;
