@@ -53,8 +53,9 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
         "breach loose", "breach supported", "breakthrough queens", "pieces on pawns",
         "idle pieces", "king near front", "black phase", "black pieces", "rear pawn dist",
         "lead pawn dist", "king front gap", "pawns near promo", "black material", "promoted",
+        "white doubled", "black doubled", "king cover",
     ],
-    fixed: 20,
+    fixed: 23,
     neg: 0,
 };
 
@@ -292,6 +293,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
     }
 
     if S::ON {
+        let phase = crate::evaluation::base::effective_phase(game.total_phase, game.initial_phase);
         let pawns = white_pawns.len() as i32;
         let dist = |y: i64| (promo_rank - y).clamp(0, 255) as i32;
         let (rear, lead, gap) = if pawns > 0 {
@@ -322,6 +324,9 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
             ct(near_promo),
             cp(black_material),
             cp(promoted),
+            cp(doubled(white_pawns.iter().map(|p| p.x), phase)),
+            cp(doubled(black_pieces.iter().filter(|p| p.1 == PieceType::Pawn).map(|p| p.0.x), phase)),
+            ct(king_cover(game, black_king_pos) / 10),
         ];
         for (c, v) in cols.into_iter().enumerate() {
             sink.set(c, v);
@@ -337,6 +342,40 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
     } else {
         score
     }
+}
+
+/// The generic doubled-pawn penalty: each extra pawn on a file, tapered by phase.
+fn doubled(files: impl Iterator<Item = i64>, phase: i32) -> i32 {
+    use crate::evaluation::base::MAX_PHASE;
+    use crate::search::params::{eg_doubled_pawn_penalty, mg_doubled_pawn_penalty};
+    let mut xs: ArrayVec<i64, 64> = files.take(64).collect();
+    xs.sort_unstable();
+    let extra = xs.windows(2).filter(|w| w[0] == w[1]).count() as i32;
+    -extra * (mg_doubled_pawn_penalty() * phase + eg_doubled_pawn_penalty() * (MAX_PHASE - phase)) / MAX_PHASE
+}
+
+/// Black's cover within two squares of its king, weighted as the generic defender
+/// histogram does.
+fn king_cover(game: &GameState, k: Coordinate) -> i32 {
+    let mut units = 0;
+    for dy in -2i64..=2 {
+        for dx in -2i64..=2 {
+            let Some(p) = game.board.get_piece(k.x + dx, k.y + dy) else {
+                continue;
+            };
+            let far = usize::from(dx.abs().max(dy.abs()) == 2);
+            units += if p.color() == PlayerColor::Neutral {
+                [25, 12][far]
+            } else if p.color() != PlayerColor::Black || p.piece_type().is_royal() {
+                0
+            } else if p.piece_type() == PieceType::Pawn {
+                [33, 16][far]
+            } else {
+                [100, 50][far]
+            };
+        }
+    }
+    units
 }
 
 #[cfg(test)]
