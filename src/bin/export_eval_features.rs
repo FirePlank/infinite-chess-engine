@@ -1029,6 +1029,9 @@ fn checkpoint(
 ) {
     let mut w = writer.lock().unwrap();
     w.flush().unwrap();
+    if let Some(h) = HASH_OUT.get() {
+        h.lock().unwrap().flush().unwrap();
+    }
     let kept = stats.kept.load(Ordering::Relaxed);
     let f = w.get_mut();
     f.seek(SeekFrom::Start(HEADER_SIZE - 8)).unwrap();
@@ -1090,11 +1093,6 @@ fn main() {
         eprintln!("keep-hashes: {} hashes", set.len());
         let _ = KEEP_HASHES.set(set);
     }
-    if let Some(path) = &cli.hash_out {
-        assert!(!cli.resume, "--hash-out cannot resume: the sidecar would lose alignment");
-        let f = File::create(path).unwrap();
-        let _ = HASH_OUT.set(Mutex::new(BufWriter::new(f)));
-    }
     if let Some(path) = &cli.keep_keys {
         let bytes = std::fs::read(path).unwrap();
         let set: HashSet<u64> = bytes
@@ -1133,6 +1131,19 @@ fn main() {
     }
     let progress_path = PathBuf::from(format!("{}.progress", cli.out.display()));
     let prior = if cli.resume { Progress::load(&progress_path) } else { None };
+    if let Some(path) = &cli.hash_out {
+        // On resume the sidecar is cut back to the records kept, one hash each.
+        let f = match &prior {
+            Some(p) => {
+                let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+                f.set_len(p.kept * 8).unwrap();
+                f.seek(SeekFrom::End(0)).unwrap();
+                f
+            }
+            None => File::create(path).unwrap(),
+        };
+        let _ = HASH_OUT.set(Mutex::new(BufWriter::new(f)));
+    }
     let rec = RECORD_SIZE;
     let file = if let Some(p) = &prior {
         let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&cli.out).unwrap();
