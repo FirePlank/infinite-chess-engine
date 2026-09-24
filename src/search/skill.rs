@@ -713,6 +713,8 @@ pub(crate) fn get_best_move_limited(
                 defense_scale: config.defense_eval_scale,
             }
         });
+        // After the style is installed, so a style change drops the other style's scores.
+        searcher.adopt_eval_kind(game.eval_kind);
 
         // For MultiPV, we use the same optimum/maximum but disable dynamic extensions
         searcher

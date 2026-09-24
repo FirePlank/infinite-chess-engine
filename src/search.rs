@@ -938,7 +938,7 @@ pub struct Searcher {
     // Triangular PV table: flat array indexed by pv_table[ply * MAX_PLY + offset]
     // Using Box to avoid stack overflow with 64*64 = 4096 Move entries
     /// The PV of the last completed iteration, and whether this node is still
-    /// walking it. Nodes on it are exempt from IIR.
+    /// walking it. Nodes on it are exempt from in-move pruning at PV nodes.
     pub prev_iteration_pv: Vec<Move>,
     /// Exact move played at ply 0. The root keeps only hashed coords in
     /// prev_move_stack, and move_history is written by the interior loop.
@@ -983,6 +983,9 @@ pub struct Searcher {
     pub completed_depth: usize,
     /// Evaluator family the cached scores and histories were produced under.
     pub last_eval_kind: Option<crate::evaluation::eval_kind::EvalKind>,
+    /// Skill levels scale the eval, so their cached scores must not reach a search
+    /// at another style (and vice versa).
+    pub last_eval_style: Option<crate::evaluation::EvalStyle>,
 
     // Silent mode - no info output
     pub silent: bool,
@@ -1140,6 +1143,7 @@ impl Searcher {
             rng: Prng::new(0),
             completed_depth: 0,
             last_eval_kind: None,
+            last_eval_style: None,
             silent: false,
             thread_id: 0,
             helper_epoch: 0,
@@ -1314,10 +1318,14 @@ impl Searcher {
     /// so a kind change between searches (a custom position, or a mid-game
     /// re-detection) resets the table and histories instead of reusing them.
     pub fn adopt_eval_kind(&mut self, kind: crate::evaluation::eval_kind::EvalKind) {
-        if self.last_eval_kind.is_some() && self.last_eval_kind != Some(kind) {
+        let style = crate::evaluation::base::eval_style();
+        if (self.last_eval_kind.is_some() && self.last_eval_kind != Some(kind))
+            || (self.last_eval_style.is_some() && self.last_eval_style != Some(style))
+        {
             self.clear();
         }
         self.last_eval_kind = Some(kind);
+        self.last_eval_style = Some(style);
     }
 
     /// Clears TT and resets all history tables to neutral values.
@@ -4026,10 +4034,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Update improving flag based on static eval vs beta
         improving = improving || static_eval >= beta;
 
-        // Internal iterative reductions (IIR)
-        // Without TT move, reduce depth to find one faster. Nodes still on the
-        // previous iteration's PV are exempt: reducing the line the engine
-        // currently believes in is what it can least afford to get wrong.
+        // Internal iterative reductions (IIR): without a TT move, reduce depth to find one faster.
         if depth >= iir_min_depth() && tt_move.is_none() {
             depth -= 2;
         }

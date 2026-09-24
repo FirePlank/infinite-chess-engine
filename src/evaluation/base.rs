@@ -1053,11 +1053,13 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 if pt == PieceType::Pawn {
                                     pawn_min_y = pawn_min_y.min(y);
                                     pawn_max_y = pawn_max_y.max(y);
+                                    // With no promotion rank (sentinel) every pawn still counts
+                                    // for structure and shelter; only passer terms skip it.
                                     if is_white {
-                                        if y < w_promo {
+                                        if y < w_promo || w_promo == i64::MIN {
                                             white_pawns.push((x, y));
                                         }
-                                    } else if y > b_promo {
+                                    } else if y > b_promo || b_promo == i64::MAX {
                                         black_pawns.push((x, y));
                                     }
                                 } else if !pt.is_neutral_type() {
@@ -3620,10 +3622,10 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                             let y = cy * 8 + (idx / 8) as i64;
                             if piece.piece_type() == PieceType::Pawn {
                                 if piece.color() == PlayerColor::White {
-                                    if y < w_promo {
+                                    if y < w_promo || w_promo == i64::MIN {
                                         wp.push((x, y));
                                     }
-                                } else if y > b_promo {
+                                } else if y > b_promo || b_promo == i64::MAX {
                                     bp.push((x, y));
                                 }
                             }
@@ -3683,6 +3685,16 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     // cached; taper and passed-pawn scoring happen live so phase, king positions
     // and blockers are always current.
     let idx = (pawn_hash as usize) & (PAWN_CACHE_SIZE - 1);
+    // Cached terms read eval params, so a tuning run's param change must drop them.
+    #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
+    {
+        thread_local!(static SEEN_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+        let generation =
+            crate::search::params::EVAL_PARAMS_GEN.load(std::sync::atomic::Ordering::Acquire);
+        if SEEN_GEN.with(|g| g.replace(generation)) != generation {
+            clear_pawn_cache();
+        }
+    }
     // Scored inside the borrow: cloning the entry copied two passer lists per hit,
     // and score_passed_pawns never touches this cache.
     let hit = PAWN_CACHE.with(|cache| {
@@ -3895,7 +3907,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
         // Relative rank 0 to 5 (assuming 6 ranks is "near promotion")
         // For an infinite board, we'll anchor to the promotion rank.
         let w_promo = game.white_promo_rank;
-        let dist_to_promo = (w_promo - wy).max(1);
+        let dist_to_promo = w_promo.saturating_sub(wy).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
 
         for dx in -1..=1 {
@@ -3914,6 +3926,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
             }
         }
 
+        // A pawn that cannot promote is never a passer or a candidate.
+        if w_promo == i64::MIN {
+            is_passed = false;
+            stoppers = 0;
+        }
         if is_passed {
             w_passed.push((wx, wy));
         } else {
@@ -4002,7 +4019,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
         }
 
         let b_promo = game.black_promo_rank;
-        let dist_to_promo = (by - b_promo).max(1);
+        let dist_to_promo = by.saturating_sub(b_promo).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
 
         for dx in -1..=1 {
@@ -4019,6 +4036,10 @@ fn compute_pawn_core<T: EvaluationTracer>(
             }
         }
 
+        if b_promo == i64::MAX {
+            is_passed = false;
+            stoppers = 0;
+        }
         if is_passed {
             b_passed.push((bx, by));
         } else {
@@ -4177,7 +4198,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
     for &(wx, wy) in w_passed {
         let w_promo = game.white_promo_rank;
-        let dist_to_promo = (w_promo - wy).max(1);
+        let dist_to_promo = w_promo.saturating_sub(wy).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
 
         // 1. Can Advance
@@ -4192,13 +4213,13 @@ fn score_passed_pawns<T: EvaluationTracer>(
         let mut friendly_king_bonus = 0;
         let mut enemy_king_penalty = 0;
         for wk in white_royals {
-            let d = (wx - wk.x).abs().max((wy - wk.y).abs()) as usize;
-            let b = passed_friendly_king_dist()[rel_rank] * (7 - d.min(7)) as i32;
+            let d = (wx - wk.x).abs().max((wy - wk.y).abs()).min(7);
+            let b = passed_friendly_king_dist()[rel_rank] * (7 - d) as i32;
             friendly_king_bonus = friendly_king_bonus.max(b);
         }
         for bk in black_royals {
-            let d = (wx - bk.x).abs().max((wy - bk.y).abs()) as usize;
-            let p = passed_enemy_king_dist()[rel_rank] * (7 - d.min(7)) as i32;
+            let d = (wx - bk.x).abs().max((wy - bk.y).abs()).min(7);
+            let p = passed_enemy_king_dist()[rel_rank] * (7 - d) as i32;
             enemy_king_penalty = enemy_king_penalty.max(p);
         }
 
@@ -4260,7 +4281,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
 
     for &(bx, by) in b_passed {
         let b_promo = game.black_promo_rank;
-        let dist_to_promo = (by - b_promo).max(1);
+        let dist_to_promo = by.saturating_sub(b_promo).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
 
         let next_y = by - 1;
@@ -4271,13 +4292,13 @@ fn score_passed_pawns<T: EvaluationTracer>(
         let mut friendly_king_bonus = 0;
         let mut enemy_king_penalty = 0;
         for bk in black_royals {
-            let d = (bx - bk.x).abs().max((by - bk.y).abs()) as usize;
-            let b = passed_friendly_king_dist()[rel_rank] * (7 - d.min(7)) as i32;
+            let d = (bx - bk.x).abs().max((by - bk.y).abs()).min(7);
+            let b = passed_friendly_king_dist()[rel_rank] * (7 - d) as i32;
             friendly_king_bonus = friendly_king_bonus.max(b);
         }
         for wk in white_royals {
-            let d = (bx - wk.x).abs().max((by - wk.y).abs()) as usize;
-            let p = passed_enemy_king_dist()[rel_rank] * (7 - d.min(7)) as i32;
+            let d = (bx - wk.x).abs().max((by - wk.y).abs()).min(7);
+            let p = passed_enemy_king_dist()[rel_rank] * (7 - d) as i32;
             enemy_king_penalty = enemy_king_penalty.max(p);
         }
 
@@ -4543,7 +4564,7 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     // Find the closes distance from each pawn to the kings.
     for &(wx, wy) in white_pawns {
         let w_promo = game.white_promo_rank;
-        let dist_to_promo = (w_promo - wy).max(1);
+        let dist_to_promo = w_promo.saturating_sub(wy).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
         let mut min_d = 255; // Chebyshev distance
 
@@ -4608,7 +4629,7 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     }
     for &(bx, by) in black_pawns {
         let b_promo = game.black_promo_rank;
-        let dist_to_promo = (by - b_promo).max(1);
+        let dist_to_promo = by.saturating_sub(b_promo).max(1);
         let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
         let mut min_d = 255; // Chebyshev distance
 

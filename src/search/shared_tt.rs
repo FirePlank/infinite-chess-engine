@@ -259,7 +259,7 @@ impl SharedTranspositionTable {
                 let gb = e.gen_bound8.load(REL);
                 let occupied =
                     e.key16.load(REL) != 0 || gb != 0 || e.depth8.load(REL) != 0;
-                if occupied && TTEntry::generation(gb) == r#gen {
+                if occupied && TTEntry::generation(gb) == r#gen & GENERATION_MASK {
                     occ += 1;
                 }
             }

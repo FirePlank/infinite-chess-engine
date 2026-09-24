@@ -186,11 +186,9 @@ fn apply_rule50_damping(game: &GameState, raw_eval: i32, mop_up_active: bool) ->
     }
 }
 
-/// A specialized evaluator's net residual, side-to-move relative. Its inputs are the
-/// base HCE's features, so a variant with a net also pays for one base evaluation.
-#[inline]
 /// A specialized evaluator's score plus its net's residual, side-to-move relative. The
 /// evaluator's own pass writes the net's inputs, so the net costs no second eval.
+#[inline]
 fn variant_eval(game: &GameState) -> i32 {
     use crate::eval_net::variant_features::{VariantFeatures, VariantLayout};
     let plain = |g: &GameState| match g.eval_kind {
