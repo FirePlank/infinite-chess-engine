@@ -1984,7 +1984,8 @@ fn generate_castling_moves(
 
     // Find all pieces with special rights that could be castling partners
     for coord in special_rights.iter() {
-        if coord == from {
+        // Partners share the king's rank; most rights holders are pawns elsewhere.
+        if coord == from || coord.y != from.y {
             continue;
         }
         if let Some(target_piece) = board.get_piece(coord.x, coord.y) {
@@ -4344,6 +4345,10 @@ fn generate_castling_moves_into(
     }
 
     for coord in special_rights.iter() {
+        // Partners share the king's rank; most rights holders are pawns elsewhere.
+        if coord.y != from.y {
+            continue;
+        }
         if board.get_piece(coord.x, coord.y).is_some_and(|p| {
             p.color() == piece.color()
                 && p.piece_type() != PieceType::Pawn
