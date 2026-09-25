@@ -2737,7 +2737,7 @@ impl GameState {
                 || pt == PieceType::Hawk
                 || pt == PieceType::Knightrider;
 
-            for m in pseudo {
+            for &m in pseudo.iter() {
                 // Capture of checker
                 if m.to.x == checker_sq.x && m.to.y == checker_sq.y {
                     out.push(m);

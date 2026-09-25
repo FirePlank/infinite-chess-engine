@@ -3262,7 +3262,7 @@ fn safe_check_units(
             } else {
                 &mut bishop
             };
-            for (sx, sy) in cands {
+            for &(sx, sy) in cands.iter() {
                 if (sx, sy) != (px, py)
                     && (sx, sy) != (kx, ky)
                     && !set.is_full()

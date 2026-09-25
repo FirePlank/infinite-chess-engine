@@ -2082,6 +2082,7 @@ fn generate_pawn_capture_moves(
     }
 }
 
+#[cfg(test)]
 fn generate_castling_moves(
     board: &Board,
     from: &Coordinate,
@@ -2091,79 +2092,7 @@ fn generate_castling_moves(
     indices: &SpatialIndices,
 ) -> MoveList {
     let mut moves = MoveList::new();
-
-    // King must have special rights to castle
-    if !special_rights.contains(from) {
-        return moves;
-    }
-
-    // Find all pieces with special rights that could be castling partners
-    for coord in special_rights.iter() {
-        // Partners share the king's rank; most rights holders are pawns elsewhere.
-        if coord == from || coord.y != from.y {
-            continue;
-        }
-        if let Some(target_piece) = board.get_piece(coord.x, coord.y) {
-            // Must be same color and a valid castling partner (rook-like piece, not pawn)
-            if target_piece.color() == piece.color()
-                && target_piece.piece_type() != PieceType::Pawn
-                && !target_piece.piece_type().is_royal()
-            {
-                let dx = coord.x - from.x;
-                let dy = coord.y - from.y;
-
-                if dy == 0 {
-                    // A castling partner closer than 3 squares away is illegal
-                    // (the king's own landing square would overlap the partner
-                    // or the space it needs to move through).
-                    if dx.abs() < 3 {
-                        continue;
-                    }
-
-                    let dir = if dx > 0 { 1i64 } else { -1i64 };
-
-                    // Use spatial indices to check path - O(log n) instead of O(distance).
-                    // Since the partner is always >=3 squares away here, this also proves
-                    // the king's own landing square (2 squares away) is empty.
-                    if let Some(row_pieces) = indices.rows.get(&from.y)
-                        && let Some((nearest_x, _)) = row_pieces.find_nearest(from.x, dir)
-                        && ((dir > 0 && nearest_x < coord.x) || (dir < 0 && nearest_x > coord.x))
-                    {
-                        continue; // There's a piece between king and rook
-                    }
-
-                    let path_1 = from.x + dir;
-                    let path_2 = from.x + (dir * 2);
-
-                    let pos_1 = Coordinate::new(path_1, from.y);
-                    let pos_2 = Coordinate::new(path_2, from.y);
-
-                    let opponent = piece.color().opponent();
-                    let opponent_can_checkmate = match piece.color() {
-                        PlayerColor::White => {
-                            game_rules.black_win_condition.requires_check_evasion()
-                        }
-                        PlayerColor::Black => {
-                            game_rules.white_win_condition.requires_check_evasion()
-                        }
-                        PlayerColor::Neutral => true,
-                    };
-
-                    if !opponent_can_checkmate
-                        || (!is_square_attacked(board, from, opponent, indices)
-                            && !is_square_attacked(board, &pos_1, opponent, indices)
-                            && !is_square_attacked(board, &pos_2, opponent, indices))
-                    {
-                        let to_x = from.x + (dir * 2);
-                        let mut castling_move =
-                            Move::new(*from, Coordinate::new(to_x, from.y), *piece);
-                        castling_move.partner_x = coord.x;
-                        moves.push(castling_move);
-                    }
-                }
-            }
-        }
-    }
+    generate_castling_moves_into(board, from, piece, special_rights, game_rules, indices, &mut moves);
     moves
 }
 
@@ -2261,9 +2190,15 @@ fn generate_quiets_for_piece(
         PieceType::King => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             // Castling is always a quiet move
-            let castling =
-                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
-            out.extend(castling);
+            generate_castling_moves_into(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices,
+                out,
+            );
         }
         PieceType::Guard => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
@@ -2275,9 +2210,15 @@ fn generate_quiets_for_piece(
         PieceType::RoyalCentaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::Quiets, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
-            let castling =
-                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
-            out.extend(castling);
+            generate_castling_moves_into(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices,
+                out,
+            );
         }
         PieceType::Hawk => {
             generate_compass_moves_into(board, from, piece, 2, MoveGenType::Quiets, out);
@@ -2373,9 +2314,15 @@ fn generate_quiets_for_piece(
                 out,
             );
             // Castling support for RoyalQueen
-            let castling =
-                generate_castling_moves(board, from, piece, special_rights, game_rules, indices);
-            out.extend(castling);
+            generate_castling_moves_into(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices,
+                out,
+            );
         }
         PieceType::Chancellor => {
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
@@ -4471,8 +4418,8 @@ fn generate_castling_moves_into(
             let dy = coord.y - from.y;
 
             if dy == 0 {
-                // A castling partner closer than 3 squares away is illegal (see
-                // generate_castling_moves).
+                // A partner closer than 3 squares would overlap the king's landing
+                // square or the squares it passes through.
                 if dx.abs() < 3 {
                     continue;
                 }
