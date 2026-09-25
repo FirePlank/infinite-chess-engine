@@ -34,6 +34,10 @@ const run = (m) => {
 
 for (const [k, m] of mods.entries()) {
   if (!m.net_selftest()) throw new Error(`${pkgs[k]}: net kernel selftest failed`);
+  // SHARED_TT=1 times the shared table the site's helper threads use (MT builds).
+  if (process.env.SHARED_TT === '1' && !m.set_shared_tt(true)) {
+    throw new Error(`${pkgs[k]}: SHARED_TT needs an MT build`);
+  }
   run(m); // warm-up: tables, JIT tiers, corpus
 }
 const times = mods.map(() => []);

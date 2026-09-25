@@ -158,6 +158,22 @@ pub fn eval_sum(passes: u32) -> f64 {
     })
 }
 
+/// Searches through the shared TT the site's multi-threaded play uses (MT build
+/// only), so its per-thread cost is timed without starting worker threads.
+#[wasm_bindgen]
+pub fn set_shared_tt(on: bool) -> bool {
+    #[cfg(feature = "mt")]
+    {
+        search::bench_use_shared_tt(on);
+        true
+    }
+    #[cfg(not(feature = "mt"))]
+    {
+        let _ = on;
+        false
+    }
+}
+
 /// The net's SIMD dense layer against its scalar reference, inside this build.
 #[wasm_bindgen]
 pub fn net_selftest() -> bool {

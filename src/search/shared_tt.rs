@@ -24,6 +24,54 @@ use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU64, Ordering};
 /// Fields are separate so refreshing the generation cannot disturb the payload.
 const REL: Ordering = Ordering::Relaxed;
 
+/// Entry field access. wasm has only sequentially consistent atomics, so every
+/// relaxed store there is a locked exchange on the host; like Stockfish's
+/// USE_SLOPPY_ATOMICS, fields up to the 32-bit word size use plain accesses on
+/// wasm, while 64-bit fields stay atomic so they cannot tear.
+trait Field {
+    type V: Copy;
+    fn get(&self) -> Self::V;
+    fn set(&self, v: Self::V);
+}
+
+macro_rules! plain_on_wasm {
+    ($($atomic:ty => $v:ty),*) => {$(
+        impl Field for $atomic {
+            type V = $v;
+            #[inline(always)]
+            fn get(&self) -> $v {
+                #[cfg(target_arch = "wasm32")]
+                // SAFETY: an aligned in-bounds access; a racing write can only
+                // yield a stale or torn entry, which every reader already tolerates.
+                return unsafe { std::ptr::read_volatile(self.as_ptr()) };
+                #[cfg(not(target_arch = "wasm32"))]
+                return self.load(REL);
+            }
+            #[inline(always)]
+            fn set(&self, v: $v) {
+                #[cfg(target_arch = "wasm32")]
+                // SAFETY: as in `get`.
+                unsafe { std::ptr::write_volatile(self.as_ptr(), v) };
+                #[cfg(not(target_arch = "wasm32"))]
+                self.store(v, REL);
+            }
+        }
+    )*};
+}
+plain_on_wasm!(AtomicU8 => u8, AtomicU16 => u16, AtomicI16 => i16);
+
+impl Field for AtomicU64 {
+    type V = u64;
+    #[inline(always)]
+    fn get(&self) -> u64 {
+        self.load(REL)
+    }
+    #[inline(always)]
+    fn set(&self, v: u64) {
+        self.store(v, REL);
+    }
+}
+
 // TT entry structure uses 16 bytes: key16 | depth8 | gen_bound8 | score16 | eval16,
 // plus the packed 13-bit-coordinate move (64 bits).
 
@@ -43,14 +91,14 @@ impl TTEntry {
     #[inline]
     pub fn read(&self, key16: u16, params_hash: u64) -> Option<(i32, i32, u8, u8, Option<Move>)> {
         {
-            if self.key16.load(REL) != key16 {
+            if self.key16.get() != key16 {
                 return None;
             }
 
-            let d = self.depth8.load(REL);
-            let gb = self.gen_bound8.load(REL);
-            let score = self.score16.load(REL) as i32;
-            let eval = self.eval16.load(REL) as i32;
+            let d = self.depth8.get();
+            let gb = self.gen_bound8.get();
+            let score = self.score16.get() as i32;
+            let eval = self.eval16.get() as i32;
 
             // A never-written entry is all zeroes, which only survives the key check
             // when the probing key is itself zero.
@@ -58,7 +106,7 @@ impl TTEntry {
                 return None;
             }
 
-            let mdata = self.move_data.load(REL);
+            let mdata = self.move_data.get();
 
             // XOR the probing key into move_data: a move stored by a colliding/other position
             // decodes to garbage and gets rejected by the guards below.
@@ -147,22 +195,22 @@ impl TTEntry {
 
         // Payload before key: a reader that matches the key then sees data for this
         // position rather than the previous occupant's.
-        self.move_data.store(protected_mdata, REL);
-        self.depth8.store(depth, REL);
-        self.gen_bound8.store(gen_bound, REL);
-        self.score16.store(score, REL);
-        self.eval16.store(eval, REL);
-        self.key16.store(key16, REL);
+        self.move_data.set(protected_mdata);
+        self.depth8.set(depth);
+        self.gen_bound8.set(gen_bound);
+        self.score16.set(score);
+        self.eval16.set(eval);
+        self.key16.set(key16);
     }
 
     #[inline]
     pub fn clear(&self) {
-        self.key16.store(0, REL);
-        self.depth8.store(0, REL);
-        self.gen_bound8.store(0, REL);
-        self.score16.store(0, REL);
-        self.eval16.store(0, REL);
-        self.move_data.store(0, REL);
+        self.key16.set(0);
+        self.depth8.set(0);
+        self.gen_bound8.set(0);
+        self.score16.set(0);
+        self.eval16.set(0);
+        self.move_data.set(0);
     }
     #[inline]
     pub fn flag(gen_bound: u8) -> TTFlag {
@@ -256,9 +304,9 @@ impl SharedTranspositionTable {
         let mut occ = 0u32;
         for i in 0..sample {
             for e in &self.buckets[i].entries {
-                let gb = e.gen_bound8.load(REL);
+                let gb = e.gen_bound8.get();
                 let occupied =
-                    e.key16.load(REL) != 0 || gb != 0 || e.depth8.load(REL) != 0;
+                    e.key16.get() != 0 || gb != 0 || e.depth8.get() != 0;
                 if occupied && TTEntry::generation(gb) == r#gen & GENERATION_MASK {
                     occ += 1;
                 }
@@ -309,12 +357,12 @@ impl SharedTranspositionTable {
                 // fights while untouched ones age out. Only this byte is written, so a
                 // concurrent store's score and depth cannot be reverted by the refresh.
                 let r#gen = self.generation.load(REL);
-                let gb = e.gen_bound8.load(REL);
+                let gb = e.gen_bound8.get();
                 let refreshed = (r#gen & GENERATION_MASK) | (gb & 0x07);
                 // Already current: the store would rewrite the same byte, and under
                 // wasm threads every atomic store is a full seq_cst exchange.
                 if refreshed != gb {
-                    e.gen_bound8.store(refreshed, REL);
+                    e.gen_bound8.set(refreshed);
                 }
                 let score = value_from_tt(
                     score_from_i16(score),
@@ -342,9 +390,9 @@ impl SharedTranspositionTable {
     pub fn penalize(&self, hash: u64, penalty: u8) {
         let key16 = self.hash_key16(hash);
         for e in &self.buckets[self.bucket_index(hash)].entries {
-            if e.key16.load(REL) == key16 {
-                let d = e.depth8.load(REL);
-                e.depth8.store(d.saturating_sub(penalty), REL);
+            if e.key16.get() == key16 {
+                let d = e.depth8.get();
+                e.depth8.set(d.saturating_sub(penalty));
                 return;
             }
         }
@@ -362,19 +410,19 @@ impl SharedTranspositionTable {
         let mut worst = i32::MAX;
 
         for (i, e) in bucket.entries.iter().enumerate() {
-            let e_key = e.key16.load(REL);
-            let old_depth = e.depth8.load(REL);
-            let old_gb = e.gen_bound8.load(REL);
+            let e_key = e.key16.get();
+            let old_depth = e.depth8.get();
+            let old_gb = e.gen_bound8.get();
 
             // Check if key matches (and entry is not empty)
             let empty = e_key == 0
                 && old_depth == 0
                 && old_gb == 0
-                && e.score16.load(REL) == 0
-                && e.eval16.load(REL) == 0;
+                && e.score16.get() == 0
+                && e.eval16.get() == 0;
             if e_key == key16 && !empty {
-                let mdata = e.move_data.load(REL);
-                let old_eval = e.eval16.load(REL);
+                let mdata = e.move_data.get();
+                let old_eval = e.eval16.get();
 
                 // Decode old move for preservation
                 let old_move_data = mdata ^ (params.hash >> 16);
@@ -426,24 +474,21 @@ impl SharedTranspositionTable {
                     || (params.depth as i32 + pv_bonus) > (old_depth as i32 - 4)
                     || rel_age != 0
                 {
-                    e.move_data
-                        .store(mdata_to_write ^ (params.hash >> 16), REL);
-                    e.depth8.store(params.depth as u8, REL);
-                    e.gen_bound8.store(
-                        TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag),
-                        REL,
-                    );
-                    e.score16.store(score_to_i16(adj_score), REL);
-                    e.eval16.store(store_eval, REL);
-                    e.key16.store(key16, REL);
+                    e.move_data.set(mdata_to_write ^ (params.hash >> 16));
+                    e.depth8.set(params.depth as u8);
+                    e.gen_bound8
+                        .set(TTEntry::pack_gen_bound(r#gen, params.is_pv, params.flag));
+                    e.score16.set(score_to_i16(adj_score));
+                    e.eval16.set(store_eval);
+                    e.key16.set(key16);
                 } else if old_depth >= 5
                     && TTEntry::flag(old_gb) != TTFlag::Exact
-                    && super::is_decisive(score_from_i16(e.score16.load(REL) as i32))
+                    && super::is_decisive(score_from_i16(e.score16.get() as i32))
                 {
                     // Only a decisive bound decays. Aging ordinary deep bounds costs
                     // cutoffs table-wide; a stale mate bound is what has to lose depth
                     // so a fresher search can replace it.
-                    e.depth8.store(old_depth - 1, REL);
+                    e.depth8.set(old_depth - 1);
                 }
                 return;
             }

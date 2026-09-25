@@ -434,6 +434,16 @@ fn get_lmr(depth: usize, moves: usize) -> i32 {
 #[cfg(feature = "multithreading")]
 pub(crate) static USE_SHARED_TT: AtomicBool = AtomicBool::new(false);
 
+/// Routes a single-threaded search through the shared table, so the wasm harness
+/// can time the per-thread cost of the build the site runs with helper threads.
+#[cfg(all(feature = "multithreading", feature = "bench_positions"))]
+pub fn bench_use_shared_tt(on: bool) {
+    if on {
+        init_shared_tt();
+    }
+    USE_SHARED_TT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Helper struct to satisfy closure syntax in get_or_init
 pub struct TranspositionTable;
 impl TranspositionTable {

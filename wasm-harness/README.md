@@ -18,6 +18,7 @@ PROFILE=1 ./build.sh pkg-prof mt   # keeps names for node --cpu-prof
 node run.mjs search 10 12 pkg-old pkg-new   # interleaved A/B, depth 10, 12 pairs
 node run.mjs eval 20 12 pkg-old pkg-new     # 20 corpus passes per run
 NPS_ONLY=CoaIP_RO node run.mjs search 12 8 pkg-old pkg-new
+SHARED_TT=1 node run.mjs search 10 12 pkg-old pkg-new  # search through the shared TT
 node --cpu-prof --cpu-prof-dir=prof run.mjs search 10 1 pkg-prof
 ```
 
