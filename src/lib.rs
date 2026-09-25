@@ -52,7 +52,7 @@ pub enum Variant {
 }
 
 impl Variant {
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, not(target_arch = "wasm32"), feature = "bench_positions"))]
     pub fn starting_icn(&self) -> &'static str {
         match self {
             Variant::Classical => {

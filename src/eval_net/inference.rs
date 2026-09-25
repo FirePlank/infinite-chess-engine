@@ -154,6 +154,34 @@ fn has_avx2() -> bool {
     false
 }
 
+/// The SIMD dense layer checked against the scalar integer layer on pseudo-random
+/// weights, run inside whatever build calls it (the wasm harness uses it).
+#[cfg(any(test, feature = "bench_positions"))]
+pub fn kernel_selftest() -> bool {
+    let (n_out, stride, shift) = (64usize, 128usize, 6u32);
+    let mut seed = 0x9E3779B97F4A7C15u64;
+    let mut next = |m: i64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((seed >> 33) as i64 % (2 * m + 1) - m) as i32
+    };
+    for _ in 0..50 {
+        let w: Vec<i16> = (0..n_out * stride).map(|_| next(128) as i16).collect();
+        let b: Vec<i32> = (0..n_out).map(|_| next(20_000)).collect();
+        let x: Vec<i16> = (0..stride).map(|_| next(600) as i16).collect();
+        for avx2 in [false, has_avx2()] {
+            let mut got = vec![0i16; n_out];
+            dense_layer(&w, &b, stride, &x, shift, &mut got, avx2);
+            for r in 0..n_out {
+                let d: i32 = (0..stride).map(|i| w[r * stride + i] as i32 * x[i] as i32).sum();
+                if got[r] != ((b[r] + d) >> shift).clamp(0, 127) as i16 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Input buffer wide enough for every layout, padded to the layer-1 stride.
 pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if NUM_FEATURES > MAX_VARIANT_FEATURES {
     NUM_FEATURES
@@ -220,29 +248,10 @@ mod tests {
         assert_eq!(forward(&net, &x), (raw as f32 * 0.1) as i32);
     }
 
-    /// Both kernels must reproduce the scalar integer layer exactly.
+    /// Every kernel must reproduce the scalar integer layer exactly.
     #[test]
     fn dense_layer_matches_scalar_reference() {
-        let (n_out, stride, shift) = (64usize, 128usize, 6u32);
-        let mut seed = 0x9E3779B97F4A7C15u64;
-        let mut next = |m: i64| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((seed >> 33) as i64 % (2 * m + 1) - m) as i32
-        };
-        for _ in 0..50 {
-            let w: Vec<i16> = (0..n_out * stride).map(|_| next(128) as i16).collect();
-            let b: Vec<i32> = (0..n_out).map(|_| next(20_000)).collect();
-            let x: Vec<i16> = (0..stride).map(|_| next(600) as i16).collect();
-            for avx2 in [false, has_avx2()] {
-                let mut got = vec![0i16; n_out];
-                dense_layer(&w, &b, stride, &x, shift, &mut got, avx2);
-                for r in 0..n_out {
-                    let d: i32 = (0..stride).map(|i| w[r * stride + i] as i32 * x[i] as i32).sum();
-                    let want = ((b[r] + d) >> shift).clamp(0, 127) as i16;
-                    assert_eq!(got[r], want, "row {r} avx2 {avx2}");
-                }
-            }
-        }
+        assert!(kernel_selftest());
     }
 
     #[test]

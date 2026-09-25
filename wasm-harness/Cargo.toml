@@ -1,0 +1,23 @@
+[package]
+name = "apeiron-wasm-harness"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Benchmarks and identity checks for the engine compiled to wasm; see run.mjs."
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+# The shipped build: Lazy SMP compiled in, with the repo's shared-memory rustflags.
+mt = ["apeiron/multithreading"]
+
+[dependencies]
+apeiron = { path = "..", default-features = false, features = ["bench_positions"] }
+wasm-bindgen = "=0.2.126"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

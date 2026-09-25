@@ -99,6 +99,9 @@ multithreading = ["rayon", "wasm-bindgen-rayon"]
 parallel_solver = ["rayon", "num_cpus"]
 puzzle_gen = ["csv", "serde_json", "rayon", "indicatif"]
 debug = ["console_error_panic_hook"]
+# Keeps the variant starting positions in wasm builds, which drop them to save
+# size; the wasm bench harness (wasm-harness/) needs them.
+bench_positions = []
 
 
 [dev-dependencies]

@@ -13,6 +13,8 @@ mod inference;
 mod weights;
 
 pub use inference::RESIDUAL_CAP;
+#[cfg(any(test, feature = "bench_positions"))]
+pub use inference::kernel_selftest;
 
 /// True when trained weights are embedded and the runtime kill-switch
 /// (`APEIRON_EVAL_NET=0`) is not set.
