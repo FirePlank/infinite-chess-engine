@@ -714,19 +714,134 @@ impl SpatialLine {
     }
 }
 
+/// Lines keyed by one coordinate. Keys in a window around the origin index `dense`
+/// directly and the rest hash; either way a key is present iff its line is non-empty.
+#[derive(Debug, Clone)]
+pub struct LineMap {
+    base: i64,
+    dense: Box<[SpatialLine]>,
+    sparse: FxHashMap<i64, SpatialLine>,
+}
+
+/// Rank and file keys covered by the direct-mapped window, [-64, 64).
+const ORTHO_LINE_WINDOW: usize = 128;
+/// Diagonal keys (x-y, x+y) span twice the range, [-128, 128).
+const DIAG_LINE_WINDOW: usize = 256;
+
+impl LineMap {
+    fn with_window(width: usize) -> Self {
+        Self {
+            base: -(width as i64 / 2),
+            dense: vec![SpatialLine::new(); width].into_boxed_slice(),
+            sparse: FxHashMap::default(),
+        }
+    }
+
+    #[inline(always)]
+    fn slot(&self, key: i64) -> Option<usize> {
+        let i = key.wrapping_sub(self.base) as u64;
+        (i < self.dense.len() as u64).then_some(i as usize)
+    }
+
+    #[inline]
+    pub fn get(&self, key: &i64) -> Option<&SpatialLine> {
+        match self.slot(*key) {
+            Some(i) => {
+                let line = unsafe { self.dense.get_unchecked(i) };
+                (!line.is_empty()).then_some(line)
+            }
+            None => self.sparse.get(key),
+        }
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, key: &i64) -> Option<&mut SpatialLine> {
+        match self.slot(*key) {
+            Some(i) => {
+                let line = unsafe { self.dense.get_unchecked_mut(i) };
+                (!line.is_empty()).then_some(line)
+            }
+            None => self.sparse.get_mut(key),
+        }
+    }
+
+    #[inline]
+    pub fn entry_or_default(&mut self, key: i64) -> &mut SpatialLine {
+        match self.slot(key) {
+            Some(i) => unsafe { self.dense.get_unchecked_mut(i) },
+            None => self.sparse.entry(key).or_default(),
+        }
+    }
+
+    /// Drops the line. A dense slot keeps its allocation for the next occupant.
+    #[inline]
+    pub fn remove(&mut self, key: &i64) {
+        match self.slot(*key) {
+            Some(i) => {
+                let line = &mut self.dense[i];
+                line.coords.clear();
+                line.pieces.clear();
+            }
+            None => {
+                self.sparse.remove(key);
+            }
+        }
+    }
+
+    pub fn contains_key(&self, key: &i64) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Scans the whole window, so keep it off hot paths.
+    pub fn is_empty(&self) -> bool {
+        self.sparse.is_empty() && self.dense.iter().all(SpatialLine::is_empty)
+    }
+
+    /// Every non-empty line, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (i64, &SpatialLine)> + '_ {
+        let base = self.base;
+        self.dense
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !l.is_empty())
+            .map(move |(i, l)| (base + i as i64, l))
+            .chain(self.sparse.iter().map(|(&k, l)| (k, l)))
+    }
+}
+
+impl Serialize for LineMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for LineMap {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = FxHashMap::<i64, SpatialLine>::deserialize(deserializer)?;
+        // The window only decides where a key is stored, so the wider one suits any map.
+        let mut map = LineMap::with_window(DIAG_LINE_WINDOW);
+        for (k, line) in raw {
+            if !line.is_empty() {
+                *map.entry_or_default(k) = line;
+            }
+        }
+        Ok(map)
+    }
+}
+
 /// Keyed by (x, y, dir_index); value is the sorted interception distances.
 pub type SliderCache = std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpatialIndices {
     /// Row index: y -> SpatialLine sorted by x
-    pub rows: FxHashMap<i64, SpatialLine>,
+    pub rows: LineMap,
     /// Column index: x -> SpatialLine sorted by y
-    pub cols: FxHashMap<i64, SpatialLine>,
+    pub cols: LineMap,
     /// Diagonal (x-y constant): key -> SpatialLine sorted by x
-    pub diag1: FxHashMap<i64, SpatialLine>,
+    pub diag1: LineMap,
     /// Anti-diagonal (x+y constant): key -> SpatialLine sorted by x
-    pub diag2: FxHashMap<i64, SpatialLine>,
+    pub diag2: LineMap,
     /// Lazily-populated slider interception cache.
     #[serde(skip)]
     pub slider_cache: SliderCache,
@@ -743,10 +858,10 @@ pub struct SpatialIndices {
 
 impl SpatialIndices {
     pub fn new(board: &Board) -> Self {
-        let mut rows: FxHashMap<i64, SpatialLine> = FxHashMap::default();
-        let mut cols: FxHashMap<i64, SpatialLine> = FxHashMap::default();
-        let mut diag1: FxHashMap<i64, SpatialLine> = FxHashMap::default();
-        let mut diag2: FxHashMap<i64, SpatialLine> = FxHashMap::default();
+        let mut rows = LineMap::with_window(ORTHO_LINE_WINDOW);
+        let mut cols = LineMap::with_window(ORTHO_LINE_WINDOW);
+        let mut diag1 = LineMap::with_window(DIAG_LINE_WINDOW);
+        let mut diag2 = LineMap::with_window(DIAG_LINE_WINDOW);
 
         // Fairy piece flags: [0] = white, [1] = black
         let mut has_huygen = [false, false];
@@ -767,10 +882,10 @@ impl SpatialIndices {
                 let x = cx * 8 + lx;
                 let y = cy * 8 + ly;
 
-                rows.entry(y).or_default().insert(x, packed);
-                cols.entry(x).or_default().insert(y, packed);
-                diag1.entry(x - y).or_default().insert(x, packed);
-                diag2.entry(x + y).or_default().insert(x, packed);
+                rows.entry_or_default(y).insert(x, packed);
+                cols.entry_or_default(x).insert(y, packed);
+                diag1.entry_or_default(x - y).insert(x, packed);
+                diag2.entry_or_default(x + y).insert(x, packed);
 
                 // Track fairy piece existence for O(1) early-exit in attack detection
                 let piece = Piece::from_packed(packed);
@@ -802,13 +917,13 @@ impl SpatialIndices {
 
     /// Incrementally add a piece at (x, y) to the indices.
     pub fn add(&mut self, x: i64, y: i64, packed: u8) {
-        self.rows.entry(y).or_default().insert(x, packed);
-        self.cols.entry(x).or_default().insert(y, packed);
+        self.rows.entry_or_default(y).insert(x, packed);
+        self.cols.entry_or_default(x).insert(y, packed);
 
         let d1 = x - y;
         let d2 = x + y;
-        self.diag1.entry(d1).or_default().insert(x, packed);
-        self.diag2.entry(d2).or_default().insert(x, packed);
+        self.diag1.entry_or_default(d1).insert(x, packed);
+        self.diag2.entry_or_default(d2).insert(x, packed);
 
         // The slider cache is deliberately not invalidated here; callers that need an
         // exact move list bypass it instead. Clearing per edit measured much worse.
@@ -902,10 +1017,10 @@ impl SpatialIndices {
 impl Default for SpatialIndices {
     fn default() -> Self {
         SpatialIndices {
-            rows: FxHashMap::default(),
-            cols: FxHashMap::default(),
-            diag1: FxHashMap::default(),
-            diag2: FxHashMap::default(),
+            rows: LineMap::with_window(ORTHO_LINE_WINDOW),
+            cols: LineMap::with_window(ORTHO_LINE_WINDOW),
+            diag1: LineMap::with_window(DIAG_LINE_WINDOW),
+            diag2: LineMap::with_window(DIAG_LINE_WINDOW),
             slider_cache: std::cell::RefCell::new(FxHashMap::default()),
             has_huygen: [false, false],
             has_rose: [false, false],
