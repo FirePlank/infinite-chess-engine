@@ -2837,6 +2837,18 @@ impl GameState {
                 process_piece(self, Coordinate::new(ax, ay), &p, out);
             }
         }
+
+        // The blocking and direct-capture sections and the filtered generator can
+        // each emit the same capture; keep the first so no move is searched twice.
+        let mut kept = 0;
+        for i in 0..out.len() {
+            let m = out[i];
+            if !out[..kept].contains(&m) {
+                out[kept] = m;
+                kept += 1;
+            }
+        }
+        out.truncate(kept);
     }
 
     /// Arithmetic-only legality check, with no spatial index lookups. `true` means
@@ -4573,7 +4585,7 @@ mod tests {
         };
         // Every leaper type near a checking rook, some reaching it.
         compare(&create_test_game_from_icn(
-            "w (8;q|1;q) K0,0|r0,5|k20,20|N1,3|N4,4|L3,6|L5,5|I1,1|I4,6|Z2,2|Z3,8|H2,5|H3,3|G1,5|E1,4|E3,2",
+            "w (8;q|1;q) K0,0|r0,5|k20,20|N1,3|N4,4|CA3,6|CA5,5|GI1,1|GI4,6|ZE2,2|ZE3,8|HA2,5|HA3,3|GU1,5|CE1,4|CE3,2",
         ));
         for v in [
             crate::Variant::ScatteredLeapers,
@@ -4618,6 +4630,23 @@ mod tests {
         }
         assert!(checked >= 200, "only {checked} positions in check");
         assert!(leaper_captures >= 50, "only {leaper_captures} leaper captures exercised");
+    }
+
+    /// Evasion lists hold each move once; the capture of a checker used to be
+    /// emitted by both a blocking section and the filtered generator.
+    #[test]
+    fn evasion_moves_are_unique() {
+        let g = create_test_game_from_icn(
+            "w (8;q|1;q) K0,0|r0,5|k20,20|N1,3|CA3,6|CE1,4|HA2,5|GU1,5|R4,5|B5,0",
+        );
+        assert!(g.is_in_check());
+        let mut out = MoveList::new();
+        g.get_evasion_moves_into(&mut out);
+        for (i, m) in out.iter().enumerate() {
+            assert!(!out[..i].contains(m), "duplicate evasion {m:?}");
+        }
+        let to_checker = out.iter().filter(|m| m.to == Coordinate::new(0, 5)).count();
+        assert!(to_checker >= 5, "expected several checker captures, got {to_checker}");
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {
