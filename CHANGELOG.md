@@ -13,6 +13,145 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 
+## v6.0.0 (2026-09-25)
+Commit: `bfeb847601b2fa5804594542bc4c421e032d46f5` • [compare to v5.5.0](https://github.com/FirePlank/infinite-chess-engine/compare/51544372373ab8d00fd513fcb0ec389dc222b0a0...bfeb847601b2fa5804594542bc4c421e032d46f5)
+
+**It is about 23 Elo better than v5.5.0, and about 250 Elo better than the v5.0.0 baseline.**
+
+Most of that gain since v5.0.0 comes from the eval net: a small quantized MLP that reads terms the hand-crafted evaluation already computes and adds a learned, capped residual to its score, so it covers every fairy piece and custom position the HCE does. It arrived as one generic net in v5.1.0 and now has its own net for each specialized evaluator (Chess, Obstocean, Pawn Horde), trained on depth-9 relabels of archive games.
+
+Search is also faster, even though it now pays for the net on every evaluation. Across the node-oracle sweep it runs about 12% more nodes per second than v5.0.0 and reaches a fixed depth 12-19% sooner. With the net switched off (`APEIRON_EVAL_NET=0`) it runs about 25% more nodes per second, so the net costs about 10% of search speed. Most of this release's speed comes from a behaviour-identical pass over the board representation, measured on both the native and the shipped wasm build. Native and wasm now also search identical trees.
+
+### Added
+- `wasm-harness/`, which builds the engine to wasm the way the site ships it (shared memory, Lazy SMP compiled in) and times two builds interleaved under Node; each run first checks the net's SIMD kernel against its scalar reference inside the build being measured
+- The Pawn Horde net reads doubled pawns and Black's king cover, two generic-eval terms the Pawn Horde evaluator never scored
+
+### Changed
+- An iteration may run to the full move budget; it used to be aborted once it alone had used half, which left the rest of the clock unspent. No new iteration starts past half
+- Futility and SEE pruning judge the depth the move would actually be searched at (after the LMR reduction), as in Stockfish; the unreduced depth had left the quiet futility margin about twice as loose
+- Draw detection stays on below a null move: the repetition scan stops at the null move, which starts a fresh repetition window, instead of repetition, rule-50 and upcoming-repetition checks all being disabled under it
+- Pawns of a side with no promotion rank enter the pawn lists (structure, shelter, open files) but are never scored as passers or candidates
+- The wasm build strips panic file/line strings (1,180,139 -> 1,161,883 bytes, no change to generated code)
+
+### Fixed
+- SEE sorted a Checkmate king (282) below a knight (315), so it recaptured with the king early and then ended the exchange without using the side's remaining minors; royals now recapture last
+- Quiet promotions were emitted by the capture stage, the quiet stage and a promotion killer, inflating the move count that LMR and LMP key off
+- Razoring ran inside the singular exclusion search, where quiescence has no excluded move and returned the node's own TT bound on the move under test, so singular moves read as non-singular
+- Evasion lists could hold the same capture of the checker up to three times (41% of in-check positions, 8.6% of evasion moves)
+- Obstacle boards generated evasions by walking a hash set of squares whose order depends on the width of `usize`, so native and wasm searched different trees; the scans now walk the tiles' colour occupancy, in the same order on every platform
+- A skill style change now drops cached scores, a tuning-parameter change drops the pawn cache, and passer king distances are safe in 32 bits
+
+### Improved
+- Tiles in a 32x32-tile block around the origin (256x256 squares, where every variant starts) map straight to their table slots, skipping the hash and the probe (-3.3% cycles)
+- Rank, file and diagonal indices keep flat arrays in front of their hash maps, and at setup and each search root those windows move onto the densest cluster of pieces, so a few far-off pieces cannot drag them into empty space (-1.9% cycles; -3.0% on Classical shifted 10,000 files)
+- The eval net's dense layers use an eight-row AVX2 kernel (forward pass 670 -> 400 ns) with u8 x i8 products in layer 2 (~370 ns), and an eight-row simd128 kernel on wasm (wasm eval -10.5%, search -6.4%); all integer arithmetic, so outputs are bit-identical
+- Knightrider movegen sorts pieces onto rays in one pass instead of a division test per piece per direction (+41% NPS on CoaIP_NO), and both it and the eval's ray fill read only the tile squares on the rider's lines through precomputed masks (another -5.5% cycles on CoaIP_NO)
+- Rose moves are deduplicated with a bitmask over its 32 distinct spiral squares instead of scanning up to 64 pairs and clearing a 1 KB array per call (-18.8% cycles on CoaIP_RO)
+- Move lists (6 KB inline) are no longer copied by value in evasion and castling generation, and line scans read plain slices instead of checking SmallVec storage on every element (-2.7% and -3.7% cycles)
+- The shared TT's fields up to 32 bits use plain stores on wasm, like Stockfish's wasm build; wasm has only sequentially consistent atomics, so each relaxed store had been a locked exchange, six per TT write (-9.3% on wasm through the shared table)
+- Special rights (castling, pawn double-step) live in a 128x128 bitboard around the origin instead of a hash set, and castling reads only the king's rank
+- SEE finds its eight slider rays with four line scans, slider generation reads its per-call state once, and evasions test a leaper's capture of the checker directly instead of generating its full move list
+- The eval's pawn lists are insertion-sorted, since the tile walk already emits them in near-sorted runs, and line congestion scans its short lines instead of binary-searching them (wasm -2.0% and -1.2%)
+
+## v5.5.0 (2026-09-24)
+Commit: `51544372373ab8d00fd513fcb0ec389dc222b0a0` • [compare to v5.4.0](https://github.com/FirePlank/infinite-chess-engine/compare/1d381cb4961fc44572f695416c1d0d7ee37e2e81...51544372373ab8d00fd513fcb0ec389dc222b0a0)
+
+**It is about 19 Elo better than v5.4.0.**
+
+### Changed
+- The Chess, Obstocean and Pawn Horde nets read their own evaluator's terms, written during its pass, instead of running a second generic evaluation per node; the generic net drops eight dead columns (129 -> 121 inputs, so layer 1 pads to 128 lanes instead of 160)
+- `nnue/` is renamed to `evalnet/`: the net is a small MLP over HCE terms, not an NNUE
+
+### Fixed
+- Checking obstacle captures in Obstocean were searched at every qsearch ply and filled the first-three exemption, chaining 16 plies deep (650k nodes at depth 1); only the first qsearch ply keeps them now, and pawn breakouts are unchanged
+
+### Removed
+- Three tuning parameters the eval never read (the middlegame and endgame king tropism bonus and the queen's ideal line distance)
+
+## v5.4.0 (2026-09-24)
+Commit: `1d381cb4961fc44572f695416c1d0d7ee37e2e81` • [compare to v5.3.0](https://github.com/FirePlank/infinite-chess-engine/compare/d66c67e0734960f52e994cc3a7bb48678757775e...1d381cb4961fc44572f695416c1d0d7ee37e2e81)
+
+**It is about 28 Elo better than v5.3.0.**
+
+### Added
+- Eval nets for the specialized Chess, Pawn Horde and Obstocean evaluators, each a residual over its own evaluator's score trained on that variant's archive games (24.1k, 24.7k and 26.3k games)
+- Parameter sweeps through the offline screen, and joint training of several seeds on one copy of the data (about 2.3x faster at the same holdout loss)
+
+### Changed
+- A leaper counts as out of play beyond 8 squares from the piece cloud instead of the shared 16, since it only reaches one jump; sliders and riders keep 16. Aimed at far-starting pieces like the CoaIP hawks
+- Knightrider 800 -> 900, queen 1380 -> 1518, chancellor 1125 -> 1060, camel 195 -> 175, and the endgame connected-pawn bonus 15 -> 30: the best set from the offline parameter sweeps
+- The leaper and rider cloud radii are tunable parameters; sweeps confirmed the defaults of 8 and 16
+
+### Fixed
+- An Obstocean board below 60% obstacle fill fell to the generic evaluator and its net, which never trained on obstacles and blew up quiescence: a depth-1 search went from 149 to 10,379 nodes and 39% of Obstocean games were lost on time. Any bounded board with obstacles now stays on the Obstocean evaluator
+
+## v5.3.0 (2026-09-23)
+Commit: `d66c67e0734960f52e994cc3a7bb48678757775e` • [compare to v5.2.0](https://github.com/FirePlank/infinite-chess-engine/compare/73ede4800b314d3c7edba103738acf231d21e988...d66c67e0734960f52e994cc3a7bb48678757775e)
+
+**It is about 42 Elo better than v5.2.0.**
+
+### Added
+- An offline screen for HCE changes: a reduced export and short training over several seeds for HEAD and the change, about a minute per seed, which ranks variants of an idea before any SPRT
+- Exporter tooling for the net: fixed-depth relabelling of any source, perturbed search-tree positions, human games, colour-mirrored twins, and hash-keyed label joins so depth-9 labels carry across an HCE change
+
+### Changed
+- The eval net reads the position from the side to move's perspective instead of White's, so a position and its colour mirror evaluate identically; the start-position colour bias (up to +-69cp) is exactly 0
+- The net also trains on opening plies (from ply 0 instead of 12), the positions the engine actually searches first
+- The net is skipped against a bare king, where it never trains and cannot see the mating geometry, so its residual was only noise on the mop-up gradient
+- The eval net is always built; the `eval_net` cargo feature only let `--no-default-features` builds silently lose it, and `APEIRON_EVAL_NET=0` still switches it off at runtime
+- SPRT pairs play their opening once: the first game searches its first 8 plies at fixed depth with the pair's noise seed and the second game replays them, since per-engine noise had given only 20% of pairs the same opening
+- The training recipe runs 120 base epochs (swept 30-240; 180 and up overfit)
+
+### Fixed
+- The pawn hash XORed colour in as a constant, so it survived only as each side's pawn-count parity: swapping ownership of pawns kept the hash, and the pawn cache, pawn history and pawn correction history treated the two structures as one
+- The net's king-to-cloud distance input mixed doubled and single units
+- A resumed SPRT restarted its timeout counters at zero, so the Final Summary's timeout alert undercounted
+
+### Removed
+- The starting-square development term: whether a piece has left its starting square says nothing about where it stands, and in custom setups some pieces are best left home. Starting-square tracking in make/undo goes with it
+
+## v5.2.0 (2026-09-22)
+Commit: `73ede4800b314d3c7edba103738acf231d21e988` • [compare to v5.1.0](https://github.com/FirePlank/infinite-chess-engine/compare/884b35fcc9afa596269e8c594a4475207e3712b3...73ede4800b314d3c7edba103738acf231d21e988)
+
+**It is about 54 Elo better than v5.1.0.**
+
+### Changed
+- The eval net widens to 129 inputs (pawn structure through the pawn cache, diagonal/orthogonal ray splits, defender histograms, king geometry) with a residual cap of 500cp
+- The net is fine-tuned on 898k archive positions relabelled by a depth-9 search
+- The net's hidden layers shrink from 256x64 to 128x64: half the forward cost for a slightly less accurate net, and the speed wins
+
+### Improved
+- The net's forward pass multiplies 64-byte-aligned i16 rows with `pmaddwd` (1.37 us vs 1.94)
+
+### Removed
+- The InfNNUE-v1 full-replacement network: it never shipped, its 14 MB weights were untracked so fresh checkouts could not build it, and it gated 40 sites across search and the tools
+
+## v5.1.0 (2026-09-21)
+Commit: `884b35fcc9afa596269e8c594a4475207e3712b3` • [compare to v5.0.0](https://github.com/FirePlank/infinite-chess-engine/compare/8cf0c7a621672bc743ebd1c0237babe644f4b1f3...884b35fcc9afa596269e8c594a4475207e3712b3)
+
+**It is about 84 Elo better than v5.0.0.**
+
+### Added
+- The hybrid eval net: a 99 -> 32 -> 32 -> 1 quantized MLP over scalars the HCE already computes, adding a capped residual to the generic evaluator's score, so it works for every fairy piece and custom position; exporter, trainer and quantizer included
+
+### Changed
+- Capture history is aged between searches like main history, instead of keeping opening credit at full weight hundreds of plies later
+- The puzzle generator drops its per-variant and ply-count caps, which were discarding most candidates once the corpus grew, and excludes Huygen solutions, since its movegen only enumerates fixed prime-distance stops and such a line is usually not really forced
+
+### Fixed
+- A singular exclusion search that ran out of moves scored 0, which a negative beta read as a multi-cut for the whole node; it now returns alpha, as in Stockfish
+- SEE consulted pin maps built at setup and never updated by make/undo, so inside the tree it reasoned about the root position's pins
+- The exact legal-move list offered rose-pinned moves, since a rose pins along a spiral the queen-ray pin test cannot see (208 illegal moves in 7.3M across 24k CoaIP_RO positions)
+- The root never filled its own move context, so at ply 1 continuation history was empty, fail-low credit never reached the root move, and qsearch could not see a recapture
+
+### Improved
+- The root legal-move filter no longer clones the whole game state per move for strict verification; one scratch state with make/undo serves them all (root movegen 9.4x faster)
+- Legality checking trusts the cached royal list instead of rescanning the board for royals it already had (+3.4% NPS on multi-royal variants)
+- The fast legality test only gives up for a knightrider that actually stands on a knight ray through the royal, instead of for every move whenever one stood anywhere
+
+### Removed
+- Dead code: `is_legal_fast`'s never-returned `Ok(false)` arm, the singular block's always-zero PV bonus, an uncalled history decay, and 1,269 lines of unused magic-bitboard code
+
 ## v5.0.0 (2026-09-20)
 Commit: `8cf0c7a621672bc743ebd1c0237babe644f4b1f3` • [compare to v4.5.0](https://github.com/FirePlank/infinite-chess-engine/compare/036259218b96859d7ffd5161c4e349a71c8cd66a...8cf0c7a621672bc743ebd1c0237babe644f4b1f3)
 
