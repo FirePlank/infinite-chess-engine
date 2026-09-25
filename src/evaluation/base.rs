@@ -25,6 +25,8 @@ use crate::search::params::{
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
     pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
+    eg_archbishop, eg_amazon, eg_bishop, eg_camel, eg_centaur, eg_chancellor, eg_giraffe, eg_guard,
+    eg_hawk, eg_huygen, eg_knight, eg_knightrider, eg_queen, eg_rook, eg_rose, eg_zebra,
 };
 
 // 2-Bucket LRU pawn structure cache
@@ -281,6 +283,23 @@ pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
 pub const DEFAULT_EVAL_ROSE: i32 = 997;
 pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
 pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1060;
+pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
+pub const DEFAULT_EVAL_EG_KNIGHT: i32 = 345;
+pub const DEFAULT_EVAL_EG_BISHOP: i32 = 450;
+pub const DEFAULT_EVAL_EG_ROOK: i32 = 618;
+pub const DEFAULT_EVAL_EG_GUARD: i32 = 252;
+pub const DEFAULT_EVAL_EG_CENTAUR: i32 = 660;
+pub const DEFAULT_EVAL_EG_QUEEN: i32 = 1518;
+pub const DEFAULT_EVAL_EG_CAMEL: i32 = 205;
+pub const DEFAULT_EVAL_EG_GIRAFFE: i32 = 195;
+pub const DEFAULT_EVAL_EG_ZEBRA: i32 = 210;
+pub const DEFAULT_EVAL_EG_KNIGHTRIDER: i32 = 910;
+pub const DEFAULT_EVAL_EG_HAWK: i32 = 550;
+pub const DEFAULT_EVAL_EG_ARCHBISHOP: i32 = 1080;
+pub const DEFAULT_EVAL_EG_ROSE: i32 = 997;
+pub const DEFAULT_EVAL_EG_HUYGEN: i32 = 330;
+pub const DEFAULT_EVAL_EG_CHANCELLOR: i32 = 1060;
+pub const DEFAULT_EVAL_EG_AMAZON: i32 = 1793;
 /// Amazon was the only compound priced at the bare sum of its parts, while the
 /// chancellor carries +245 over rook+knight and the archbishop +371.
 pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 10;
@@ -293,7 +312,6 @@ pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 19;
 pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 33;
 pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 56;
-pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
 pub const DEFAULT_EVAL_SLIDER_NET_BONUS: i32 = 21;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS: i32 = 18;
 pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS: i32 = 40;
@@ -497,6 +515,43 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
         // special infinite-board pieces
         PieceType::Rose => rose(),
         PieceType::Huygen => huygen(),
+    }
+}
+
+pub fn get_piece_value_endgame(piece_type: PieceType) -> i32 {
+    match piece_type {
+        // neutral/blocking pieces - no material value
+        PieceType::Void => 0,
+        PieceType::Obstacle => 0,
+
+        // orthodox - adjusted for infinite chess where sliders dominate
+        PieceType::Pawn => pawn(),            // Fixed at 100
+        PieceType::Knight => eg_knight(),     // Weak in infinite chess
+        PieceType::Bishop => eg_bishop(),     // Strong slider
+        PieceType::Rook => eg_rook(),         // Very strong in infinite chess
+        PieceType::Queen => eg_queen(),
+        PieceType::Guard => eg_guard(),
+
+        // short / medium range
+        PieceType::Camel => eg_camel(),     // (1,3) leaper
+        PieceType::Giraffe => eg_giraffe(), // (1,4) leaper
+        PieceType::Zebra => eg_zebra(),     // (2,3) leaper
+
+        // riders / compounds
+        PieceType::Knightrider => eg_knightrider(),
+        PieceType::Amazon => eg_amazon(),
+        PieceType::Hawk => eg_hawk(),
+        PieceType::Chancellor => eg_chancellor(),
+        PieceType::Archbishop => eg_archbishop(),
+        PieceType::Centaur => eg_centaur(),
+
+        PieceType::King => eg_guard(),
+        PieceType::RoyalQueen => eg_queen(),
+        PieceType::RoyalCentaur => eg_centaur(),
+
+        // special infinite-board pieces
+        PieceType::Rose => eg_rose(),
+        PieceType::Huygen => eg_huygen(),
     }
 }
 
@@ -735,9 +790,6 @@ pub fn evaluate_inner(game: &GameState) -> i32 {
 pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
     // Read once per evaluation, then threaded to each term it weights.
     let style = eval_style();
-    let mut score = game.material_score;
-    // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
-    tracer.record("Material (net)", game.material_score, 0);
 
     let (white_royals, black_royals) = (game.white_royals.as_slice(), game.black_royals.as_slice());
     let white_king = white_royals.first().copied();
@@ -747,6 +799,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     let taper = |mg: i32, eg: i32| -> i32 {
         ((mg * eff_phase) + (eg * (MAX_PHASE - eff_phase))) / MAX_PHASE
     };
+    let material_scores = calculate_initial_material(game);
+    let mut score = taper(material_scores.0, material_scores.1);
+    // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
+    tracer.record("Material (net)", score, 0);
 
     // Single-Pass Collection and Scoring
     let mut phase = 0; // decreases with fewer pieces
@@ -3062,10 +3118,8 @@ fn evaluate_leaper_positioning(
     cloud_center: Option<&Coordinate>,
     piece_type: PieceType,
     cloud_avg_spread: i32,
-    phase: i32,
+    _phase: i32,
 ) -> i32 {
-    let taper =
-        |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let piece_value = get_piece_value_base(piece_type);
     let mut bonus: i32 = 0;
 
@@ -3091,18 +3145,6 @@ fn evaluate_leaper_positioning(
     };
     let density_adj = (8_i32 - cloud_avg_spread).clamp(-8, 8);
     bonus += density_adj * density_sensitivity / 10;
-
-    // 3. PHASE TAPER
-    let (mg_bonus, eg_bonus): (i32, i32) = match piece_type {
-        PieceType::Knight | PieceType::Camel | PieceType::Zebra | PieceType::Giraffe => (0, 30),
-        PieceType::Guard => (0, 20),
-        PieceType::Hawk => (0, 10),
-        PieceType::Centaur | PieceType::RoyalCentaur => (0, 20),
-        PieceType::Huygen => (0, 0),
-        PieceType::Rose => (0, 0),
-        _ => (0, 10),
-    };
-    bonus += taper(mg_bonus, eg_bonus);
 
     bonus
 }
@@ -4710,11 +4752,13 @@ pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     w_activity - b_activity
 }
 
-pub fn calculate_initial_material(board: &Board) -> i32 {
-    let mut score: i32 = 0;
+#[cfg(feature = "eval_tuning")]
+#[inline]
+pub fn calculate_initial_material(game: &GameState) -> (i32, i32) {
+    let mut score = (0, 0);
 
     // BITBOARD: Use tile-based CTZ iteration for O(popcount) scan
-    for (cx, cy, tile) in board.tiles.iter() {
+    for (cx, cy, tile) in game.board.tiles.iter() {
         // SIMD: Fast skip empty tiles
         if crate::simd::both_zero(tile.occ_white, tile.occ_black) {
             continue;
@@ -4729,7 +4773,8 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score += get_piece_value_base(piece.piece_type());
+                score.0 += game.get_piece_value(piece.piece_type(), piece.color());
+                score.1 += game.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
 
@@ -4742,7 +4787,8 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
             let packed = tile.piece[idx];
             if packed != 0 {
                 let piece = crate::board::Piece::from_packed(packed);
-                score -= get_piece_value_base(piece.piece_type());
+                score.0 -= game.get_piece_value(piece.piece_type(), piece.color());
+                score.1 -= game.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
 
@@ -4750,6 +4796,15 @@ pub fn calculate_initial_material(board: &Board) -> i32 {
         let _ = (cx, cy);
     }
     score
+}
+
+/// When the eval tuning feature is disabled, it outputs the stored middlegame and
+/// endgame material scores. Otherwise, it recomputes the middlegame and endgame
+/// material scores.
+#[cfg(not(feature = "eval_tuning"))]
+#[inline(always)]
+pub fn calculate_initial_material(game: &GameState) -> (i32, i32) {
+    (game.material_score, game.eg_material_score)
 }
 
 #[cfg(test)]
@@ -5059,11 +5114,11 @@ mod tests {
         let mut game = GameState::new();
 
         // Empty board = 0
-        assert_eq!(calculate_initial_material(&game.board), 0);
+        assert_eq!(calculate_initial_material(&game), (0, 0));
 
         let icn2 = "w (8;q|1|q) Q4,1|q4,8";
         game.setup_position_from_icn(icn2);
-        assert_eq!(calculate_initial_material(&game.board), 0);
+        assert_eq!(calculate_initial_material(&game), (0, 0));
     }
 
     #[test]

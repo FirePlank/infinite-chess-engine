@@ -176,6 +176,7 @@ pub struct GameState {
     pub halfmove_clock: u32,
     pub fullmove_number: u32,
     pub material_score: i32,   // Positive = White advantage
+    pub eg_material_score: i32, // Positive = White advantage, endgame values
     pub game_rules: GameRules, // Variant-specific rules
     /// Optional variant identifier (e.g. "Classical", "Pawn_Horde"), used for
     /// variant-specific evaluation and tuning. Not serialized.
@@ -403,6 +404,7 @@ impl GameState {
             halfmove_clock: 0,
             fullmove_number: 1,
             material_score: 0,
+            eg_material_score: 0,
             game_rules: GameRules::default(),
             variant: None,
             eval_kind: crate::evaluation::eval_kind::EvalKind::default(),
@@ -454,6 +456,7 @@ impl GameState {
             halfmove_clock: 0,
             fullmove_number: 1,
             material_score: 0,
+            eg_material_score: 0,
             game_rules,
             variant: None,
             eval_kind: crate::evaluation::eval_kind::EvalKind::default(),
@@ -498,6 +501,19 @@ impl GameState {
 
     pub fn get_piece_value(&self, pt: PieceType, color: PlayerColor) -> i32 {
         let base = crate::evaluation::base::get_piece_value_base(pt);
+        if pt.is_royal() {
+            match color {
+                PlayerColor::White => base + self.white_royal_bonus,
+                PlayerColor::Black => base + self.black_royal_bonus,
+                _ => base,
+            }
+        } else {
+            base
+        }
+    }
+
+    pub fn get_piece_value_endgame(&self, pt: PieceType, color: PlayerColor) -> i32 {
+        let base = crate::evaluation::base::get_piece_value_endgame(pt);
         if pt.is_royal() {
             match color {
                 PlayerColor::White => base + self.white_royal_bonus,
@@ -1109,19 +1125,32 @@ impl GameState {
         self.total_phase += sign * get_piece_phase(victim.piece_type());
 
         let value = self.get_piece_value(victim.piece_type(), victim.color());
-        let (count, pawns, score_delta) = if victim.color() == PlayerColor::White {
-            (&mut self.white_piece_count, &mut self.white_pawn_count, -value)
+        let eg_value = self.get_piece_value_endgame(victim.piece_type(), victim.color());
+        let (count, pawns, score_delta, eg_score_delta) = if victim.color() == PlayerColor::White {
+            (
+                &mut self.white_piece_count,
+                &mut self.white_pawn_count,
+                -value,
+                -eg_value,
+            )
         } else {
-            (&mut self.black_piece_count, &mut self.black_pawn_count, value)
+            (
+                &mut self.black_piece_count,
+                &mut self.black_pawn_count,
+                value,
+                eg_value,
+            )
         };
         if capturing {
             self.material_score += score_delta;
+            self.eg_material_score += eg_score_delta;
             *count = count.saturating_sub(1);
             if is_pawn {
                 *pawns = pawns.saturating_sub(1);
             }
         } else {
             self.material_score -= score_delta;
+            self.eg_material_score -= eg_score_delta;
             *count = count.saturating_add(1);
             if is_pawn {
                 *pawns = pawns.saturating_add(1);
@@ -3207,14 +3236,17 @@ impl GameState {
                 ));
 
                 let value = self.get_piece_value(captured.piece_type(), captured.color());
+                let eg_value = self.get_piece_value_endgame(captured.piece_type(), captured.color());
                 if captured.color() == PlayerColor::White {
                     self.material_score -= value;
+                    self.eg_material_score -= eg_value;
                     self.white_piece_count = self.white_piece_count.saturating_sub(1);
                     if captured.piece_type() == PieceType::Pawn {
                         self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
                     }
                 } else {
                     self.material_score += value;
+                    self.eg_material_score += eg_value;
                     self.black_piece_count = self.black_piece_count.saturating_sub(1);
                     if captured.piece_type() == PieceType::Pawn {
                         self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
@@ -3269,13 +3301,19 @@ impl GameState {
 
             let pawn_val = self.get_piece_value(PieceType::Pawn, piece.color());
             let promo_val = self.get_piece_value(promo_type, piece.color());
+            let eg_pawn_val = self.get_piece_value_endgame(PieceType::Pawn, piece.color());
+            let eg_promo_val = self.get_piece_value_endgame(promo_type, piece.color());
             if piece.color() == PlayerColor::White {
                 self.material_score -= pawn_val;
                 self.material_score += promo_val;
+                self.eg_material_score -= eg_pawn_val;
+                self.eg_material_score += eg_promo_val;
                 self.white_pawn_count = self.white_pawn_count.saturating_sub(1);
             } else {
                 self.material_score += pawn_val;
                 self.material_score -= promo_val;
+                self.eg_material_score += eg_pawn_val;
+                self.eg_material_score -= eg_promo_val;
                 self.black_pawn_count = self.black_pawn_count.saturating_sub(1);
             }
 
@@ -3532,14 +3570,20 @@ impl GameState {
             // Convert back to pawn
             let pawn_val = self.get_piece_value(PieceType::Pawn, piece.color());
             let promo_val = self.get_piece_value(piece.piece_type(), piece.color());
+            let eg_pawn_val = self.get_piece_value_endgame(PieceType::Pawn, piece.color());
+            let eg_promo_val = self.get_piece_value_endgame(piece.piece_type(), piece.color());
 
             if piece.color() == PlayerColor::White {
                 self.material_score -= promo_val;
                 self.material_score += pawn_val;
+                self.eg_material_score -= eg_promo_val;
+                self.eg_material_score += eg_pawn_val;
                 self.white_pawn_count = self.white_pawn_count.saturating_add(1);
             } else {
                 self.material_score += promo_val;
                 self.material_score -= pawn_val;
+                self.eg_material_score += eg_promo_val;
+                self.eg_material_score -= eg_pawn_val;
                 self.black_pawn_count = self.black_pawn_count.saturating_add(1);
             }
             self.total_phase = undo.old_total_phase;
@@ -3580,14 +3624,17 @@ impl GameState {
             // Only update piece counts and material for non-neutral pieces
             if captured.color() != PlayerColor::Neutral {
                 let value = self.get_piece_value(captured.piece_type(), captured.color());
+                let eg_value = self.get_piece_value_endgame(captured.piece_type(), captured.color());
                 if captured.color() == PlayerColor::White {
                     self.material_score += value;
+                    self.eg_material_score += eg_value;
                     self.white_piece_count = self.white_piece_count.saturating_add(1);
                     if captured.piece_type() == PieceType::Pawn {
                         self.white_pawn_count = self.white_pawn_count.saturating_add(1);
                     }
                 } else {
                     self.material_score -= value;
+                    self.eg_material_score -= eg_value;
                     self.black_piece_count = self.black_piece_count.saturating_add(1);
                     if captured.piece_type() == PieceType::Pawn {
                         self.black_pawn_count = self.black_pawn_count.saturating_add(1);
@@ -3756,6 +3803,7 @@ impl GameState {
         self.halfmove_clock = 0;
         self.fullmove_number = 1;
         self.material_score = 0;
+        self.eg_material_score = 0;
 
         self.game_rules.promotion_ranks.white.clear();
         self.game_rules.promotion_ranks.black.clear();
@@ -4116,14 +4164,17 @@ impl GameState {
 
         // 4. Calculate initial material score now that we have bonuses
         self.material_score = 0;
+        self.eg_material_score = 0;
         for &coord in &self.white_pieces {
             if let Some(piece) = self.board.get_piece(coord.0, coord.1) {
                 self.material_score += self.get_piece_value(piece.piece_type(), piece.color());
+                self.eg_material_score += self.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
         for &coord in &self.black_pieces {
             if let Some(piece) = self.board.get_piece(coord.0, coord.1) {
                 self.material_score -= self.get_piece_value(piece.piece_type(), piece.color());
+                self.eg_material_score -= self.get_piece_value_endgame(piece.piece_type(), piece.color());
             }
         }
 
@@ -4308,16 +4359,28 @@ mod tests {
     /// Asserts after make AND undo: an asymmetric pair poisons every later TT key,
     /// which a plain round-trip check would miss.
     fn assert_incremental_state_matches_scratch(game: &mut GameState, label: &str) {
-        let (ph, mh, wpc, bpc) = (
+        let (ph, mh, eg, wpc, bpc) = (
             game.pawn_hash,
             game.material_hash,
+            game.eg_material_score,
             game.white_pawn_count,
             game.black_pawn_count,
         );
+        let expected_eg = game.board.iter().fold(0, |score, (_, _, piece)| {
+            let value = game.get_piece_value_endgame(piece.piece_type(), piece.color());
+            if piece.color() == PlayerColor::White {
+                score + value
+            } else if piece.color() == PlayerColor::Black {
+                score - value
+            } else {
+                score
+            }
+        });
         game.recompute_correction_hashes();
         game.recompute_piece_counts();
         assert_eq!(ph, game.pawn_hash, "{label}: pawn_hash drifted");
         assert_eq!(mh, game.material_hash, "{label}: material_hash drifted");
+        assert_eq!(eg, expected_eg, "{label}: eg_material_score drifted");
         assert_eq!(wpc, game.white_pawn_count, "{label}: white_pawn_count drifted");
         assert_eq!(bpc, game.black_pawn_count, "{label}: black_pawn_count drifted");
     }

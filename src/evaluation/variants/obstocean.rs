@@ -674,7 +674,10 @@ fn evaluate_inner(game: &GameState) -> i32 {
 
 #[inline]
 pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
-    let mut score = game.material_score;
+    let material_scores = base::calculate_initial_material(game);
+    let mut score = (material_scores.0 * game.total_phase
+        + material_scores.1 * (base::MAX_PHASE - game.total_phase))
+        / base::MAX_PHASE;
     // Per side: pawn terms, knight, bishop, rook, queen, psqt; only filled for a net.
     let mut terms = [[0i32; 2]; 6];
     let mut counts = [[0i32; 5]; 2];
