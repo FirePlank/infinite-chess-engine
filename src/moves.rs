@@ -4196,6 +4196,39 @@ const ROSE_SPIRALS_CONST: [[[(i64, i64); 7]; 2]; 8] = {
     spirals
 };
 
+/// Each spiral square numbered among the 32 distinct squares the 16 spirals visit, so
+/// move generation dedups the two spirals that share a square with one bit test.
+static ROSE_SQUARE_ID: [[[u8; 7]; 2]; 8] = {
+    let spirals = ROSE_SPIRALS_CONST;
+    let mut ids = [[[0u8; 7]; 2]; 8];
+    let mut seen = [(0i64, 0i64); 112];
+    let mut n = 0usize;
+    let mut dir = 0usize;
+    while dir < 8 {
+        let mut rot = 0usize;
+        while rot < 2 {
+            let mut hop = 0usize;
+            while hop < 7 {
+                let sq = spirals[dir][rot][hop];
+                let mut k = 0usize;
+                while k < n && (seen[k].0 != sq.0 || seen[k].1 != sq.1) {
+                    k += 1;
+                }
+                if k == n {
+                    seen[n] = sq;
+                    n += 1;
+                }
+                ids[dir][rot][hop] = k as u8;
+                hop += 1;
+            }
+            rot += 1;
+        }
+        dir += 1;
+    }
+    assert!(n <= 32);
+    ids
+};
+
 /// Max |cumulative offset| over 7 knight hops, so a 29x29 window covers every spiral square.
 pub const ROSE_SPAN: i64 = 14;
 
@@ -4237,29 +4270,13 @@ pub fn generate_rose_moves_into(
     let fx = from.x;
     let fy = from.y;
 
-    // Dedup seen squares (same square reachable via CW and CCW spirals)
-    let mut seen: [(i64, i64); 64] = [(i64::MAX, i64::MAX); 64];
-    let mut seen_count = 0usize;
+    // The CW and CCW spirals share squares; a square is generated once.
+    let mut seen: u32 = 0;
 
-    #[inline(always)]
-    fn is_seen_or_mark(seen: &mut [(i64, i64); 64], count: &mut usize, x: i64, y: i64) -> bool {
-        for &s in seen.iter().take(*count) {
-            if s == (x, y) {
-                return true;
-            }
-        }
-        if *count < 64 {
-            seen[*count] = (x, y);
-            *count += 1;
-        }
-        false
-    }
-
-    // Process all 16 spirals (8 start directions × 2 rotations)
-    for spirals_for_dir in &ROSE_SPIRALS {
-        for spiral_path in spirals_for_dir {
+    for (spirals_for_dir, ids_for_dir) in ROSE_SPIRALS.iter().zip(ROSE_SQUARE_ID.iter()) {
+        for (spiral_path, ids) in spirals_for_dir.iter().zip(ids_for_dir.iter()) {
             // Single pass: walk spiral, generate moves, stop at blocker
-            for &(cum_dx, cum_dy) in spiral_path.iter() {
+            for (&(cum_dx, cum_dy), &id) in spiral_path.iter().zip(ids.iter()) {
                 let tx = fx + cum_dx;
                 let ty = fy + cum_dy;
 
@@ -4273,7 +4290,9 @@ pub fn generate_rose_moves_into(
                 let is_blocked = occupant.is_some();
 
                 // Dedup: skip generating a move if already seen, but still respect blocking
-                let already_seen = is_seen_or_mark(&mut seen, &mut seen_count, tx, ty);
+                let bit = 1u32 << id;
+                let already_seen = seen & bit != 0;
+                seen |= bit;
 
                 if is_blocked {
                     // Generate capture if enemy and not already seen
