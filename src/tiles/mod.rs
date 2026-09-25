@@ -17,7 +17,8 @@ pub const TILE_MASK: i64 = TILE_SIZE - 1; // 0b111 = 7
 pub const TILE_TABLE_INITIAL_CAPACITY: usize = 512;
 
 /// Side of the square block of tiles around the origin that `dense` maps straight
-/// to slots, skipping the hash. Every variant starts inside it (256x256 squares).
+/// to slots, skipping the hash (256x256 squares). Kept at the origin: a movable one
+/// measured ~0.7% slower on this hot lookup, more than recentring it earns.
 const DENSE_TILES: i64 = 32;
 const DENSE_NONE: u32 = u32::MAX;
 
@@ -653,6 +654,30 @@ impl TileTable {
     /// Index 4 is the center tile.
     #[inline]
     pub fn get_neighborhood(&self, cx: i64, cy: i64) -> [Option<&Tile>; 9] {
+        // Away from the block's edge all nine tiles are fixed offsets from the centre's
+        // index: one bounds check instead of nine lookups.
+        let dx = cx.wrapping_add(DENSE_TILES / 2) as u64;
+        let dy = cy.wrapping_add(DENSE_TILES / 2) as u64;
+        if dx.wrapping_sub(1) < (DENSE_TILES - 2) as u64 && dy.wrapping_sub(1) < (DENSE_TILES - 2) as u64
+        {
+            let c = (dy * DENSE_TILES as u64 + dx) as usize;
+            let w = DENSE_TILES as usize;
+            let at = |d: usize| {
+                let slot = unsafe { *self.dense.get_unchecked(d) };
+                (slot != DENSE_NONE).then(|| unsafe { self.tiles.get_unchecked(slot as usize) })
+            };
+            return [
+                at(c - w - 1),
+                at(c - w),
+                at(c - w + 1),
+                at(c - 1),
+                at(c),
+                at(c + 1),
+                at(c + w - 1),
+                at(c + w),
+                at(c + w + 1),
+            ];
+        }
         [
             self.get_tile(cx - 1, cy - 1), // 0: (-1, -1)
             self.get_tile(cx, cy - 1),     // 1: (0, -1)

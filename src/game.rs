@@ -387,6 +387,23 @@ impl GameState {
     }
 }
 
+/// Midpoint of the `width`-wide interval holding the most of `keys` (sorted in
+/// place), for placing a direct-mapped window over the densest cluster.
+fn densest_center(keys: &mut [i64], width: i64) -> i64 {
+    keys.sort_unstable();
+    let (mut best, mut lo, mut hi) = (0, 0, 0);
+    let mut j = 0;
+    for i in 0..keys.len() {
+        while keys[i] as i128 - keys[j] as i128 >= width as i128 {
+            j += 1;
+        }
+        if i - j + 1 > best {
+            (best, lo, hi) = (i - j + 1, j, i);
+        }
+    }
+    ((keys[lo] as i128 + keys[hi] as i128) / 2) as i64
+}
+
 #[cfg(test)]
 thread_local! {
     static EVASION_LEAPER_FAST: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
@@ -591,6 +608,7 @@ impl GameState {
         self.black_pawn_count = black_pawns;
 
         self.spatial_indices = SpatialIndices::new(&self.board);
+        self.recenter_windows();
         self.recompute_castling_state();
         // Recompute check squares for O(1) check detection
         self.recompute_pins();
@@ -4167,6 +4185,31 @@ impl GameState {
         self.recompute_hash();
 
         self.spatial_indices = SpatialIndices::new(&self.board);
+        self.recenter_windows();
+    }
+
+    /// Moves each line map's window onto its densest cluster of pieces, so far-off pieces
+    /// cannot drag it into empty space. Pure indexing, speed only. The tile and rights
+    /// windows stay at the origin: a movable origin cost their hot lookups more than it earned.
+    pub fn recenter_windows(&mut self) {
+        let mut xs = Vec::with_capacity(self.board.len());
+        let mut ys = Vec::with_capacity(self.board.len());
+        for (x, y, _) in self.board.iter() {
+            xs.push(x);
+            ys.push(y);
+        }
+        if xs.is_empty() {
+            return;
+        }
+        let mut diffs: Vec<i64> = xs.iter().zip(&ys).map(|(x, y)| x.wrapping_sub(*y)).collect();
+        let mut sums: Vec<i64> = xs.iter().zip(&ys).map(|(x, y)| x.wrapping_add(*y)).collect();
+        let (cols, rows) = (densest_center(&mut xs, 128), densest_center(&mut ys, 128));
+        self.spatial_indices.recenter(
+            rows,
+            cols,
+            densest_center(&mut diffs, 256),
+            densest_center(&mut sums, 256),
+        );
     }
 
     #[cfg(any(test, not(target_arch = "wasm32"), feature = "parallel_solver"))]
@@ -4608,6 +4651,21 @@ mod tests {
             game.undo_move(m, undo);
             assert_eq!((game.hash, game.special_rights.clone()), before);
         }
+    }
+
+    /// A few pieces far away must not pull the windows off the main cluster: the
+    /// densest placement keeps the home pieces inside, where a mean would not.
+    #[test]
+    fn windows_stay_on_the_main_cluster() {
+        let mut game = create_test_game_from_icn(
+            "w (8|1) P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|K5,1+|Q4,1|N2,1|N7,1|B3,1|B6,1             |R10000001,1|R10000008,1|Q-9999996,1             |p1,7+|p2,7+|p3,7+|p4,7+|p5,7+|p6,7+|p7,7+|p8,7+|k5,8+|q4,8|r1,8+|r8,8+|n2,8|n7,8|b3,8|b6,8",
+        );
+        game.recenter_windows();
+        let idx = &game.spatial_indices;
+        let (rows, cols) = (idx.rows.window_center(), idx.cols.window_center());
+        // Every home square (files and ranks 1..=8) must sit inside the 128-wide windows.
+        assert!((1..=8).all(|k| (k - rows).abs() < 64 && (k - cols).abs() < 64));
+        assert!(cols.abs() < 1000, "the far sliders pulled the file window to {cols}");
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {

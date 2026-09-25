@@ -2113,6 +2113,8 @@ fn search_with_searcher(
     game: &mut GameState,
     max_depth: usize,
 ) -> Option<(Move, i32)> {
+    game.recenter_windows();
+
     // Root must bypass the slider candidate cache: it is never invalidated, so a
     // persistent GameState accumulates staleness and the root list both loses legal
     // moves and gains impossible ones (measured 84% of positions after 120 plies).

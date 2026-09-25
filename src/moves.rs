@@ -811,6 +811,32 @@ impl LineMap {
         self.get(key).is_some()
     }
 
+    /// Centres the direct-mapped window on `center`, moving every line to its new
+    /// home. Presence and contents are unchanged, so no lookup can see a difference.
+    fn recenter(&mut self, center: i64) {
+        let half = self.dense.len() as i64 / 2;
+        // Close enough already: skip the rebuild.
+        if (center as i128 - (self.base as i128 + half as i128)).abs() <= 16 {
+            return;
+        }
+        let base = center.wrapping_sub(half);
+        let mut lines: Vec<(i64, SpatialLine)> = self.sparse.drain().collect();
+        for (i, line) in self.dense.iter_mut().enumerate() {
+            if !line.is_empty() {
+                lines.push((self.base.wrapping_add(i as i64), std::mem::take(line)));
+            }
+        }
+        self.base = base;
+        for (key, line) in lines {
+            *self.entry_or_default(key) = line;
+        }
+    }
+
+    /// Key the direct-mapped window is centred on.
+    pub fn window_center(&self) -> i64 {
+        self.base.wrapping_add(self.dense.len() as i64 / 2)
+    }
+
     /// Scans the whole window, so keep it off hot paths.
     pub fn is_empty(&self) -> bool {
         self.sparse.is_empty() && self.dense.iter().all(SpatialLine::is_empty)
@@ -932,6 +958,14 @@ impl SpatialIndices {
             has_rose,
             has_knightrider,
         }
+    }
+
+    /// Centres each line window on the given key; see `LineMap::recenter`.
+    pub fn recenter(&mut self, row: i64, col: i64, diag1: i64, diag2: i64) {
+        self.rows.recenter(row);
+        self.cols.recenter(col);
+        self.diag1.recenter(diag1);
+        self.diag2.recenter(diag2);
     }
 
     /// Incrementally add a piece at (x, y) to the indices.
