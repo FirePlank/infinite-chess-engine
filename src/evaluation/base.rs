@@ -2679,7 +2679,13 @@ fn line_congestion(
     own: PlayerColor,
 ) -> i32 {
     let Some(l) = line else { return 0 };
-    let i = l.coords.partition_point(|&c| c < key);
+    let (coords, pieces) = l.slices();
+    // Lines hold a handful of pieces, where a scan beats the branchy binary search.
+    let i = if coords.len() <= 16 {
+        coords.iter().take_while(|&&c| c < key).count()
+    } else {
+        coords.partition_point(|&c| c < key)
+    };
     let mut units = 0;
     // An enemy pawn walls a ray as surely as an own piece (usually defended, and
     // capturing it doesn't open the line). Own pieces can step aside, so they
@@ -2695,16 +2701,16 @@ fn line_congestion(
             0
         }
     };
-    if i + 1 < l.coords.len() {
-        let d = l.coords[i + 1] - key;
+    if i + 1 < coords.len() {
+        let d = coords[i + 1] - key;
         if d <= 2 {
-            units += wall_units(Piece::from_packed(l.pieces[i + 1]), d);
+            units += wall_units(Piece::from_packed(pieces[i + 1]), d);
         }
     }
     if i > 0 {
-        let d = key - l.coords[i - 1];
+        let d = key - coords[i - 1];
         if d <= 2 {
-            units += wall_units(Piece::from_packed(l.pieces[i - 1]), d);
+            units += wall_units(Piece::from_packed(pieces[i - 1]), d);
         }
     }
     units
