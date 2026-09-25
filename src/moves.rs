@@ -143,6 +143,48 @@ fn generate_knightrider_moves(board: &Board, from: &Coordinate, piece: &Piece) -
     moves
 }
 
+/// Tile squares on one family of knightrider lines, indexed by the line's offset:
+/// `steep` gives row = sign*2*col + k, otherwise col = sign*2*row + k.
+const fn knightrider_lines(steep: bool, sign: i64, bias: i64) -> [u64; 22] {
+    let mut table = [0u64; 22];
+    let mut i = 0;
+    while i < 22 {
+        let mut j = 0;
+        while j < 8 {
+            let o = sign * 2 * j + i as i64 - bias;
+            if o >= 0 && o < 8 {
+                let (c, r) = if steep { (j, o) } else { (o, j) };
+                table[i] |= 1 << (r * 8 + c);
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    table
+}
+const KR_UP: [u64; 22] = knightrider_lines(true, 1, 14);
+const KR_DOWN: [u64; 22] = knightrider_lines(true, -1, 0);
+const KR_RIGHT: [u64; 22] = knightrider_lines(false, 1, 14);
+const KR_LEFT: [u64; 22] = knightrider_lines(false, -1, 0);
+
+/// The squares of a tile on a knightrider's four lines, given the tile origin minus
+/// the rider's square. None past 2^60, where callers test every piece instead, so
+/// the line offsets below cannot overflow.
+#[inline]
+pub(crate) fn knightrider_tile_mask(wx: i64, wy: i64) -> Option<u64> {
+    const NEAR: u64 = 1 << 60;
+    if wx.unsigned_abs() >= NEAR || wy.unsigned_abs() >= NEAR {
+        return None;
+    }
+    let pick = |table: &[u64; 22], k: i64| if (k as u64) < 22 { table[k as usize] } else { 0 };
+    Some(
+        pick(&KR_UP, 2 * wx - wy + 14)
+            | pick(&KR_DOWN, -2 * wx - wy)
+            | pick(&KR_RIGHT, 2 * wy - wx + 14)
+            | pick(&KR_LEFT, -2 * wy - wx),
+    )
+}
+
 /// Generate knightrider moves directly into an output buffer
 /// gen_type controls which move types to generate: All, Quiets only, or Captures only
 pub fn generate_knightrider_moves_into(
@@ -169,7 +211,9 @@ pub fn generate_knightrider_moves_into(
     let mut closest_k = [i64::MAX; 8];
     let mut closest_is_enemy = [false; 8];
     for (cx, cy, tile) in board.tiles.iter() {
-        let mut bits = tile.occ_all;
+        let on_lines =
+            knightrider_tile_mask((cx * 8).wrapping_sub(from.x), (cy * 8).wrapping_sub(from.y));
+        let mut bits = tile.occ_all & on_lines.unwrap_or(!0);
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
             bits &= bits - 1;

@@ -5,6 +5,7 @@ use crate::game::GameState;
 use crate::search::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
 
 use super::base::{MAX_PHASE, get_piece_value_base};
+use crate::moves::knightrider_tile_mask;
 
 const ROSE_DEFEND_BONUS: i32 = 4;
 
@@ -200,23 +201,32 @@ pub(crate) fn fill_knightrider_rays(riders: &[(i64, i64)], board: &Board, out: &
 
     // Every occupant stops a ray, as in movegen; pawns and neutrals are scored
     // as blockers only, so the officer-calibrated credits below stay unchanged.
-    for (px, py, other) in board.iter() {
+    for (cx, cy, tile) in board.tiles.iter() {
         for (i, &(x, y)) in riders.iter().enumerate() {
-            let (rx, ry) = (px - x, py - y);
-            let (dx, dy) = (rx.abs(), ry.abs());
+            let on_lines =
+                knightrider_tile_mask((cx * 8).wrapping_sub(x), (cy * 8).wrapping_sub(y));
+            let mut bits = tile.occ_all & on_lines.unwrap_or(!0);
+            while bits != 0 {
+                let idx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (px, py) = (cx * 8 + (idx % 8) as i64, cy * 8 + (idx / 8) as i64);
+                let other = Piece::from_packed(tile.piece[idx]);
+                let (rx, ry) = (px - x, py - y);
+                let (dx, dy) = (rx.abs(), ry.abs());
 
-            // Only check pieces that are on knightrider's rays.
-            if dx == 0 || (dx * 2 != dy && dx != dy * 2) {
-                continue;
-            }
+                // Only check pieces that are on knightrider's rays.
+                if dx == 0 || (dx * 2 != dy && dx != dy * 2) {
+                    continue;
+                }
 
-            let slot = 4 * (rx > 0) as usize + 2 * (ry > 0) as usize + (dx > dy) as usize;
+                let slot = 4 * (rx > 0) as usize + 2 * (ry > 0) as usize + (dx > dy) as usize;
 
-            // It only needs to check the minimum dx since it's always a multiple
-            // of either 1 or 2 depending on the slot.
-            if dx < best_k[i][slot] {
-                best_k[i][slot] = dx;
-                out[i][slot] = Some(other);
+                // It only needs to check the minimum dx since it's always a multiple
+                // of either 1 or 2 depending on the slot.
+                if dx < best_k[i][slot] {
+                    best_k[i][slot] = dx;
+                    out[i][slot] = Some(other);
+                }
             }
         }
     }
@@ -288,6 +298,24 @@ pub(crate) fn evaluate_compound_leap_threats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knightrider_tile_mask_is_exactly_the_lines() {
+        for wx in -40i64..40 {
+            for wy in -40i64..40 {
+                let mut expect = 0u64;
+                for idx in 0..64 {
+                    let (dx, dy) = ((wx + idx % 8).abs(), (wy + idx / 8).abs());
+                    if dx * 2 == dy || dx == dy * 2 {
+                        expect |= 1 << idx;
+                    }
+                }
+                assert_eq!(knightrider_tile_mask(wx, wy), Some(expect), "offset ({wx}, {wy})");
+            }
+        }
+        assert_eq!(knightrider_tile_mask(1 << 60, 0), None);
+        assert_eq!(knightrider_tile_mask(0, i64::MIN), None);
+    }
 
     fn white_rider_reach(icn: &str) -> i32 {
         let mut g = GameState::new();
