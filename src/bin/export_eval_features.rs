@@ -52,6 +52,8 @@ const MATE_FLOOR: i32 = apeiron::search::MATE_SCORE;
 /// Games set up sequentially per parallel replay pass; bounds peak memory.
 const SETUP_CHUNK: usize = 512;
 static UNPARSED_MOVES: AtomicU64 = AtomicU64::new(0);
+/// `--hash-counts`: each hash-sidecar row also carries the position's piece counts.
+static HASH_COUNTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MIRRORED: AtomicU64 = AtomicU64::new(0);
 static MIRROR_REJECTED: AtomicU64 = AtomicU64::new(0);
 static KEEP_KEYS: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
@@ -210,6 +212,10 @@ struct Cli {
     /// labels can be carried across an eval change that alters every feature key.
     #[arg(long)]
     hash_out: Option<PathBuf>,
+    /// Append the position's piece counts (u8 per [White, Black] x piece type, 2 x 32
+    /// bytes) to every hash-sidecar row, for fitting material values offline.
+    #[arg(long)]
+    hash_counts: bool,
     /// Keep only positions whose Zobrist hash is in this file of LE u64s.
     #[arg(long)]
     keep_hashes: Option<PathBuf>,
@@ -688,6 +694,9 @@ fn consider(
                 out.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
                 out.extend_from_slice(&[0u8; 2]);
                 hashes.extend_from_slice(&pos.hash.to_le_bytes());
+                if HASH_COUNTS.load(Ordering::Relaxed) {
+                    hashes.extend_from_slice(&piece_counts(&pos));
+                }
                 acc.kept += 1;
                 if c.perturb == 0
                     && let Some((m, _)) = mirror
@@ -827,6 +836,21 @@ fn record(stats: &Stats, game: &Game, acc: &Acc) {
             .entry(game.variant.clone())
             .or_default() += acc.kept;
     }
+}
+
+/// Piece counts by colour (White then Black) and `PieceType as usize`, saturating at 255.
+fn piece_counts(g: &GameState) -> [u8; 64] {
+    let mut c = [0u8; 64];
+    for (_, _, p) in g.board.iter() {
+        let side = match p.color() {
+            PlayerColor::White => 0,
+            PlayerColor::Black => 32,
+            _ => continue,
+        };
+        let slot = &mut c[side + (p.piece_type() as usize).min(31)];
+        *slot = slot.saturating_add(1);
+    }
+    c
 }
 
 /// A set-up start position, parsed once per distinct ICN. Setting up also applies the
@@ -1111,6 +1135,7 @@ fn group_by_variant(games: Vec<Game>) -> Vec<Vec<Game>> {
 
 fn main() {
     let cli = Cli::parse();
+    HASH_COUNTS.store(cli.hash_counts, Ordering::Relaxed);
     let layout = variant_layout(target_kind(&cli.eval_kind))
         .filter(|_| !cli.generic_features)
         .map_or((NUM_FEATURES, schema_hash()), |l| (l.len(), l.schema_hash()));
