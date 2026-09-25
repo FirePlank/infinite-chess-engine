@@ -212,15 +212,44 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
     }
 
     // B. Lazy Ray Discovery (Sliding Pieces + Distant Knights/Kings)
-    // We only find the FIRST blocker on each ray.
+    // We only find the FIRST blocker on each ray. One scan per line yields both of
+    // its rays, in the same order as ray_dirs 0..8.
+    let mut slider_first: [Option<(i64, i64, Piece)>; 8] = [None; 8];
+    {
+        let idx = &game.spatial_indices;
+        let (k1, k2) = (target_x - target_y, target_x + target_y);
+        let at = |e: crate::moves::LineEnd, to_xy: &dyn Fn(i64) -> (i64, i64)| {
+            e.map(|(c, packed)| {
+                let (x, y) = to_xy(c);
+                (x, y, Piece::from_packed(packed))
+            })
+        };
+        if let Some(l) = idx.rows.get(&target_y) {
+            let (f, b) = l.neighbors(target_x);
+            slider_first[0] = at(f, &|c| (c, target_y));
+            slider_first[1] = at(b, &|c| (c, target_y));
+        }
+        if let Some(l) = idx.cols.get(&target_x) {
+            let (f, b) = l.neighbors(target_y);
+            slider_first[2] = at(f, &|c| (target_x, c));
+            slider_first[3] = at(b, &|c| (target_x, c));
+        }
+        if let Some(l) = idx.diag1.get(&k1) {
+            let (f, b) = l.neighbors(target_x);
+            slider_first[4] = at(f, &|c| (c, c - k1));
+            slider_first[7] = at(b, &|c| (c, c - k1));
+        }
+        if let Some(l) = idx.diag2.get(&k2) {
+            let (f, b) = l.neighbors(target_x);
+            slider_first[5] = at(f, &|c| (c, k2 - c));
+            slider_first[6] = at(b, &|c| (c, k2 - c));
+        }
+    }
     for (r, &(dx, dy)) in ray_dirs.iter().enumerate() {
         let mut found_pos: Option<(i64, i64, Piece)> = None;
 
         if r < 8 {
-            // Cardinal/Diagonal via SpatialIndices (Infinite range)
-            found_pos = game
-                .spatial_indices
-                .find_first_blocker(target_x, target_y, dx, dy);
+            found_pos = slider_first[r];
         } else if game.spatial_indices.has_knightrider[0] || game.spatial_indices.has_knightrider[1]
         {
             // Knightrider Rays. Capped at the same hop count `is_square_attacked`
