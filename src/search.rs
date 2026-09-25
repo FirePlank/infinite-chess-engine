@@ -3927,7 +3927,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Razoring: if eval is really low, drop to qsearch. The margin is linear so
         // it stays reachable at depth; seek_mate guards mate-finding instead of a cap.
-        if !is_pv && !searcher.hot.seek_mate && eval < alpha - razoring_quad() * depth as i32 {
+        // Not under exclusion: qsearch would return the parent's own TT bound on the singular move.
+        if !is_pv
+            && !searcher.hot.seek_mate
+            && excluded_move.is_none()
+            && eval < alpha - razoring_quad() * depth as i32
+        {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
         }
 
