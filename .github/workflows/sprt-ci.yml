@@ -22,6 +22,9 @@ permissions:
 
 env:
   COVERAGE_THRESHOLD: 75
+  # Tests share process-global world bounds (moves::set_world_bounds), so parallel
+  # test threads race on them and a different test fails each run.
+  RUST_TEST_THREADS: 1
 
 jobs:
   test-and-coverage:
