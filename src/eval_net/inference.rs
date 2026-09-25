@@ -71,48 +71,52 @@ fn dot_i16_chunks(w: &[i16], x: &[i16]) -> i32 {
     sum
 }
 
-/// Four rows against one input vector, sharing the input loads and amortizing
-/// the horizontal reductions.
-#[inline(always)]
-fn dot4_i16(rows: [&[i16]; 4], x: &[i16], len: usize, avx2: bool) -> [i32; 4] {
-    #[cfg(target_arch = "x86_64")]
-    if avx2 {
-        return unsafe { dot4_i16_avx2(rows, x, len) };
-    }
-    let _ = avx2;
-    [
-        dot_i16(rows[0], x, len),
-        dot_i16(rows[1], x, len),
-        dot_i16(rows[2], x, len),
-        dot_i16(rows[3], x, len),
-    ]
-}
-
+/// Eight rows per pass: one input load feeds eight madds, and a hadd tree turns
+/// the eight accumulators into one vector of row sums instead of reducing each row.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn dot4_i16_avx2(rows: [&[i16]; 4], x: &[i16], len: usize) -> [i32; 4] {
+unsafe fn dense_layer_avx2(
+    w: &[i16],
+    b: &[i32],
+    stride: usize,
+    x: &[i16],
+    shift: u32,
+    out: &mut [i16],
+) {
     use std::arch::x86_64::*;
-    debug_assert!(len.is_multiple_of(32));
+    debug_assert!(out.len().is_multiple_of(8) && stride.is_multiple_of(16));
+    debug_assert!(w.len() >= out.len() * stride && x.len() >= stride && b.len() >= out.len());
     unsafe {
-        let mut acc = [_mm256_setzero_si256(); 4];
-        for i in (0..len).step_by(16) {
-            let xv = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
-            for r in 0..4 {
-                let wv = _mm256_loadu_si256(rows[r].as_ptr().add(i) as *const __m256i);
-                acc[r] = _mm256_add_epi32(acc[r], _mm256_madd_epi16(wv, xv));
+        let count = _mm_cvtsi32_si128(shift as i32);
+        let (zero, max) = (_mm256_setzero_si256(), _mm256_set1_epi32(127));
+        for g in (0..out.len()).step_by(8) {
+            let rows = w.as_ptr().add(g * stride);
+            let mut acc = [_mm256_setzero_si256(); 8];
+            for i in (0..stride).step_by(16) {
+                let xv = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
+                for (r, a) in acc.iter_mut().enumerate() {
+                    let wv = _mm256_loadu_si256(rows.add(r * stride + i) as *const __m256i);
+                    *a = _mm256_add_epi32(*a, _mm256_madd_epi16(wv, xv));
+                }
+            }
+            let s01 = _mm256_hadd_epi32(acc[0], acc[1]);
+            let s23 = _mm256_hadd_epi32(acc[2], acc[3]);
+            let s45 = _mm256_hadd_epi32(acc[4], acc[5]);
+            let s67 = _mm256_hadd_epi32(acc[6], acc[7]);
+            let t0 = _mm256_hadd_epi32(s01, s23);
+            let t1 = _mm256_hadd_epi32(s45, s67);
+            let sums = _mm256_add_epi32(
+                _mm256_permute2x128_si256(t0, t1, 0x20),
+                _mm256_permute2x128_si256(t0, t1, 0x31),
+            );
+            let v = _mm256_add_epi32(sums, _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i));
+            let v = _mm256_min_epi32(_mm256_max_epi32(_mm256_sra_epi32(v, count), zero), max);
+            let mut lanes = [0i32; 8];
+            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v);
+            for (o, &l) in out[g..g + 8].iter_mut().zip(&lanes) {
+                *o = l as i16;
             }
         }
-        let mut out = [0i32; 4];
-        for r in 0..4 {
-            let s = _mm_add_epi32(
-                _mm256_castsi256_si128(acc[r]),
-                _mm256_extracti128_si256(acc[r], 1),
-            );
-            let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b01_00_11_10));
-            let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b10_11_00_01));
-            out[r] = _mm_cvtsi128_si32(s);
-        }
-        out
     }
 }
 
@@ -127,13 +131,14 @@ fn dense_layer(
     out: &mut [i16],
     avx2: bool,
 ) {
-    debug_assert!(out.len().is_multiple_of(4));
-    for g in (0..out.len()).step_by(4) {
-        let row = |r: usize| &w[(g + r) * stride..(g + r + 1) * stride];
-        let d = dot4_i16([row(0), row(1), row(2), row(3)], x, stride, avx2);
-        for r in 0..4 {
-            out[g + r] = ((b[g + r] + d[r]) >> shift).clamp(0, 127) as i16;
-        }
+    #[cfg(target_arch = "x86_64")]
+    if avx2 && out.len().is_multiple_of(8) {
+        return unsafe { dense_layer_avx2(w, b, stride, x, shift, out) };
+    }
+    let _ = avx2;
+    for (r, o) in out.iter_mut().enumerate() {
+        let d = dot_i16(&w[r * stride..(r + 1) * stride], x, stride);
+        *o = ((b[r] + d) >> shift).clamp(0, 127) as i16;
     }
 }
 
@@ -215,27 +220,36 @@ mod tests {
         assert_eq!(forward(&net, &x), (raw as f32 * 0.1) as i32);
     }
 
+    /// Both kernels must reproduce the scalar integer layer exactly.
+    #[test]
+    fn dense_layer_matches_scalar_reference() {
+        let (n_out, stride, shift) = (64usize, 128usize, 6u32);
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        let mut next = |m: i64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as i64 % (2 * m + 1) - m) as i32
+        };
+        for _ in 0..50 {
+            let w: Vec<i16> = (0..n_out * stride).map(|_| next(128) as i16).collect();
+            let b: Vec<i32> = (0..n_out).map(|_| next(20_000)).collect();
+            let x: Vec<i16> = (0..stride).map(|_| next(600) as i16).collect();
+            for avx2 in [false, has_avx2()] {
+                let mut got = vec![0i16; n_out];
+                dense_layer(&w, &b, stride, &x, shift, &mut got, avx2);
+                for r in 0..n_out {
+                    let d: i32 = (0..stride).map(|i| w[r * stride + i] as i32 * x[i] as i32).sum();
+                    let want = ((b[r] + d) >> shift).clamp(0, 127) as i16;
+                    assert_eq!(got[r], want, "row {r} avx2 {avx2}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn forward_zero_input_is_bias_only() {
         let net = tiny_net();
         let x = [0i16; NUM_FEATURES];
         assert_eq!(forward(&net, &x), 0);
-    }
-
-    #[test]
-    fn dot4_matches_single_row_dots() {
-        let n = 160;
-        let x: Vec<i16> = (0..n).map(|i| ((i * 911 % 4001) as i32 - 2000) as i16).collect();
-        let rows: Vec<Vec<i16>> = (0..4)
-            .map(|r| (0..n).map(|i| (((i * 37 + r * 53) % 255) as i32 - 127) as i16).collect())
-            .collect();
-        for avx2 in [false, has_avx2()] {
-            let got = dot4_i16([&rows[0], &rows[1], &rows[2], &rows[3]], &x, n, avx2);
-            for r in 0..4 {
-                let want: i32 = rows[r].iter().zip(&x).map(|(a, b)| *a as i32 * *b as i32).sum();
-                assert_eq!(got[r], want, "row {r} avx2 {avx2}");
-            }
-        }
     }
 
     #[test]
