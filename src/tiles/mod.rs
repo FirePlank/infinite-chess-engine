@@ -16,6 +16,11 @@ pub const TILE_MASK: i64 = TILE_SIZE - 1; // 0b111 = 7
 /// plays fits well inside this, so the table never reallocates in normal play.
 pub const TILE_TABLE_INITIAL_CAPACITY: usize = 512;
 
+/// Side of the square block of tiles around the origin that `dense` maps straight
+/// to slots, skipping the hash. Every variant starts inside it (256x256 squares).
+const DENSE_TILES: i64 = 32;
+const DENSE_NONE: u32 = u32::MAX;
+
 // Tile Coordinate Math
 
 /// Convert world coordinate to tile coordinate using arithmetic shift.
@@ -357,6 +362,9 @@ pub struct TileTable {
     tiles: Box<[Tile]>,
     /// BITBOARD: Bitmask of occupied slots, `capacity / 64` words.
     occ_mask: Box<[u64]>,
+    /// Slot of each tile inside the dense block, or `DENSE_NONE`. A pure index over
+    /// the hash layout: slots and their order are exactly what probing assigns.
+    dense: Box<[u32]>,
 }
 
 impl Default for TileTable {
@@ -383,6 +391,25 @@ impl TileTable {
             // Boxed slice rather than an array: 512 tiles is ~96 KiB of stack.
             tiles: vec![Tile::new(); capacity].into_boxed_slice(),
             occ_mask: vec![0u64; capacity / 64].into_boxed_slice(),
+            dense: vec![DENSE_NONE; (DENSE_TILES * DENSE_TILES) as usize].into_boxed_slice(),
+        }
+    }
+
+    #[inline(always)]
+    fn dense_index(cx: i64, cy: i64) -> Option<usize> {
+        let dx = cx.wrapping_add(DENSE_TILES / 2) as u64;
+        let dy = cy.wrapping_add(DENSE_TILES / 2) as u64;
+        if dx < DENSE_TILES as u64 && dy < DENSE_TILES as u64 {
+            Some((dy * DENSE_TILES as u64 + dx) as usize)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn set_dense(&mut self, cx: i64, cy: i64, slot: u32) {
+        if let Some(d) = Self::dense_index(cx, cy) {
+            self.dense[d] = slot;
         }
     }
 
@@ -436,6 +463,7 @@ impl TileTable {
             fresh.occ_mask[idx / 64] |= 1u64 << (idx % 64);
             fresh.states[idx] = SlotState::Occupied;
             fresh.keys[idx] = (cx, cy);
+            fresh.set_dense(cx, cy, idx as u32);
             fresh.tiles[idx] = std::mem::replace(&mut self.tiles[i], Tile::new());
         }
         *self = fresh;
@@ -444,6 +472,11 @@ impl TileTable {
     /// Get a tile, if it exists.
     #[inline]
     pub fn get_tile(&self, cx: i64, cy: i64) -> Option<&Tile> {
+        if let Some(d) = Self::dense_index(cx, cy) {
+            let slot = unsafe { *self.dense.get_unchecked(d) };
+            return (slot != DENSE_NONE)
+                .then(|| unsafe { self.tiles.get_unchecked(slot as usize) });
+        }
         let mut idx = self.hash(cx, cy);
         for _ in 0..self.states.len() {
             // Unsafe: idx is masked by self.mask
@@ -464,6 +497,11 @@ impl TileTable {
     /// Get a mutable tile, if it exists.
     #[inline]
     pub fn get_tile_mut(&mut self, cx: i64, cy: i64) -> Option<&mut Tile> {
+        if let Some(d) = Self::dense_index(cx, cy) {
+            let slot = unsafe { *self.dense.get_unchecked(d) };
+            return (slot != DENSE_NONE)
+                .then(|| unsafe { self.tiles.get_unchecked_mut(slot as usize) });
+        }
         let mut idx = self.hash(cx, cy);
         for _ in 0..self.states.len() {
             // Unsafe: idx is masked by self.mask
@@ -486,6 +524,12 @@ impl TileTable {
     /// further along the chain.
     #[inline]
     pub fn get_or_create(&mut self, cx: i64, cy: i64) -> &mut Tile {
+        if let Some(d) = Self::dense_index(cx, cy) {
+            let slot = self.dense[d];
+            if slot != DENSE_NONE {
+                return unsafe { self.tiles.get_unchecked_mut(slot as usize) };
+            }
+        }
         let mut idx = self.hash(cx, cy);
         let mut first_tombstone: Option<usize> = None;
         let mut found: Option<usize> = None;
@@ -538,6 +582,7 @@ impl TileTable {
         self.occ_mask[slot / 64] |= 1u64 << (slot % 64);
         self.states[slot] = SlotState::Occupied;
         self.keys[slot] = (cx, cy);
+        self.set_dense(cx, cy, slot as u32);
         self.tiles[slot] = Tile::new();
         &mut self.tiles[slot]
     }
@@ -554,6 +599,7 @@ impl TileTable {
         self.occ_mask[idx / 64] |= 1u64 << (idx % 64);
         self.states[idx] = SlotState::Occupied;
         self.keys[idx] = (cx, cy);
+        self.set_dense(cx, cy, idx as u32);
         self.tiles[idx] = Tile::new();
         &mut self.tiles[idx]
     }
@@ -571,6 +617,7 @@ impl TileTable {
                 SlotState::Occupied => {
                     if unsafe { *self.keys.get_unchecked(idx) } == (cx, cy) {
                         self.states[idx] = SlotState::Tombstone;
+                        self.set_dense(cx, cy, DENSE_NONE);
                         // No clear() here: a non-Occupied slot is unreachable, and
                         // get_or_create/insert_fresh zero the tile on reuse anyway.
                         self.count -= 1;
@@ -628,6 +675,7 @@ impl TileTable {
         self.count = 0;
         self.used = 0;
         self.occ_mask.fill(0);
+        self.dense.fill(DENSE_NONE);
     }
 
     /// Get the number of occupied tiles.
