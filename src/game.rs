@@ -387,6 +387,20 @@ impl GameState {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static EVASION_LEAPER_FAST: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Lets tests compare evasions with and without the leaper fast path.
+#[inline(always)]
+fn evasion_leaper_fast_path() -> bool {
+    #[cfg(test)]
+    return EVASION_LEAPER_FAST.with(|c| c.get());
+    #[cfg(not(test))]
+    true
+}
+
 impl Default for GameState {
     fn default() -> Self {
         Self::new()
@@ -2713,6 +2727,35 @@ impl GameState {
                 }
             }
 
+            // Pure leapers and steppers: against a linear or leaper checker the list
+            // below yields only their capture of the checker, and their generators
+            // have no side effects (no slider cache), so test the offset directly.
+            if !is_knightrider_checker && !is_nonlinear_checker && evasion_leaper_fast_path() {
+                let (adx, ady) = ((checker_sq.x - from.x).abs(), (checker_sq.y - from.y).abs());
+                let step = adx.max(ady) == 1;
+                let knight = (adx == 1 && ady == 2) || (adx == 2 && ady == 1);
+                let hits = match pt {
+                    PieceType::Knight => Some(knight),
+                    PieceType::Camel => Some((adx == 1 && ady == 3) || (adx == 3 && ady == 1)),
+                    PieceType::Giraffe => Some((adx == 1 && ady == 4) || (adx == 4 && ady == 1)),
+                    PieceType::Zebra => Some((adx == 2 && ady == 3) || (adx == 3 && ady == 2)),
+                    PieceType::Hawk => Some(
+                        (adx.max(ady) == 2 || adx.max(ady) == 3)
+                            && (adx == 0 || ady == 0 || adx == ady),
+                    ),
+                    // Castling lands on a square proven empty, never the checker's.
+                    PieceType::King | PieceType::Guard => Some(step),
+                    PieceType::Centaur | PieceType::RoyalCentaur => Some(step || knight),
+                    _ => None,
+                };
+                if let Some(hits) = hits {
+                    if hits && crate::moves::in_bounds(checker_sq.x, checker_sq.y) {
+                        out.push(Move::new(from, checker_sq, *piece));
+                    }
+                    return;
+                }
+            }
+
             // CAPTURE & BLOCKING DETECTION (for remaining pieces)
             // Uses pseudo-legal move generation for captures
             let mut pseudo = MoveList::new();
@@ -4493,6 +4536,88 @@ mod tests {
     fn create_test_game() -> GameState {
         reset_world_bounds();
         create_test_game_from_icn("w (8;q|1;q) K5,1|k5,8")
+    }
+
+    /// The leaper fast path in evasion generation must leave the evasion list
+    /// unchanged, move for move, against the generate-and-filter path it skips.
+    #[test]
+    fn evasion_leaper_fast_path_is_identical() {
+        let evasions = |g: &GameState, fast: bool| {
+            super::EVASION_LEAPER_FAST.with(|c| c.set(fast));
+            let mut out = MoveList::new();
+            g.get_evasion_moves_into(&mut out);
+            super::EVASION_LEAPER_FAST.with(|c| c.set(true));
+            out
+        };
+        let mut checked = 0;
+        let mut leaper_captures = 0;
+        let mut compare = |g: &GameState| {
+            if !g.is_in_check() {
+                return;
+            }
+            let (slow, fast) = (evasions(g, false), evasions(g, true));
+            assert_eq!(slow.as_slice(), fast.as_slice());
+            checked += 1;
+            leaper_captures += fast
+                .iter()
+                .filter(|m| {
+                    crate::attacks::attacks_like_knight(m.piece.piece_type())
+                        || crate::attacks::attacks_like_king(m.piece.piece_type())
+                        || matches!(
+                            m.piece.piece_type(),
+                            PieceType::Camel | PieceType::Giraffe | PieceType::Zebra | PieceType::Hawk
+                        )
+                })
+                .filter(|m| g.board.get_piece(m.to.x, m.to.y).is_some())
+                .count();
+        };
+        // Every leaper type near a checking rook, some reaching it.
+        compare(&create_test_game_from_icn(
+            "w (8;q|1;q) K0,0|r0,5|k20,20|N1,3|N4,4|L3,6|L5,5|I1,1|I4,6|Z2,2|Z3,8|H2,5|H3,3|G1,5|E1,4|E3,2",
+        ));
+        for v in [
+            crate::Variant::ScatteredLeapers,
+            crate::Variant::CoaIP,
+            crate::Variant::Classical,
+            crate::Variant::Palace,
+        ] {
+            for seed in 0..40u64 {
+                let mut g = create_test_game_from_icn(v.starting_icn());
+                let mut r = seed.wrapping_mul(0x9E3779B97F4A7C15) | 1;
+                for _ in 0..80 {
+                    compare(&g);
+                    crate::moves::set_slider_cache_bypass(true);
+                    let pseudo = g.get_pseudo_legal_moves();
+                    crate::moves::set_slider_cache_bypass(false);
+                    let moves: Vec<Move> = pseudo
+                        .iter()
+                        .filter(|m| {
+                            let undo = g.make_move(m);
+                            let ok = !g.is_move_illegal();
+                            g.undo_move(m, undo);
+                            ok
+                        })
+                        .copied()
+                        .collect();
+                    if moves.is_empty() {
+                        break;
+                    }
+                    r ^= r << 13;
+                    r ^= r >> 7;
+                    r ^= r << 17;
+                    let caps: Vec<_> =
+                        moves.iter().filter(|m| g.board.get_piece(m.to.x, m.to.y).is_some()).collect();
+                    let m = if !caps.is_empty() && r % 3 == 0 {
+                        *caps[(r >> 8) as usize % caps.len()]
+                    } else {
+                        moves[(r >> 8) as usize % moves.len()]
+                    };
+                    g.make_move(&m);
+                }
+            }
+        }
+        assert!(checked >= 200, "only {checked} positions in check");
+        assert!(leaper_captures >= 50, "only {leaper_captures} leaper captures exercised");
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {
