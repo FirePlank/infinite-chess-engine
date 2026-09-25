@@ -171,7 +171,7 @@ pub struct GameState {
     pub turn: PlayerColor,
     /// Special rights for pieces - includes both castling rights (kings/rooks) AND
     /// pawn double-move rights. A piece with its coordinate in this set has its special rights.
-    pub special_rights: FxHashSet<Coordinate>,
+    pub special_rights: crate::rights::SpecialRights,
     pub en_passant: Option<EnPassantState>,
     pub halfmove_clock: u32,
     pub fullmove_number: u32,
@@ -296,12 +296,12 @@ impl GameState {
     /// Returns pieces that can castle (kings/royals and any non-pawn partner with special rights)
     pub fn castling_rights(&self) -> FxHashSet<Coordinate> {
         let mut rights = FxHashSet::default();
-        for coord in &self.special_rights {
+        for coord in self.special_rights.iter() {
             if let Some(piece) = self.board.get_piece(coord.x, coord.y) {
                 // Include royals (kings) and any non-pawn piece as potential castling partners
                 // This matches the move generation logic which accepts any non-pawn, non-royal piece
                 if piece.piece_type().is_royal() || piece.piece_type() != PieceType::Pawn {
-                    rights.insert(*coord);
+                    rights.insert(coord);
                 }
             }
         }
@@ -342,8 +342,8 @@ impl GameState {
                 continue;
             }
 
-            for coord in &self.special_rights {
-                if coord.y != royal.y || coord.x == royal.x {
+            for coord in self.special_rights.iter_rank(royal.y) {
+                if coord.x == royal.x {
                     continue;
                 }
                 let Some(partner) = self.board.get_piece(coord.x, coord.y) else {
@@ -374,7 +374,7 @@ impl GameState {
         let mut h = castling_rights_key_from_bitfield(self.effective_castling_rights);
 
         if self.needs_precise_castling_rights_hash() {
-            for coord in &self.special_rights {
+            for coord in self.special_rights.iter() {
                 if let Some(piece) = self.board.get_piece(coord.x, coord.y)
                     && piece.piece_type() != PieceType::Pawn
                 {
@@ -412,7 +412,7 @@ impl GameState {
         GameState {
             board: Board::new(),
             turn: PlayerColor::White,
-            special_rights: FxHashSet::default(),
+            special_rights: crate::rights::SpecialRights::new(),
             en_passant: None,
             halfmove_clock: 0,
             fullmove_number: 1,
@@ -463,7 +463,7 @@ impl GameState {
         GameState {
             board: Board::new(),
             turn: PlayerColor::White,
-            special_rights: FxHashSet::default(),
+            special_rights: crate::rights::SpecialRights::new(),
             en_passant: None,
             halfmove_clock: 0,
             fullmove_number: 1,
@@ -1448,7 +1448,7 @@ impl GameState {
         h ^= self.castling_hash();
 
         // Hash individual PAWN special rights (double-push rights)
-        for coord in &self.special_rights {
+        for coord in self.special_rights.iter() {
             if let Some(piece) = self.board.get_piece(coord.x, coord.y)
                 && piece.piece_type() == PieceType::Pawn
             {
@@ -4647,6 +4647,41 @@ mod tests {
         }
         let to_checker = out.iter().filter(|m| m.to == Coordinate::new(0, 5)).count();
         assert!(to_checker >= 5, "expected several checker captures, got {to_checker}");
+    }
+
+    /// Rights far outside the bitboard window: castling, the partner counts, the
+    /// precise castling hash (two partners a side) and make/undo must all see them.
+    #[test]
+    fn castling_with_several_partners_on_a_far_rank() {
+        let (x, y) = (1_000_000_000_000_000_000i64, -42_629_629_468_368_998i64);
+        let mut game = create_test_game_from_icn(&format!(
+            "w K{x},{y}+|R{},{y}+|R{},{y}+|R{},{y}+|R{},{y}+|r{},{y}+|k0,0",
+            x + 3,
+            x + 7,
+            x - 4,
+            x - 9,
+            x + 20,
+        ));
+        assert_eq!(game.castling_partner_counts, [2, 2, 0, 0]);
+
+        let castles: Vec<Move> = game
+            .get_pseudo_legal_moves()
+            .into_iter()
+            .filter(|m| m.partner_x != crate::moves::NO_PARTNER)
+            .collect();
+        let partners: Vec<i64> = castles.iter().map(|m| m.partner_x).collect();
+        assert_eq!(partners, vec![x - 4, x + 3], "only the nearest partner a side castles");
+
+        let before = (game.hash, game.special_rights.clone());
+        for m in &castles {
+            let undo = game.make_move(m);
+            assert!(!game.special_rights.contains(&Coordinate::new(x, y)));
+            let incremental = game.hash;
+            game.recompute_hash();
+            assert_eq!(game.hash, incremental, "incremental hash drifted after {m:?}");
+            game.undo_move(m, undo);
+            assert_eq!((game.hash, game.special_rights.clone()), before);
+        }
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {

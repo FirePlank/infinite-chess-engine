@@ -9,7 +9,6 @@ use crate::moves::{
     generate_pawn_quiet_promotions, generate_rose_moves_into, generate_sliding_capture_moves,
     is_enemy_piece,
 };
-use rustc_hash::FxHashSet;
 
 /// Generate only capturing moves for quiescence search when the side to move is **not** in check.
 /// This avoids generating and then filtering thousands of quiet moves.
@@ -165,7 +164,7 @@ fn generate_pawn_capture_moves(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    _special_rights: &FxHashSet<Coordinate>,
+    _special_rights: &crate::rights::SpecialRights,
     en_passant: &Option<EnPassantState>,
     game_rules: &GameRules,
     out: &mut MoveList,

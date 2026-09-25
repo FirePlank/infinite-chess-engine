@@ -1,5 +1,6 @@
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{EnPassantState, GameRules};
+use crate::rights::SpecialRights;
 use crate::utils::{PRIMES_UNDER_128, is_prime_fast};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -56,7 +57,7 @@ pub type MoveList = smallvec::SmallVec<[Move; 128]>;
 
 #[derive(Debug, Clone)]
 pub struct MoveGenContext<'a> {
-    pub special_rights: &'a FxHashSet<Coordinate>,
+    pub special_rights: &'a SpecialRights,
     pub en_passant: &'a Option<EnPassantState>,
     pub game_rules: &'a GameRules,
     pub indices: &'a SpatialIndices,
@@ -546,7 +547,7 @@ pub fn is_piece_attacking_square(
     // 3. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
     let mut moves = MoveList::new();
     let ctx = MoveGenContext {
-        special_rights: &FxHashSet::default(),
+        special_rights: &SpecialRights::new(),
         en_passant: &None,
         game_rules,
         indices,
@@ -1945,7 +1946,7 @@ pub fn generate_pawn_quiet_promotions(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    special_rights: &FxHashSet<Coordinate>,
+    special_rights: &SpecialRights,
     game_rules: &GameRules,
     out: &mut MoveList,
 ) {
@@ -2009,7 +2010,7 @@ fn generate_pawn_capture_moves(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    _special_rights: &FxHashSet<Coordinate>,
+    _special_rights: &SpecialRights,
     en_passant: &Option<EnPassantState>,
     game_rules: &GameRules,
     out: &mut MoveList,
@@ -2105,7 +2106,7 @@ fn generate_castling_moves(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    special_rights: &FxHashSet<Coordinate>,
+    special_rights: &SpecialRights,
     game_rules: &GameRules,
     indices: &SpatialIndices,
 ) -> MoveList {
@@ -2422,7 +2423,7 @@ fn generate_pawn_quiet_moves(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    special_rights: &FxHashSet<Coordinate>,
+    special_rights: &SpecialRights,
     game_rules: &GameRules,
     out: &mut MoveList,
 ) {
@@ -4313,7 +4314,7 @@ fn generate_pawn_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    special_rights: &FxHashSet<Coordinate>,
+    special_rights: &SpecialRights,
     en_passant: &Option<EnPassantState>,
     game_rules: &GameRules,
     out: &mut MoveList,
@@ -4439,7 +4440,7 @@ fn generate_castling_moves_into(
     board: &Board,
     from: &Coordinate,
     piece: &Piece,
-    special_rights: &FxHashSet<Coordinate>,
+    special_rights: &SpecialRights,
     game_rules: &GameRules,
     indices: &SpatialIndices,
     out: &mut MoveList,
@@ -4448,11 +4449,7 @@ fn generate_castling_moves_into(
         return;
     }
 
-    for coord in special_rights.iter() {
-        // Partners share the king's rank; most rights holders are pawns elsewhere.
-        if coord.y != from.y {
-            continue;
-        }
+    for coord in special_rights.iter_rank(from.y) {
         if board.get_piece(coord.x, coord.y).is_some_and(|p| {
             p.color() == piece.color()
                 && p.piece_type() != PieceType::Pawn
@@ -4981,7 +4978,7 @@ mod tests {
             let from = Coordinate::new(4, 2);
             let piece = Piece::new(PieceType::Pawn, PlayerColor::White);
 
-            let special = FxHashSet::default();
+            let special = SpecialRights::new();
             let mut moves = MoveList::new();
             generate_pawn_moves_into(
                 &game.board,

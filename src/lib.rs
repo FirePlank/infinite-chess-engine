@@ -7,6 +7,7 @@ pub mod eval_net;
 pub mod evaluation;
 pub mod game;
 pub mod moves;
+pub mod rights;
 pub mod search;
 pub mod simd;
 pub mod tiles;
