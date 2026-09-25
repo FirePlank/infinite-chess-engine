@@ -1053,13 +1053,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 if pt == PieceType::Pawn {
                                     pawn_min_y = pawn_min_y.min(y);
                                     pawn_max_y = pawn_max_y.max(y);
-                                    // With no promotion rank (sentinel) every pawn still counts
-                                    // for structure and shelter; only passer terms skip it.
                                     if is_white {
-                                        if y < w_promo || w_promo == i64::MIN {
-                                            white_pawns.push((x, y));
-                                        }
-                                    } else if y > b_promo || b_promo == i64::MAX {
+                                        white_pawns.push((x, y));
+                                    } else {
                                         black_pawns.push((x, y));
                                     }
                                 } else if !pt.is_neutral_type() {
@@ -3605,9 +3601,6 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                     wp.clear();
                     bp.clear();
 
-                    let w_promo = game.white_promo_rank;
-                    let b_promo = game.black_promo_rank;
-
                     for (cx, cy, tile) in game.board.tiles.iter() {
                         let mut bits = tile.occ_all;
                         while bits != 0 {
@@ -3622,10 +3615,8 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                             let y = cy * 8 + (idx / 8) as i64;
                             if piece.piece_type() == PieceType::Pawn {
                                 if piece.color() == PlayerColor::White {
-                                    if y < w_promo || w_promo == i64::MIN {
-                                        wp.push((x, y));
-                                    }
-                                } else if y > b_promo || b_promo == i64::MAX {
+                                    wp.push((x, y));
+                                } else {
                                     bp.push((x, y));
                                 }
                             }
@@ -3926,8 +3917,9 @@ fn compute_pawn_core<T: EvaluationTracer>(
             }
         }
 
-        // A pawn that cannot promote is never a passer or a candidate.
-        if w_promo == i64::MIN {
+        // A pawn that cannot promote (no rank, or already past it) is never a passer
+        // or a candidate; it still counts for structure and shelter.
+        if wy >= w_promo {
             is_passed = false;
             stoppers = 0;
         }
@@ -4036,7 +4028,7 @@ fn compute_pawn_core<T: EvaluationTracer>(
             }
         }
 
-        if b_promo == i64::MAX {
+        if by <= b_promo {
             is_passed = false;
             stoppers = 0;
         }
