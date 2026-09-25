@@ -3984,6 +3984,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
                 let saved_plies_from_null = game.plies_from_null;
+                let saved_repetition = game.repetition;
                 // Install a null context so the child sees "no previous move"
                 // (disabling continuation-history lookups keyed on this ply)
                 // instead of a stale real move from an earlier sibling.
@@ -4009,6 +4010,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 game.unmake_null_move();
                 game.en_passant = saved_ep;
                 game.plies_from_null = saved_plies_from_null;
+                game.repetition = saved_repetition;
 
                 searcher.pop_move_context(ply, ctx_backup);
 

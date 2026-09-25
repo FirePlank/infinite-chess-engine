@@ -1201,10 +1201,6 @@ impl GameState {
     /// stored negative, so it always compares below the ply and always counts.
     #[inline]
     pub fn is_repetition(&self, ply: usize) -> bool {
-        // Don't check during null move search
-        if self.null_moves > 0 {
-            return false;
-        }
 
         // Result is true if a repetition occurred within the current search tree.
         self.repetition != 0 && self.repetition < (ply as i32)
@@ -1216,10 +1212,6 @@ impl GameState {
     pub fn upcoming_repetition(&self, ply: usize) -> bool {
         use crate::search::zobrist::{SIDE_KEY, piece_key};
 
-        // Don't check during null move search
-        if self.null_moves > 0 {
-            return false;
-        }
 
         let stack_len = self.hash_stack.len();
         let history_len = self.move_history.len();
@@ -1338,10 +1330,6 @@ impl GameState {
 /// Insufficient material is NOT tested here; the evaluator handles it separately.
     #[inline]
     pub fn is_draw(&mut self, ply: usize, in_check: bool) -> bool {
-        // Don't check during null move search
-        if self.null_moves > 0 {
-            return false;
-        }
 
         // Draw by fifty-move rule: only if we aren't in checkmate
         if let Some(limit) = self.game_rules.move_rule_limit {
@@ -1380,10 +1368,6 @@ impl GameState {
 
     /// Check if position is a draw by 50-move rule (or variant specific limit)
     pub fn is_fifty(&self) -> bool {
-        // Don't check during null move search
-        if self.null_moves > 0 {
-            return false;
-        }
         // If no move rule is defined, never trigger a draw
         match self.game_rules.move_rule_limit {
             Some(limit) => self.halfmove_clock >= limit,
@@ -1410,8 +1394,9 @@ impl GameState {
 
         self.null_moves += 1;
 
-        // Reset plies from last null move.
+        // Reset plies from last null move; the caller restores both.
         self.plies_from_null = 0;
+        self.repetition = 0;
     }
 
     /// Unmake a null move
@@ -3449,7 +3434,10 @@ impl GameState {
         // Compute distance to previous occurrence for repetition detection:
         // of same position. 0 = no repetition, positive = distance to twofold, negative = threefold.
         self.repetition = 0;
-        let end = (self.halfmove_clock as usize).min(self.hash_stack.len());
+        // Positions before a null move are not reachable by real moves.
+        let end = (self.halfmove_clock as usize)
+            .min(self.hash_stack.len())
+            .min(self.plies_from_null as usize);
         if end >= 4 {
             let current_hash = self.hash;
             let mut i = 4usize;
@@ -4757,15 +4745,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_fifty_respects_null_move() {
+    fn test_is_fifty_under_null_move() {
         let mut game = create_test_game();
         game.game_rules.move_rule_limit = Some(100);
         game.halfmove_clock = 100;
         game.null_moves = 1;
-        assert!(
-            !game.is_fifty(),
-            "Should not trigger during null move search"
-        );
+        assert!(game.is_fifty(), "the move clock still runs below a null move");
     }
 
     #[test]
@@ -4929,11 +4914,11 @@ mod tests {
     }
 
     #[test]
-    fn test_is_repetition_during_null_move() {
+    fn test_null_move_resets_repetition() {
         let mut game = create_test_game();
         game.repetition = -3;
-        game.null_moves = 1;
-        assert!(!game.is_repetition(5), "Should not detect during null move");
+        game.make_null_move();
+        assert!(!game.is_repetition(5), "a null move starts a new repetition window");
     }
 
     #[test]
