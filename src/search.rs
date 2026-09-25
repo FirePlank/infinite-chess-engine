@@ -669,6 +669,8 @@ pub struct SearcherHot {
     pub best_move_nodes: u64,
     /// Running average score smoothed across iterations
     pub best_previous_average_score: i32,
+    /// The previous search's root score, which seeds the falling-eval reference.
+    pub last_root_score: i32,
     /// Root is deep enough and the score decisive enough that mate hunting is on:
     /// static shortcuts stop being trustworthy.
     pub seek_mate: bool,
@@ -1108,6 +1110,7 @@ impl Searcher {
                 best_move_changes: 0.0,
                 best_move_nodes: 0,
                 best_previous_average_score: 0,
+                last_root_score: 0,
                 seek_mate: false,
                 iter_values: [0; 4],
                 iter_idx: 0,
@@ -1272,9 +1275,9 @@ impl Searcher {
         self.hot.tot_best_move_changes = 0.0;
         self.hot.best_move_changes = 0.0;
         self.hot.best_move_nodes = 0;
-        self.hot.best_previous_average_score = 0;
+        self.hot.best_previous_average_score = self.hot.last_root_score;
         self.hot.seek_mate = false;
-        self.hot.iter_values.fill(0);
+        self.hot.iter_values.fill(self.hot.last_root_score);
         self.hot.iter_idx = 0;
         self.hot.prev_time_reduction = 1.0;
         self.hot.last_best_move_depth = 0;
@@ -1340,6 +1343,7 @@ impl Searcher {
 
     /// Clears TT and resets all history tables to neutral values.
     pub fn clear(&mut self) {
+        self.hot.last_root_score = 0;
         // Clear transposition table
         #[cfg(feature = "multithreading")]
         if let Some(tt) = SHARED_TT.get() {
@@ -2402,6 +2406,7 @@ fn search_with_searcher(
         }
     }
 
+    searcher.hot.last_root_score = if is_decisive(best_score) { 0 } else { best_score };
     best_move.map(|m| (m, best_score))
 }
 
