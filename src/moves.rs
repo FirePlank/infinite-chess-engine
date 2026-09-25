@@ -3145,7 +3145,25 @@ fn generate_sliding_moves_impl(
         }
     }
 
+    // Fixed for the whole call, so read once rather than per ray and per move.
+    let pin = ctx.pinned.get(from).copied();
+    let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
+    let quiet_ray_cap = QUIET_RAY_CAP.with(|c| c.get());
+    let (min_x, max_x, min_y, max_y) = get_coord_bounds();
+
     for &(dx_raw, dy_raw) in directions {
+        // One scan of the line gives the nearest piece in both of its directions.
+        let (line, along) = if dx_raw == 0 {
+            (indices.cols.get(&from.x), from.y)
+        } else if dy_raw == 0 {
+            (indices.rows.get(&from.y), from.x)
+        } else if dx_raw == dy_raw {
+            (indices.diag1.get(&(from.x - from.y)), from.x)
+        } else {
+            (indices.diag2.get(&(from.x + from.y)), from.x)
+        };
+        let (line_fwd, line_back) = line.map_or((None, None), |l| l.neighbors(along));
+
         for sign in [1i64, -1i64] {
             let dir_x = dx_raw * sign;
             let dir_y = dy_raw * sign;
@@ -3155,7 +3173,7 @@ fn generate_sliding_moves_impl(
             }
 
             // Pin check: if this piece is pinned, it can only move along the pin ray
-            if let Some(&(px, py)) = ctx.pinned.get(from)
+            if let Some((px, py)) = pin
                 && dir_x * py != dir_y * px
             {
                 continue;
@@ -3164,9 +3182,15 @@ fn generate_sliding_moves_impl(
             let is_vertical = dir_x == 0;
             let is_horizontal = dir_y == 0;
 
-            // Use spatial indices for O(log n) blocker finding
+            let step = if is_vertical { dir_y } else { dir_x };
             let (closest_dist, closest_is_enemy) =
-                find_blocker_via_indices(board, from, dir_x, dir_y, indices, our_color);
+                match if step > 0 { line_fwd } else { line_back } {
+                    Some((c, packed)) => {
+                        let p = Piece::from_packed(packed);
+                        ((c - along).abs(), p.color() != our_color && !p.piece_type().is_uncapturable())
+                    }
+                    None => (i64::MAX, false),
+                };
 
             let max_dist = if closest_dist < i64::MAX {
                 if closest_is_enemy {
@@ -3198,8 +3222,6 @@ fn generate_sliding_moves_impl(
                 _ => 0,        // fallback
             };
             let cache_key = (from.x, from.y, dir_index);
-
-            let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
 
             // A hit hands out the slice from inside the borrow: cloning the
             // handle cost a refcount bump and drop on every ray.
@@ -3605,7 +3627,7 @@ fn generate_sliding_moves_impl(
             // Generate moves from target_dists (sorted ascending, so a per-ray
             // cap naturally keeps the nearest candidates).
             let ray_cap = if gen_type == MoveGenType::Quiets {
-                QUIET_RAY_CAP.with(|c| c.get())
+                quiet_ray_cap
             } else {
                 0
             };
@@ -3645,7 +3667,7 @@ fn generate_sliding_moves_impl(
                     }
                 }
 
-                if in_bounds(sq_x, sq_y) {
+                if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
                     out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
                 }
             }
