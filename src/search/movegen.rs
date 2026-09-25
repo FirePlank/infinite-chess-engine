@@ -1195,6 +1195,7 @@ impl StagedMoveGen {
                         && !self.is_excluded(&m)
                         && !Self::is_capture(game, &m)
                         && !game.is_en_passant(&m)
+                        && m.promotion.is_none()
                         && Self::is_pseudo_legal(game, &m)
                     {
                         return Some(m);
@@ -1214,6 +1215,7 @@ impl StagedMoveGen {
                         && !Self::moves_match(&m, &self.killer1)
                         && !Self::is_capture(game, &m)
                         && !game.is_en_passant(&m)
+                        && m.promotion.is_none()
                         && Self::is_pseudo_legal(game, &m)
                     {
                         return Some(m);

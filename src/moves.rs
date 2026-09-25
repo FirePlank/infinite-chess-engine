@@ -2359,17 +2359,6 @@ fn generate_pawn_quiet_moves(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    let default_promos = [
-        PieceType::Queen,
-        PieceType::Rook,
-        PieceType::Bishop,
-        PieceType::Knight,
-    ];
-    let promotion_pieces: &[PieceType] = game_rules
-        .promotion_types
-        .as_deref()
-        .unwrap_or(&default_promos);
-
     // Helper function for promotion moves
     #[inline]
     fn add_pawn_move(
@@ -2379,18 +2368,10 @@ fn generate_pawn_quiet_moves(
         to_y: i64,
         piece: Piece,
         promotion_ranks: &[i64],
-        promotion_pieces: &[PieceType],
     ) {
-        if in_bounds(to_x, to_y) {
-            if promotion_ranks.contains(&to_y) {
-                for &promo in promotion_pieces {
-                    let mut m = Move::new(from, Coordinate::new(to_x, to_y), piece);
-                    m.promotion = Some(promo);
-                    out.push(m);
-                }
-            } else {
-                out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
-            }
+        // Quiet promotions come from the capture stage (generate_pawn_quiet_promotions).
+        if in_bounds(to_x, to_y) && !promotion_ranks.contains(&to_y) {
+            out.push(Move::new(from, Coordinate::new(to_x, to_y), piece));
         }
     }
 
@@ -2407,7 +2388,6 @@ fn generate_pawn_quiet_moves(
             to_y,
             *piece,
             promotion_ranks,
-            promotion_pieces,
         );
 
         // Double push if pawn has special rights
@@ -2421,7 +2401,6 @@ fn generate_pawn_quiet_moves(
                     double_y,
                     *piece,
                     promotion_ranks,
-                    promotion_pieces,
                 );
             }
         }
