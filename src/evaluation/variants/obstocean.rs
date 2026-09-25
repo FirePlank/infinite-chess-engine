@@ -771,8 +771,8 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                         let phase = phase.min(base::MAX_PHASE);
 
                         // 2. Sort pawn lists for O(log N) file lookups
-                        white_pawns.sort_unstable();
-                        black_pawns.sort_unstable();
+                        crate::evaluation::base::sort_squares(white_pawns);
+                        crate::evaluation::base::sort_squares(black_pawns);
 
                         // 3. Non-pawn piece evaluation
                         for &(x, y, p) in heavy_pieces.iter() {

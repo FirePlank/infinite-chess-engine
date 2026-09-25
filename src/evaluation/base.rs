@@ -659,6 +659,26 @@ pub const DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS: i32 = 27;
 pub const SLIDER_CONGESTION_UNIT: i32 = 3;
 pub const DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS: i32 = 67;
 
+/// Sorts squares by (x, y). The tile walk yields them in runs already sorted by x
+/// within a tile, so insertion sort runs near-linear; squares are distinct, so any
+/// correct sort gives the same order.
+#[inline]
+pub(crate) fn sort_squares(v: &mut [(i64, i64)]) {
+    if v.len() > 64 {
+        v.sort_unstable();
+        return;
+    }
+    for i in 1..v.len() {
+        let cur = v[i];
+        let mut j = i;
+        while j > 0 && v[j - 1] > cur {
+            v[j] = v[j - 1];
+            j -= 1;
+        }
+        v[j] = cur;
+    }
+}
+
 /// Probe a square offset (dx, dy) from a piece at local tile index `idx`.
 /// Targets that stay inside the current 8x8 tile are read straight from the
 /// tile's bitboard/piece array, skipping the TileTable hash probe.
@@ -1544,8 +1564,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         }
 
                         // Sort pawns for efficient structure evaluation (O(P log P))
-                        white_pawns.sort_unstable();
-                        black_pawns.sort_unstable();
+                        sort_squares(white_pawns);
+                        sort_squares(black_pawns);
 
                         let total_pieces = white_non_pawn_non_royal + black_non_pawn_non_royal;
                         let multiplier_q = (190 - 18 * total_pieces).clamp(10, 100);
@@ -3622,8 +3642,8 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
                             }
                         }
                     }
-                    wp.sort_unstable();
-                    bp.sort_unstable();
+                    sort_squares(wp);
+                    sort_squares(bp);
 
                     evaluate_pawn_structure_traced(
                         game,
