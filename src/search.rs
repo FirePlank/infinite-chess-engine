@@ -4263,8 +4263,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 movegen.skip_quiet_moves();
             }
 
-            // LMR depth estimate for pruning decisions
-            let lmr_depth = new_depth as i32;
+            // Futility and SEE margins judge the depth the move would actually be searched at.
+            let lmr_depth = (new_depth as i32 - get_lmr(depth, legal_moves + 1)).max(0);
 
             if is_capture || gives_check {
                 // Capture/check pruning
