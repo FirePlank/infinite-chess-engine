@@ -1604,11 +1604,11 @@ impl Searcher {
                 }
             }
 
-            // If the current depth ALONE has consumed > 50% of the move budget, return.
+            // An iteration may run to the full move budget; no new one starts past half of it.
             // ONLY for hard limits. For soft limits (fixed time), we want to use all time.
             if !self.hot.is_soft_limit
                 && self.hot.total_time_ms > 0.0
-                && elapsed - self.hot.iter_start_ms > self.hot.total_time_ms * 0.50
+                && elapsed > self.hot.total_time_ms
             {
                 self.hot.stopped = true;
                 return true;
