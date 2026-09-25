@@ -819,9 +819,22 @@ impl TileTable {
         &self,
         is_white: bool,
     ) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
+        self.iter_colors(if is_white { !0 } else { 0 }, if is_white { 0 } else { !0 })
+    }
+
+    /// White and black pieces, skipping voids and obstacles, in slot order: the same
+    /// order on every platform, unlike iterating a hash set of squares.
+    #[inline]
+    pub fn iter_colored_pieces(&self) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
+        self.iter_colors(!0, !0)
+    }
+
+    #[inline]
+    fn iter_colors(&self, white: u64, black: u64) -> TileTableColorIter<'_> {
         TileTableColorIter {
             table: self,
-            is_white,
+            white,
+            black,
             bucket_mask_idx: 0,
             bucket_mask: self.occ_mask[0],
             current_bucket_idx: None,
@@ -889,7 +902,9 @@ impl<'a> Iterator for TileTablePieceIter<'a> {
 /// Iterator over pieces of a specific color
 struct TileTableColorIter<'a> {
     table: &'a TileTable,
-    is_white: bool,
+    /// All-ones to include that colour's occupancy, zero to skip it.
+    white: u64,
+    black: u64,
     bucket_mask_idx: usize,
     bucket_mask: u64,
     current_bucket_idx: Option<usize>,
@@ -939,11 +954,8 @@ impl<'a> Iterator for TileTableColorIter<'a> {
                 self.current_bucket_idx = Some(bucket_idx);
                 // Use color-specific occupancy
                 let tile = &self.table.tiles[bucket_idx];
-                self.current_tile_bits = if self.is_white {
-                    tile.occ_white
-                } else {
-                    tile.occ_black
-                };
+                self.current_tile_bits =
+                    (tile.occ_white & self.white) | (tile.occ_black & self.black);
             }
         }
     }

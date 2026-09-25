@@ -1,5 +1,5 @@
 use crate::tiles::{Tile, TileTable, local_index, tile_coords};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 /// Total number of piece types in the game (Void..Pawn)
@@ -412,8 +412,6 @@ pub struct Board {
     pub tiles: TileTable,
     #[serde(skip)]
     pub piece_count: usize,
-    #[serde(skip)]
-    pub active_coords: Option<FxHashSet<(i64, i64)>>,
 }
 
 /// Raw representation for serialization
@@ -424,21 +422,6 @@ struct BoardRaw {
 
 impl From<BoardRaw> for Board {
     fn from(raw: BoardRaw) -> Self {
-        let has_neutral = raw
-            .pieces
-            .values()
-            .any(|p| p.piece_type().is_neutral_type());
-
-        let active_coords = has_neutral.then_some({
-            let mut set = FxHashSet::default();
-            for (pos, piece) in &raw.pieces {
-                if !piece.piece_type().is_neutral_type() {
-                    set.insert(*pos);
-                }
-            }
-            set
-        });
-
         // Build tiles and count pieces
         let mut tiles = TileTable::new();
         let mut piece_count = 0;
@@ -449,11 +432,7 @@ impl From<BoardRaw> for Board {
             piece_count += 1;
         }
 
-        Board {
-            tiles,
-            piece_count,
-            active_coords,
-        }
+        Board { tiles, piece_count }
     }
 }
 
@@ -474,7 +453,6 @@ impl Default for Board {
 impl Board {
     pub fn new() -> Self {
         Self {
-            active_coords: None,
             tiles: TileTable::new(),
             piece_count: 0,
         }
@@ -501,6 +479,12 @@ impl Board {
         is_white: bool,
     ) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
         self.tiles.iter_pieces_by_color(is_white)
+    }
+
+    /// White and black pieces only, skipping voids and obstacles by bitmask.
+    #[inline]
+    pub fn iter_colored(&self) -> impl Iterator<Item = (i64, i64, Piece)> + '_ {
+        self.tiles.iter_colored_pieces()
     }
 
     /// Iterate all pieces on the board using bitboards.
@@ -538,25 +522,6 @@ impl Board {
         // Update count
         if old_piece.is_none() {
             self.piece_count += 1;
-        }
-
-        if piece.piece_type().is_neutral_type() && self.active_coords.is_none() {
-            let mut set = FxHashSet::default();
-
-            for (px, py, p) in self.tiles.iter_all_pieces() {
-                if !p.piece_type().is_neutral_type() {
-                    set.insert((px, py));
-                }
-            }
-            self.active_coords = Some(set);
-        }
-
-        if let Some(ref mut active) = self.active_coords {
-            if !piece.piece_type().is_neutral_type() {
-                active.insert((x, y));
-            } else {
-                active.remove(&(x, y));
-            }
         }
     }
 
@@ -621,17 +586,10 @@ impl Board {
         if tile_emptied {
             self.tiles.remove(cx, cy);
         }
-
-        if let (Some(active), Some(p)) = (self.active_coords.as_mut(), removed)
-            && !p.piece_type().is_neutral_type()
-        {
-            active.remove(&(*x, *y));
-        }
         removed
     }
 
     pub fn clear(&mut self) {
-        self.active_coords = None;
         self.tiles.clear();
         self.piece_count = 0;
     }

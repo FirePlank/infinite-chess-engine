@@ -1302,28 +1302,12 @@ impl GameState {
         let mut white_has_non_king = false;
         let mut black_has_non_king = false;
 
-        if let Some(active) = &self.board.active_coords {
-            for (x, y) in active {
-                let piece = match self.board.get_piece(*x, *y) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                if piece.piece_type() != PieceType::King {
-                    if piece.color() == PlayerColor::White {
-                        white_has_non_king = true;
-                    } else if piece.color() == PlayerColor::Black {
-                        black_has_non_king = true;
-                    }
-                }
-            }
-        } else {
-            for (_, _, piece) in self.board.iter() {
-                if piece.piece_type() != PieceType::King {
-                    if piece.color() == PlayerColor::White {
-                        white_has_non_king = true;
-                    } else if piece.color() == PlayerColor::Black {
-                        black_has_non_king = true;
-                    }
+        for (_, _, piece) in self.board.iter_colored() {
+            if piece.piece_type() != PieceType::King {
+                if piece.color() == PlayerColor::White {
+                    white_has_non_king = true;
+                } else if piece.color() == PlayerColor::Black {
+                    black_has_non_king = true;
                 }
             }
         }
@@ -1836,40 +1820,20 @@ impl GameState {
         // COMPREHENSIVE CHECKER DETECTION (Sync with is_square_attacked)
         // Check all enemy pieces to see if they attack our king
         let indices = &self.spatial_indices;
-        if let Some(active) = &self.board.active_coords {
-            for &(ax, ay) in active {
-                if self.board.get_piece(ax, ay).is_some_and(|p| {
-                    p.color() == their_color
-                        && crate::moves::is_piece_attacking_square(
-                            &self.board,
-                            &p,
-                            &Coordinate::new(ax, ay),
-                            &king_sq,
-                            indices,
-                            &self.game_rules,
-                        )
-                }) && checker_count < 16
-                {
-                    checkers[checker_count] = Coordinate::new(ax, ay);
-                    checker_count += 1;
-                }
-            }
-        } else {
-            for (ax, ay, p) in self.board.iter() {
-                if p.color() == their_color
-                    && crate::moves::is_piece_attacking_square(
-                        &self.board,
-                        &p,
-                        &Coordinate::new(ax, ay),
-                        &king_sq,
-                        indices,
-                        &self.game_rules,
-                    )
-                    && checker_count < 16
-                {
-                    checkers[checker_count] = Coordinate::new(ax, ay);
-                    checker_count += 1;
-                }
+        for (ax, ay, p) in self.board.iter_colored() {
+            if p.color() == their_color
+                && crate::moves::is_piece_attacking_square(
+                    &self.board,
+                    &p,
+                    &Coordinate::new(ax, ay),
+                    &king_sq,
+                    indices,
+                    &self.game_rules,
+                )
+                && checker_count < 16
+            {
+                checkers[checker_count] = Coordinate::new(ax, ay);
+                checker_count += 1;
             }
         }
 
@@ -2826,16 +2790,8 @@ impl GameState {
             }
         };
 
-        if let Some(active) = &self.board.active_coords {
-            for &(ax, ay) in active {
-                if let Some(p) = self.board.get_piece(ax, ay) {
-                    process_piece(self, Coordinate::new(ax, ay), &p, out);
-                }
-            }
-        } else {
-            for (ax, ay, p) in self.board.iter() {
-                process_piece(self, Coordinate::new(ax, ay), &p, out);
-            }
+        for (ax, ay, p) in self.board.iter_colored() {
+            process_piece(self, Coordinate::new(ax, ay), &p, out);
         }
 
         // The blocking and direct-capture sections and the filtered generator can
@@ -2980,26 +2936,11 @@ impl GameState {
         moved_color: PlayerColor,
         indices: &SpatialIndices,
     ) -> bool {
-        if let Some(active) = &self.board.active_coords {
-            for (x, y) in active {
-                let piece = match self.board.get_piece(*x, *y) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                if piece.color() == moved_color && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(*x, *y);
-                    if is_square_attacked(&self.board, &pos, self.turn, indices) {
-                        return true;
-                    }
-                }
-            }
-        } else {
-            for (x, y, piece) in self.board.iter() {
-                if piece.color() == moved_color && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(x, y);
-                    if is_square_attacked(&self.board, &pos, self.turn, indices) {
-                        return true;
-                    }
+        for (x, y, piece) in self.board.iter_colored() {
+            if piece.color() == moved_color && piece.piece_type().is_royal() {
+                let pos = Coordinate::new(x, y);
+                if is_square_attacked(&self.board, &pos, self.turn, indices) {
+                    return true;
                 }
             }
         }
@@ -3045,26 +2986,11 @@ impl GameState {
         attacker_color: PlayerColor,
         indices: &SpatialIndices,
     ) -> bool {
-        if let Some(active) = &self.board.active_coords {
-            for (x, y) in active {
-                let piece = match self.board.get_piece(*x, *y) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                if piece.color() == self.turn && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(*x, *y);
-                    if is_square_attacked(&self.board, &pos, attacker_color, indices) {
-                        return true;
-                    }
-                }
-            }
-        } else {
-            for (x, y, piece) in self.board.iter() {
-                if piece.color() == self.turn && piece.piece_type().is_royal() {
-                    let pos = Coordinate::new(x, y);
-                    if is_square_attacked(&self.board, &pos, attacker_color, indices) {
-                        return true;
-                    }
+        for (x, y, piece) in self.board.iter_colored() {
+            if piece.color() == self.turn && piece.piece_type().is_royal() {
+                let pos = Coordinate::new(x, y);
+                if is_square_attacked(&self.board, &pos, attacker_color, indices) {
+                    return true;
                 }
             }
         }
