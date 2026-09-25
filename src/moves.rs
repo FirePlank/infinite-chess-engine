@@ -595,22 +595,45 @@ impl SpatialLine {
         }
     }
 
+    /// Both arrays as plain slices. Indexing a SmallVec re-checks inline vs heap
+    /// storage on every access, so hot scans take the slices once.
+    #[inline(always)]
+    pub fn slices(&self) -> (&[i64], &[u8]) {
+        (self.coords.as_slice(), self.pieces.as_slice())
+    }
+
+    /// Shifts in place rather than through `SmallVec::insert`, whose memmove call
+    /// costs more than moving the handful of entries a line holds.
     #[inline]
     pub fn insert(&mut self, coord: i64, val: u8) {
-        match self.coords.binary_search(&coord) {
-            Ok(pos) => self.pieces[pos] = val,
+        match self.coords.as_slice().binary_search(&coord) {
+            Ok(pos) => self.pieces.as_mut_slice()[pos] = val,
             Err(pos) => {
-                self.coords.insert(pos, coord);
-                self.pieces.insert(pos, val);
+                self.coords.push(coord);
+                self.pieces.push(val);
+                let (c, p) = (self.coords.as_mut_slice(), self.pieces.as_mut_slice());
+                let mut i = c.len() - 1;
+                while i > pos {
+                    c[i] = c[i - 1];
+                    p[i] = p[i - 1];
+                    i -= 1;
+                }
+                c[pos] = coord;
+                p[pos] = val;
             }
         }
     }
 
     #[inline]
     pub fn remove(&mut self, coord: i64) {
-        if let Ok(pos) = self.coords.binary_search(&coord) {
-            self.coords.remove(pos);
-            self.pieces.remove(pos);
+        if let Ok(pos) = self.coords.as_slice().binary_search(&coord) {
+            let (c, p) = (self.coords.as_mut_slice(), self.pieces.as_mut_slice());
+            for i in pos..c.len() - 1 {
+                c[i] = c[i + 1];
+                p[i] = p[i + 1];
+            }
+            self.coords.pop();
+            self.pieces.pop();
         }
     }
 
@@ -626,12 +649,13 @@ impl SpatialLine {
 
     #[inline]
     pub fn get(&self, index: usize) -> (i64, u8) {
-        (self.coords[index], self.pieces[index])
+        let (c, p) = self.slices();
+        (c[index], p[index])
     }
 
     #[inline]
     pub fn binary_search(&self, coord: i64) -> Result<usize, usize> {
-        self.coords.binary_search(&coord)
+        self.coords.as_slice().binary_search(&coord)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (i64, u8)> + '_ {
@@ -642,7 +666,8 @@ impl SpatialLine {
     /// directions share the same partition point, so this halves the work.
     #[inline]
     pub fn neighbors(&self, from: i64) -> (LineEnd, LineEnd) {
-        let len = self.coords.len();
+        let (c, p) = self.slices();
+        let len = c.len();
         if len == 0 {
             return (None, None);
         }
@@ -650,25 +675,17 @@ impl SpatialLine {
         // <= 4), where a predictable scan beats partition_point's branchy search.
         let lo = if len <= LINEAR_SCAN_MAX {
             let mut i = 0;
-            while i < len && self.coords[i] < from {
+            while i < len && c[i] < from {
                 i += 1;
             }
             i
         } else {
-            self.coords.partition_point(|&c| c < from)
+            c.partition_point(|&x| x < from)
         };
-        let back = if lo > 0 {
-            Some((self.coords[lo - 1], self.pieces[lo - 1]))
-        } else {
-            None
-        };
+        let back = if lo > 0 { Some((c[lo - 1], p[lo - 1])) } else { None };
         // Coordinates are unique, so at most the one entry equal to `from` is skipped.
-        let hi = lo + (lo < len && self.coords[lo] == from) as usize;
-        let fwd = if hi < len {
-            Some((self.coords[hi], self.pieces[hi]))
-        } else {
-            None
-        };
+        let hi = lo + (lo < len && c[lo] == from) as usize;
+        let fwd = if hi < len { Some((c[hi], p[hi])) } else { None };
         (fwd, back)
     }
 
@@ -676,7 +693,8 @@ impl SpatialLine {
     /// Returns (coord, packed_piece) if found.
     #[inline]
     pub fn find_nearest(&self, from: i64, direction: i64) -> Option<(i64, u8)> {
-        let len = self.coords.len();
+        let (c, p) = self.slices();
+        let len = c.len();
         if len == 0 {
             return None;
         }
@@ -685,29 +703,29 @@ impl SpatialLine {
             // Look forward: Find first element > from
             let idx = if len <= LINEAR_SCAN_MAX {
                 let mut i = 0;
-                while i < len && self.coords[i] <= from {
+                while i < len && c[i] <= from {
                     i += 1;
                 }
                 i
             } else {
-                self.coords.partition_point(|&c| c <= from)
+                c.partition_point(|&x| x <= from)
             };
             if idx < len {
-                return Some((self.coords[idx], self.pieces[idx]));
+                return Some((c[idx], p[idx]));
             }
         } else {
             // Look backward: Find last element < from
             let idx = if len <= LINEAR_SCAN_MAX {
                 let mut i = 0;
-                while i < len && self.coords[i] < from {
+                while i < len && c[i] < from {
                     i += 1;
                 }
                 i
             } else {
-                self.coords.partition_point(|&c| c < from)
+                c.partition_point(|&x| x < from)
             };
             if idx > 0 {
-                return Some((self.coords[idx - 1], self.pieces[idx - 1]));
+                return Some((c[idx - 1], p[idx - 1]));
             }
         }
         None
@@ -3058,12 +3076,13 @@ fn collect_knight_attack_dists(
         let Some(line) = line else {
             continue;
         };
-        for i in 0..line.len() {
-            let d = (line.coords[i] - base) / step;
+        let (line_c, line_p) = line.slices();
+        for (&c, &packed) in line_c.iter().zip(line_p) {
+            let d = (c - base) / step;
             if d <= 0 || d > max_dist {
                 continue;
             }
-            let p = Piece::from_packed(line.pieces[i]);
+            let p = Piece::from_packed(packed);
             if p.color() == our_color
                 || p.color() == PlayerColor::Neutral
                 || p.piece_type().is_uncapturable()
@@ -3216,7 +3235,8 @@ fn generate_sliding_moves_impl(
                 // 1. Direct Ray iteration (O(log pieces_on_line + pieces_near_slider))
                 if is_horizontal {
                     if let Some(pieces_on_row) = indices.rows.get(&from.y) {
-                        let pos = pieces_on_row.coords.binary_search(&from.x);
+                        let (line_c, line_p) = pieces_on_row.slices();
+                        let pos = line_c.binary_search(&from.x);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -3225,7 +3245,7 @@ fn generate_sliding_moves_impl(
                         let (start, end, rev) = if dir_x > 0 {
                             (
                                 if pos.is_ok() { idx + 1 } else { idx },
-                                pieces_on_row.len(),
+                                line_c.len(),
                                 false,
                             )
                         } else {
@@ -3234,8 +3254,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let px = pieces_on_row.coords[real_idx];
-                            let packed = pieces_on_row.pieces[real_idx];
+                            let px = line_c[real_idx];
+                            let packed = line_p[real_idx];
                             let dx = px - from.x;
                             let piece_dist = dx.abs();
 
@@ -3286,7 +3306,8 @@ fn generate_sliding_moves_impl(
                     }
                 } else if is_vertical {
                     if let Some(pieces_on_col) = indices.cols.get(&from.x) {
-                        let pos = pieces_on_col.coords.binary_search(&from.y);
+                        let (line_c, line_p) = pieces_on_col.slices();
+                        let pos = line_c.binary_search(&from.y);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -3295,7 +3316,7 @@ fn generate_sliding_moves_impl(
                         let (start, end, rev) = if dir_y > 0 {
                             (
                                 if pos.is_ok() { idx + 1 } else { idx },
-                                pieces_on_col.len(),
+                                line_c.len(),
                                 false,
                             )
                         } else {
@@ -3304,8 +3325,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let py = pieces_on_col.coords[real_idx];
-                            let packed = pieces_on_col.pieces[real_idx];
+                            let py = line_c[real_idx];
+                            let packed = line_p[real_idx];
                             let dy = py - from.y;
                             let piece_dist = dy.abs();
 
@@ -3367,7 +3388,8 @@ fn generate_sliding_moves_impl(
                     };
 
                     if let Some(pieces_on_diag) = diag_map.get(&diag_key) {
-                        let pos = pieces_on_diag.coords.binary_search(&from.x);
+                        let (line_c, line_p) = pieces_on_diag.slices();
+                        let pos = line_c.binary_search(&from.x);
                         let idx = match pos {
                             Ok(i) => i,
                             Err(i) => i,
@@ -3376,7 +3398,7 @@ fn generate_sliding_moves_impl(
                         let (start, end, rev) = if dir_x > 0 {
                             (
                                 if pos.is_ok() { idx + 1 } else { idx },
-                                pieces_on_diag.len(),
+                                line_c.len(),
                                 false,
                             )
                         } else {
@@ -3385,8 +3407,8 @@ fn generate_sliding_moves_impl(
 
                         for i in 0..(end - start) {
                             let real_idx = if rev { end - 1 - i } else { start + i };
-                            let px = pieces_on_diag.coords[real_idx];
-                            let packed = pieces_on_diag.pieces[real_idx];
+                            let px = line_c[real_idx];
+                            let packed = line_p[real_idx];
                             let dx = px - from.x;
                             let piece_dist = dx.abs();
 
