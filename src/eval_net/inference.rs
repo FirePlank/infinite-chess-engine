@@ -120,6 +120,60 @@ unsafe fn dense_layer_avx2(
     }
 }
 
+/// Four accumulators to one vector of their horizontal sums, by a 4x4 transpose.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(always)]
+fn reduce4_simd128(
+    a: std::arch::wasm32::v128,
+    b: std::arch::wasm32::v128,
+    c: std::arch::wasm32::v128,
+    d: std::arch::wasm32::v128,
+) -> std::arch::wasm32::v128 {
+    use std::arch::wasm32::*;
+    let ab = i32x4_add(i32x4_shuffle::<0, 4, 1, 5>(a, b), i32x4_shuffle::<2, 6, 3, 7>(a, b));
+    let cd = i32x4_add(i32x4_shuffle::<0, 4, 1, 5>(c, d), i32x4_shuffle::<2, 6, 3, 7>(c, d));
+    i32x4_add(i32x4_shuffle::<0, 1, 4, 5>(ab, cd), i32x4_shuffle::<2, 3, 6, 7>(ab, cd))
+}
+
+/// The wasm twin of `dense_layer_avx2`: eight rows share each input load, and the
+/// row sums come out of two transposes instead of four lane extracts per row.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn dense_layer_simd128(
+    w: &[i16],
+    b: &[i32],
+    stride: usize,
+    x: &[i16],
+    shift: u32,
+    out: &mut [i16],
+) {
+    use std::arch::wasm32::*;
+    assert!(out.len().is_multiple_of(8) && stride.is_multiple_of(8));
+    assert!(w.len() >= out.len() * stride && x.len() >= stride && b.len() >= out.len());
+    let (zero, max) = (i32x4_splat(0), i32x4_splat(127));
+    for g in (0..out.len()).step_by(8) {
+        unsafe {
+            let rows = w.as_ptr().add(g * stride);
+            let mut acc = [zero; 8];
+            for i in (0..stride).step_by(8) {
+                let xv = v128_load(x.as_ptr().add(i) as *const v128);
+                for (r, a) in acc.iter_mut().enumerate() {
+                    let wv = v128_load(rows.add(r * stride + i) as *const v128);
+                    *a = i32x4_add(*a, i32x4_dot_i16x8(wv, xv));
+                }
+            }
+            let lo = reduce4_simd128(acc[0], acc[1], acc[2], acc[3]);
+            let hi = reduce4_simd128(acc[4], acc[5], acc[6], acc[7]);
+            let bias = b.as_ptr().add(g) as *const v128;
+            let act = |s: v128, bias: v128| {
+                i32x4_min(i32x4_max(i32x4_shr(i32x4_add(s, bias), shift), zero), max)
+            };
+            let (lo, hi) = (act(lo, v128_load(bias)), act(hi, v128_load(bias.add(1))));
+            // Activations are 0..=127, so the saturating narrow is exact.
+            v128_store(out.as_mut_ptr().add(g) as *mut v128, i16x8_narrow_i32x4(lo, hi));
+        }
+    }
+}
+
 /// `x` must be zero beyond the layer's real input count up to `stride`.
 #[inline(always)]
 fn dense_layer(
@@ -134,6 +188,10 @@ fn dense_layer(
     #[cfg(target_arch = "x86_64")]
     if avx2 && out.len().is_multiple_of(8) {
         return unsafe { dense_layer_avx2(w, b, stride, x, shift, out) };
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if out.len().is_multiple_of(8) {
+        return dense_layer_simd128(w, b, stride, x, shift, out);
     }
     let _ = avx2;
     for (r, o) in out.iter_mut().enumerate() {
