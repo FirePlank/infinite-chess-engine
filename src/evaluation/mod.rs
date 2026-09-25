@@ -6,6 +6,7 @@ pub mod eval_kind;
 pub mod helpers;
 pub mod insufficient_material;
 pub mod mop_up;
+pub mod params;
 pub mod piece_reach;
 pub mod variants;
 
@@ -23,7 +24,7 @@ pub use base::{
 const RULE50_DAMP_CAP: i32 = 700;
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
-pub use crate::search::params::{
+pub use crate::evaluation::params::{
     EVAL_PARAMS, EvalParamSpec, EvalParams, TUNABLE_EVAL_PARAM_SPECS, get_eval_params_as_json,
     set_eval_params, set_eval_params_from_json,
 };

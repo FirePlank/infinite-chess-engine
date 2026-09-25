@@ -8,7 +8,7 @@ use super::piece_reach::{
     MAX_BATCHED_RIDERS, RiderRays, evaluate_compound_leap_threats, evaluate_huygen_reach,
     evaluate_rose_reach, fill_knightrider_rays, knightrider_rays, score_knightrider_rays,
 };
-use crate::search::params::{
+use crate::evaluation::params::{
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
     chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
@@ -265,65 +265,9 @@ macro_rules! bump_feat {
     ($($tt:tt)*) => {};
 }
 
-pub const DEFAULT_EVAL_PAWN: i32 = 100;
-pub const DEFAULT_EVAL_KNIGHT: i32 = 315;
-pub const DEFAULT_EVAL_BISHOP: i32 = 450;
-pub const DEFAULT_EVAL_ROOK: i32 = 618;
-pub const DEFAULT_EVAL_GUARD: i32 = 232;
-pub const DEFAULT_EVAL_CENTAUR: i32 = 640;
-pub const DEFAULT_EVAL_QUEEN: i32 = 1518;
-pub const DEFAULT_EVAL_CAMEL: i32 = 175;
-pub const DEFAULT_EVAL_GIRAFFE: i32 = 165;
-pub const DEFAULT_EVAL_ZEBRA: i32 = 180;
-pub const DEFAULT_EVAL_KNIGHTRIDER: i32 = 900;
-pub const DEFAULT_EVAL_HAWK: i32 = 540;
-pub const DEFAULT_EVAL_ARCHBISHOP: i32 = 1080;
-pub const DEFAULT_EVAL_ROSE: i32 = 997;
-pub const DEFAULT_EVAL_HUYGEN: i32 = 330;
-pub const DEFAULT_EVAL_CHANCELLOR: i32 = 1060;
-/// Amazon was the only compound priced at the bare sum of its parts, while the
-/// chancellor carries +245 over rook+knight and the archbishop +371.
-pub const DEFAULT_EVAL_MG_DOUBLED_PAWN_PENALTY: i32 = 10;
-pub const DEFAULT_EVAL_EG_DOUBLED_PAWN_PENALTY: i32 = 15;
-pub const DEFAULT_EVAL_MG_BISHOP_PAIR_BONUS: i32 = 57;
-pub const DEFAULT_EVAL_EG_BISHOP_PAIR_BONUS: i32 = 101;
-pub const DEFAULT_EVAL_ROOK_OPEN_FILE_BONUS: i32 = 57;
-pub const DEFAULT_EVAL_ROOK_SEMI_OPEN_FILE_BONUS: i32 = 29;
-pub const DEFAULT_EVAL_QUEEN_OPEN_FILE_BONUS: i32 = 33;
-pub const DEFAULT_EVAL_QUEEN_SEMI_OPEN_FILE_BONUS: i32 = 19;
-pub const DEFAULT_EVAL_MG_OUTPOST_BONUS: i32 = 33;
-pub const DEFAULT_EVAL_EG_OUTPOST_BONUS: i32 = 56;
-pub const DEFAULT_EVAL_AMAZON: i32 = 1793;
-pub const DEFAULT_EVAL_SLIDER_NET_BONUS: i32 = 21;
-pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_RADIUS: i32 = 18;
-pub const DEFAULT_EVAL_FAR_SLIDER_CHEB_MAX_EXCESS: i32 = 40;
-pub const DEFAULT_EVAL_FAR_QUEEN_PENALTY: i32 = 5;
 /// A slider re-enters the fight in one move, so drifting away costs it tempi,
 /// not a share of itself. The ramp is capped at this fraction of its value.
 pub const FAR_SLIDER_PENALTY_VALUE_DIV: i32 = 8;
-pub const DEFAULT_EVAL_FAR_ROOK_PENALTY: i32 = 7;
-pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_RADIUS: i32 = 16;
-/// Cloud radius beyond which a leaper counts as out of play: its reach is one jump.
-pub const DEFAULT_EVAL_LEAPER_CLOUD_RADIUS: i32 = 8;
-/// Cloud radius beyond which a rider (knightrider, rose, huygen) counts as out of play.
-pub const DEFAULT_EVAL_RIDER_CLOUD_RADIUS: i32 = 16;
-pub const DEFAULT_EVAL_SLIDER_AXIS_WIGGLE: i32 = 5;
-pub const DEFAULT_EVAL_PIECE_CLOUD_CHEB_MAX_EXCESS: i32 = 64;
-pub const DEFAULT_EVAL_CLOUD_PENALTY_PER_100_VALUE: i32 = 2;
-pub const DEFAULT_EVAL_CLOUD_PENALTY_MAX_PCT: i32 = 50;
-pub const DEFAULT_EVAL_CLOUD_CENTER_MAX_SKEW_DIST: i32 = 16;
-pub const DEFAULT_EVAL_LEAPER_TROPISM_DIVISOR: i32 = 400;
-pub const DEFAULT_EVAL_CHANCELLOR_ROOK_SCALE: i32 = 90;
-pub const DEFAULT_EVAL_ARCHBISHOP_BISHOP_SCALE: i32 = 90;
-pub const DEFAULT_EVAL_AMAZON_ROOK_SCALE: i32 = 50;
-pub const DEFAULT_EVAL_AMAZON_QUEEN_SCALE: i32 = 70;
-pub const DEFAULT_EVAL_CENTAUR_GUARD_SCALE: i32 = 50;
-pub const DEFAULT_EVAL_PAWN_FULL_VALUE_THRESHOLD: i32 = 6;
-pub const DEFAULT_EVAL_PAWN_PAST_PROMO_PENALTY: i32 = 90;
-pub const DEFAULT_EVAL_PAWN_FAR_FROM_PROMO_MAX_PENALTY: i32 = 100;
-pub const DEFAULT_EVAL_KING_DEFENDER_REF_VALUE: i32 = 250;
-pub const DEFAULT_EVAL_TIED_DEFENDER_REF_VALUE: i32 = 600;
-pub const DEFAULT_EVAL_CENTRALITY_VALUE_SCALE: i32 = 72;
 /// Counterplay units at which the weaker side is considered fully able to resist.
 pub const COMPLEXITY_RESIST_FULL: i32 = MAX_PHASE / 2;
 /// Pawn-rank spread bracketing the own-king tropism term. Set above Space_Classic's
@@ -339,72 +283,6 @@ pub const DEFAULT_UNSTOPPABLE_PASSER_DECAY: i32 = 60;
 fn unstoppable_passer_bonus() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_BONUS }
 #[inline]
 fn unstoppable_passer_decay() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_DECAY }
-pub const DEFAULT_EVAL_COMPLEXITY_DAMP: i32 = 8;
-pub const DEFAULT_EVAL_COMPLEXITY_EXCESS_MAX: i32 = 40;
-pub const DEFAULT_EVAL_KING_SHIELD_AHEAD_MAX_DIST: i32 = 3;
-pub const DEFAULT_EVAL_MG_KING_PAWN_AHEAD_PENALTY: i32 = 20;
-pub const DEFAULT_EVAL_EG_KING_PAWN_AHEAD_PENALTY: i32 = 0;
-pub const DEFAULT_EVAL_MG_FAR_SLIDER_PENALTY_MULT: i32 = 100;
-pub const DEFAULT_EVAL_EG_FAR_SLIDER_PENALTY_MULT: i32 = 44;
-pub const DEFAULT_EVAL_SLIDER_THREAT_DIV: i32 = 5;
-pub const DEFAULT_EVAL_SLIDER_THREAT_CAP: i32 = 100;
-/// Cost of a piece frozen by a real absolute pin, per tied_defender_ref_value.
-pub const DEFAULT_EVAL_PIN_OPPORTUNITY_COST: i32 = 26;
-pub const DEFAULT_EVAL_PIN_OPPORTUNITY_CAP: i32 = 70;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_0: i32 = 2;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_1: i32 = 0;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_2: i32 = 12;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_3: i32 = 25;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_4: i32 = 42;
-pub const DEFAULT_EVAL_CANDIDATE_PASSER_BONUS_5: i32 = 74;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_0: i32 = 7;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_1: i32 = 3;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_2: i32 = 6;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_3: i32 = 0;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_4: i32 = 3;
-pub const DEFAULT_EVAL_PAWN_FRIENDLY_KING_DIST_5: i32 = 14;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_0: i32 = 4;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_1: i32 = 4;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_2: i32 = 0;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_3: i32 = 8;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_4: i32 = 9;
-pub const DEFAULT_EVAL_PAWN_ENEMY_KING_DIST_5: i32 = 19;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_0: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_1: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_2: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_3: i32 = 5;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_4: i32 = 8;
-pub const DEFAULT_EVAL_PASSED_FRIENDLY_KING_DIST_5: i32 = 4;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_0: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_1: i32 = 10;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_2: i32 = 1;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_3: i32 = 3;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_4: i32 = 3;
-pub const DEFAULT_EVAL_PASSED_ENEMY_KING_DIST_5: i32 = 9;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_0: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_1: i32 = 3;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_2: i32 = 4;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_3: i32 = 13;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_4: i32 = 21;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_0_5: i32 = 37;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_0: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_1: i32 = 4;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_2: i32 = 13;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_3: i32 = 26;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_4: i32 = 57;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_0_1_5: i32 = 81;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_0: i32 = 2;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_1: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_2: i32 = 16;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_3: i32 = 36;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_4: i32 = 70;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_0_5: i32 = 124;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_0: i32 = 0;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_1: i32 = 8;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_2: i32 = 38;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_3: i32 = 81;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_4: i32 = 148;
-pub const DEFAULT_EVAL_PASSED_PAWN_ADV_BONUS_1_1_5: i32 = 238;
 
 // Piece Values
 
@@ -617,47 +495,9 @@ pub fn get_piece_phase(piece_type: PieceType) -> i32 {
     }
 }
 
-// Tapered Evaluation Constants (MG, EG)
-
-// King Safety
-pub const DEFAULT_EVAL_MG_BEHIND_KING_BONUS: i32 = 45;
-pub const DEFAULT_EVAL_EG_BEHIND_KING_BONUS: i32 = 59; // More important to be behind king in EG
-
-
-// Shelter / Ring
-pub const DEFAULT_EVAL_MG_KING_RING_MISSING_PENALTY: i32 = 52;
-pub const DEFAULT_EVAL_EG_KING_RING_MISSING_PENALTY: i32 = 11; // Less penalty in EG
-
-pub const DEFAULT_EVAL_MG_KING_PAWN_SHIELD_BONUS: i32 = 20;
-pub const DEFAULT_EVAL_EG_KING_PAWN_SHIELD_BONUS: i32 = 0; // Shield less critical
-
-// A pawn only shelters the king when it is close in front; on an unbounded
-// board an ahead pawn could otherwise be arbitrarily far and fabricate cover.
-
-pub const DEFAULT_EVAL_MG_KING_OPEN_FILE_PENALTY: i32 = 28;
-pub const DEFAULT_EVAL_EG_KING_OPEN_FILE_PENALTY: i32 = 0;
-
-// Structural
-pub const DEFAULT_EVAL_MG_CONNECTED_PAWN_BONUS: i32 = 0;
-pub const DEFAULT_EVAL_EG_CONNECTED_PAWN_BONUS: i32 = 30; // Chains critical in EG
-
-pub const DEFAULT_EVAL_MG_KING_DEFENDER_BONUS: i32 = 18;
-pub const DEFAULT_EVAL_EG_KING_DEFENDER_BONUS: i32 = 0; // Less need for defenders
-
-// Slider Distances (Centralization less critical in EG)
-
-// Piece on Open File Bonuses
-
-// Passed Pawn Detail (MG/EG tapered arrays by relative rank 0-5)
-// Rank 0 is far, Rank 5 is near promotion.
-
-// passed_pawn_adv_bonus()[canAdvance][safeAdvance][rank]
-
-pub const DEFAULT_EVAL_MG_PASSED_SAFE_PATH_BONUS: i32 = 27;
 /// A slider walled in by its own pieces at one or two squares has no unbounded
 /// reach at all; the far penalties price the opposite failure, never this one.
 pub const SLIDER_CONGESTION_UNIT: i32 = 3;
-pub const DEFAULT_EVAL_EG_PASSED_SAFE_PATH_BONUS: i32 = 67;
 
 /// Sorts squares by (x, y). The tile walk yields them in runs already sorted by x
 /// within a tile, so insertion sort runs near-linear; squares are distinct, so any
@@ -2152,7 +1992,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     // rooted hawks to their dense home cluster (-114 Elo in CoaIP),
                     // the same inverse-value frame as king_defender_bonus_for.
                     let v = get_piece_value_base(pt);
-                    let r = crate::search::params::king_defender_ref_value();
+                    let r = crate::evaluation::params::king_defender_ref_value();
                     crate::evaluation::piece_reach::evaluate_leap_threats(
                         game,
                         x,
@@ -2194,7 +2034,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // attacking a rook scored nothing.
             PieceType::Guard => {
                 let v = get_piece_value_base(pt);
-                let r = crate::search::params::king_defender_ref_value();
+                let r = crate::evaluation::params::king_defender_ref_value();
                 crate::evaluation::piece_reach::evaluate_leap_threats(
                     game,
                     x,
@@ -2299,8 +2139,8 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 if dist <= 3 {
                     piece_score += king_defender_bonus_for(
                         taper(
-                            crate::search::params::mg_king_defender_bonus(),
-                            crate::search::params::eg_king_defender_bonus(),
+                            crate::evaluation::params::mg_king_defender_bonus(),
+                            crate::evaluation::params::eg_king_defender_bonus(),
                         ),
                         piece_val,
                     );
@@ -2756,8 +2596,8 @@ pub fn evaluate_rook(
         // Behind enemy king along the rank direction.
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
             king_bonus += taper(
-                crate::search::params::mg_behind_king_bonus(),
-                crate::search::params::eg_behind_king_bonus(),
+                crate::evaluation::params::mg_behind_king_bonus(),
+                crate::evaluation::params::eg_behind_king_bonus(),
             );
             break;
         }
@@ -2996,8 +2836,8 @@ pub fn evaluate_bishop(
         // Bishop behind enemy king along the rank direction (less direct than rook/queen).
         if (color == PlayerColor::White && y > ek.y) || (color == PlayerColor::Black && y < ek.y) {
             bonus += taper(
-                crate::search::params::mg_behind_king_bonus(),
-                crate::search::params::eg_behind_king_bonus(),
+                crate::evaluation::params::mg_behind_king_bonus(),
+                crate::evaluation::params::eg_behind_king_bonus(),
             ) / 2
                 * king_mult
                 / 100;
@@ -3364,8 +3204,8 @@ pub(crate) fn evaluate_king_shelter(
     // 1. Local pawn / guard cover (Optimized: Ring cover passed in)
     if !has_ring_cover {
         safety -= taper(
-            crate::search::params::mg_king_ring_missing_penalty(),
-            crate::search::params::eg_king_ring_missing_penalty(),
+            crate::evaluation::params::mg_king_ring_missing_penalty(),
+            crate::evaluation::params::eg_king_ring_missing_penalty(),
         );
         bump_feat!(king_ring_missing_penalty, -1);
     }
@@ -3401,8 +3241,8 @@ pub(crate) fn evaluate_king_shelter(
         // King on Open File Penalty (No friendly pawns on file)
         if dx == 0 && on_file_count == 0 {
             safety -= taper(
-                crate::search::params::mg_king_open_file_penalty(),
-                crate::search::params::eg_king_open_file_penalty(),
+                crate::evaluation::params::mg_king_open_file_penalty(),
+                crate::evaluation::params::eg_king_open_file_penalty(),
             );
         }
     }
@@ -3411,8 +3251,8 @@ pub(crate) fn evaluate_king_shelter(
     // absence of a forward pawn (with one behind) draws the penalty.
     if has_pawn_ahead {
         safety += taper(
-            crate::search::params::mg_king_pawn_shield_bonus(),
-            crate::search::params::eg_king_pawn_shield_bonus(),
+            crate::evaluation::params::mg_king_pawn_shield_bonus(),
+            crate::evaluation::params::eg_king_pawn_shield_bonus(),
         );
     } else if has_pawn_behind {
         safety -= taper(mg_king_pawn_ahead_penalty(), eg_king_pawn_ahead_penalty());
@@ -3707,7 +3547,7 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     {
         thread_local!(static SEEN_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
         let generation =
-            crate::search::params::EVAL_PARAMS_GEN.load(std::sync::atomic::Ordering::Acquire);
+            crate::evaluation::params::EVAL_PARAMS_GEN.load(std::sync::atomic::Ordering::Acquire);
         if SEEN_GEN.with(|g| g.replace(generation)) != generation {
             clear_pawn_cache();
         }
@@ -3975,11 +3815,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
             if is_passed {
-                w_connected.0 += (crate::search::params::mg_connected_pawn_bonus() * 3) / 2;
-                w_connected.1 += (crate::search::params::eg_connected_pawn_bonus() * 3) / 2;
+                w_connected.0 += (crate::evaluation::params::mg_connected_pawn_bonus() * 3) / 2;
+                w_connected.1 += (crate::evaluation::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                w_connected.0 += crate::search::params::mg_connected_pawn_bonus();
-                w_connected.1 += crate::search::params::eg_connected_pawn_bonus();
+                w_connected.0 += crate::evaluation::params::mg_connected_pawn_bonus();
+                w_connected.1 += crate::evaluation::params::eg_connected_pawn_bonus();
             }
         }
     }
@@ -4081,11 +3921,11 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
         {
             if is_passed {
-                b_connected.0 += (crate::search::params::mg_connected_pawn_bonus() * 3) / 2;
-                b_connected.1 += (crate::search::params::eg_connected_pawn_bonus() * 3) / 2;
+                b_connected.0 += (crate::evaluation::params::mg_connected_pawn_bonus() * 3) / 2;
+                b_connected.1 += (crate::evaluation::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                b_connected.0 += crate::search::params::mg_connected_pawn_bonus();
-                b_connected.1 += crate::search::params::eg_connected_pawn_bonus();
+                b_connected.0 += crate::evaluation::params::mg_connected_pawn_bonus();
+                b_connected.1 += crate::evaluation::params::eg_connected_pawn_bonus();
             }
         }
     }
@@ -4265,8 +4105,8 @@ fn score_passed_pawns<T: EvaluationTracer>(
         }
         let safe_path_bonus = if safe_path {
             taper(
-                crate::search::params::mg_passed_safe_path_bonus(),
-                crate::search::params::eg_passed_safe_path_bonus(),
+                crate::evaluation::params::mg_passed_safe_path_bonus(),
+                crate::evaluation::params::eg_passed_safe_path_bonus(),
             )
         } else {
             0
@@ -4343,8 +4183,8 @@ fn score_passed_pawns<T: EvaluationTracer>(
         }
         let safe_path_bonus = if safe_path {
             taper(
-                crate::search::params::mg_passed_safe_path_bonus(),
-                crate::search::params::eg_passed_safe_path_bonus(),
+                crate::evaluation::params::mg_passed_safe_path_bonus(),
+                crate::evaluation::params::eg_passed_safe_path_bonus(),
             )
         } else {
             0

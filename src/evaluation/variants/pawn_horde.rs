@@ -347,7 +347,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
 /// The generic doubled-pawn penalty: each extra pawn on a file, tapered by phase.
 fn doubled(files: impl Iterator<Item = i64>, phase: i32) -> i32 {
     use crate::evaluation::base::MAX_PHASE;
-    use crate::search::params::{eg_doubled_pawn_penalty, mg_doubled_pawn_penalty};
+    use crate::evaluation::params::{eg_doubled_pawn_penalty, mg_doubled_pawn_penalty};
     let mut xs: ArrayVec<i64, 64> = files.take(64).collect();
     xs.sort_unstable();
     let extra = xs.windows(2).filter(|w| w[0] == w[1]).count() as i32;

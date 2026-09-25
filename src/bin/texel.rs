@@ -19,7 +19,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const EVAL_BASE_RS_PATH: &str = "src/evaluation/base.rs";
+const EVAL_PARAMS_RS_PATH: &str = "src/evaluation/params.rs";
 /// Any |score| beyond this is a confirmed forced mate, not a real evaluation.
 const MATE_FLOOR: i32 = apeiron::search::MATE_SCORE;
 /// Fitted on this engine's own score scale (`puzzle_gen`'s WC_K=0.00188 → 1/K),
@@ -91,7 +91,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
     },
-    /// Patch tuned values from a Run's output JSON into base.rs's `DEFAULT_EVAL_*`.
+    /// Patch tuned values from a Run's output JSON into the `eval_params!` table.
     Apply {
         #[arg(long, default_value = "games/eval_params_tuned.json")]
         input: String,
@@ -1225,54 +1225,23 @@ fn apply_tuned(input: &str) -> Result<(), String> {
         .and_then(Value::as_object)
         .ok_or_else(|| format!("{} has no \"params\" object", input))?;
 
-    let base_text = fs::read_to_string(EVAL_BASE_RS_PATH)
-        .map_err(|e| format!("failed to read {}: {}", EVAL_BASE_RS_PATH, e))?;
-
-    let updates: HashMap<String, i64> = obj
+    let updates: HashMap<&str, i64> = obj
         .iter()
-        .filter_map(|(n, v)| {
-            v.as_i64()
-                .map(|x| (format!("DEFAULT_EVAL_{}", n.to_uppercase()), x))
-        })
+        .filter_map(|(n, v)| v.as_i64().map(|x| (n.as_str(), x)))
         .collect();
     if updates.is_empty() {
         return Err(format!("no numeric parameters found in {}", input));
     }
 
-    // base.rs is CRLF and `.lines()` strips both styles, so the ending has to be
-    // restored explicitly or every line reads as changed.
-    let eol = if base_text.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let mut applied = 0;
-    let mut out = String::with_capacity(base_text.len());
-    for line in base_text.lines() {
-        let mut replaced = None;
-        if let Some(rest) = line.trim().strip_prefix("pub const ")
-            && let Some((name, _)) = rest.split_once(':')
-            && let Some(&value) = updates.get(name.trim())
-            && let Some(eq) = line.find('=')
-            && let Some(semi) = line.find(';')
-        {
-            replaced = Some(format!(
-                "{}= {}{}",
-                &line[..=eq].trim_end_matches('='),
-                value,
-                &line[semi..]
-            ));
-            applied += 1;
-        }
-        out.push_str(&replaced.unwrap_or_else(|| line.to_string()));
-        out.push_str(eol);
-    }
-
-    fs::write(EVAL_BASE_RS_PATH, out)
-        .map_err(|e| format!("failed to write {}: {}", EVAL_BASE_RS_PATH, e))?;
+    let table = fs::read_to_string(EVAL_PARAMS_RS_PATH)
+        .map_err(|e| format!("failed to read {}: {}", EVAL_PARAMS_RS_PATH, e))?;
+    let (out, applied) =
+        apeiron::search::params::rewrite_table_defaults(&table, |name| updates.get(name).copied());
+    fs::write(EVAL_PARAMS_RS_PATH, out)
+        .map_err(|e| format!("failed to write {}: {}", EVAL_PARAMS_RS_PATH, e))?;
     println!(
-        "\x1b[32m[texel] applied {} constant(s) from {} to {}\x1b[0m",
-        applied, input, EVAL_BASE_RS_PATH
+        "\x1b[32m[texel] applied {} parameter(s) from {} to {}\x1b[0m",
+        applied, input, EVAL_PARAMS_RS_PATH
     );
     Ok(())
 }

@@ -2,7 +2,7 @@
 //! what its distinctive movement actually attacks, covers, or is blocked by.
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::GameState;
-use crate::search::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
+use crate::evaluation::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
 
 use super::base::{MAX_PHASE, get_piece_value_base};
 use crate::moves::knightrider_tile_mask;

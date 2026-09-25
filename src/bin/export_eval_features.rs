@@ -535,14 +535,14 @@ fn apply_param_overrides(overrides: &[String]) {
         return;
     }
     let mut v: serde_json::Value =
-        serde_json::from_str(&apeiron::search::params::get_eval_params_as_json()).unwrap();
+        serde_json::from_str(&apeiron::evaluation::params::get_eval_params_as_json()).unwrap();
     for kv in overrides {
         let (k, val) = kv.split_once('=').expect("--param takes name=value");
         assert!(v.get(k).is_some(), "unknown eval parameter {k}");
         v[k] = serde_json::json!(val.parse::<i64>().expect("--param value must be an integer"));
         eprintln!("param {k} = {val}");
     }
-    assert!(apeiron::search::params::set_eval_params_from_json(&v.to_string()));
+    assert!(apeiron::evaluation::params::set_eval_params_from_json(&v.to_string()));
 }
 
 #[cfg(not(feature = "eval_tuning"))]

@@ -8,9 +8,8 @@ use std::time::Instant;
 use apeiron::board::PlayerColor;
 use apeiron::evaluation::{self};
 use apeiron::game::{GameState, WinCondition};
-use apeiron::search::params::{
-    self, EvalParams, SearchParams, TUNABLE_EVAL_PARAM_SPECS, TUNABLE_PARAM_SPECS,
-};
+use apeiron::evaluation::params::{EvalParams, TUNABLE_EVAL_PARAM_SPECS};
+use apeiron::search::params::{self, SearchParams, TUNABLE_PARAM_SPECS};
 use apeiron::{Engine, Variant};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,7 @@ const DEFAULT_VARIANTS: &str = "Classical,Confined_Classical,Classical_Plus,Core
 const DEFAULT_CHECKPOINT_DIR: &str = "sprt/spsa_checkpoints";
 const DEFAULT_RESULTS_PATH: &str = "sprt/spsa_final.json";
 const SEARCH_PARAMS_RS_PATH: &str = "src/search/params.rs";
-const EVAL_BASE_RS_PATH: &str = "src/evaluation/base.rs";
+const EVAL_PARAMS_RS_PATH: &str = "src/evaluation/params.rs";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -1014,69 +1013,29 @@ fn load_checkpoint(path: &Path) -> Checkpoint {
     serde_json::from_str(&fs::read_to_string(path).expect("read checkpoint"))
         .expect("parse checkpoint")
 }
-fn search_const_name(name: &str) -> String {
-    format!("DEFAULT_{}", name.to_ascii_uppercase())
-}
-fn eval_const_name(name: &str) -> String {
-    format!("DEFAULT_EVAL_{}", name.to_ascii_uppercase())
-}
-
-fn apply_constants(path: &str, values: &[(String, String, i64)]) {
-    let mut content = fs::read_to_string(path).expect("read constants file");
-    for (_, const_name, value) in values {
-        let lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
-        let mut out = Vec::with_capacity(lines.len());
-        for line in lines {
-            let trimmed = line.trim();
-            if trimmed.starts_with("pub const ")
-                && let Some(rest) = trimmed.strip_prefix("pub const ")
-                && let Some((name_part, _)) = rest.split_once(':')
-                && name_part.trim() == const_name
-                && let Some(eq_idx) = line.find('=')
-                && let Some(semi_idx) = line.find(';')
-                && eq_idx < semi_idx
-            {
-                out.push(format!(
-                    "{} {}{}",
-                    &line[..eq_idx + 1],
-                    value,
-                    &line[semi_idx..]
-                ));
-            } else {
-                out.push(line);
-            }
-        }
-        content = out.join("\n");
-        content.push('\n');
-    }
-    fs::write(path, content).expect("write constants file");
+fn apply_defaults(path: &str, values: &HashMap<&str, i64>) {
+    let content = fs::read_to_string(path).expect("read parameter table");
+    let (content, _) = params::rewrite_table_defaults(&content, |name| values.get(name).copied());
+    fs::write(path, content).expect("write parameter table");
 }
 
 fn apply_selected_values(theta: &BTreeMap<String, f64>) {
-    let mut search_updates = Vec::new();
-    let mut eval_updates = Vec::new();
+    let mut search_updates = HashMap::new();
+    let mut eval_updates = HashMap::new();
     for spec in all_specs() {
         if let Some(value) = theta.get(spec.name) {
-            let quantized = spec.quantize(*value);
-            match spec.domain {
-                Domain::Search => search_updates.push((
-                    spec.name.to_string(),
-                    search_const_name(spec.name),
-                    quantized,
-                )),
-                Domain::Eval => eval_updates.push((
-                    spec.name.to_string(),
-                    eval_const_name(spec.name),
-                    quantized,
-                )),
-            }
+            let updates = match spec.domain {
+                Domain::Search => &mut search_updates,
+                Domain::Eval => &mut eval_updates,
+            };
+            updates.insert(spec.name, spec.quantize(*value));
         }
     }
     if !search_updates.is_empty() {
-        apply_constants(SEARCH_PARAMS_RS_PATH, &search_updates);
+        apply_defaults(SEARCH_PARAMS_RS_PATH, &search_updates);
     }
     if !eval_updates.is_empty() {
-        apply_constants(EVAL_BASE_RS_PATH, &eval_updates);
+        apply_defaults(EVAL_PARAMS_RS_PATH, &eval_updates);
     }
 }
 

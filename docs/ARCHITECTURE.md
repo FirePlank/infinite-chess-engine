@@ -101,7 +101,7 @@ This directory holds the search-side policy and machinery:
 - `see.rs` — static exchange evaluation;
 - `tt.rs`, `shared_tt.rs`, `tt_defs.rs` — transposition-table machinery;
 - `zobrist.rs` — hashing keys and helpers;
-- `params.rs` — tunable search constants.
+- `params.rs` — the search parameter table (defaults and tuning ranges).
 
 This split matters. The general move/rule layer lives in `src/moves.rs`; search-specific ordering and heuristics live here.
 
@@ -109,7 +109,7 @@ This split matters. The general move/rule layer lives in `src/moves.rs`; search-
 
 This is the static evaluation layer.
 
-`base.rs` contains the default hand-crafted evaluation. `helpers.rs`, `mop_up.rs`, and `insufficient_material.rs` support it. `variants/` exists for cases where a variant needs genuinely different scoring rather than a tiny rules tweak.
+`base.rs` contains the default hand-crafted evaluation; its tunable weights live in the `params.rs` table. `helpers.rs`, `mop_up.rs`, and `insufficient_material.rs` support it. `variants/` exists for cases where a variant needs genuinely different scoring rather than a tiny rules tweak.
 
 Evaluation should mostly read already-maintained state and turn it into a score. If it has to rediscover basic positional facts from scratch, something is probably in the wrong place.
 

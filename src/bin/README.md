@@ -82,7 +82,7 @@ cargo build --bin uci --release
 
 ### 8. Texel Tuner (texel.rs)
 
-A static-eval Texel tuner for `src/evaluation/base.rs` constants. Fits eval parameters to a `data_gen` corpus and applies the tuned values back to the source. Use one bounds-group corpus (the `data_gen` default `base_only` preset is the usual choice).
+A static-eval Texel tuner for the `src/evaluation/params.rs` parameter table. Fits eval parameters to a `data_gen` corpus and applies the tuned values back to the source. Use one bounds-group corpus (the `data_gen` default `base_only` preset is the usual choice).
 
 ```bash
 cargo run --release --bin data_gen --features data_gen -- --games 100000
