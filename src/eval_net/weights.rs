@@ -36,6 +36,12 @@ impl AlignedI16 {
     }
 }
 
+/// The first `len` weights of `w` as i8; every stored weight is in i8 range.
+#[cfg(target_arch = "x86_64")]
+pub fn narrow(w: &AlignedI16, len: usize) -> Box<[i8]> {
+    w.as_slice()[..len].iter().map(|&v| v as i8).collect()
+}
+
 /// Row strides are padded to 32 i16 (64 bytes) so aligned rows stay aligned.
 pub const fn pad32(n: usize) -> usize {
     n.div_ceil(32) * 32
@@ -61,6 +67,10 @@ pub struct EvalNetWeights {
     pub l1_w: AlignedI16,
     pub l1_b: Box<[i32]>,
     pub l2_w: AlignedI16,
+    /// `l2_w` again as i8: layer-1 activations are 0..=127, so layer 2 can use
+    /// u8 x i8 pair products, which never saturate i16 (2 * 127 * 127 < 32768).
+    #[cfg(target_arch = "x86_64")]
+    pub l2_w8: Box<[i8]>,
     pub l2_b: Box<[i32]>,
     pub l3_w: AlignedI16,
     pub l3_b: i32,
@@ -147,6 +157,8 @@ impl EvalNetWeights {
             l1_w: AlignedI16::from_rows(&l1, n_in, stride1, h1),
             l1_b,
             l2_w: AlignedI16::from_rows(&l2, h1, stride2, h2),
+            #[cfg(target_arch = "x86_64")]
+            l2_w8: narrow(&AlignedI16::from_rows(&l2, h1, stride2, h2), stride2 * h2),
             l2_b,
             l3_w: AlignedI16::from_rows(&l3, h2, pad32(h2), 1),
             l3_b,

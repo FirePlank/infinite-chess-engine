@@ -120,6 +120,69 @@ unsafe fn dense_layer_avx2(
     }
 }
 
+/// `dense_layer_avx2` for u8 inputs and i8 weights: `maddubs` takes 32 products per
+/// instruction and exact pair sums, since inputs are 0..=127 and weights |w| <= 127.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn dense_layer_u8_avx2(
+    w: &[i8],
+    b: &[i32],
+    stride: usize,
+    x16: &[i16],
+    shift: u32,
+    out: &mut [i16],
+) {
+    use std::arch::x86_64::*;
+    debug_assert!(out.len().is_multiple_of(8) && stride.is_multiple_of(32));
+    debug_assert!(w.len() >= out.len() * stride && x16.len() >= stride && b.len() >= out.len());
+    unsafe {
+        // Narrow the 0..=127 activations to bytes once; packus keeps lane order after
+        // the 64-bit permute.
+        let mut xb = [0u8; MAX_H];
+        for i in (0..stride).step_by(32) {
+            let lo = _mm256_loadu_si256(x16.as_ptr().add(i) as *const __m256i);
+            let hi = _mm256_loadu_si256(x16.as_ptr().add(i + 16) as *const __m256i);
+            let packed = _mm256_permute4x64_epi64(_mm256_packus_epi16(lo, hi), 0b11_01_10_00);
+            _mm256_storeu_si256(xb.as_mut_ptr().add(i) as *mut __m256i, packed);
+        }
+        let x = &xb[..stride];
+        let count = _mm_cvtsi32_si128(shift as i32);
+        // Opaque to LLVM, which otherwise rewrites madd-by-ones as sign extends and
+        // shuffles, eight instructions for one.
+        let ones = std::hint::black_box(_mm256_set1_epi16(1));
+        let (zero, max) = (_mm256_setzero_si256(), _mm256_set1_epi32(127));
+        for g in (0..out.len()).step_by(8) {
+            let rows = w.as_ptr().add(g * stride);
+            let mut acc = [_mm256_setzero_si256(); 8];
+            for i in (0..stride).step_by(32) {
+                let xv = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
+                for (r, a) in acc.iter_mut().enumerate() {
+                    let wv = _mm256_loadu_si256(rows.add(r * stride + i) as *const __m256i);
+                    let pairs = _mm256_maddubs_epi16(xv, wv);
+                    *a = _mm256_add_epi32(*a, _mm256_madd_epi16(pairs, ones));
+                }
+            }
+            let s01 = _mm256_hadd_epi32(acc[0], acc[1]);
+            let s23 = _mm256_hadd_epi32(acc[2], acc[3]);
+            let s45 = _mm256_hadd_epi32(acc[4], acc[5]);
+            let s67 = _mm256_hadd_epi32(acc[6], acc[7]);
+            let t0 = _mm256_hadd_epi32(s01, s23);
+            let t1 = _mm256_hadd_epi32(s45, s67);
+            let sums = _mm256_add_epi32(
+                _mm256_permute2x128_si256(t0, t1, 0x20),
+                _mm256_permute2x128_si256(t0, t1, 0x31),
+            );
+            let v = _mm256_add_epi32(sums, _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i));
+            let v = _mm256_min_epi32(_mm256_max_epi32(_mm256_sra_epi32(v, count), zero), max);
+            let mut lanes = [0i32; 8];
+            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v);
+            for (o, &l) in out[g..g + 8].iter_mut().zip(&lanes) {
+                *o = l as i16;
+            }
+        }
+    }
+}
+
 /// Four accumulators to one vector of their horizontal sums, by a 4x4 transpose.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[inline(always)]
@@ -236,6 +299,19 @@ pub fn kernel_selftest() -> bool {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
+        if has_avx2() {
+            let w8: Vec<i8> = w.iter().map(|&v| v.clamp(-127, 127) as i8).collect();
+            let xu: Vec<i16> = x.iter().map(|&v| v.clamp(0, 127)).collect();
+            let mut got = vec![0i16; n_out];
+            unsafe { dense_layer_u8_avx2(&w8, &b, stride, &xu, shift, &mut got) };
+            for r in 0..n_out {
+                let d: i32 = (0..stride).map(|i| w8[r * stride + i] as i32 * xu[i] as i32).sum();
+                if got[r] != ((b[r] + d) >> shift).clamp(0, 127) as i16 {
+                    return false;
+                }
+            }
+        }
     }
     true
 }
@@ -263,6 +339,13 @@ pub fn forward(net: &EvalNetWeights, x: &[i16]) -> i32 {
     dense_layer(net.l1_w.as_slice(), &net.l1_b, net.stride1, &xp, net.s1, &mut h1[..net.h1], avx2);
 
     let mut h2 = [0i16; MAX_H];
+    #[cfg(target_arch = "x86_64")]
+    if avx2 && net.h2.is_multiple_of(8) && net.stride2.is_multiple_of(32) {
+        unsafe { dense_layer_u8_avx2(&net.l2_w8, &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2]) };
+    } else {
+        dense_layer(net.l2_w.as_slice(), &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2], avx2);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     dense_layer(net.l2_w.as_slice(), &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2], avx2);
 
     let raw = net.l3_b + dot_i16(net.l3_w.as_slice(), &h2, super::weights::pad32(net.h2));
@@ -289,6 +372,8 @@ mod tests {
             l1_w: AlignedI16::from_rows(&vec![1i16; 32 * n_in], n_in, pad32(n_in), 32),
             l1_b: vec![0i32; 32].into_boxed_slice(),
             l2_w: AlignedI16::from_rows(&vec![1i16; 32 * 32], 32, pad32(32), 32),
+            #[cfg(target_arch = "x86_64")]
+            l2_w8: vec![1i8; 32 * pad32(32)].into_boxed_slice(),
             l2_b: vec![0i32; 32].into_boxed_slice(),
             l3_w: AlignedI16::from_rows(&[1i16; 32], 32, pad32(32), 1),
             l3_b: 0,
