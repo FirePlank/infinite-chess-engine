@@ -619,6 +619,7 @@ mod tests {
         game.en_passant = Some(EnPassantState {
             square: Coordinate::new(4, 6),
             pawn_square: Coordinate::new(4, 5),
+            hashed: true,
         });
         let m = Move::new(
             Coordinate::new(5, 5),

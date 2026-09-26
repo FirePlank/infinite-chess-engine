@@ -1,9 +1,9 @@
 {
-  "name": "02_rider_flags",
-  "old": "9455077",
+  "name": "29_ep_key_capturable",
+  "old": "75e42cf",
   "games": 3000,
   "shards": 20,
-  "variants": "CoaIP_NO,CoaIP_HO,CoaIP_RO",
+  "variants": "site",
   "tc": "10+0.1",
   "elo0": -10,
   "elo1": 0

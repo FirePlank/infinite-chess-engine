@@ -4389,7 +4389,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
             // The child always clears the parent's en-passant square, so without
             // this the prefetch walks to an unrelated bucket on those nodes.
-            if let Some(ep) = game.en_passant {
+            if let Some(ep) = game.en_passant
+                && ep.hashed
+            {
                 child_hash ^= crate::search::zobrist::en_passant_key(ep.square.x, ep.square.y);
             }
             #[cfg(feature = "multithreading")]
@@ -5528,7 +5530,9 @@ fn quiescence(
             if let Some(cap) = captured {
                 child_hash ^= piece_key(cap.piece_type(), cap.color(), m.to.x, m.to.y);
             }
-            if let Some(ep) = game.en_passant {
+            if let Some(ep) = game.en_passant
+                && ep.hashed
+            {
                 child_hash ^= crate::search::zobrist::en_passant_key(ep.square.x, ep.square.y);
             }
             #[cfg(feature = "multithreading")]
