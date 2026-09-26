@@ -847,8 +847,36 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
             PlayerColor::Black => 32,
             _ => continue,
         };
-        let slot = &mut c[side + (p.piece_type() as usize).min(31)];
+        let slot = &mut c[side + (p.piece_type() as usize).min(21)];
         *slot = slot.saturating_add(1);
+    }
+    // Slots 22-24 / 54-56: the side's king exposure against queen-like checkers (open
+    // rays with no own or neutral piece within 3, enemy queen-like present, own pieces
+    // within 2 squares of the king).
+    let counts = c;
+    let queen_like = |side: usize| -> u8 {
+        [8usize, 7, 11, 12, 9].iter().any(|&t| counts[side + t] > 0) as u8
+    };
+    for (us, side, them) in [(PlayerColor::White, 0usize, 32usize), (PlayerColor::Black, 32, 0)] {
+        let kings = if us == PlayerColor::White { &g.white_royals } else { &g.black_royals };
+        let Some(k) = kings.first() else { continue };
+        let mut open = 0u8;
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            let shut = g.spatial_indices.find_first_blocker(k.x, k.y, dx, dy).is_some_and(|(x, y, p)| {
+                (x - k.x).abs().max((y - k.y).abs()) <= 3
+                    && (p.color() == us || p.color() == PlayerColor::Neutral)
+            });
+            open += !shut as u8;
+        }
+        let near = g
+            .board
+            .iter()
+            .filter(|(x, y, p)| p.color() == us && (x - k.x).abs().max((y - k.y).abs()) <= 2 && !(x == &k.x && y == &k.y))
+            .count()
+            .min(255) as u8;
+        c[side + 22] = open;
+        c[side + 23] = queen_like(them);
+        c[side + 24] = near;
     }
     c
 }
