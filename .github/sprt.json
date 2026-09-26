@@ -1,10 +1,10 @@
 {
-  "name": "29_ep_key_capturable",
-  "old": "75e42cf",
+  "name": "30_perpetual_damp_p6_net",
+  "old": "3338eaa",
   "games": 3000,
   "shards": 20,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0
+  "elo0": 0,
+  "elo1": 5
 }
