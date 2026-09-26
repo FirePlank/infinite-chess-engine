@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: sprt-${{ github.ref }}
@@ -84,58 +85,49 @@ jobs:
             echo "::error::Null test: new and old engine source are identical"; exit 1
           fi
 
-      - name: Restore new binary
-        id: newbin
-        uses: actions/cache/restore@v6
-        with:
-          path: sprt-bin
-          key: sprt-bin-${{ steps.keys.outputs.new }}
-
-      - name: Build new
+      # Caches are scoped to the branch that made them and every test is a new branch,
+      # so binaries live as repo-wide artifacts named by content key instead.
+      - name: Fetch or build binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p bins
-          if [ "${{ steps.newbin.outputs.cache-hit }}" = "true" ]; then
-            mv sprt-bin/sprt bins/new-sprt
+          fetch() {
+            id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=sprt-bin-$1&per_page=5"                  -q '[.artifacts[] | select(.expired == false)][0].id // empty')
+            [ -n "$id" ] || return 1
+            rm -rf fetched && mkdir fetched
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > fetched/b.zip
+            unzip -q -o fetched/b.zip -d fetched && mv fetched/sprt "$2" && chmod +x "$2"
+          }
+          if fetch "${{ steps.keys.outputs.new }}" bins/new-sprt; then
+            echo "new: reused sprt-bin-${{ steps.keys.outputs.new }}"
           else
             cargo build --release --features sprt --bin sprt
             cp target/release/sprt bins/new-sprt
+            mkdir -p save-new && cp bins/new-sprt save-new/sprt
           fi
-          rm -rf sprt-bin
-
-      - name: Save new binary
-        if: steps.newbin.outputs.cache-hit != 'true'
-        run: mkdir -p sprt-bin && cp bins/new-sprt sprt-bin/sprt
-
-      - if: steps.newbin.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: sprt-bin
-          key: sprt-bin-${{ steps.keys.outputs.new }}
-
-      - name: Restore old binary
-        id: oldbin
-        uses: actions/cache/restore@v6
-        with:
-          path: sprt-bin
-          key: sprt-bin-${{ steps.keys.outputs.old }}
-
-      - name: Build old
-        run: |
-          if [ "${{ steps.oldbin.outputs.cache-hit }}" = "true" ]; then
-            mv sprt-bin/sprt bins/old-sprt
+          if fetch "${{ steps.keys.outputs.old }}" bins/old-sprt; then
+            echo "old: reused sprt-bin-${{ steps.keys.outputs.old }}"
           else
-            rm -rf sprt-bin
             git worktree add ../old "${{ steps.cfg.outputs.old }}"
             (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
             cp target-old/release/sprt bins/old-sprt
-            mkdir -p sprt-bin && cp bins/old-sprt sprt-bin/sprt
+            mkdir -p save-old && cp bins/old-sprt save-old/sprt
           fi
 
-      - if: steps.oldbin.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+      - if: hashFiles('save-new/sprt') != ''
+        uses: actions/upload-artifact@v7
         with:
-          path: sprt-bin
-          key: sprt-bin-${{ steps.keys.outputs.old }}
+          name: sprt-bin-${{ steps.keys.outputs.new }}
+          path: save-new/sprt
+          retention-days: 30
+
+      - if: hashFiles('save-old/sprt') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: sprt-bin-${{ steps.keys.outputs.old }}
+          path: save-old/sprt
+          retention-days: 30
 
       - uses: actions/upload-artifact@v7
         with:
