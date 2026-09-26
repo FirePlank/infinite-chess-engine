@@ -878,7 +878,56 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
         c[side + 23] = queen_like(them);
         c[side + 24] = near;
     }
+    // Slots 25-27 / 57-59: the side's own non-pawn, non-royal pieces attacked and
+    // undefended (count, value / 50), and opponent checks landing on squares it does
+    // not defend (safe checks against it).
+    let idx = &g.spatial_indices;
+    for (us, side) in [(PlayerColor::White, 0usize), (PlayerColor::Black, 32usize)] {
+        let them = us.opponent();
+        let (mut loose, mut loose_val) = (0u32, 0u32);
+        for (x, y, p) in g.board.iter() {
+            let pt = p.piece_type();
+            if p.color() != us || pt == apeiron::board::PieceType::Pawn || pt.is_royal() {
+                continue;
+            }
+            let sq = apeiron::board::Coordinate::new(x, y);
+            if apeiron::moves::is_square_attacked(&g.board, &sq, them, idx)
+                && !apeiron::moves::is_square_attacked(&g.board, &sq, us, idx)
+            {
+                loose += 1;
+                loose_val += apeiron::evaluation::get_piece_value_base(pt).max(0) as u32;
+            }
+        }
+        c[side + 25] = loose.min(255) as u8;
+        c[side + 26] = (loose_val / 50).min(255) as u8;
+        c[side + 27] = safe_checks_against(g, us).min(255) as u8;
+    }
     c
+}
+
+/// Opponent moves that check `us` and land on a square `us` does not defend.
+fn safe_checks_against(g: &GameState, us: PlayerColor) -> u32 {
+    let kings = if us == PlayerColor::White { &g.white_royals } else { &g.black_royals };
+    let Some(&king) = kings.first() else { return 0 };
+    let them = us.opponent();
+    let mut h = g.clone();
+    if h.turn != them {
+        h.make_null_move();
+    }
+    let mut n = 0;
+    for m in h.get_pseudo_legal_moves().iter() {
+        let undo = h.make_move(m);
+        let royals = if us == PlayerColor::White { &h.white_royals } else { &h.black_royals };
+        if !h.is_move_illegal()
+            && royals.first() == Some(&king)
+            && apeiron::moves::is_square_attacked(&h.board, &king, them, &h.spatial_indices)
+            && !apeiron::moves::is_square_attacked(&h.board, &m.to, us, &h.spatial_indices)
+        {
+            n += 1;
+        }
+        h.undo_move(m, undo);
+    }
+    n
 }
 
 /// A set-up start position, parsed once per distinct ICN. Setting up also applies the
