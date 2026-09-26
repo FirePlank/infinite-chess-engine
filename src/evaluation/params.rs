@@ -193,7 +193,7 @@ eval_params! {
     eg_connected_pawn_bonus = 30 => (0, 60, 2.0, 0.002, "Endgame connected pawn bonus");
     mg_passed_safe_path_bonus = 27 => (0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus");
     eg_passed_safe_path_bonus = 67 => (0, 240, 2.0, 0.002, "Endgame passed pawn safe path bonus");
-    mg_king_open_file_penalty = 28 => (0, 120, 2.0, 0.002, "Middlegame king open file penalty");
+    mg_king_open_file_penalty = 0 => (0, 120, 2.0, 0.002, "Middlegame king open file penalty");
     eg_king_open_file_penalty = 0 => (0, 120, 2.0, 0.002, "Endgame king open file penalty");
     mg_king_defender_bonus = 18 => (0, 50, 2.0, 0.002, "Middlegame king defender bonus");
     eg_king_defender_bonus = 0 => (0, 50, 2.0, 0.002, "Endgame king defender bonus");
