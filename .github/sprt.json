@@ -1,10 +1,10 @@
 {
-  "name": "24c_evaldiff_fixed",
-  "old": "3338eaa",
+  "name": "29_ep_key_capturable",
+  "old": "75e42cf",
   "games": 3000,
   "shards": 20,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5
+  "elo0": -10,
+  "elo1": 0
 }
