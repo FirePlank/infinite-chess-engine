@@ -55,9 +55,26 @@ jobs:
             echo "elo1=$(jq -r '.elo1 // 5' $c)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+          key: rustup-${{ hashFiles('rust-toolchain.toml') }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: sprt-bin
+          cache-directories: target-old
+
+      # Consecutive tests usually share a baseline, so the old engine is built once per ref.
+      - name: Cache old binary
+        id: oldbin
+        uses: actions/cache@v4
+        with:
+          path: bins-old
+          key: old-sprt-${{ steps.cfg.outputs.old }}
 
       - name: Build new
         run: |
@@ -65,10 +82,14 @@ jobs:
           mkdir -p bins && cp target/release/sprt bins/new-sprt
 
       - name: Build old
+        if: steps.oldbin.outputs.cache-hit != 'true'
         run: |
           git worktree add ../old "${{ steps.cfg.outputs.old }}"
           (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
-          cp target-old/release/sprt bins/old-sprt
+          mkdir -p bins-old && cp target-old/release/sprt bins-old/old-sprt
+
+      - name: Stage old
+        run: cp bins-old/old-sprt bins/old-sprt
 
       - uses: actions/upload-artifact@v4
         with:
