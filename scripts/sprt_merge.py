@@ -126,10 +126,30 @@ def trinomial_elo(w, l, d):
     return -400 * math.log10(1 / s - 1), min(err, 200.0)
 
 
+def pair_counts(games):
+    """Pentanomial pair counts (ll, ld, wl+dd, wd, ww) of one shard's games, in order."""
+    pc, by_idx, seg = [0, 0, 0, 0, 0], {}, 0
+    for icn in games:
+        ev = tag(icn, "Event") or ""
+        if ev.startswith("SPRT Test Game "):
+            idx = int(ev.split()[-1])
+            if (seg, idx) in by_idx:
+                seg += 1
+            by_idx[(seg, idx)] = result_for_new(icn)
+    for sg, k in {(sg, i // 2) for sg, i in by_idx}:
+        if (sg, 2 * k) in by_idx and (sg, 2 * k + 1) in by_idx:
+            pc[int(round((by_idx[(sg, 2 * k)] + by_idx[(sg, 2 * k + 1)]) * 2))] += 1
+    return pc
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("inputs", nargs="+")
-    ap.add_argument("--out", required=True, help="merged games JSON (one list of ICNs)")
+    # Live-monitor modes: a shard reports its counts; the driver turns summed counts into
+    # an LLR and a stop flag.
+    ap.add_argument("--counts", metavar="GAMES_JSON", help="print one shard's pair counts as a,b,c,d,e")
+    ap.add_argument("--from-counts", metavar="A,B,C,D,E", help="print llr= and stop= for summed counts")
+    ap.add_argument("inputs", nargs="*")
+    ap.add_argument("--out", help="merged games JSON (one list of ICNs)")
     ap.add_argument("--elo0", type=float, default=0.0)
     ap.add_argument("--elo1", type=float, default=5.0)
     ap.add_argument("--model", default="normalized")
@@ -137,6 +157,20 @@ def main():
     ap.add_argument("--old", default="OLD")
     ap.add_argument("--gh-output", default=None, help="append llr= and stop= (bound crossed) for Actions")
     a = ap.parse_args()
+    if a.counts:
+        try:
+            games = json.load(open(a.counts, encoding="utf-8"))
+        except (OSError, ValueError):
+            games = []  # mid-write or not saved yet
+        print(",".join(map(str, pair_counts(games))))
+        return
+    if a.from_counts:
+        pc = [int(v) for v in a.from_counts.split(",")]
+        llr = penta_llr(pc, a.elo0, a.elo1, a.model) if sum(pc) else 0.0
+        print(f"llr={llr:.3f}\nstop={str(abs(llr) >= math.log(0.95 / 0.05)).lower()}\npairs={sum(pc)}")
+        return
+    if not a.inputs or not a.out:
+        ap.error("inputs and --out are required")
 
     allg, pc = [], [0, 0, 0, 0, 0]  # ll, ld, (wl + dd), wd, ww
     w = l = d = timeouts = new_timeouts = 0

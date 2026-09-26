@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPRT on GitHub runners: commits `test: <name>` (= <base> + patch + .github/sprt.json) on the
-# one `sprt` branch, merges the shards' games as they upload, cancels the run once the LLR
+# one `sprt` branch, sums the shards' live pair counts, cancels the run once the LLR
 # crosses a bound, and saves games + Final Summary under games/sprt. Record the decision
 # afterwards with scripts/sprt_done.sh.
 #   scripts/sprt_run.sh <name> <base-sha> <patch-file|-> <games> [variants] [elo0] [elo1] [tc]
@@ -47,33 +47,26 @@ for _ in $(seq 60); do
 done
 echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"; mkdir -p "$T"
-declare -A SEEN
-fetch() {
-  gh api "repos/$REPO/actions/runs/$ID/artifacts?per_page=100"     -q '.artifacts[] | select(.name | startswith("shard-")) | "\(.id) \(.name) \(.updated_at)"' > "$T/list" || return 0
-  while read -r aid aname aupd; do
-    [ "${SEEN[$aname]:-}" = "$aupd" ] && continue
-    gh api "repos/$REPO/actions/artifacts/$aid/zip" > "$T/z.zip"       && rm -rf "$T/$aname" && unzip -q -o "$T/z.zip" -d "$T/$aname" && SEEN[$aname]=$aupd
-  done < "$T/list"
-}
-merge() {
-  python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1" "$@"     --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json
-}
-# Shards upload after each third of their games; stop the run as soon as the aggregate
-# LLR crosses a bound. `gh run watch` is avoided: it can hang without a terminal.
+# Each shard posts its pair counts (ll,ld,wl+dd,wd,ww) as a commit status every few
+# minutes; sum the newest per shard and stop the run once the LLR crosses a bound.
+# `gh run watch` is avoided: it can hang without a terminal.
 while :; do
   STATUS=$(gh run view "$ID" --json status -q .status)
-  fetch
-  if compgen -G "$T/shard-*/shard_*.json" > /dev/null; then
-    rm -f "$T/out"; merge --gh-output "$T/out" > /dev/null
-    if grep -q '^stop=true' "$T/out"; then
-      gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
-      echo "LLR bound crossed ($(grep '^llr=' "$T/out")): run cancelled"; break
-    fi
+  SUM=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"           -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+              | map(max_by(.updated_at).description | split(",") | map(tonumber))
+              | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
+  OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
+  if grep -q '^stop=true' <<< "$OUT"; then
+    gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+    echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
+    until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
+    break
   fi
   [ "$STATUS" = completed ] && break
   sleep 60
 done
-fetch
-merge | tee "$R/games/sprt/summary_${NAME}_remote.txt"
+# Keep every game, stopped early or not: one JSON per test under games/sprt.
+T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
+gh run download "$ID" -p "shard-*" -D "$T"
+python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
 rm -rf "$T"
