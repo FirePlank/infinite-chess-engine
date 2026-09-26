@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   setup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       shards: ${{ steps.cfg.outputs.shards }}
@@ -31,7 +31,7 @@ jobs:
       elo1: ${{ steps.cfg.outputs.elo1 }}
       total: ${{ steps.cfg.outputs.total }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -56,7 +56,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Cache toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.rustup/toolchains
@@ -71,7 +71,7 @@ jobs:
       # Consecutive tests usually share a baseline, so the old engine is built once per ref.
       - name: Cache old binary
         id: oldbin
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bins-old
           key: old-sprt-${{ steps.cfg.outputs.old }}
@@ -91,7 +91,7 @@ jobs:
       - name: Stage old
         run: cp bins-old/old-sprt bins/old-sprt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bins
           path: bins/
@@ -99,14 +99,14 @@ jobs:
 
   play:
     needs: setup
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJson(needs.setup.outputs.shards) }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bins
           path: bins
@@ -124,7 +124,7 @@ jobs:
             --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}" \
             --games "shard_${{ matrix.shard }}.json" --results "results_${{ matrix.shard }}.json" | tail -20
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shard-${{ matrix.shard }}
           path: shard_${{ matrix.shard }}.json
@@ -133,15 +133,15 @@ jobs:
   merge:
     needs: [setup, play]
     if: always() && needs.setup.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts/sprt_merge.py
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: shard-*
           path: art
@@ -151,7 +151,7 @@ jobs:
           python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
           { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: merged
           path: |
