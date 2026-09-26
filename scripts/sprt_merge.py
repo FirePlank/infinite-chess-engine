@@ -6,8 +6,8 @@ fastchess normalized/logistic GSPRT LLR, trinomial per-variant Elo), same line f
     python scripts/sprt_merge.py --out games/sprt/games_X.json [--elo0 0 --elo1 5]
         [--model normalized] [--label NEW] [--old OLD] shard1.json shard2.json ...
 
-Pairs are the harness's (2k, 2k+1) game indices within each input file, since every
-shard numbers its games from 0.
+Pairs are the harness's (2k, 2k+1) game indices within each shard. Every shard numbers
+its games from 0, so a repeated index starts a new shard, even inside a merged file.
 """
 import argparse
 import json
@@ -143,7 +143,7 @@ def main():
     for path in a.inputs:
         games = json.load(open(path, encoding="utf-8"))
         allg += games
-        by_idx = {}
+        by_idx, seg = {}, 0
         for icn in games:
             r = result_for_new(icn)
             w, l, d = w + (r == 1), l + (r == 0), d + (r == 0.5)
@@ -155,10 +155,13 @@ def main():
             tc = tc or tag(icn, "TimeControl")
             ev = tag(icn, "Event") or ""
             if ev.startswith("SPRT Test Game "):
-                by_idx[int(ev.split()[-1])] = r
-        for k in {i // 2 for i in by_idx}:
-            if 2 * k in by_idx and 2 * k + 1 in by_idx:
-                pc[int(round((by_idx[2 * k] + by_idx[2 * k + 1]) * 2))] += 1
+                idx = int(ev.split()[-1])
+                if (seg, idx) in by_idx:
+                    seg += 1
+                by_idx[(seg, idx)] = r
+        for sg, k in {(sg, i // 2) for sg, i in by_idx}:
+            if (sg, 2 * k) in by_idx and (sg, 2 * k + 1) in by_idx:
+                pc[int(round((by_idx[(sg, 2 * k)] + by_idx[(sg, 2 * k + 1)]) * 2))] += 1
     json.dump(allg, open(a.out, "w", encoding="utf-8"))
 
     elo, err, nelo, nerr = penta_elo(pc)
