@@ -781,6 +781,7 @@ impl StagedMoveGen {
                     m.piece.color().opponent(),
                     &game.spatial_indices,
                 )
+                && !Self::attacked_through_origin(game, m)
             {
                 score += (mover_val * 5).min(10000);
             }
@@ -834,6 +835,32 @@ impl StagedMoveGen {
             // Quiet: use history
             self.score_quiet(game, searcher, m)
         }
+    }
+
+    /// A piece retreating along the line it is attacked on still stands on that line:
+    /// the pre-move board hides the attacker behind the mover's own origin.
+    fn attacked_through_origin(game: &GameState, m: &Move) -> bool {
+        let (dx, dy) = (m.from.x - m.to.x, m.from.y - m.to.y);
+        if !(dx == 0 || dy == 0 || dx.abs() == dy.abs()) {
+            return false;
+        }
+        let (sx, sy) = (dx.signum(), dy.signum());
+        let ortho = sx == 0 || sy == 0;
+        game.spatial_indices
+            .find_first_blocker(m.from.x, m.from.y, sx, sy)
+            .is_some_and(|(_, _, p)| {
+                p.color() == m.piece.color().opponent()
+                    && if ortho {
+                        crate::attacks::is_ortho_slider(p.piece_type())
+                    } else {
+                        crate::attacks::is_diag_slider(p.piece_type())
+                    }
+            })
+            && crate::evaluation::base::is_clear_line_between_fast(
+                &game.spatial_indices,
+                &m.to,
+                &m.from,
+            )
     }
 
     /// Is the ray between two aligned squares clear once `vacated` is emptied?
