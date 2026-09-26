@@ -123,3 +123,10 @@ evalnet/*.progress
 evalnet/*.hash
 evalnet/*.hashes
 evalnet/var/
+
+# Scratch output: root binaries, side build dirs, offline analysis dirs, local probes.
+/*.exe
+/target-*/
+evalnet/resid/
+evalnet/forensics/
+src/bin/sampler.rs
