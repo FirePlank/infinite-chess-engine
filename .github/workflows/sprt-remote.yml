@@ -79,6 +79,10 @@ jobs:
           }
           echo "new=$(key HEAD)" >> "$GITHUB_OUTPUT"
           echo "old=$(key "${{ steps.cfg.outputs.old }}")" >> "$GITHUB_OUTPUT"
+          # Identical engine content on both sides means the patch never landed: a mistake.
+          if [ "$(key HEAD)" = "$(key "${{ steps.cfg.outputs.old }}")" ]; then
+            echo "::error::Null test: new and old engine source are identical"; exit 1
+          fi
 
       - name: Restore new binary
         id: newbin
@@ -110,7 +114,6 @@ jobs:
 
       - name: Restore old binary
         id: oldbin
-        if: steps.keys.outputs.old != steps.keys.outputs.new
         uses: actions/cache/restore@v6
         with:
           path: sprt-bin
@@ -118,9 +121,7 @@ jobs:
 
       - name: Build old
         run: |
-          if [ "${{ steps.keys.outputs.old }}" = "${{ steps.keys.outputs.new }}" ]; then
-            cp bins/new-sprt bins/old-sprt
-          elif [ "${{ steps.oldbin.outputs.cache-hit }}" = "true" ]; then
+          if [ "${{ steps.oldbin.outputs.cache-hit }}" = "true" ]; then
             mv sprt-bin/sprt bins/old-sprt
           else
             rm -rf sprt-bin
@@ -130,7 +131,7 @@ jobs:
             mkdir -p sprt-bin && cp bins/old-sprt sprt-bin/sprt
           fi
 
-      - if: steps.keys.outputs.old != steps.keys.outputs.new && steps.oldbin.outputs.cache-hit != 'true'
+      - if: steps.oldbin.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: sprt-bin

@@ -13,6 +13,13 @@ jq -n --arg n "$NAME" --arg o "$BASE" --arg v "$VARIANTS" --arg tc "$TC" \
       --argjson g "$GAMES" --argjson e0 "$E0" --argjson e1 "$E1" \
       '{name:$n, old:$o, games:$g, shards:20, variants:$v, tc:$tc, elo0:$e0, elo1:$e1}' > .github/sprt.json
 git add -A && git commit -q -m "sprt: $NAME"
+key() {
+  { git ls-tree -r "$1" -- src Cargo.toml Cargo.lock build.rs .cargo/config.toml rust-toolchain.toml       | grep -v $'	src/bin/'
+    git ls-tree "$1" -- src/bin/sprt.rs; } | sha256sum | cut -c1-24
+}
+if [ "$(key HEAD)" = "$(key "$BASE")" ]; then
+  echo "null test: the patch leaves the engine source identical to $BASE; not pushing" >&2; exit 1
+fi
 SHA=$(git rev-parse HEAD)
 git push -f -q origin "HEAD:refs/heads/sprt/$NAME"
 ID=""
