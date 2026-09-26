@@ -302,6 +302,12 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             };
 
             let pos = Coordinate::new(vx, vy);
+            // Already in the exchange from the leaper/pawn scan: give it this ray, so the
+            // slider behind it joins once it has recaptured.
+            if let Some(a) = attackers.iter_mut().find(|a| a.pos == pos && a.ray_idx.is_none()) {
+                a.ray_idx = Some(r);
+                continue;
+            }
             let pt = p.piece_type();
             let dist = (vx - target_x).abs().max((vy - target_y).abs());
 
