@@ -1,0 +1,10 @@
+{
+  "name": "24_evaldiff_history",
+  "old": "662d86d",
+  "games": 3000,
+  "shards": 20,
+  "variants": "site",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5
+}
