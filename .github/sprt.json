@@ -1,0 +1,10 @@
+{
+  "name": "02_rider_flags",
+  "old": "9455077",
+  "games": 3000,
+  "shards": 20,
+  "variants": "CoaIP_NO,CoaIP_HO,CoaIP_RO",
+  "tc": "10+0.1",
+  "elo0": -10,
+  "elo1": 0
+}

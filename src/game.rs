@@ -3264,6 +3264,14 @@ impl GameState {
             }
 
             self.total_phase += get_piece_phase(promo_type);
+            // A promotion can create the side's first rider; these flags gate its attack detection.
+            let c = if piece.color() == PlayerColor::White { 0 } else { 1 };
+            match promo_type {
+                PieceType::Knightrider => self.spatial_indices.has_knightrider[c] = true,
+                PieceType::Huygen => self.spatial_indices.has_huygen[c] = true,
+                PieceType::Rose => self.spatial_indices.has_rose[c] = true,
+                _ => {}
+            }
         }
 
         // Remove old en passant
