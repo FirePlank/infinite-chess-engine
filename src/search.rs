@@ -4910,7 +4910,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Countermove heuristic. The destination is truncated to i32 here and
                 // at the read site alike, so a false match needs a 2^32 coordinate gap,
                 // which the far-escape shell (+/-4063) keeps out of reach.
-                if ply > 0 {
+                if ply > 0 && searcher.plies_from_null[ply] != 1 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
                         searcher.countermoves[prev_from_hash][prev_to_hash] =

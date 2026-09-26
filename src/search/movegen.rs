@@ -239,10 +239,11 @@ impl StagedMoveGen {
         searcher: &Searcher,
         stage: MoveStage,
     ) -> Self {
-        let (prev_from_hash, prev_to_hash) = if ply > 0 {
+        // After a null move the slot is (0, 0), a bucket real moves share: no countermove.
+        let (prev_from_hash, prev_to_hash) = if ply > 0 && searcher.plies_from_null[ply] != 1 {
             searcher.prev_move_stack[ply - 1]
         } else {
-            (0, 0)
+            (usize::MAX, usize::MAX)
         };
 
         let killer1 = if ply < searcher.killers.len() {
