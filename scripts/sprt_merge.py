@@ -135,6 +135,7 @@ def main():
     ap.add_argument("--model", default="normalized")
     ap.add_argument("--label", default="NEW")
     ap.add_argument("--old", default="OLD")
+    ap.add_argument("--gh-output", default=None, help="append llr= and stop= (bound crossed) for Actions")
     a = ap.parse_args()
 
     allg, pc = [], [0, 0, 0, 0, 0]  # ll, ld, (wl + dd), wd, ww
@@ -177,6 +178,9 @@ def main():
     print(f"  LLR: {llr:.3f}  bounds [{-bound:.2f}, {bound:.2f}] ({a.model} model, [{a.elo0:g}, {a.elo1:g}])")
     if timeouts:
         print(f"  ALERT: {timeouts} games ended by timeout ({new_timeouts} from new) ")
+    if a.gh_output:
+        with open(a.gh_output, "a") as f:
+            f.write(f"llr={llr:.3f}\nstop={str(abs(llr) >= bound).lower()}\n")
     print("\nPer-Variant Breakdown:")
     for name in sorted(per_var):
         vw, vl, vd = per_var[name]

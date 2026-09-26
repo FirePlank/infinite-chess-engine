@@ -12,7 +12,8 @@ C=$(git log --format=%H --grep="^test: $NAME\$" -1)
 [ -n "$C" ] || { echo "no 'test: $NAME' commit on sprt" >&2; exit 1; }
 MSG=$(mktemp); { echo "$VERDICT: $NAME"; echo; [ -f "$SUMMARY" ] && cat "$SUMMARY"; } > "$MSG"
 if [ "$VERDICT" = reject ]; then
-  git revert -q --no-edit "$C" && git commit -q --amend -F "$MSG"
+  git revert --no-edit "$C" > /dev/null
+  git commit -q --amend -F "$MSG"
 else
   git commit -q --allow-empty -F "$MSG"
 fi
