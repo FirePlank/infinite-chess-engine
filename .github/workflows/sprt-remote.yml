@@ -1,24 +1,26 @@
-# Sharded SPRT on GitHub-hosted runners. Push a branch `sprt/<name>` whose tip carries
-# .github/sprt.json; old = the config's ref, new = the branch tip. Each shard plays its
+# Sharded SPRT on GitHub-hosted runners. Every test is a `test: <name>` commit on the one
+# `sprt` branch carrying .github/sprt.json; old = the config's ref, new = that commit. Each shard plays its
 # games on one runner (both engines share the machine, so timing stays fair), and the
 # merge job prints the harness's Final Summary over every shard's games.
 name: SPRT remote
 
 on:
   push:
-    branches: ["sprt/**"]
+    branches: [sprt]
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  actions: read
 
+# One test at a time on the one branch; a new push queues behind the running test.
 concurrency:
-  group: sprt-${{ github.ref }}
-  cancel-in-progress: true
+  group: sprt
+  cancel-in-progress: false
 
 jobs:
   setup:
+    # Merges of main and the accept/reject records are pushed too; only tests run.
+    if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'test: ')"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -85,49 +87,58 @@ jobs:
             echo "::error::Null test: new and old engine source are identical"; exit 1
           fi
 
-      # Caches are scoped to the branch that made them and every test is a new branch,
-      # so binaries live as repo-wide artifacts named by content key instead.
-      - name: Fetch or build binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Everything runs on the one sprt branch, so its caches are shared by every test:
+      # binaries are keyed by engine source content and reused wherever it matches.
+      - name: Restore new binary
+        id: newbin
+        uses: actions/cache/restore@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.new }}
+
+      - name: Build new
         run: |
           mkdir -p bins
-          fetch() {
-            id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=sprt-bin-$1&per_page=5"                  -q '[.artifacts[] | select(.expired == false)][0].id // empty')
-            [ -n "$id" ] || return 1
-            rm -rf fetched && mkdir fetched
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > fetched/b.zip
-            unzip -q -o fetched/b.zip -d fetched && mv fetched/sprt "$2" && chmod +x "$2"
-          }
-          if fetch "${{ steps.keys.outputs.new }}" bins/new-sprt; then
-            echo "new: reused sprt-bin-${{ steps.keys.outputs.new }}"
+          if [ "${{ steps.newbin.outputs.cache-hit }}" = "true" ]; then
+            mv sprt-bin/sprt bins/new-sprt
           else
             cargo build --release --features sprt --bin sprt
             cp target/release/sprt bins/new-sprt
-            mkdir -p save-new && cp bins/new-sprt save-new/sprt
+            mkdir -p sprt-bin && cp bins/new-sprt sprt-bin/sprt
           fi
-          if fetch "${{ steps.keys.outputs.old }}" bins/old-sprt; then
-            echo "old: reused sprt-bin-${{ steps.keys.outputs.old }}"
+
+      - if: steps.newbin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.new }}
+
+      - name: Clear
+        run: rm -rf sprt-bin
+
+      - name: Restore old binary
+        id: oldbin
+        uses: actions/cache/restore@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.old }}
+
+      - name: Build old
+        run: |
+          if [ "${{ steps.oldbin.outputs.cache-hit }}" = "true" ]; then
+            mv sprt-bin/sprt bins/old-sprt
           else
             git worktree add ../old "${{ steps.cfg.outputs.old }}"
             (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
             cp target-old/release/sprt bins/old-sprt
-            mkdir -p save-old && cp bins/old-sprt save-old/sprt
+            mkdir -p sprt-bin && cp bins/old-sprt sprt-bin/sprt
           fi
 
-      - if: hashFiles('save-new/sprt') != ''
-        uses: actions/upload-artifact@v7
+      - if: steps.oldbin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
         with:
-          name: sprt-bin-${{ steps.keys.outputs.new }}
-          path: save-new/sprt
-          retention-days: 30
-
-      - if: hashFiles('save-old/sprt') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: sprt-bin-${{ steps.keys.outputs.old }}
-          path: save-old/sprt
-          retention-days: 30
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.old }}
 
       - uses: actions/upload-artifact@v7
         with:
