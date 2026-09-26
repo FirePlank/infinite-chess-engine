@@ -4290,8 +4290,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // Futility and SEE margins judge the depth the move would actually be searched at.
             let lmr_depth = (new_depth as i32 - get_lmr(depth, legal_moves + 1)).max(0);
 
-            if is_capture || gives_check {
+            // A quiet promotion is tactical: quiet futility prices it at the pre-move eval,
+            // a full piece short, so only SEE may prune it.
+            if is_capture || gives_check || is_promotion {
                 // Capture/check pruning
+                if !is_capture
+                    && !gives_check
+                    && !see_ge(game, &m, -see_capture_linear() * depth as i32)
+                {
+                    continue;
+                }
                 if let Some(cap_type) = captured_type.filter(|_| !is_royal_capture_win) {
                     let capt_hist = searcher.capture_history[p_type as usize][cap_type as usize];
 
