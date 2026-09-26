@@ -76,10 +76,19 @@ pub fn variant_residual(
 /// Capped residual of `net` for a position whose base-HCE features are in `fc`, White-ahead.
 #[inline]
 pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState, fc: &FeatureCollector) -> i32 {
-    let mut x = feature_vector(game, fc);
+    let base = feature_vector(game, fc);
     let black = game.turn == crate::board::PlayerColor::Black;
+    let mut x = [0i16; features::NET_INPUTS];
+    x[..NUM_FEATURES].copy_from_slice(&base);
     if net.perspective {
-        features::to_perspective(&mut x, black);
+        features::to_perspective(&mut x[..NUM_FEATURES], black);
+    }
+    // A 121-input net never reads these columns.
+    let ke = &fc.inputs.king_exposure;
+    let (own, opp) = if net.perspective && black { (1, 0) } else { (0, 1) };
+    for j in 0..3 {
+        x[NUM_FEATURES + j] = (ke[own][j] * 16) as i16;
+        x[NUM_FEATURES + 3 + j] = (ke[opp][j] * 16) as i16;
     }
     let r = inference::forward(net, &x).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }

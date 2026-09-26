@@ -88,6 +88,103 @@ pub struct EvalNetInputs {
     /// Most advanced pawn's distance to promotion (100 when the side has none).
     pub promo_dist: [i32; 2],
     pub non_pawn_non_royal: [i32; 2],
+    /// Per side: open king rays, enemy owns a queen-like piece, own pieces near the king.
+    pub king_exposure: [[i32; 3]; 2],
+}
+
+/// King-exposure inputs appended after the perspective vector: (own, opponent) x
+/// (open rays, enemy queen-like, near), each x16 as `--extra-pairs 22,23,24` trains them.
+pub const KEXP_INPUTS: usize = 6;
+pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS;
+const KEXP_RADIUS: i64 = 3;
+const KEXP_NEAR: i64 = 2;
+
+fn queen_like(pt: PieceType) -> bool {
+    matches!(
+        pt,
+        PieceType::Queen
+            | PieceType::RoyalQueen
+            | PieceType::Amazon
+            | PieceType::Chancellor
+            | PieceType::Archbishop
+    )
+}
+
+/// King-exposure inputs from what the eval already gathers: the first royal's nearest
+/// piece per ray, own pieces within 2 of it, and a queen-like bit per colour.
+#[derive(Default)]
+pub struct KingExposure {
+    queen_like_bits: u32,
+}
+
+/// One royal's nearest piece per ray: (distance, value, colour, type).
+pub type KingRays = [(i32, i32, PlayerColor, PieceType); 8];
+
+/// Bit per queen-like piece type (Queen, RoyalQueen, Amazon, Chancellor, Archbishop).
+const QUEEN_LIKE_MASK: u32 = (1 << PieceType::Queen as u32)
+    | (1 << PieceType::RoyalQueen as u32)
+    | (1 << PieceType::Amazon as u32)
+    | (1 << PieceType::Chancellor as u32)
+    | (1 << PieceType::Archbishop as u32);
+
+impl KingExposure {
+    #[inline(always)]
+    pub fn add(&mut self, color: PlayerColor, pt: PieceType) {
+        self.queen_like_bits |= ((QUEEN_LIKE_MASK >> pt as u32) & 1) << color as u32;
+    }
+
+    /// `rays[side]` is that side's first royal's nearest piece per ray (distance,
+    /// value, colour, type), `near[side]` its own pieces within 2 squares.
+    pub fn finish(
+        &self,
+        rays: [Option<&KingRays>; 2],
+        near: [i32; 2],
+    ) -> [[i32; 3]; 2] {
+        let mut out = [[0; 3]; 2];
+        for (side, us) in [(0usize, PlayerColor::White), (1, PlayerColor::Black)] {
+            let Some(r) = rays[side] else { continue };
+            let open = r
+                .iter()
+                .filter(|&&(d, _, c, _)| !(d <= KEXP_RADIUS as i32 && (c == us || c == PlayerColor::Neutral)))
+                .count() as i32;
+            let enemy_ql = (self.queen_like_bits >> us.opponent() as u32) & 1;
+            out[side] = [open, enemy_ql as i32, near[side]];
+        }
+        out
+    }
+}
+
+/// Reference definition the training sidecar was built from (slow: board walks).
+pub fn king_exposure_reference(g: &GameState) -> [[i32; 3]; 2] {
+    let mut out = [[0; 3]; 2];
+    let ql = |side: PlayerColor| g.board.iter().any(|(_, _, p)| p.color() == side && queen_like(p.piece_type()));
+    for (side, us) in [(0usize, PlayerColor::White), (1, PlayerColor::Black)] {
+        let kings = if side == 0 { &g.white_royals } else { &g.black_royals };
+        let Some(k) = kings.first() else { continue };
+        let mut open = 0;
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            let shut = g.spatial_indices.find_first_blocker(k.x, k.y, dx, dy).is_some_and(|(x, y, p)| {
+                (x - k.x).abs().max((y - k.y).abs()) <= KEXP_RADIUS
+                    && (p.color() == us || p.color() == PlayerColor::Neutral)
+            });
+            open += i32::from(!shut);
+        }
+        let near = g
+            .board
+            .iter()
+            .filter(|(x, y, p)| {
+                p.color() == us && (x - k.x).abs().max((y - k.y).abs()) <= KEXP_NEAR && !(*x == k.x && *y == k.y)
+            })
+            .count()
+            .min(255) as i32;
+        out[side] = [open, i32::from(ql(us.opponent())), near];
+    }
+    out
+}
+
+/// Schema of a net that also reads the king-exposure inputs.
+pub fn net_schema_hash() -> u64 {
+    schema_hash() ^ 0x4b45_5850_3232_3234
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
@@ -362,6 +459,44 @@ pub fn schema_hash() -> u64 {
 mod tests {
     use super::*;
     use crate::evaluation::base;
+
+    /// The piece-loop collector must reproduce the definition the net was trained on.
+    #[test]
+    fn king_exposure_matches_reference() {
+        use crate::Variant;
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut checked = 0;
+        for v in [Variant::Classical, Variant::CoaIP, Variant::Palace, Variant::Space, Variant::Core, Variant::Obstocean] {
+            for game_no in 0..6 {
+                let mut g = GameState::new();
+                g.setup_position_from_icn(&format!("[Variant \"{}\"] {}", v.to_str(), v.starting_icn()));
+                for _ in 0..(20 + 15 * game_no) {
+                    let moves = g.get_pseudo_legal_moves();
+                    let legal: Vec<_> = moves
+                        .iter()
+                        .copied()
+                        .filter(|m| {
+                            let u = g.make_move(m);
+                            let ok = !g.is_move_illegal();
+                            g.undo_move(m, u);
+                            ok
+                        })
+                        .collect();
+                    if legal.is_empty() {
+                        break;
+                    }
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    let m = legal[(seed >> 33) as usize % legal.len()];
+                    g.make_move(&m);
+                    let mut fc = FeatureCollector::default();
+                    base::evaluate_inner_traced(&g, &mut fc);
+                    assert_eq!(fc.inputs.king_exposure, king_exposure_reference(&g), "{} after {:?}", v.to_str(), m);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 500);
+    }
 
     #[test]
     fn feature_vector_is_full_and_deterministic() {
