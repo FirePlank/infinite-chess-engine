@@ -3827,23 +3827,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
     searcher.eval_stack[ply] = static_eval;
 
-    // Credit or blame the opponent's quiet move by how far it moved our static eval
-    // (Stockfish's evalDiff history update).
-    if ply > 0
-        && !in_check
-        && ctx.excluded_move.is_none()
-        && !searcher.in_check_history[ply - 1]
-        && !searcher.capture_history_stack[ply - 1]
-        && let Some(prev) = searcher.move_history[ply - 1]
-    {
-        let eval_diff = (-(searcher.eval_stack[ply - 1] + static_eval)).clamp(-189, 194) + 60;
-        let idx = hash_move_dest(&prev);
-        searcher.update_history(prev.piece.color(), prev.piece.piece_type(), idx, eval_diff * 11);
-        if !tt_hit_node && prev.piece.piece_type() != PieceType::Pawn && prev.promotion.is_none() {
-            searcher.update_pawn_history(game.pawn_hash, prev.piece.piece_type(), idx, eval_diff * 13);
-        }
-    }
-
     // Compare eval to 2 plies ago. In check there is no honest static eval to
     // compare against, and late-move pruning is not gated on check.
     let mut improving = if in_check {
@@ -3890,7 +3873,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // TT Cutoff
     if !is_pv
-        && ctx.excluded_move.is_none()
+        && excluded_move.is_none()
         && tt_hit_node
         && let Some(tt_s) = tt_value
     {
@@ -3964,7 +3947,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Not under exclusion: qsearch would return the parent's own TT bound on the singular move.
         if !is_pv
             && !searcher.hot.seek_mate
-            && ctx.excluded_move.is_none()
+            && excluded_move.is_none()
             && eval < alpha - razoring_quad() * depth as i32
         {
             return quiescence(searcher, game, ply, 0, alpha, beta, node_type);
@@ -4465,7 +4448,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         if let Some((tt_s_base, singular_depth)) = se_conditions.filter(|_| {
             is_tt_move
                 && !is_pv
-                && ctx.excluded_move.is_none()
+                && excluded_move.is_none()
                 && depth >= 6 + (tt_pv as usize)
                 && !searcher.is_shuffling(game, &m, ply, is_capture)
         }) {
