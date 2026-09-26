@@ -1,0 +1,10 @@
+{
+  "name": "26_capture_malus_best_move",
+  "old": "31aafd6",
+  "games": 3000,
+  "shards": 20,
+  "variants": "site",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5
+}
