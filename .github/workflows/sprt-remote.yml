@@ -44,12 +44,12 @@ jobs:
           c=.github/sprt.json
           shards=$(jq -r '.shards // 20' $c)
           games=$(jq -r '.games' $c)
-          # Even per shard so pairs never straddle shards.
-          per=$(( (games + shards - 1) / shards )); per=$(( per + per % 2 ))
+          # Three waves of `shards` jobs; even per shard so pairs never straddle shards.
+          per=$(( (games + 3 * shards - 1) / (3 * shards) )); per=$(( per + per % 2 ))
           {
             echo "shards=$(jq -nc --argjson n $shards '[range(1; $n + 1)]')"
             echo "per_shard=$per"
-            echo "total=$(( per * shards ))"
+            echo "total=$(( per * shards * 3 ))"
             echo "old=$(jq -r '.old' $c)"
             echo "name=$(jq -r '.name' $c)"
             echo "variants=$(jq -r '.variants // "site"' $c)"
@@ -146,7 +146,7 @@ jobs:
           path: bins/
           retention-days: 3
 
-  play:
+  play1:
     needs: setup
     runs-on: ubuntu-24.04
     timeout-minutes: 350
@@ -164,23 +164,118 @@ jobs:
         run: |
           chmod +x bins/*
           # min-games = the shard size: a shard alone never has the evidence to stop.
-          ./bins/new-sprt run \
-            --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt" \
-            --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}" \
-            --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}" \
-            --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}" \
-            --concurrency "$(nproc)" --compact \
-            --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}" \
-            --games "shard_${{ matrix.shard }}.json" --results "results_${{ matrix.shard }}.json" | tail -20
+          ./bins/new-sprt run             --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt"             --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}"             --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}"             --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}"             --concurrency "$(nproc)" --compact             --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}"             --games "shard_w1_${{ matrix.shard }}.json" --results "results.json" | tail -20
 
       - uses: actions/upload-artifact@v7
         with:
-          name: shard-${{ matrix.shard }}
-          path: shard_${{ matrix.shard }}.json
+          name: shard-w1-${{ matrix.shard }}
+          path: shard_w1_${{ matrix.shard }}.json
+          retention-days: 7
+
+  # Stop between waves once the aggregate LLR crosses a bound.
+  check1:
+    needs: [setup, play1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      stop: ${{ steps.m.outputs.stop }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/sprt_merge.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shard-*
+          path: art
+
+      - name: Merge and summarize
+        id: m
+        run: |
+          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}" --gh-output "$GITHUB_OUTPUT"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
+          { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  play2:
+    needs: [setup, check1]
+    if: needs.check1.outputs.stop == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bins
+          path: bins
+
+      - name: Play shard
+        run: |
+          chmod +x bins/*
+          # min-games = the shard size: a shard alone never has the evidence to stop.
+          ./bins/new-sprt run             --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt"             --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}"             --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}"             --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}"             --concurrency "$(nproc)" --compact             --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}"             --games "shard_w2_${{ matrix.shard }}.json" --results "results.json" | tail -20
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shard-w2-${{ matrix.shard }}
+          path: shard_w2_${{ matrix.shard }}.json
+          retention-days: 7
+
+  # Stop between waves once the aggregate LLR crosses a bound.
+  check2:
+    needs: [setup, play2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      stop: ${{ steps.m.outputs.stop }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/sprt_merge.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shard-*
+          path: art
+
+      - name: Merge and summarize
+        id: m
+        run: |
+          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}" --gh-output "$GITHUB_OUTPUT"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
+          { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  play3:
+    needs: [setup, check2]
+    if: needs.check2.outputs.stop == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bins
+          path: bins
+
+      - name: Play shard
+        run: |
+          chmod +x bins/*
+          # min-games = the shard size: a shard alone never has the evidence to stop.
+          ./bins/new-sprt run             --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt"             --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}"             --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}"             --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}"             --concurrency "$(nproc)" --compact             --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}"             --games "shard_w3_${{ matrix.shard }}.json" --results "results.json" | tail -20
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shard-w3-${{ matrix.shard }}
+          path: shard_w3_${{ matrix.shard }}.json
           retention-days: 7
 
   merge:
-    needs: [setup, play]
+    needs: [setup, play1, check1, play2, check2, play3]
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -196,8 +291,9 @@ jobs:
           path: art
 
       - name: Merge and summarize
+        id: m
         run: |
-          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
+          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}" --gh-output "$GITHUB_OUTPUT"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
           { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
