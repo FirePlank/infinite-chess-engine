@@ -81,6 +81,10 @@ impl WinCondition {
 pub struct EnPassantState {
     pub square: Coordinate,
     pub pawn_square: Coordinate,
+    /// Only a capturable target enters the hash, so transpositions that differ by a
+    /// dead en-passant square still share TT entries and count as repetitions.
+    #[serde(default)]
+    pub hashed: bool,
 }
 
 /// Promotion ranks configuration for a variant
@@ -1382,7 +1386,9 @@ impl GameState {
         // Push hashes and update for null move
         self.hash_stack.push(self.hash);
 
-        if let Some(ep) = &self.en_passant {
+        if let Some(ep) = &self.en_passant
+            && ep.hashed
+        {
             self.hash ^= en_passant_key(ep.square.x, ep.square.y);
         }
         self.en_passant = None;
@@ -1444,7 +1450,9 @@ impl GameState {
         }
 
         // Hash en passant
-        if let Some(ep) = &self.en_passant {
+        if let Some(ep) = &self.en_passant
+            && ep.hashed
+        {
             h ^= en_passant_key(ep.square.x, ep.square.y);
         }
 
@@ -3275,7 +3283,9 @@ impl GameState {
         }
 
         // Remove old en passant
-        if let Some(ep) = &self.en_passant {
+        if let Some(ep) = &self.en_passant
+            && ep.hashed
+        {
             self.hash ^= en_passant_key(ep.square.x, ep.square.y);
         }
 
@@ -3405,12 +3415,20 @@ impl GameState {
             let dy = m.to.y - m.from.y;
             if dy.abs() == 2 {
                 let ep_y = m.from.y + (dy / 2);
+                let enemy = piece.color().opponent();
+                let hashed = [-1, 1].iter().any(|dx| {
+                    self.board.get_piece(m.to.x + dx, m.to.y).is_some_and(|p| {
+                        p.piece_type() == PieceType::Pawn && p.color() == enemy
+                    })
+                });
                 self.en_passant = Some(EnPassantState {
                     square: Coordinate::new(m.from.x, ep_y),
                     pawn_square: m.to,
+                    hashed,
                 });
-                // Add new en passant
-                self.hash ^= en_passant_key(m.from.x, ep_y);
+                if hashed {
+                    self.hash ^= en_passant_key(m.from.x, ep_y);
+                }
             }
         }
 
@@ -3927,6 +3945,7 @@ impl GameState {
                     self.en_passant = Some(EnPassantState {
                         square: Coordinate::new(x, y),
                         pawn_square: Coordinate::new(x, pawn_y),
+                        hashed: true,
                     });
                 }
             } else if let Ok(val) = token.parse::<u32>() {
@@ -4945,6 +4964,7 @@ mod tests {
         game.en_passant = Some(EnPassantState {
             square: Coordinate::new(4, 3),
             pawn_square: Coordinate::new(4, 4),
+            hashed: true,
         });
         game.make_null_move();
         assert!(game.en_passant.is_none(), "En passant should be cleared");
