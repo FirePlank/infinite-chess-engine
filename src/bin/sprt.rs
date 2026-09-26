@@ -239,10 +239,16 @@ fn exited_by_console_interrupt(status: &std::process::ExitStatus) -> bool {
 /// A persistent engine process for one game. Reusing it across every move is what
 /// real play does: the TT, history and correction tables stay warm, and the ~50ms
 /// Windows process spawn is paid once per game instead of once per move.
+/// Slack past a move's time budget before a silent engine counts as hung.
+const HANG_GRACE_MS: u64 = 5_000;
+const BOOK_HANG_BUDGET_MS: u64 = 30_000;
+
 struct ServeEngine {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
-    stdout: std::io::BufReader<std::process::ChildStdout>,
+    /// Lines from a reader thread, so a silent engine can be timed out instead of
+    /// blocking the game (and its whole shard) forever.
+    lines: std::sync::mpsc::Receiver<String>,
 }
 
 impl ServeEngine {
@@ -261,11 +267,26 @@ impl ServeEngine {
             })
             .spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+        let mut stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            loop {
+                let mut line = String::new();
+                match stdout.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if tx.send(line).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         Ok(ServeEngine {
             child,
             stdin,
-            stdout,
+            lines,
         })
     }
 
@@ -287,20 +308,31 @@ impl ServeEngine {
         }
     }
 
-    fn request(&mut self, req: &ServeRequest) -> std::io::Result<ServeResponse> {
-        use std::io::{BufRead, Write};
+    /// Past `deadline` the engine is killed and the request fails with `TimedOut`.
+    fn request(&mut self, req: &ServeRequest, deadline: Duration) -> std::io::Result<ServeResponse> {
+        use std::io::Write;
+        use std::sync::mpsc::RecvTimeoutError;
         let encoded = serde_json::to_string(req)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         writeln!(self.stdin, "{encoded}")?;
         self.stdin.flush()?;
 
-        let mut line = String::new();
-        if self.stdout.read_line(&mut line)? == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "engine closed its output (crashed or exited)",
-            ));
-        }
+        let line = match self.lines.recv_timeout(deadline) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("engine gave no answer within {} ms", deadline.as_millis()),
+                ));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "engine closed its output (crashed or exited)",
+                ));
+            }
+        };
         serde_json::from_str(line.trim())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
@@ -1625,6 +1657,7 @@ fn play_game(
             config.old_strength
         };
 
+        let mut hung = false;
         let (bestmove_raw, score, panic_detail, crash_detail, elapsed) = if config.use_serve {
             // One process for the whole game: the engine keeps its TT, history and
             // correction tables warm across moves, as it does in real play.
@@ -1669,12 +1702,33 @@ fn play_game(
             };
 
             let round_trip = Instant::now();
+            // The clock (or fixed budget) plus grace: an engine still silent after that
+            // is hung, and waiting longer only stalls the shard.
+            let own_clock = if game.turn == PlayerColor::White { white_clock } else { black_clock };
+            // Book moves carry a nominal 600 s budget but are depth-capped to milliseconds.
+            let budget = if in_book {
+                BOOK_HANG_BUDGET_MS
+            } else {
+                req.fixed_time.map_or(own_clock + config.tc_inc_ms, u64::from)
+            };
+            let deadline = Duration::from_millis(budget + HANG_GRACE_MS);
             // Bound the borrow before `died_by_interrupt` needs `engine` again.
-            let response = engine.request(&req);
+            let response = engine.request(&req, deadline);
             match response {
                 // Charge everything the engine itself did (parse, replay, search),
                 // not the one-time process spawn that already happened before this.
                 Ok(resp) => (resp.bestmove, resp.score, resp.panic, None, resp.elapsed_ms),
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    eprintln!(
+                        "ALERT: game {game_idx} [{}] {} engine hung ({e}); scored as a loss on time. Position: {}",
+                        variant.to_str(),
+                        if is_new_turn { "NEW" } else { "OLD" },
+                        subprocess_icn
+                    );
+                    hung = true;
+                    *slot = None;
+                    (None, None, None, None, deadline.as_millis() as u64)
+                }
                 Err(e) => {
                     // Ctrl+C kills the engine child before this process's handler
                     // thread sets USER_STOP, so the closed pipe used to be read as
@@ -1827,6 +1881,7 @@ fn play_game(
         } else {
             account_move_time(current_clock, elapsed, config.tc_inc_ms, config.tc_fixed_ms.is_some())
         };
+        let flagged_on_time = flagged_on_time || hung;
 
         if flagged_on_time {
             let result = if is_new_turn {

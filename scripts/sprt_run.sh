@@ -50,12 +50,29 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 # Each shard posts its pair counts (ll,ld,wl+dd,wd,ww) as a commit status every few
 # minutes; sum the newest per shard and stop the run once the LLR crosses a bound.
 # `gh run watch` is avoided: it can hang without a terminal.
+# A shard whose count stays unchanged while still pending is stuck (the harness saves
+# every 10 games, minutes apart): cancel, so one shard cannot hold a test for hours.
+STALL_S=1200
+declare -A LAST_SEEN LAST_CHANGE
 while :; do
   STATUS=$(gh run view "$ID" --json status -q .status)
   SUM=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"           -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
               | map(max_by(.updated_at).description | split(",") | map(tonumber))
               | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
   OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
+  NOW=$(date +%s); STUCK=""
+  while IFS='|' read -r CTX STATE DESC; do
+    [ -n "$CTX" ] || continue
+    if [ "${LAST_SEEN[$CTX]:-}" != "$DESC" ]; then LAST_SEEN[$CTX]=$DESC; LAST_CHANGE[$CTX]=$NOW; fi
+    if [ "$STATE" = pending ] && [ $(( NOW - ${LAST_CHANGE[$CTX]} )) -ge $STALL_S ]; then STUCK="$STUCK $CTX"; fi
+  done < <(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"              -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+                 | map(max_by(.updated_at)) | .[] | "\(.context)|\(.state)|\(.description)"' 2> /dev/null)
+  if [ -n "$STUCK" ]; then
+    gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+    echo "stalled for $((STALL_S / 60)) min:$STUCK; run cancelled ($(grep '^pairs=' <<< "$OUT"))"
+    until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
+    break
+  fi
   if grep -q '^stop=true' <<< "$OUT"; then
     gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
     echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
