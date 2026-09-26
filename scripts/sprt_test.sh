@@ -45,7 +45,8 @@ for _ in $(seq 60); do
   [ -n "$ID" ] && break; sleep 5
 done
 echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
-gh run watch "$ID" --interval 30 > /dev/null || true
+# `gh run watch` can hang without a terminal after the run ends, so poll the status.
+until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 30; done
 # Keep every game: one JSON per test under games/sprt (puzzles, net training).
 T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
 gh run download "$ID" -p "shard-*" -D "$T"
