@@ -231,9 +231,6 @@ eval_params! {
     king_defender_ref_value = 250 => (100, 800, 4.0, 0.002, "Piece value below which a piece counts as a king defender");
     complexity_damp = 8 => (0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score");
     complexity_excess_max = 40 => (8, 100, 2.0, 0.002, "Cap on phase excess counted for complexity damping");
-    perpetual_ray_damp = 40 => (0, 200, 4.0, 0.002, "Lead damping per open leader-king ray vs a queen-like defender (1/1000)");
-    perpetual_max_phase = 6 => (0, 24, 1.0, 0.002, "Perpetual damping only at or below this tapered phase");
-    perpetual_ray_radius = 3 => (1, 8, 1.0, 0.002, "An own or neutral piece within this many squares shuts a king ray");
     /// A pawn only shelters the king when close in front; on an unbounded board an
     /// ahead pawn could otherwise be arbitrarily far and fabricate cover.
     king_shield_ahead_max_dist = 3 => (1, 10, 2.0, 0.002, "Max distance ahead of the king counted for pawn shield");

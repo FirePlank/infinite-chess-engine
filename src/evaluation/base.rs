@@ -9,7 +9,6 @@ use super::piece_reach::{
     evaluate_rose_reach, fill_knightrider_rays, knightrider_rays, score_knightrider_rays,
 };
 use crate::evaluation::params::{
-    perpetual_max_phase, perpetual_ray_damp, perpetual_ray_radius,
     amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
     chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
@@ -649,8 +648,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     };
 
     // Slider counts for attack bonus (white, black) and attacking units
-    // Per side: owns a piece that checks on lines, diagonals or with a leap (perpetual damping).
-    let mut queen_like = [false; 3];
     let mut w_diag_count = 0;
     let mut w_ortho_count = 0;
     let mut b_diag_count = 0;
@@ -815,16 +812,6 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 let piece = crate::board::Piece::from_packed(packed);
                                 let pt = piece.piece_type();
                                 let piece_val = get_piece_value_base(pt);
-                                if matches!(
-                                    pt,
-                                    PieceType::Queen
-                                        | PieceType::RoyalQueen
-                                        | PieceType::Amazon
-                                        | PieceType::Chancellor
-                                        | PieceType::Archbishop
-                                ) {
-                                    queen_like[piece.color() as usize] = true;
-                                }
                                 let is_white = piece.color() == PlayerColor::White;
                                 let is_neutral = pt.is_neutral_type();
                                 let x = cx * 8 + (idx % 8) as i64;
@@ -1753,49 +1740,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         score = scaled;
     }
 
-    // A queen-like defender can check an exposed leading king forever, and on an open
-    // board those checks never repeat into a draw: damp the lead per open king ray.
-    let damp = perpetual_ray_damp();
-    if damp > 0 && score != 0 && eff_phase <= perpetual_max_phase() {
-        let (kings, us) = if score > 0 {
-            (white_royals, PlayerColor::White)
-        } else {
-            (black_royals, PlayerColor::Black)
-        };
-        if let [king] = kings
-            && queen_like[us.opponent() as usize]
-        {
-            let open = open_king_rays(game, king, us, perpetual_ray_radius() as i64);
-            if open > 0 {
-                let scaled = score * (1000 - damp * open).max(0) / 1000;
-                tracer.record("Perpetual damping", scaled - score, 0);
-                score = scaled;
-            }
-        }
-    }
-
     // Return from current player's perspective
     if game.turn == PlayerColor::Black {
         -score
     } else {
         score
     }
-}
-
-/// King rays with no own or neutral piece within `radius` squares.
-fn open_king_rays(game: &GameState, king: &Coordinate, us: PlayerColor, radius: i64) -> i32 {
-    const DIRS: [(i64, i64); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
-    DIRS.iter()
-        .filter(|&&(dx, dy)| {
-            match game.spatial_indices.find_first_blocker(king.x, king.y, dx, dy) {
-                Some((x, y, p)) => {
-                    let near = (x - king.x).abs().max((y - king.y).abs()) <= radius;
-                    !(near && (p.color() == us || p.color() == PlayerColor::Neutral))
-                }
-                None => true,
-            }
-        })
-        .count() as i32
 }
 
 struct PieceMetrics {
