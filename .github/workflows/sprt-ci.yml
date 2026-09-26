@@ -2,6 +2,7 @@ name: Test and Coverage
 
 on:
   push:
+    branches-ignore: ["sprt/**"]
     paths:
       - "src/**"
       - "Cargo.toml"

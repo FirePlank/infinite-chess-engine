@@ -1,0 +1,144 @@
+# Sharded SPRT on GitHub-hosted runners. Push a branch `sprt/<name>` whose tip carries
+# .github/sprt.json; old = the config's ref, new = the branch tip. Each shard plays its
+# games on one runner (both engines share the machine, so timing stays fair), and the
+# merge job prints the harness's Final Summary over every shard's games.
+name: SPRT remote
+
+on:
+  push:
+    branches: ["sprt/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sprt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      shards: ${{ steps.cfg.outputs.shards }}
+      per_shard: ${{ steps.cfg.outputs.per_shard }}
+      old: ${{ steps.cfg.outputs.old }}
+      name: ${{ steps.cfg.outputs.name }}
+      variants: ${{ steps.cfg.outputs.variants }}
+      tc: ${{ steps.cfg.outputs.tc }}
+      elo0: ${{ steps.cfg.outputs.elo0 }}
+      elo1: ${{ steps.cfg.outputs.elo1 }}
+      total: ${{ steps.cfg.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read config
+        id: cfg
+        run: |
+          c=.github/sprt.json
+          shards=$(jq -r '.shards // 20' $c)
+          games=$(jq -r '.games' $c)
+          # Even per shard so pairs never straddle shards.
+          per=$(( (games + shards - 1) / shards )); per=$(( per + per % 2 ))
+          {
+            echo "shards=$(jq -nc --argjson n $shards '[range(1; $n + 1)]')"
+            echo "per_shard=$per"
+            echo "total=$(( per * shards ))"
+            echo "old=$(jq -r '.old' $c)"
+            echo "name=$(jq -r '.name' $c)"
+            echo "variants=$(jq -r '.variants // "site"' $c)"
+            echo "tc=$(jq -r '.tc // "10+0.1"' $c)"
+            echo "elo0=$(jq -r '.elo0 // 0' $c)"
+            echo "elo1=$(jq -r '.elo1 // 5' $c)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sprt-bin
+
+      - name: Build new
+        run: |
+          cargo build --release --features sprt --bin sprt
+          mkdir -p bins && cp target/release/sprt bins/new-sprt
+
+      - name: Build old
+        run: |
+          git worktree add ../old "${{ steps.cfg.outputs.old }}"
+          (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
+          cp target-old/release/sprt bins/old-sprt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bins
+          path: bins/
+          retention-days: 3
+
+  play:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bins
+          path: bins
+
+      - name: Play shard
+        run: |
+          chmod +x bins/*
+          # min-games = the shard size: a shard alone never has the evidence to stop.
+          ./bins/new-sprt run \
+            --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt" \
+            --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}" \
+            --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}" \
+            --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}" \
+            --concurrency "$(nproc)" --compact \
+            --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}" \
+            --games "shard_${{ matrix.shard }}.json" --results "results_${{ matrix.shard }}.json" | tail -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.json
+          retention-days: 7
+
+  merge:
+    needs: [setup, play]
+    if: always() && needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{bins,shard-*}"
+          path: art
+
+      - name: Merge and summarize
+        run: |
+          chmod +x art/bins/*
+          jq -s 'add' art/shard-*/shard_*.json > merged.json
+          n=$(jq 'length' merged.json)
+          ./art/bins/new-sprt run \
+            --old-bin "$PWD/art/bins/old-sprt" --new-bin "$PWD/art/bins/new-sprt" \
+            --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}" \
+            --variants "${{ needs.setup.outputs.variants }}" \
+            --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}" \
+            --resume merged.json --games merged_out.json --results results.json \
+            --min-games "$n" --max-games "$n" --compact | sed -n '/Final Summary:/,$p' > summary.txt
+          cat summary.txt
+          { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merged
+          path: |
+            merged.json
+            summary.txt
+          retention-days: 30
