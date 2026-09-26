@@ -4204,8 +4204,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let world_size = crate::moves::get_world_size();
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
-    let mut captures_searched: [Option<(PieceType, PieceType, Move)>; 16] = [None; 16];
-    let mut n_captures_searched = 0usize;
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
@@ -4966,23 +4964,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
             }
             break;
-        } else if let Some(cap_type) = captured_type
-            && n_captures_searched < captures_searched.len()
-        {
-            captures_searched[n_captures_searched] = Some((m.piece.piece_type(), cap_type, m));
-            n_captures_searched += 1;
-        }
-    }
-
-    // Failed captures are penalized only once some move raised alpha, and never that move:
-    // in an all-node every capture fails and nothing was learned about ordering.
-    if let Some(bm) = tt_best_move {
-        let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
-            .min(history_bonus_cap());
-        for &(piece, cap, cm) in captures_searched[..n_captures_searched].iter().flatten() {
-            if !(cm.from == bm.from && cm.to == bm.to && cm.promotion == bm.promotion) {
-                searcher.update_capture_history(piece, cap, -malus);
-            }
+        } else if let Some(cap_type) = captured_type {
+            // Penalize a capture searched before the cutoff that didn't produce one
+            // (symmetric magnitude with the cutoff bonus).
+            let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                .min(history_bonus_cap());
+            searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus);
         }
     }
 
