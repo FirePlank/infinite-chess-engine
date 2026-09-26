@@ -64,6 +64,14 @@ def main():
     model.qat = True  # compare against the quantization-aware float path
     assert ck["in_scale"] == IN_SCALE == 64.0
     out_scale_f = float(ck["out_scale"])
+    # The engine reads one extra-input layout: the king-exposure pairs (features.rs
+    # KingExposure), sealed with its own schema so a base engine rejects the net.
+    schema = ck["schema"]
+    extras = (list(ck.get("extra_types") or []), list(ck.get("extra_pairs") or []), ck.get("extra_ply"))
+    if extras == ([], [22, 23, 24], None):
+        schema ^= 0x4B45_5850_3232_3234
+    elif extras != ([], [], None):
+        raise SystemExit(f"engine has no input layout for extras {extras}")
 
     w1 = model.l1.weight.detach().numpy()
     b1 = model.l1.bias.detach().numpy()
@@ -86,7 +94,7 @@ def main():
         f.write(MAGIC)
         version = 2 if ck.get("perspective") else VERSION
         f.write(struct.pack("<IIIIII", version, n_in, hidden, hidden2, S1, S2))
-        f.write(struct.pack("<Q", ck["schema"]))
+        f.write(struct.pack("<Q", schema))
         f.write(struct.pack("<f", float(net["out_scale"])))
         f.write(net["l1_w"].tobytes(order="C"))
         f.write(net["l1_b"].astype("<i4").tobytes())
@@ -95,7 +103,7 @@ def main():
         f.write(net["l3_w"].tobytes())
         f.write(struct.pack("<i", net["l3_b"]))
     params = w1.size + b1.size + w2.size + b2.size + w3.size + 1
-    print(f"wrote {args.out}: {n_in}->{hidden}->{hidden2}->1, {params} params, schema {ck['schema']:#x}")
+    print(f"wrote {args.out}: {n_in}->{hidden}->{hidden2}->1, {params} params, schema {schema:#x}")
 
     try:
         _, arr = load(args.data, args.check_samples)
@@ -103,6 +111,8 @@ def main():
         print("no data file for the int/float check; skipped")
         return
     x_int = np.asarray(arr["x"])[:, :n_in].astype(np.int32) * int(ck.get("x_mult", 1))
+    if x_int.shape[1] < n_in:  # extra inputs live in a sidecar; zeros still test quantization
+        x_int = np.pad(x_int, ((0, 0), (0, n_in - x_int.shape[1])))
     x_int = x_int.clip(-32767, 32767).astype(np.int16)
     with torch.no_grad():
         f_out = (model(torch.from_numpy(x_int.astype(np.float32)) / IN_SCALE) * out_scale_f).numpy()

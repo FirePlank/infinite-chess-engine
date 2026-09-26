@@ -171,7 +171,14 @@ impl EvalNetWeights {
 static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 
 pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
-    parse(EVAL_NET_BYTES, super::features::NUM_FEATURES, super::features::schema_hash())
+    use super::features::{NET_INPUTS, NUM_FEATURES, net_schema_hash, schema_hash};
+    // Either the base vector or the base plus the king-exposure inputs, by header width.
+    let n_in = EVAL_NET_BYTES.get(12..16).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    if n_in == Some(NET_INPUTS) {
+        parse(EVAL_NET_BYTES, NET_INPUTS, net_schema_hash())
+    } else {
+        parse(EVAL_NET_BYTES, NUM_FEATURES, schema_hash())
+    }
 });
 
 /// Nets for the specialized evaluators, each over its own evaluator's layout, residual

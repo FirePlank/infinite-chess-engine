@@ -648,6 +648,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     };
 
     // Slider counts for attack bonus (white, black) and attacking units
+    let mut king_exposure = crate::eval_net::features::KingExposure::default();
     let mut w_diag_count = 0;
     let mut w_ortho_count = 0;
     let mut b_diag_count = 0;
@@ -717,6 +718,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
             attacking_units: 0,
             defender_units: 0,
             defender_units_in_distance: [0; 8],
+            near: 0,
         })
         .collect();
     let mut black_royal_tropisms: SmallVec<[_; 1]> = game
@@ -736,6 +738,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
             attacking_units: 0,
             defender_units: 0,
             defender_units_in_distance: [0; 8],
+            near: 0,
         })
         .collect();
 
@@ -816,6 +819,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 let is_neutral = pt.is_neutral_type();
                                 let x = cx * 8 + (idx % 8) as i64;
                                 let y = cy * 8 + (idx / 8) as i64;
+                                if T::WANTS_INPUTS {
+                                    king_exposure.add(piece.color(), pt);
+                                }
 
                                 // Attack and defender units for king tropism.
                                 if !is_neutral
@@ -894,6 +900,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if d <= 7 {
                                                 yk.defender_units_in_distance[d as usize] +=
                                                     table[d as usize];
+                                                yk.near += i32::from(d != 0 && d <= 2);
                                             }
                                         }
                                     }
@@ -1662,6 +1669,16 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             };
                             let pair = |c: (bool, bool)| i32::from(c.0 && c.1);
                             tracer.record_inputs(&crate::eval_net::EvalNetInputs {
+                                king_exposure: king_exposure.finish(
+                                    [
+                                        w_royal_rays.first().map(|r| &r.0),
+                                        b_royal_rays.first().map(|r| &r.0),
+                                    ],
+                                    [
+                                        white_royal_tropisms.first().map_or(0, |k| k.near),
+                                        black_royal_tropisms.first().map_or(0, |k| k.near),
+                                    ],
+                                ),
                                 phase: final_phase,
                                 spread,
                                 pawn_span,
@@ -2220,6 +2237,8 @@ pub struct RoyalTropismMetrics {
     attacking_units: i32,
     defender_units: i32,
     defender_units_in_distance: [i32; 8],
+    /// Own pieces within 2 squares, for the net's king-exposure inputs.
+    near: i32,
     x: i64,
     y: i64,
 }

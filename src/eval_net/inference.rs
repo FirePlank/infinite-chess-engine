@@ -2,6 +2,7 @@
 //! contract in `evalnet/export_eval_net.py`: any change here needs the same change
 //! there, verified by its integer-simulation check.
 
+#[cfg(test)]
 use super::features::NUM_FEATURES;
 use super::variant_features::MAX_VARIANT_FEATURES;
 use super::weights::EvalNetWeights;
@@ -317,8 +318,8 @@ pub fn kernel_selftest() -> bool {
 }
 
 /// Input buffer wide enough for every layout, padded to the layer-1 stride.
-pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if NUM_FEATURES > MAX_VARIANT_FEATURES {
-    NUM_FEATURES
+pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if super::features::NET_INPUTS > MAX_VARIANT_FEATURES {
+    super::features::NET_INPUTS
 } else {
     MAX_VARIANT_FEATURES
 });
