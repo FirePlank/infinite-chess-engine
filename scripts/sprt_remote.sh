@@ -17,8 +17,9 @@ SHA=$(git rev-parse HEAD)
 git push -f -q origin "HEAD:refs/heads/sprt/$NAME"
 ID=""
 for _ in $(seq 60); do
-  ID=$(gh run list --branch "sprt/$NAME" --workflow sprt-remote.yml --limit 5 --json databaseId,headSha \
-       -q ".[] | select(.headSha==\"$SHA\") | .databaseId" | head -1)
+  # The workflow lives on the branch, not the default branch, so find it by commit.
+  ID=$(gh run list --branch "sprt/$NAME" --limit 10 --json databaseId,headSha,workflowName \
+       -q ".[] | select(.headSha==\"$SHA\" and .workflowName==\"SPRT remote\") | .databaseId" | head -1)
   [ -n "$ID" ] && break; sleep 5
 done
 echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
