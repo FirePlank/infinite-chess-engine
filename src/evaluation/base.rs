@@ -4014,6 +4014,8 @@ fn passer_is_unstoppable(
     if moves_to_promo <= 0 || defender_has_interceptor {
         return false;
     }
+    // A defender on move gets the extra tempo.
+    let moves_to_promo = moves_to_promo + (game.turn == defender) as i64;
     for (x, y, pc) in game.board.iter() {
         if pc.color() != defender {
             continue;
