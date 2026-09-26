@@ -68,28 +68,73 @@ jobs:
           shared-key: sprt-bin
           cache-directories: target-old
 
-      # Consecutive tests usually share a baseline, so the old engine is built once per ref.
-      - name: Cache old binary
-        id: oldbin
-        uses: actions/cache@v6
+      # Binaries are keyed by what goes into the engine, not by commit: a rejected test
+      # keeps its baseline's key, and a committed test's new binary is the next old one.
+      - name: Content keys
+        id: keys
+        run: |
+          key() {
+            { git ls-tree -r "$1" -- src Cargo.toml Cargo.lock build.rs .cargo/config.toml rust-toolchain.toml                 | grep -v $'	src/bin/'
+              git ls-tree "$1" -- src/bin/sprt.rs; } | sha256sum | cut -c1-24
+          }
+          echo "new=$(key HEAD)" >> "$GITHUB_OUTPUT"
+          echo "old=$(key "${{ steps.cfg.outputs.old }}")" >> "$GITHUB_OUTPUT"
+
+      - name: Restore new binary
+        id: newbin
+        uses: actions/cache/restore@v6
         with:
-          path: bins-old
-          key: old-sprt-${{ steps.cfg.outputs.old }}
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.new }}
 
       - name: Build new
         run: |
-          cargo build --release --features sprt --bin sprt
-          mkdir -p bins && cp target/release/sprt bins/new-sprt
+          mkdir -p bins
+          if [ "${{ steps.newbin.outputs.cache-hit }}" = "true" ]; then
+            mv sprt-bin/sprt bins/new-sprt
+          else
+            cargo build --release --features sprt --bin sprt
+            cp target/release/sprt bins/new-sprt
+          fi
+          rm -rf sprt-bin
+
+      - name: Save new binary
+        if: steps.newbin.outputs.cache-hit != 'true'
+        run: mkdir -p sprt-bin && cp bins/new-sprt sprt-bin/sprt
+
+      - if: steps.newbin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.new }}
+
+      - name: Restore old binary
+        id: oldbin
+        if: steps.keys.outputs.old != steps.keys.outputs.new
+        uses: actions/cache/restore@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.old }}
 
       - name: Build old
-        if: steps.oldbin.outputs.cache-hit != 'true'
         run: |
-          git worktree add ../old "${{ steps.cfg.outputs.old }}"
-          (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
-          mkdir -p bins-old && cp target-old/release/sprt bins-old/old-sprt
+          if [ "${{ steps.keys.outputs.old }}" = "${{ steps.keys.outputs.new }}" ]; then
+            cp bins/new-sprt bins/old-sprt
+          elif [ "${{ steps.oldbin.outputs.cache-hit }}" = "true" ]; then
+            mv sprt-bin/sprt bins/old-sprt
+          else
+            rm -rf sprt-bin
+            git worktree add ../old "${{ steps.cfg.outputs.old }}"
+            (cd ../old && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-old" cargo build --release --features sprt --bin sprt)
+            cp target-old/release/sprt bins/old-sprt
+            mkdir -p sprt-bin && cp bins/old-sprt sprt-bin/sprt
+          fi
 
-      - name: Stage old
-        run: cp bins-old/old-sprt bins/old-sprt
+      - if: steps.keys.outputs.old != steps.keys.outputs.new && steps.oldbin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: sprt-bin
+          key: sprt-bin-${{ steps.keys.outputs.old }}
 
       - uses: actions/upload-artifact@v7
         with:
