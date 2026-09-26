@@ -979,6 +979,8 @@ pub struct Searcher {
     // Static eval stack for "improving" heuristic
     // Stores eval at each ply to detect if position is improving
     pub eval_stack: Vec<i32>,
+    /// Static evals before the history smoothing, for the eval-difference history update.
+    pub raw_eval_stack: Vec<i32>,
 
     // Best move from previous iteration
     pub best_move_root: Option<Move>,
@@ -1148,6 +1150,7 @@ impl Searcher {
             tt_pv_stack: vec![false; MAX_PLY],
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
+            raw_eval_stack: vec![0; MAX_PLY],
             stat_score_stack: vec![0; MAX_PLY],
             best_move_root: None,
             prev_score: 0,
@@ -3416,6 +3419,7 @@ fn negamax_root(
     } else {
         searcher.eval_stack[0] = 0;
     }
+    searcher.raw_eval_stack[0] = searcher.eval_stack[0];
 
     // Reorders `moves` in place, TT move first then by score, so the next iteration
     // inherits the ordering.
@@ -3815,6 +3819,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         (adjusted, raw)
     };
 
+    let unsmoothed_eval = static_eval;
+
     // Apply StatScore bonus from parent move success (Evaluation Smoothing)
     if ply > 0 {
         let history_bonus = -searcher.stat_score_stack[ply - 1] / 512;
@@ -3826,6 +3832,25 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         static_eval += get_noise(searcher.seed, hash, searcher.noise_amp);
     }
     searcher.eval_stack[ply] = static_eval;
+    searcher.raw_eval_stack[ply] = unsmoothed_eval;
+
+    // Stockfish's evalDiff history, without its +60 bias (it starves our history-gated
+    // pruning) and on unsmoothed evals, which already carry this move's history.
+    if ply > 0
+        && !in_check
+        && ctx.excluded_move.is_none()
+        && !searcher.in_check_history[ply - 1]
+        && !searcher.capture_history_stack[ply - 1]
+        && let Some(prev) = searcher.move_history[ply - 1]
+    {
+        let eval_diff =
+            (-(searcher.raw_eval_stack[ply - 1] + unsmoothed_eval)).clamp(-189, 194);
+        let idx = hash_move_dest(&prev);
+        searcher.update_history(prev.piece.color(), prev.piece.piece_type(), idx, eval_diff * 11);
+        if !tt_hit_node && prev.piece.piece_type() != PieceType::Pawn && prev.promotion.is_none() {
+            searcher.update_pawn_history(game.pawn_hash, prev.piece.piece_type(), idx, eval_diff * 13);
+        }
+    }
 
     // Compare eval to 2 plies ago. In check there is no honest static eval to
     // compare against, and late-move pruning is not gated on check.
