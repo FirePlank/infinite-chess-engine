@@ -5486,6 +5486,16 @@ fn quiescence(
             continue;
         }
 
+        // Evasions, as in Stockfish: once one has shown we are not mated, only captures
+        // that do not lose material are still searched.
+        if in_check
+            && !captures_royal_for_win
+            && !is_loss(best_value)
+            && (!is_capture || !see_ge(game, m, -74))
+        {
+            continue;
+        }
+
         if !captures_royal_for_win && !in_check && !is_loss(best_value) && !is_recapture {
             // A slightly losing capture can still be the point of a combination, so
             // the floor sits below zero rather than at it. Both tests are
