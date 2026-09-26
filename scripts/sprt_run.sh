@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SPRT on GitHub runners: commits `test: <name>` (= <base> + patch + .github/sprt.json) on the
-# one `sprt` branch, waits for the sharded run, and saves its games and Final Summary under
-# games/sprt. Record the decision afterwards with scripts/sprt_done.sh.
-#   scripts/sprt_test.sh <name> <base-sha> <patch-file|-> <games> [variants] [elo0] [elo1] [tc]
+# one `sprt` branch, sums the shards' live pair counts, cancels the run once the LLR
+# crosses a bound, and saves games + Final Summary under games/sprt. Record the decision
+# afterwards with scripts/sprt_done.sh.
+#   scripts/sprt_run.sh <name> <base-sha> <patch-file|-> <games> [variants] [elo0] [elo1] [tc]
 set -euo pipefail
 NAME=$1 BASE=$2 PATCH=$3 GAMES=$4 VARIANTS=${5:-site} E0=${6:-0} E1=${7:-5} TC=${8:-10+0.1}
 R=$(git rev-parse --show-toplevel); W="$R/../ice-sprt-branch"
@@ -45,12 +46,27 @@ for _ in $(seq 60); do
   [ -n "$ID" ] && break; sleep 5
 done
 echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
-# `gh run watch` can hang without a terminal after the run ends, so poll the status.
-until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 30; done
-# Keep every game: one JSON per test under games/sprt (puzzles, net training).
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+# Each shard posts its pair counts (ll,ld,wl+dd,wd,ww) as a commit status every few
+# minutes; sum the newest per shard and stop the run once the LLR crosses a bound.
+# `gh run watch` is avoided: it can hang without a terminal.
+while :; do
+  STATUS=$(gh run view "$ID" --json status -q .status)
+  SUM=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"           -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+              | map(max_by(.updated_at).description | split(",") | map(tonumber))
+              | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
+  OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
+  if grep -q '^stop=true' <<< "$OUT"; then
+    gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+    echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
+    until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
+    break
+  fi
+  [ "$STATUS" = completed ] && break
+  sleep 60
+done
+# Keep every game, stopped early or not: one JSON per test under games/sprt.
 T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
 gh run download "$ID" -p "shard-*" -D "$T"
-python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1" \
-  --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json \
-  | tee "$R/games/sprt/summary_${NAME}_remote.txt"
+python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
 rm -rf "$T"

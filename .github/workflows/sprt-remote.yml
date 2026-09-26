@@ -1,5 +1,7 @@
 # Sharded SPRT on GitHub-hosted runners. Every test is a `test: <name>` commit on the one
-# `sprt` branch carrying .github/sprt.json; old = the config's ref, new = that commit. Each shard plays its
+# `sprt` branch carrying .github/sprt.json; old = the config's ref, new = that commit.
+# Each shard posts its pentanomial pair counts as a commit status every few minutes; the
+# local driver sums them and cancels the run once the LLR crosses a bound. Each shard plays its
 # games on one runner (both engines share the machine, so timing stays fair), and the
 # merge job prints the harness's Final Summary over every shard's games.
 name: SPRT remote
@@ -11,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 # One test at a time on the one branch; a new push queues behind the running test.
 concurrency:
@@ -144,7 +147,7 @@ jobs:
         with:
           name: bins
           path: bins/
-          retention-days: 3
+          retention-days: 1
 
   play:
     needs: setup
@@ -155,36 +158,6 @@ jobs:
       matrix:
         shard: ${{ fromJson(needs.setup.outputs.shards) }}
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: bins
-          path: bins
-
-      - name: Play shard
-        run: |
-          chmod +x bins/*
-          # min-games = the shard size: a shard alone never has the evidence to stop.
-          ./bins/new-sprt run \
-            --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt" \
-            --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}" \
-            --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}" \
-            --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}" \
-            --concurrency "$(nproc)" --compact \
-            --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}" \
-            --games "shard_${{ matrix.shard }}.json" --results "results_${{ matrix.shard }}.json" | tail -20
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: shard-${{ matrix.shard }}
-          path: shard_${{ matrix.shard }}.json
-          retention-days: 7
-
-  merge:
-    needs: [setup, play]
-    if: always() && needs.setup.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
       - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts/sprt_merge.py
@@ -192,18 +165,29 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: shard-*
-          path: art
+          name: bins
+          path: bins
 
-      - name: Merge and summarize
+      - name: Play shard
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
-          { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          chmod +x bins/*
+          G="shard_${{ matrix.shard }}.json"
+          report() {
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$1"               -f context="sprt/shard-${{ matrix.shard }}" -f description="$(python3 scripts/sprt_merge.py --counts "$G")"               > /dev/null || true
+          }
+          # The harness saves its games file every 10 games; report from it off the hot path.
+          ( while sleep 180; do report pending; done ) &
+          # min-games = the shard size: a shard alone never has the evidence to stop.
+          ./bins/new-sprt run             --old-bin "$PWD/bins/old-sprt" --new-bin "$PWD/bins/new-sprt"             --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}"             --variants "${{ needs.setup.outputs.variants }}" --tc "${{ needs.setup.outputs.tc }}"             --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}"             --concurrency "$(nproc)" --compact             --min-games "${{ needs.setup.outputs.per_shard }}" --max-games "${{ needs.setup.outputs.per_shard }}"             --games "$G" --results results.json | tail -20
+          kill %1 2> /dev/null || true
+          report success
 
-      - uses: actions/upload-artifact@v7
+      # Runs on cancellation too, so an early-stopped test still keeps its games.
+      - if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: merged
-          path: |
-            merged.json
-            summary.txt
-          retention-days: 30
+          name: shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.json
+          retention-days: 1
