@@ -24,6 +24,8 @@ for _ in $(seq 60); do
 done
 echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
 gh run watch "$ID" --interval 30 > /dev/null || true
-OUT="$R/games/sprt/remote_$NAME"; rm -rf "$OUT"
-gh run download "$ID" -n merged -D "$OUT"
-cat "$OUT/summary.txt"
+# Keep every game: one JSON per test under games/sprt (puzzles, net training).
+T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
+gh run download "$ID" -p "shard-*" -D "$T"
+python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json | tee "$R/games/sprt/summary_${NAME}_remote.txt"
+rm -rf "$T"

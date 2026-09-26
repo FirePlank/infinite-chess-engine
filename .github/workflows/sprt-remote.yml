@@ -134,26 +134,21 @@ jobs:
     needs: [setup, play]
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/sprt_merge.py
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: "{bins,shard-*}"
+          pattern: shard-*
           path: art
 
       - name: Merge and summarize
         run: |
-          chmod +x art/bins/*
-          jq -s 'add' art/shard-*/shard_*.json > merged.json
-          n=$(jq 'length' merged.json)
-          ./art/bins/new-sprt run \
-            --old-bin "$PWD/art/bins/old-sprt" --new-bin "$PWD/art/bins/new-sprt" \
-            --old-commit "${{ needs.setup.outputs.old }}" --new-commit "${{ needs.setup.outputs.name }}" \
-            --variants "${{ needs.setup.outputs.variants }}" \
-            --elo0="${{ needs.setup.outputs.elo0 }}" --elo1="${{ needs.setup.outputs.elo1 }}" \
-            --resume merged.json --games merged_out.json --results results.json \
-            --min-games "$n" --max-games "$n" --compact | sed -n '/Final Summary:/,$p' > summary.txt
-          cat summary.txt
+          python3 scripts/sprt_merge.py --label "${{ needs.setup.outputs.name }}" --old "${{ needs.setup.outputs.old }}"             --elo0 "${{ needs.setup.outputs.elo0 }}" --elo1 "${{ needs.setup.outputs.elo1 }}"             --out merged.json art/shard-*/shard_*.json | tee summary.txt
           { echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
