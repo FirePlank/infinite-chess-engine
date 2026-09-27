@@ -3604,6 +3604,19 @@ fn negamax_root(
 }
 
 /// Main negamax with alpha-beta pruning
+/// Whether another allowed promotion piece moves everywhere `pt` does (queen over rook
+/// and bishop, amazon over every Q/R/B/N compound): same squares, so never worse.
+fn promotion_dominated(pt: PieceType, allowed: u32) -> bool {
+    use PieceType::*;
+    let has = |a: PieceType| allowed & (1 << a as u32) != 0;
+    match pt {
+        Rook | Bishop => has(Queen) || has(Amazon) || (pt == Rook && has(Chancellor)) || (pt == Bishop && has(Archbishop)),
+        Knight => has(Amazon) || has(Chancellor) || has(Archbishop),
+        Queen | Chancellor | Archbishop => has(Amazon),
+        _ => false,
+    }
+}
+
 fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let searcher = &mut *ctx.searcher;
     let game = &mut *ctx.game;
@@ -4226,6 +4239,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // New depth for child nodes
     let new_depth = depth.saturating_sub(1);
 
+    // Allowed promotion pieces as a bitmask (the generator defaults to Q, R, B, N).
+    let promo_mask: u32 = match game.game_rules.promotion_types.as_deref() {
+        Some(ts) => ts.iter().fold(0, |acc, &t| acc | 1 << t as u32),
+        None => [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight]
+            .iter()
+            .fold(0, |acc, &t| acc | 1 << t as u32),
+    };
+
     // Main move loop - iterate through staged moves
     while let Some(m) = movegen.next(game, searcher) {
         // Skip excluded move (for singular extension recursive search)
@@ -4248,6 +4269,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             captured_piece.map(|p| p.piece_type())
         };
         let is_promotion = m.promotion.is_some();
+        if let Some(pt) = m.promotion
+            && promotion_dominated(pt, promo_mask)
+        {
+            continue;
+        }
         let p_type = m.piece.piece_type();
         let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
             && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
