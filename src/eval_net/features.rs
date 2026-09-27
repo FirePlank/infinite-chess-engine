@@ -90,16 +90,17 @@ pub struct EvalNetInputs {
     pub non_pawn_non_royal: [i32; 2],
     /// Per side: open king rays, enemy owns a queen-like piece, own pieces near the king.
     pub king_exposure: [[i32; 3]; 2],
-    /// Per side: slider rays whose first piece is its own within 2, its own pawn, or none.
-    pub slider_rays: [[i32; 3]; 2],
+    /// Per side: slider rays whose first piece is its own within 2, its own pawn, or none,
+    /// then the free squares before the first piece on its blocked rays (each at most 7).
+    pub slider_rays: [[i32; 4]; 2],
 }
 
 /// King-exposure inputs appended after the perspective vector: (own, opponent) x
 /// (open rays, enemy queen-like, near), each x16 as `--extra-pairs 22,23,24` trains them.
 pub const KEXP_INPUTS: usize = 6;
-/// Slider-ray inputs after those, (own, opponent) x (shut, own pawn, open), as
-/// `--extra-pairs 22,23,24,28,29,30` trains them.
-pub const RAY_INPUTS: usize = 6;
+/// Slider-ray inputs after those, (own, opponent) x (shut, own pawn, open, reach), as
+/// `--extra-pairs 22,23,24,28,29,30,31` trains them.
+pub const RAY_INPUTS: usize = 8;
 pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS + RAY_INPUTS;
 const KEXP_RADIUS: i64 = 3;
 const KEXP_NEAR: i64 = 2;
@@ -116,9 +117,9 @@ fn queen_like(pt: PieceType) -> bool {
 }
 
 /// Slider-ray tallies (White, Black) of (shut by an own piece within 2, own pawn first,
-/// open), from the line ends the slider-threat pass already looks up.
+/// open, reach), from the line ends the slider-threat pass already looks up.
 #[derive(Default)]
-pub struct SliderRays(pub [[i32; 3]; 2]);
+pub struct SliderRays(pub [[i32; 4]; 2]);
 
 impl SliderRays {
     #[inline]
@@ -127,6 +128,7 @@ impl SliderRays {
         match end {
             None => s[2] += 1,
             Some((c, packed)) => {
+                s[3] += ((c - from).abs() - 1).min(7) as i32;
                 let p = crate::board::Piece::from_packed(packed);
                 if p.color() == own {
                     s[0] += i32::from((c - from).abs() <= 2);
@@ -216,7 +218,7 @@ pub fn net_schema_hash() -> u64 {
 
 /// Schema of a net that also reads the slider-ray inputs.
 pub fn ray_net_schema_hash() -> u64 {
-    net_schema_hash() ^ 0x5241_5953_3238_3330
+    net_schema_hash() ^ 0x5245_4143_4832_3833
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
@@ -502,7 +504,7 @@ mod tests {
                 g.setup_position_from_icn(icn);
                 let mut fc = crate::eval_net::FeatureCollector::default();
                 base::evaluate_inner_traced(&g, &mut fc);
-                let mut want = [[0i32; 3]; 2];
+                let mut want = [[0i32; 4]; 2];
                 for (x, y, p) in g.board.iter() {
                     let side = match p.color() {
                         PlayerColor::White => 0,
@@ -516,11 +518,14 @@ mod tests {
                         }
                         match g.spatial_indices.find_first_blocker(x, y, dx, dy) {
                             None => want[side][2] += 1,
-                            Some((bx, by, b)) if b.color() == p.color() => {
-                                want[side][0] += i32::from((bx - x).abs().max((by - y).abs()) <= 2);
-                                want[side][1] += i32::from(b.piece_type() == PieceType::Pawn);
+                            Some((bx, by, b)) => {
+                                let d = (bx - x).abs().max((by - y).abs());
+                                want[side][3] += (d - 1).min(7) as i32;
+                                if b.color() == p.color() {
+                                    want[side][0] += i32::from(d <= 2);
+                                    want[side][1] += i32::from(b.piece_type() == PieceType::Pawn);
+                                }
                             }
-                            _ => {}
                         }
                     }
                 }

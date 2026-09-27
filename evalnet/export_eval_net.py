@@ -71,8 +71,8 @@ def main():
     extras = (list(ck.get("extra_types") or []), list(ck.get("extra_pairs") or []), ck.get("extra_ply"))
     if extras == ([], [22, 23, 24], None):
         schema ^= 0x4B45_5850_3232_3234
-    elif extras == ([], [22, 23, 24, 28, 29, 30], None):
-        schema ^= 0x4B45_5850_3232_3234 ^ 0x5241_5953_3238_3330
+    elif extras == ([], [22, 23, 24, 28, 29, 30, 31], None):
+        schema ^= 0x4B45_5850_3232_3234 ^ 0x5245_4143_4832_3833
     elif extras != ([], [], None):
         raise SystemExit(f"engine has no input layout for extras {extras}")
 
