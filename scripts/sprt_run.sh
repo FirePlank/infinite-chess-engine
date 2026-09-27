@@ -13,6 +13,13 @@ if [ "$PATCH" != "-" ] && [ "$(python "$R/scripts/sprt_scope.py" "$PATCH")" = ge
   VARIANTS=Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers
   echo "generic-evaluator patch: variants set to the default preset (no Chess/Obstocean/Pawn_Horde)"
 fi
+# GitHub calls retry for ~20 min, so a network drop cannot abort the watch.
+ghr() { local o; for _ in $(seq 40); do o=$("$@") && { echo "$o"; return 0; }; sleep 30; done; return 1; }
+REPO=$(ghr gh repo view --json nameWithOwner -q .nameWithOwner)
+# RUN_ID=<id> reattaches to a run already pushed (after a lost watch): no commit, no push.
+if [ -n "${RUN_ID:-}" ]; then
+  ID=$RUN_ID; SHA=$(ghr gh run view "$ID" --json headSha -q .headSha)
+else
 git -C "$R" fetch -q origin
 if [ ! -d "$W" ]; then
   if git -C "$R" ls-remote --exit-code --heads origin sprt > /dev/null; then
@@ -51,8 +58,8 @@ for _ in $(seq 60); do
        -q ".[] | select(.headSha==\"$SHA\" and .workflowName==\"SPRT remote\") | .databaseId" | head -1)
   [ -n "$ID" ] && break; sleep 5
 done
-echo "run $ID  https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions/runs/$ID"
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+fi
+echo "run $ID  https://github.com/$REPO/actions/runs/$ID"
 # Each shard posts its pair counts (ll,ld,wl+dd,wd,ww) as a commit status every few
 # minutes; sum the newest per shard and stop the run once the LLR crosses a bound.
 # `gh run watch` is avoided: it can hang without a terminal.
@@ -61,7 +68,7 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 STALL_S=1200
 declare -A LAST_SEEN LAST_CHANGE
 while :; do
-  STATUS=$(gh run view "$ID" --json status -q .status)
+  STATUS=$(ghr gh run view "$ID" --json status -q .status)
   SUM=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"           -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
               | map(max_by(.updated_at).description | split(",") | map(tonumber))
               | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
@@ -74,15 +81,15 @@ while :; do
   done < <(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"              -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
                  | map(max_by(.updated_at)) | .[] | "\(.context)|\(.state)|\(.description)"' 2> /dev/null)
   if [ -n "$STUCK" ]; then
-    gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+    ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
     echo "stalled for $((STALL_S / 60)) min:$STUCK; run cancelled ($(grep '^pairs=' <<< "$OUT"))"
-    until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
+    until [ "$(ghr gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
     break
   fi
   if grep -q '^stop=true' <<< "$OUT"; then
-    gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+    ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
     echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
-    until [ "$(gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
+    until [ "$(ghr gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
     break
   fi
   [ "$STATUS" = completed ] && break
@@ -90,6 +97,6 @@ while :; do
 done
 # Keep every game, stopped early or not: one JSON per test under games/sprt.
 T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
-gh run download "$ID" -p "shard-*" -D "$T"
+until gh run download "$ID" -p "shard-*" -D "$T"; do rm -rf "$T"; sleep 60; done
 python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
 rm -rf "$T"
