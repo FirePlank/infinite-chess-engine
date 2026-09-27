@@ -13,7 +13,7 @@ use crate::evaluation::params::{
     archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
     chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
     centrality_value_scale, cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
-    eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_king_pawn_ahead_penalty,
+    eg_doubled_pawn_penalty, eg_far_slider_penalty_mult,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
     king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
@@ -2155,10 +2155,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 let dist = (x - ok.x).abs().max((y - ok.y).abs());
                 if dist <= 3 {
                     piece_score += king_defender_bonus_for(
-                        taper(
-                            crate::evaluation::params::mg_king_defender_bonus(),
-                            crate::evaluation::params::eg_king_defender_bonus(),
-                        ),
+                        taper(crate::evaluation::params::mg_king_defender_bonus(), 0),
                         piece_val,
                     );
                     break; // Count once
@@ -3239,9 +3236,7 @@ pub(crate) fn evaluate_king_shelter(
         // Find range of pawns on this file
         let start = pawns.partition_point(|p| p.0 < x);
         let mut k = start;
-        let mut on_file_count = 0;
         while k < pawns.len() && pawns[k].0 == x {
-            on_file_count += 1;
             let py = pawns[k].1;
             if is_white {
                 if py > king.y && py - king.y <= king_shield_ahead_max_dist() as i64 {
@@ -3256,25 +3251,14 @@ pub(crate) fn evaluate_king_shelter(
             }
             k += 1;
         }
-
-        // King on Open File Penalty (No friendly pawns on file)
-        if dx == 0 && on_file_count == 0 {
-            safety -= taper(
-                crate::evaluation::params::mg_king_open_file_penalty(),
-                crate::evaluation::params::eg_king_open_file_penalty(),
-            );
-        }
     }
 
     // A pawn ahead shelters the king regardless of any pawn behind it; only the
     // absence of a forward pawn (with one behind) draws the penalty.
     if has_pawn_ahead {
-        safety += taper(
-            crate::evaluation::params::mg_king_pawn_shield_bonus(),
-            crate::evaluation::params::eg_king_pawn_shield_bonus(),
-        );
+        safety += taper(crate::evaluation::params::mg_king_pawn_shield_bonus(), 0);
     } else if has_pawn_behind {
-        safety -= taper(mg_king_pawn_ahead_penalty(), eg_king_pawn_ahead_penalty());
+        safety -= taper(mg_king_pawn_ahead_penalty(), 0);
     }
 
     if defense_urgency <= 10 {
@@ -3834,10 +3818,8 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || white_pawns.binary_search(&(wx + 1, wy - 1)).is_ok()
         {
             if is_passed {
-                w_connected.0 += (crate::evaluation::params::mg_connected_pawn_bonus() * 3) / 2;
                 w_connected.1 += (crate::evaluation::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                w_connected.0 += crate::evaluation::params::mg_connected_pawn_bonus();
                 w_connected.1 += crate::evaluation::params::eg_connected_pawn_bonus();
             }
         }
@@ -3940,10 +3922,8 @@ fn compute_pawn_core<T: EvaluationTracer>(
             || black_pawns.binary_search(&(bx + 1, by + 1)).is_ok()
         {
             if is_passed {
-                b_connected.0 += (crate::evaluation::params::mg_connected_pawn_bonus() * 3) / 2;
                 b_connected.1 += (crate::evaluation::params::eg_connected_pawn_bonus() * 3) / 2;
             } else {
-                b_connected.0 += crate::evaluation::params::mg_connected_pawn_bonus();
                 b_connected.1 += crate::evaluation::params::eg_connected_pawn_bonus();
             }
         }

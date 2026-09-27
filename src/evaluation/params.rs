@@ -186,17 +186,12 @@ eval_params! {
     mg_king_ring_missing_penalty = 52 => (0, 160, 2.0, 0.002, "Middlegame king ring missing penalty");
     eg_king_ring_missing_penalty = 11 => (0, 160, 2.0, 0.002, "Endgame king ring missing penalty");
     mg_king_pawn_shield_bonus = 25 => (0, 100, 2.0, 0.002, "Middlegame king pawn shield bonus");
-    eg_king_pawn_shield_bonus = 0 => (0, 100, 2.0, 0.002, "Endgame king pawn shield bonus");
     mg_behind_king_bonus = 22 => (0, 200, 2.0, 0.002, "Middlegame piece behind king bonus");
     eg_behind_king_bonus = 30 => (0, 200, 2.0, 0.002, "Endgame piece behind king bonus");
-    mg_connected_pawn_bonus = 0 => (0, 60, 2.0, 0.002, "Middlegame connected pawn bonus");
     eg_connected_pawn_bonus = 30 => (0, 60, 2.0, 0.002, "Endgame connected pawn bonus");
     mg_passed_safe_path_bonus = 27 => (0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus");
     eg_passed_safe_path_bonus = 67 => (0, 240, 2.0, 0.002, "Endgame passed pawn safe path bonus");
-    mg_king_open_file_penalty = 0 => (0, 120, 2.0, 0.002, "Middlegame king open file penalty");
-    eg_king_open_file_penalty = 0 => (0, 120, 2.0, 0.002, "Endgame king open file penalty");
     mg_king_defender_bonus = 18 => (0, 50, 2.0, 0.002, "Middlegame king defender bonus");
-    eg_king_defender_bonus = 0 => (0, 50, 2.0, 0.002, "Endgame king defender bonus");
     mg_outpost_bonus = 33 => (0, 220, 2.0, 0.002, "Middlegame outpost bonus");
     eg_outpost_bonus = 56 => (0, 250, 2.0, 0.002, "Endgame outpost bonus");
     /// Amazon was the only compound priced at the bare sum of its parts, while the
@@ -235,7 +230,6 @@ eval_params! {
     /// ahead pawn could otherwise be arbitrarily far and fabricate cover.
     king_shield_ahead_max_dist = 3 => (1, 10, 2.0, 0.002, "Max distance ahead of the king counted for pawn shield");
     mg_king_pawn_ahead_penalty = 20 => (0, 80, 2.0, 0.002, "Middlegame penalty for a pawn stuck ahead of its own king");
-    eg_king_pawn_ahead_penalty = 0 => (0, 60, 2.0, 0.002, "Endgame penalty for a pawn stuck ahead of its own king");
     mg_far_slider_penalty_mult = 100 => (20, 200, 2.0, 0.002, "Middlegame far-slider penalty scale (%)");
     eg_far_slider_penalty_mult = 44 => (0, 150, 2.0, 0.002, "Endgame far-slider penalty scale (%)");
     slider_threat_div = 5 => (2, 40, 2.0, 0.002, "Divisor for slider-threat scoring");
