@@ -171,7 +171,7 @@ search_params! {
     aspiration_max_window: i32 = 1000 => (256, 4000, 64.0, 0.002, "Maximum aspiration window");
     rfp_max_depth: usize = 14 => (1, 20, 1.0, 0.002, "Reverse futility maximum depth");
     rfp_mult_tt: i32 = 101 => (1, 256, 4.0, 0.002, "Reverse futility TT multiplier");
-    rfp_mult_no_tt: i32 = 70 => (1, 256, 4.0, 0.002, "Reverse futility non-TT multiplier");
+    rfp_mult_no_tt: i32 = 85 => (1, 256, 4.0, 0.002, "Reverse futility non-TT multiplier");
     rfp_improving_mult: i32 = 2474 => (256, 4096, 64.0, 0.002, "Reverse futility improving multiplier");
     rfp_worsening_mult: i32 = 331 => (0, 2048, 32.0, 0.002, "Reverse futility worsening multiplier");
     probcut_margin: i32 = 235 => (0, 512, 8.0, 0.002, "ProbCut margin");
