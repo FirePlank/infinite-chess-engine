@@ -179,16 +179,16 @@ eval_params! {
     eg_doubled_pawn_penalty = 15 => (0, 212, 2.0, 0.002, "Endgame doubled pawn penalty");
     mg_bishop_pair_bonus = 57 => (0, 260, 2.0, 0.002, "Middlegame bishop pair bonus");
     eg_bishop_pair_bonus = 101 => (0, 280, 2.0, 0.002, "Endgame bishop pair bonus");
-    rook_open_file_bonus = 57 => (0, 245, 2.0, 0.002, "Rook open file bonus");
-    rook_semi_open_file_bonus = 29 => (0, 220, 2.0, 0.002, "Rook semi-open file bonus");
+    rook_open_file_bonus = 71 => (0, 245, 2.0, 0.002, "Rook open file bonus");
+    rook_semi_open_file_bonus = 36 => (0, 220, 2.0, 0.002, "Rook semi-open file bonus");
     queen_open_file_bonus = 33 => (0, 225, 2.0, 0.002, "Queen open file bonus");
     queen_semi_open_file_bonus = 19 => (0, 210, 2.0, 0.002, "Queen semi-open file bonus");
     mg_king_ring_missing_penalty = 52 => (0, 160, 2.0, 0.002, "Middlegame king ring missing penalty");
     eg_king_ring_missing_penalty = 11 => (0, 160, 2.0, 0.002, "Endgame king ring missing penalty");
-    mg_king_pawn_shield_bonus = 20 => (0, 100, 2.0, 0.002, "Middlegame king pawn shield bonus");
+    mg_king_pawn_shield_bonus = 25 => (0, 100, 2.0, 0.002, "Middlegame king pawn shield bonus");
     eg_king_pawn_shield_bonus = 0 => (0, 100, 2.0, 0.002, "Endgame king pawn shield bonus");
-    mg_behind_king_bonus = 45 => (0, 200, 2.0, 0.002, "Middlegame piece behind king bonus");
-    eg_behind_king_bonus = 59 => (0, 200, 2.0, 0.002, "Endgame piece behind king bonus");
+    mg_behind_king_bonus = 22 => (0, 200, 2.0, 0.002, "Middlegame piece behind king bonus");
+    eg_behind_king_bonus = 30 => (0, 200, 2.0, 0.002, "Endgame piece behind king bonus");
     mg_connected_pawn_bonus = 0 => (0, 60, 2.0, 0.002, "Middlegame connected pawn bonus");
     eg_connected_pawn_bonus = 30 => (0, 60, 2.0, 0.002, "Endgame connected pawn bonus");
     mg_passed_safe_path_bonus = 27 => (0, 240, 2.0, 0.002, "Middlegame passed pawn safe path bonus");
@@ -202,19 +202,19 @@ eval_params! {
     /// Amazon was the only compound priced at the bare sum of its parts, while the
     /// chancellor carries +245 over rook+knight and the archbishop +371.
     amazon = 1793 => (900, 2800, 4.0, 0.002, "Amazon value");
-    slider_net_bonus = 21 => (0, 80, 2.0, 0.002, "Slider net-control bonus");
+    slider_net_bonus = 16 => (0, 80, 2.0, 0.002, "Slider net-control bonus");
     far_slider_cheb_radius = 18 => (6, 40, 2.0, 0.002, "Chebyshev radius beyond which a slider is far from the action");
     far_slider_cheb_max_excess = 40 => (10, 100, 2.0, 0.002, "Max excess distance counted for the far-slider penalty");
     far_queen_penalty = 5 => (0, 30, 2.0, 0.002, "Per-excess-square penalty for a far queen");
     far_rook_penalty = 7 => (0, 25, 2.0, 0.002, "Per-excess-square penalty for a far rook");
-    piece_cloud_cheb_radius = 16 => (4, 40, 2.0, 0.002, "Chebyshev radius of the piece-cloud cohesion zone");
+    piece_cloud_cheb_radius = 20 => (4, 40, 2.0, 0.002, "Chebyshev radius of the piece-cloud cohesion zone");
     /// Tighter than the rider radius because a leaper's reach is one jump.
     leaper_cloud_radius = 8 => (2, 40, 2.0, 0.002, "Cloud radius beyond which a leaper counts as out of play");
     /// Riders are the knightrider, rose and huygen.
     rider_cloud_radius = 16 => (2, 40, 2.0, 0.002, "Cloud radius beyond which a rider counts as out of play");
     slider_axis_wiggle = 5 => (1, 20, 2.0, 0.002, "Wiggle room for a slider ray to count as passing through center");
     piece_cloud_cheb_max_excess = 64 => (16, 160, 2.0, 0.002, "Max excess distance counted for the piece-cloud penalty");
-    centrality_value_scale = 72 => (20, 200, 4.0, 0.002, "Cloud-centre weight as a percent of piece value");
+    centrality_value_scale = 144 => (20, 200, 4.0, 0.002, "Cloud-centre weight as a percent of piece value");
     cloud_penalty_max_pct = 50 => (10, 130, 4.0, 0.002, "Cloud penalty ceiling, as a percent of the piece's value");
     cloud_penalty_per_100_value = 2 => (0, 6, 2.0, 0.002, "Cloud-spread penalty per 100 value of piece worth");
     cloud_center_max_skew_dist = 16 => (4, 40, 2.0, 0.002, "Max skew distance for the cloud-center reference point");
@@ -241,7 +241,7 @@ eval_params! {
     slider_threat_div = 5 => (2, 40, 2.0, 0.002, "Divisor for slider-threat scoring");
     slider_threat_cap = 100 => (5, 150, 2.0, 0.002, "Cap on slider-threat scoring");
     /// Cost of a piece frozen by a real absolute pin, per tied_defender_ref_value.
-    pin_opportunity_cost = 26 => (0, 80, 2.0, 0.002, "Cost of an absolutely pinned piece");
+    pin_opportunity_cost = 32 => (0, 80, 2.0, 0.002, "Cost of an absolutely pinned piece");
     pin_opportunity_cap = 70 => (0, 300, 2.0, 0.002, "Cap on total pin opportunity cost");
     candidate_passer_bonus_0 = 2 => (0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [0]");
     candidate_passer_bonus_1 = 0 => (0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [1]");
