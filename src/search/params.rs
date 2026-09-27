@@ -149,7 +149,7 @@ macro_rules! param {
 
 search_params! {
     /// Razoring margin per ply of depth.
-    razoring_quad: i32 = 232 => (100, 500, 12.0, 0.002, "Razoring quadratic margin");
+    razoring_quad: i32 = 300 => (100, 500, 12.0, 0.002, "Razoring quadratic margin");
     nmp_min_depth: usize = 3 => (1, 8, 1.0, 0.002, "Null move minimum depth");
     nmp_base: i32 = 350 => (100, 600, 16.0, 0.002, "Null move base margin");
     nmp_depth_mult: i32 = 36 => (8, 48, 2.0, 0.002, "Null move depth multiplier");
