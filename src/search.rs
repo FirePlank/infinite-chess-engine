@@ -5453,9 +5453,19 @@ fn quiescence(
         None
     };
 
+    // Underpromotions almost never matter at the horizon, and a variant with five
+    // promotion pieces multiplies every promoting move by five: try only the best.
+    let best_promo = match game.game_rules.promotion_types.as_deref() {
+        Some(ts) => ts.iter().copied().max_by_key(|&t| crate::evaluation::get_piece_value_base(t)),
+        None => Some(PieceType::Queen), // the generator's default set
+    };
+
     for m in tactical_moves.iter() {
         // Compute essential move properties
         let captured = game.board.get_piece(m.to.x, m.to.y);
+        if !in_check && m.promotion.is_some() && best_promo.is_some() && m.promotion != best_promo {
+            continue;
+        }
         let is_capture =
             game.is_en_passant(m) || captured.is_some_and(|p| !p.piece_type().is_neutral_type());
 
