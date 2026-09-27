@@ -229,7 +229,7 @@ eval_params! {
     pawn_far_from_promo_max_penalty = 100 => (0, 150, 2.0, 0.002, "Max penalty for a pawn far from promotion");
     tied_defender_ref_value = 600 => (150, 1600, 8.0, 0.002, "Reference value at which a king-tied piece pays the full penalty");
     king_defender_ref_value = 250 => (100, 800, 4.0, 0.002, "Piece value below which a piece counts as a king defender");
-    complexity_damp = 8 => (0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score");
+    complexity_damp = 4 => (0, 40, 2.0, 0.002, "Per-excess-phase damping applied to the whole score");
     complexity_excess_max = 40 => (8, 100, 2.0, 0.002, "Cap on phase excess counted for complexity damping");
     /// A pawn only shelters the king when close in front; on an unbounded board an
     /// ahead pawn could otherwise be arbitrarily far and fabricate cover.
