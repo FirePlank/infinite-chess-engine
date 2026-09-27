@@ -2997,7 +2997,8 @@ fn safe_check_units(
 ) -> i32 {
     use crate::attacks::{
         CAMEL_MASK, CAMEL_OFFSETS, DIAG_MASK, GIRAFFE_MASK, GIRAFFE_OFFSETS, HAWK_MASK,
-        HAWK_OFFSETS, KNIGHT_MASK, KNIGHT_OFFSETS, ORTHO_MASK, ZEBRA_MASK, ZEBRA_OFFSETS,
+        HAWK_OFFSETS, KNIGHT_MASK, KNIGHT_OFFSETS, KNIGHTRIDER_MASK, ORTHO_MASK, ZEBRA_MASK,
+        ZEBRA_OFFSETS,
         matches_mask,
     };
     // [knight, bishop, rook, queen] x [one square, several].
@@ -3154,6 +3155,44 @@ fn safe_check_units(
                     && safe(sx, sy)
                 {
                     set.push((sx, sy));
+                }
+            }
+        }
+
+        // A knightrider checks from where one of the king's knight lines crosses one of
+        // its own: solve K + t*v = P + u*w for each line pair, then walk both paths.
+        if matches_mask(pt, KNIGHTRIDER_MASK) {
+            const LINES: [(i64, i64); 4] = [(1, 2), (2, 1), (1, -2), (2, -1)];
+            let (dx, dy) = (px - kx, py - ky);
+            let clear = |x0: i64, y0: i64, (vx, vy): (i64, i64), n: i64| {
+                (1..n.abs()).all(|i| {
+                    let s = i * n.signum();
+                    game.board.get_piece(x0 + s * vx, y0 + s * vy).is_none()
+                })
+            };
+            for v in LINES {
+                for w in LINES {
+                    let det = w.0 * v.1 - v.0 * w.1;
+                    if det == 0 {
+                        continue;
+                    }
+                    let (tn, un) = (w.0 * dy - w.1 * dx, v.0 * dy - v.1 * dx);
+                    if tn % det != 0 || un % det != 0 {
+                        continue;
+                    }
+                    let (t, u) = (tn / det, un / det);
+                    let (sx, sy) = (kx + t * v.0, ky + t * v.1);
+                    if t == 0 || u == 0 || t.abs() > 8 || u.abs() > 8 || knight.is_full() {
+                        continue;
+                    }
+                    if !knight.contains(&(sx, sy))
+                        && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+                        && clear(kx, ky, v, t)
+                        && clear(px, py, w, u)
+                        && safe(sx, sy)
+                    {
+                        knight.push((sx, sy));
+                    }
                 }
             }
         }
@@ -4637,6 +4676,10 @@ mod tests {
         assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|n4,4|P4,2|P6,2"), 80);
         // A far queen crosses the king's rank, file and diagonal at many open squares.
         assert_eq!(white_safe_check_units("w (8;q|1;q) K0,0|k0,50|q7,20"), 70);
+        // A knightrider rides (11,7)->(7,5) and checks down the king's (1,2) line via (6,3).
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|nr11,7"), 80);
+        // Pieces on three of its four crossing paths leave only (17,-5).
+        assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|nr11,7|B6,3|B7,2|B4,3"), 50);
     }
 
     /// A compound must be allowed to reach a check square with one of its
