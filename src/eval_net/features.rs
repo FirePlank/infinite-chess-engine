@@ -90,12 +90,17 @@ pub struct EvalNetInputs {
     pub non_pawn_non_royal: [i32; 2],
     /// Per side: open king rays, enemy owns a queen-like piece, own pieces near the king.
     pub king_exposure: [[i32; 3]; 2],
+    /// Per side: slider rays whose first piece is its own within 2, its own pawn, or none.
+    pub slider_rays: [[i32; 3]; 2],
 }
 
 /// King-exposure inputs appended after the perspective vector: (own, opponent) x
 /// (open rays, enemy queen-like, near), each x16 as `--extra-pairs 22,23,24` trains them.
 pub const KEXP_INPUTS: usize = 6;
-pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS;
+/// Slider-ray inputs after those, (own, opponent) x (shut, own pawn, open), as
+/// `--extra-pairs 22,23,24,28,29,30` trains them.
+pub const RAY_INPUTS: usize = 6;
+pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS + RAY_INPUTS;
 const KEXP_RADIUS: i64 = 3;
 const KEXP_NEAR: i64 = 2;
 
@@ -108,6 +113,28 @@ fn queen_like(pt: PieceType) -> bool {
             | PieceType::Chancellor
             | PieceType::Archbishop
     )
+}
+
+/// Slider-ray tallies (White, Black) of (shut by an own piece within 2, own pawn first,
+/// open), from the line ends the slider-threat pass already looks up.
+#[derive(Default)]
+pub struct SliderRays(pub [[i32; 3]; 2]);
+
+impl SliderRays {
+    #[inline]
+    pub fn add(&mut self, own: PlayerColor, from: i64, end: Option<(i64, u8)>) {
+        let s = &mut self.0[usize::from(own != PlayerColor::White)];
+        match end {
+            None => s[2] += 1,
+            Some((c, packed)) => {
+                let p = crate::board::Piece::from_packed(packed);
+                if p.color() == own {
+                    s[0] += i32::from((c - from).abs() <= 2);
+                    s[1] += i32::from(p.piece_type() == PieceType::Pawn);
+                }
+            }
+        }
+    }
 }
 
 /// King-exposure inputs from what the eval already gathers: the first royal's nearest
@@ -185,6 +212,11 @@ pub fn king_exposure_reference(g: &GameState) -> [[i32; 3]; 2] {
 /// Schema of a net that also reads the king-exposure inputs.
 pub fn net_schema_hash() -> u64 {
     schema_hash() ^ 0x4b45_5850_3232_3234
+}
+
+/// Schema of a net that also reads the slider-ray inputs.
+pub fn ray_net_schema_hash() -> u64 {
+    net_schema_hash() ^ 0x5241_5953_3238_3330
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
@@ -459,6 +491,43 @@ pub fn schema_hash() -> u64 {
 mod tests {
     use super::*;
     use crate::evaluation::base;
+
+    /// The eval's slider-ray inputs must equal the exporter's definition, a first-blocker
+    /// walk from every slider, or the net would read other numbers than it trained on.
+    #[test]
+    fn slider_ray_inputs_match_first_blocker_walk() {
+        for v in [crate::Variant::Classical, crate::Variant::CoaIP, crate::Variant::Space, crate::Variant::Palace] {
+            for icn in [v.starting_icn(), "w (8;q|1;q) K0,0|k9,9|Q3,0|R0,5|P1,1|B4,4|b5,6|r0,9|q-3,-3|p-2,-2"] {
+                let mut g = crate::game::GameState::new();
+                g.setup_position_from_icn(icn);
+                let mut fc = crate::eval_net::FeatureCollector::default();
+                base::evaluate_inner_traced(&g, &mut fc);
+                let mut want = [[0i32; 3]; 2];
+                for (x, y, p) in g.board.iter() {
+                    let side = match p.color() {
+                        PlayerColor::White => 0,
+                        PlayerColor::Black => 1,
+                        _ => continue,
+                    };
+                    let (ortho, diag) = (crate::attacks::is_ortho_slider(p.piece_type()), crate::attacks::is_diag_slider(p.piece_type()));
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                        if !(if dx == 0 || dy == 0 { ortho } else { diag }) {
+                            continue;
+                        }
+                        match g.spatial_indices.find_first_blocker(x, y, dx, dy) {
+                            None => want[side][2] += 1,
+                            Some((bx, by, b)) if b.color() == p.color() => {
+                                want[side][0] += i32::from((bx - x).abs().max((by - y).abs()) <= 2);
+                                want[side][1] += i32::from(b.piece_type() == PieceType::Pawn);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                assert_eq!(fc.inputs.slider_rays, want, "{icn}");
+            }
+        }
+    }
 
     /// The piece-loop collector must reproduce the definition the net was trained on.
     #[test]

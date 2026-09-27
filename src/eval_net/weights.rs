@@ -171,11 +171,13 @@ impl EvalNetWeights {
 static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 
 pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
-    use super::features::{NET_INPUTS, NUM_FEATURES, net_schema_hash, schema_hash};
-    // Either the base vector or the base plus the king-exposure inputs, by header width.
+    use super::features::{KEXP_INPUTS, NET_INPUTS, NUM_FEATURES, net_schema_hash, ray_net_schema_hash, schema_hash};
+    // The base vector, plus the king-exposure inputs, plus the slider-ray ones, by header width.
     let n_in = EVAL_NET_BYTES.get(12..16).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
     if n_in == Some(NET_INPUTS) {
-        parse(EVAL_NET_BYTES, NET_INPUTS, net_schema_hash())
+        parse(EVAL_NET_BYTES, NET_INPUTS, ray_net_schema_hash())
+    } else if n_in == Some(NUM_FEATURES + KEXP_INPUTS) {
+        parse(EVAL_NET_BYTES, NUM_FEATURES + KEXP_INPUTS, net_schema_hash())
     } else {
         parse(EVAL_NET_BYTES, NUM_FEATURES, schema_hash())
     }
@@ -223,8 +225,10 @@ mod tests {
         assert!(EvalNetWeights::from_bytes(b"AEVNET01", 1, 0).is_err());
     }
 
+    /// A schema or width mismatch loads no net at all, silently: the engine would play on
+    /// the bare HCE.
     #[test]
-    fn lazy_load_does_not_panic() {
-        let _ = EVAL_NET.is_some();
+    fn embedded_net_loads() {
+        assert!(EVAL_NET.is_some());
     }
 }

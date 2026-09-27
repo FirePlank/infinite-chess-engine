@@ -83,12 +83,15 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
     if net.perspective {
         features::to_perspective(&mut x[..NUM_FEATURES], black);
     }
-    // A 121-input net never reads these columns.
-    let ke = &fc.inputs.king_exposure;
+    // Extras run own side then opponent, each king exposure then slider rays, as far as
+    // the net's width reaches (none for a 121-input net).
+    let (ke, rays) = (&fc.inputs.king_exposure, &fc.inputs.slider_rays);
     let (own, opp) = if net.perspective && black { (1, 0) } else { (0, 1) };
-    for j in 0..3 {
-        x[NUM_FEATURES + j] = (ke[own][j] * 16) as i16;
-        x[NUM_FEATURES + 3 + j] = (ke[opp][j] * 16) as i16;
+    let per = net.n_in.saturating_sub(NUM_FEATURES) / 2;
+    for j in 0..per {
+        let side = |s: usize| if j < 3 { ke[s][j] } else { rays[s][j - 3].min(255) };
+        x[NUM_FEATURES + j] = (side(own) * 16) as i16;
+        x[NUM_FEATURES + per + j] = (side(opp) * 16) as i16;
     }
     let r = inference::forward(net, &x).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }

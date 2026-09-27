@@ -649,6 +649,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
     // Slider counts for attack bonus (white, black) and attacking units
     let mut king_exposure = crate::eval_net::features::KingExposure::default();
+    let mut slider_rays = crate::eval_net::features::SliderRays::default();
     let mut w_diag_count = 0;
     let mut w_ortho_count = 0;
     let mut b_diag_count = 0;
@@ -1085,11 +1086,19 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             let (f, b) = l.neighbors(x);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
+                                            if T::WANTS_INPUTS {
+                                                slider_rays.add(own, x, f);
+                                                slider_rays.add(own, x, b);
+                                            }
                                         }
                                         if let Some(l) = idx_sp.cols.get(&x) {
                                             let (f, b) = l.neighbors(y);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
+                                            if T::WANTS_INPUTS {
+                                                slider_rays.add(own, y, f);
+                                                slider_rays.add(own, y, b);
+                                            }
                                         }
                                     }
                                     if crate::attacks::is_diag_slider(pt) {
@@ -1097,11 +1106,19 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             let (f, b) = l.neighbors(x);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
+                                            if T::WANTS_INPUTS {
+                                                slider_rays.add(own, x, f);
+                                                slider_rays.add(own, x, b);
+                                            }
                                         }
                                         if let Some(l) = idx_sp.diag2.get(&(x + y)) {
                                             let (f, b) = l.neighbors(x);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
+                                            if T::WANTS_INPUTS {
+                                                slider_rays.add(own, x, f);
+                                                slider_rays.add(own, x, b);
+                                            }
                                         }
                                     }
                                     if bonus > 0 {
@@ -1669,6 +1686,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             };
                             let pair = |c: (bool, bool)| i32::from(c.0 && c.1);
                             tracer.record_inputs(&crate::eval_net::EvalNetInputs {
+                                slider_rays: slider_rays.0,
                                 king_exposure: king_exposure.finish(
                                     [
                                         w_royal_rays.first().map(|r| &r.0),
