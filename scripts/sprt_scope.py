@@ -18,6 +18,7 @@ GENERIC_FILES = {
     "src/eval_net/mod.rs",
     "src/eval_net/weights.rs",
 }
+ENGINE_BUILD_FILES = {"Cargo.toml", "Cargo.lock", "build.rs", ".cargo/config.toml", "rust-toolchain.toml"}
 PARAMS = "src/evaluation/params.rs"
 # Files outside the generic evaluator that read eval params.
 OTHER_READERS = ["src/evaluation/mod.rs", "src/evaluation/piece_reach.rs", "src/evaluation/variants",
@@ -53,7 +54,8 @@ def main():
     root = pathlib.Path(__file__).resolve().parent.parent
     files = set(re.findall(r"^diff --git a/(\S+) b/", patch, flags=re.M))
     for f in files:
-        if f in GENERIC_FILES:
+        # Only src/ and the build files reach the engine; trainer scripts do not.
+        if f in GENERIC_FILES or not (f.startswith("src/") or f in ENGINE_BUILD_FILES):
             continue
         if f == PARAMS and not any(read_elsewhere(n, root) for n in changed_params(patch)):
             continue
