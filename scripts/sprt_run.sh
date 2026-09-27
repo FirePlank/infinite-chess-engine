@@ -7,6 +7,12 @@
 set -euo pipefail
 NAME=$1 BASE=$2 PATCH=$3 GAMES=$4 VARIANTS=${5:-site} E0=${6:-0} E1=${7:-5} TC=${8:-10+0.1}
 R=$(git rev-parse --show-toplevel); W="$R/../ice-sprt-branch"
+# A generic-evaluator-only patch cannot change Chess, Obstocean or Pawn_Horde (their own
+# evaluators), so their games are noise: force the default preset, whatever was asked.
+if [ "$PATCH" != "-" ] && [ "$(python "$R/scripts/sprt_scope.py" "$PATCH")" = generic ] && [ "$VARIANTS" = site ]; then
+  VARIANTS=Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers
+  echo "generic-evaluator patch: variants set to the default preset (no Chess/Obstocean/Pawn_Horde)"
+fi
 git -C "$R" fetch -q origin
 if [ ! -d "$W" ]; then
   if git -C "$R" ls-remote --exit-code --heads origin sprt > /dev/null; then
