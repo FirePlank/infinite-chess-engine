@@ -156,7 +156,7 @@ search_params! {
     nmp_reduction_base: usize = 7 => (2, 12, 1.0, 0.002, "Null move reduction numerator");
     nmp_reduction_div: usize = 2 => (1, 8, 1.0, 0.002, "Null move reduction divisor");
     lmr_min_depth: usize = 3 => (1, 8, 1.0, 0.002, "Late move reduction minimum depth");
-    lmr_min_moves: usize = 3 => (1, 16, 1.0, 0.002, "Late move reduction minimum move count");
+    lmr_min_moves: usize = 2 => (1, 16, 1.0, 0.002, "Late move reduction minimum move count");
     lmr_divisor: usize = 2 => (1, 8, 1.0, 0.002, "Late move reduction divisor");
     lmr_cutoff_thresh: u8 = 2 => (1, 8, 1.0, 0.002, "Late move reduction cutoff threshold");
     lmr_tt_history_thresh: i32 = -1000 => (-4000, 0, 64.0, 0.002, "Late move reduction TT history threshold");
