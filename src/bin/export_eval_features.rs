@@ -902,6 +902,38 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
         c[side + 26] = (loose_val / 50).min(255) as u8;
         c[side + 27] = safe_checks_against(g, us).min(255) as u8;
     }
+    // Slots 28-30 / 60-62: the side's slider rays shut by its own piece within 2, rays
+    // whose first piece is its own pawn, and rays open to infinity.
+    for (us, side) in [(PlayerColor::White, 0usize), (PlayerColor::Black, 32usize)] {
+        let (mut shut, mut own_pawn, mut open, mut reach) = (0u32, 0u32, 0u32, 0u32);
+        for (x, y, p) in g.board.iter() {
+            let pt = p.piece_type();
+            if p.color() != us {
+                continue;
+            }
+            let ortho = apeiron::attacks::is_ortho_slider(pt);
+            let diag = apeiron::attacks::is_diag_slider(pt);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                if !(if dx == 0 || dy == 0 { ortho } else { diag }) {
+                    continue;
+                }
+                match g.spatial_indices.find_first_blocker(x, y, dx, dy) {
+                    None => open += 1,
+                    Some((bx, by, b)) => {
+                        reach += ((bx - x).abs().max((by - y).abs()) - 1).min(7) as u32;
+                        let own = b.color() == us;
+                        shut += (own && (bx - x).abs().max((by - y).abs()) <= 2) as u32;
+                        own_pawn += (own && b.piece_type() == apeiron::board::PieceType::Pawn) as u32;
+                    }
+                }
+            }
+        }
+        c[side + 28] = shut.min(255) as u8;
+        c[side + 29] = own_pawn.min(255) as u8;
+        c[side + 30] = open.min(255) as u8;
+        // Slot 31 / 63: free squares before the first piece on its blocked slider rays, each capped at 7.
+        c[side + 31] = reach.min(255) as u8;
+    }
     c
 }
 
