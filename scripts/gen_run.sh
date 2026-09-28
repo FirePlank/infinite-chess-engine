@@ -2,10 +2,11 @@
 # Self-play data generation on GitHub runners: commits `gen: <name>` (= HEAD + the
 # generation-only node-limit patch + .github/gen.json) on the `gen` branch, waits for the
 # run, and concatenates every shard's JSONL into evalnet/gen/<name>.jsonl.
-#   scripts/gen_run.sh <name> <games> [nodes] [variants] [seed] [patch]
+#   scripts/gen_run.sh <name> <games> [nodes] [variants] [seed] [shards] [patch]
+# 40 shards fill GitHub Pro's concurrent-job limit; use fewer while an SPRT is running.
 set -euo pipefail
-NAME=$1 GAMES=$2 NODES=${3:-100000} VARIANTS=${4:-site} SEED=${5:-1}
-PATCH=${6:-$(git rev-parse --show-toplevel)/../ice-patches/gen_node_limit.patch}
+NAME=$1 GAMES=$2 NODES=${3:-100000} VARIANTS=${4:-site} SEED=${5:-1} SHARDS=${6:-40}
+PATCH=${7:-$(git rev-parse --show-toplevel)/../ice-patches/gen_node_limit.patch}
 R=$(git rev-parse --show-toplevel); W="$R/../ice-gen-branch"
 ghr() { local o; for _ in $(seq 40); do o=$("$@") && { echo "$o"; return 0; }; sleep 30; done; return 1; }
 REPO=$(ghr gh repo view --json nameWithOwner -q .nameWithOwner)
@@ -18,7 +19,7 @@ else
   git checkout -q -B gen "$BASE"
   git apply "$PATCH"
   jq -n --arg n "$NAME" --arg v "$VARIANTS" --argjson g "$GAMES" --argjson nodes "$NODES" --argjson s "$SEED" \
-        '{name:$n, games:$g, nodes:$nodes, variants:$v, seed:$s, shards:20, minutes:330}' > .github/gen.json
+        --argjson sh "$SHARDS" '{name:$n, games:$g, nodes:$nodes, variants:$v, seed:$s, shards:$sh, minutes:330}' > .github/gen.json
   git add -A && git commit -q -m "gen: $NAME"
   SHA=$(git rev-parse HEAD)
   git push -q -f origin gen
