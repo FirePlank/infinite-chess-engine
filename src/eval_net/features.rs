@@ -88,7 +88,7 @@ pub struct EvalNetInputs {
     /// Most advanced pawn's distance to promotion (100 when the side has none).
     pub promo_dist: [i32; 2],
     pub non_pawn_non_royal: [i32; 2],
-    /// Per side: open king rays, enemy owns a queen-like piece, own pieces near the king.
+    /// Per side: open king rays, enemy owns a queen-like piece, own and neutral pieces near the king.
     pub king_exposure: [[i32; 3]; 2],
     /// Per side: slider rays whose first piece is its own within 2, its own pawn, or none,
     /// then the free squares before the first piece on its blocked rays (each at most 7).
@@ -140,7 +140,7 @@ impl SliderRays {
 }
 
 /// King-exposure inputs from what the eval already gathers: the first royal's nearest
-/// piece per ray, own pieces within 2 of it, and a queen-like bit per colour.
+/// piece per ray, own and neutral pieces within 2 of it, and a queen-like bit per colour.
 #[derive(Default)]
 pub struct KingExposure {
     queen_like_bits: u32,
@@ -163,7 +163,7 @@ impl KingExposure {
     }
 
     /// `rays[side]` is that side's first royal's nearest piece per ray (distance,
-    /// value, colour, type), `near[side]` its own pieces within 2 squares.
+    /// value, colour, type), `near[side]` its own and neutral pieces within 2 squares.
     pub fn finish(
         &self,
         rays: [Option<&KingRays>; 2],
@@ -202,7 +202,9 @@ pub fn king_exposure_reference(g: &GameState) -> [[i32; 3]; 2] {
             .board
             .iter()
             .filter(|(x, y, p)| {
-                p.color() == us && (x - k.x).abs().max((y - k.y).abs()) <= KEXP_NEAR && !(*x == k.x && *y == k.y)
+                (p.color() == us || p.color() == PlayerColor::Neutral)
+                    && (x - k.x).abs().max((y - k.y).abs()) <= KEXP_NEAR
+                    && !(*x == k.x && *y == k.y)
             })
             .count()
             .min(255) as i32;

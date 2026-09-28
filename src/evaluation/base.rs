@@ -886,6 +886,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                             if d <= 7 {
                                                 king.defender_units_in_distance[d as usize] +=
                                                     DEF_NEUTRAL[d as usize];
+                                                king.near += i32::from(d != 0 && d <= 2);
                                             }
                                         }
                                     } else {
@@ -2252,7 +2253,7 @@ pub struct RoyalTropismMetrics {
     attacking_units: i32,
     defender_units: i32,
     defender_units_in_distance: [i32; 8],
-    /// Own pieces within 2 squares, for the net's king-exposure inputs.
+    /// Own and neutral pieces within 2 squares, for the net's king-exposure inputs.
     near: i32,
     x: i64,
     y: i64,

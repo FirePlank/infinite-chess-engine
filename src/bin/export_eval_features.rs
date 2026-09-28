@@ -851,8 +851,8 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
         *slot = slot.saturating_add(1);
     }
     // Slots 22-24 / 54-56: the side's king exposure against queen-like checkers (open
-    // rays with no own or neutral piece within 3, enemy queen-like present, own pieces
-    // within 2 squares of the king).
+    // rays with no own or neutral piece within 3, enemy queen-like present, own and neutral
+    // pieces within 2 squares of the king).
     let counts = c;
     let queen_like = |side: usize| -> u8 {
         [8usize, 7, 11, 12, 9].iter().any(|&t| counts[side + t] > 0) as u8
@@ -871,7 +871,11 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
         let near = g
             .board
             .iter()
-            .filter(|(x, y, p)| p.color() == us && (x - k.x).abs().max((y - k.y).abs()) <= 2 && !(x == &k.x && y == &k.y))
+            .filter(|(x, y, p)| {
+                (p.color() == us || p.color() == PlayerColor::Neutral)
+                    && (x - k.x).abs().max((y - k.y).abs()) <= 2
+                    && !(x == &k.x && y == &k.y)
+            })
             .count()
             .min(255) as u8;
         c[side + 22] = open;
