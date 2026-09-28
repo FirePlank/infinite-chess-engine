@@ -54,8 +54,10 @@ def main():
     root = pathlib.Path(__file__).resolve().parent.parent
     files = set(re.findall(r"^diff --git a/(\S+) b/", patch, flags=re.M))
     for f in files:
-        # Only src/ and the build files reach the engine; trainer scripts do not.
-        if f in GENERIC_FILES or not (f.startswith("src/") or f in ENGINE_BUILD_FILES):
+        # Only src/ and the build files reach the engine; trainer scripts and tool bins
+        # (src/bin/ other than the harness, as sprt_run.sh's build key) do not.
+        tool_bin = f.startswith("src/bin/") and f != "src/bin/sprt.rs"
+        if f in GENERIC_FILES or tool_bin or not (f.startswith("src/") or f in ENGINE_BUILD_FILES):
             continue
         if f == PARAMS and not any(read_elsewhere(n, root) for n in changed_params(patch)):
             continue
