@@ -96,7 +96,11 @@ while :; do
   sleep 60
 done
 # Keep every game, stopped early or not: one JSON per test under games/sprt.
-T="$R/games/sprt/.remote_$NAME"; rm -rf "$T"
-until gh run download "$ID" -p "shard-*" -D "$T"; do rm -rf "$T"; sleep 60; done
+# A folder per watcher process: a second watcher on the same run (a lost session's, say)
+# would otherwise extract into the same files ("The file exists") and wipe them.
+T="$R/games/sprt/.remote_${NAME}_$$"; rm -rf "$T"
+until gh run download "$ID" -p "shard-*" -D "$T"; do
+  echo "shard download failed; retrying in 60s" >&2; rm -rf "$T"; sleep 60
+done
 python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
 rm -rf "$T"
