@@ -4695,6 +4695,12 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
+                // Lost games turn on check sequences against the king 3x as often as calm
+                // positions, so a checking move is searched a ply deeper.
+                if gives_check {
+                    reduction -= 1;
+                }
+
                 // Ensure reduction stays in valid range [0, depth-2]. The upper
                 // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
                 // and clamp panics when min > max.
