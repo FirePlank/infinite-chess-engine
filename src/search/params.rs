@@ -177,7 +177,7 @@ search_params! {
     probcut_margin: i32 = 235 => (0, 512, 8.0, 0.002, "ProbCut margin");
     probcut_improving: i32 = 63 => (0, 256, 4.0, 0.002, "ProbCut improving adjustment");
     probcut_min_depth: usize = 5 => (1, 12, 1.0, 0.002, "ProbCut minimum depth");
-    probcut_depth_sub: usize = 5 => (1, 8, 1.0, 0.002, "ProbCut depth subtraction");
+    probcut_depth_sub: usize = 4 => (1, 8, 1.0, 0.002, "ProbCut depth subtraction");
     probcut_divisor: i32 = 315 => (32, 1024, 16.0, 0.002, "ProbCut static-eval divisor");
     low_depth_probcut_margin: i32 = 800 => (128, 2048, 32.0, 0.002, "Low-depth ProbCut margin");
     iir_min_depth: usize = 3 => (1, 12, 1.0, 0.002, "Internal iterative reduction minimum depth");
