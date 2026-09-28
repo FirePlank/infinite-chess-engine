@@ -183,7 +183,7 @@ search_params! {
     iir_min_depth: usize = 3 => (1, 12, 1.0, 0.002, "Internal iterative reduction minimum depth");
     see_capture_linear: i32 = 166 => (0, 512, 8.0, 0.002, "SEE capture pruning linear term");
     see_capture_hist_div: i32 = 29 => (1, 128, 2.0, 0.002, "SEE capture history divisor");
-    see_quiet_quad: i32 = 25 => (1, 128, 2.0, 0.002, "SEE quiet pruning quadratic term");
+    see_quiet_quad: i32 = 35 => (1, 128, 2.0, 0.002, "SEE quiet pruning quadratic term");
     see_winning_threshold: i32 = 0 => (-256, 256, 8.0, 0.002, "SEE threshold for classifying winning captures");
     sort_hash: i32 = 6_000_000 => (1_000_000, 10_000_000, 100_000.0, 0.002, "Hash move ordering bonus");
     sort_winning_capture: i32 = 1_000_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Winning capture ordering bonus");
