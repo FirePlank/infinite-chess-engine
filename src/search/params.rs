@@ -173,7 +173,7 @@ search_params! {
     rfp_mult_tt: i32 = 101 => (1, 256, 4.0, 0.002, "Reverse futility TT multiplier");
     rfp_mult_no_tt: i32 = 85 => (1, 256, 4.0, 0.002, "Reverse futility non-TT multiplier");
     rfp_improving_mult: i32 = 2474 => (256, 4096, 64.0, 0.002, "Reverse futility improving multiplier");
-    rfp_worsening_mult: i32 = 450 => (0, 2048, 32.0, 0.002, "Reverse futility worsening multiplier");
+    rfp_worsening_mult: i32 = 600 => (0, 2048, 32.0, 0.002, "Reverse futility worsening multiplier");
     probcut_margin: i32 = 235 => (0, 512, 8.0, 0.002, "ProbCut margin");
     probcut_improving: i32 = 63 => (0, 256, 4.0, 0.002, "ProbCut improving adjustment");
     probcut_min_depth: usize = 5 => (1, 12, 1.0, 0.002, "ProbCut minimum depth");
