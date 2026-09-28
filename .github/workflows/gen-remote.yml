@@ -1,0 +1,105 @@
+# Sharded self-play data generation on GitHub-hosted runners. Every run is a `gen: <name>`
+# commit on the `gen` branch carrying .github/gen.json; each shard plays its share of
+# node-budget games with its own seed and uploads its JSONL, cut short cleanly before the
+# job limit so partial shards still keep every finished game. scripts/gen_run.sh drives it.
+name: Gen remote
+
+on:
+  push:
+    branches: [gen]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gen
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'gen: ')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      shards: ${{ steps.cfg.outputs.shards }}
+      per_shard: ${{ steps.cfg.outputs.per_shard }}
+      nodes: ${{ steps.cfg.outputs.nodes }}
+      variants: ${{ steps.cfg.outputs.variants }}
+      seed: ${{ steps.cfg.outputs.seed }}
+      minutes: ${{ steps.cfg.outputs.minutes }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read config
+        id: cfg
+        run: |
+          c=.github/gen.json
+          shards=$(jq -r '.shards // 20' $c)
+          games=$(jq -r '.games' $c)
+          {
+            echo "shards=$(jq -nc --argjson n $shards '[range(1; $n + 1)]')"
+            echo "per_shard=$(( (games + shards - 1) / shards ))"
+            echo "nodes=$(jq -r '.nodes // 100000' $c)"
+            echo "variants=$(jq -r '.variants // "site"' $c)"
+            echo "seed=$(jq -r '.seed // 1' $c)"
+            echo "minutes=$(jq -r '.minutes // 330' $c)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cache toolchain
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+          key: rustup-${{ hashFiles('rust-toolchain.toml') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gen-bin
+
+      - name: Build data_gen
+        run: |
+          cargo build --release --features data_gen --bin data_gen
+          mkdir -p bins && cp target/release/data_gen bins/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gen-bin
+          path: bins/
+          retention-days: 1
+
+  play:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gen-bin
+          path: bins
+
+      - name: Generate shard
+        run: |
+          chmod +x bins/data_gen
+          # A distinct seed per shard (and apart from local runs) so no two shards replay
+          # the same games; `timeout` ends the shard before the job limit, and data_gen
+          # flushes each finished game, so a cut-short shard keeps everything it played.
+          seed=$(( ${{ needs.setup.outputs.seed }} * 1000 + ${{ matrix.shard }} ))
+          timeout "${{ needs.setup.outputs.minutes }}m" ./bins/data_gen \
+            --games "${{ needs.setup.outputs.per_shard }}" --depth 64 \
+            --nodes "${{ needs.setup.outputs.nodes }}" --max-move-ms 30000 \
+            --variants "${{ needs.setup.outputs.variants }}" --threads "$(nproc)" \
+            --seed "$seed" --out "shard_${{ matrix.shard }}.jsonl" | tail -5 || true
+          echo "games: $(wc -l < shard_${{ matrix.shard }}.jsonl)"
+
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.jsonl
+          retention-days: 7
