@@ -4624,7 +4624,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && legal_moves >= lmr_min_moves()
                 && !in_check
                 && !is_capture
-                && !(gives_check && (p_type == PieceType::Queen || p_type == PieceType::Amazon))
             {
                 reduction = get_lmr(depth, legal_moves);
 
