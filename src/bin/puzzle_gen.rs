@@ -520,7 +520,9 @@ fn scan_game(
     let mut moves: Vec<String> = Vec::new();
     let mut evals: Vec<i32> = Vec::new();
     for part in blob.split('|') {
-        let Some(score) = parse_annotation(part) else {
+        // The SPRT harness's shared-opening plies carry `[%book]` and no eval; read them
+        // as level instead of stopping, or every game with a book is scanned as empty.
+        let Some(score) = parse_annotation(part).or_else(|| part.contains("[%book]").then_some(0)) else {
             break;
         };
         let txt = part.split('{').next()?.trim();
