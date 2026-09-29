@@ -4579,7 +4579,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // A check near the horizon would otherwise be resolved by the qsearch
         // boundary instead of a real reply; give it one more ply. Gated on !in_check
         // so a forced sequence of replying checks can't chain extensions forever.
-        if extension == 0 && depth <= 2 && gives_check && !in_check {
+        if extension == 0 && depth <= 3 && gives_check && !in_check {
             extension = 1;
         }
 
