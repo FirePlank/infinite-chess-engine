@@ -160,7 +160,7 @@ search_params! {
     lmr_divisor: usize = 2 => (1, 8, 1.0, 0.002, "Late move reduction divisor");
     lmr_cutoff_thresh: u8 = 2 => (1, 8, 1.0, 0.002, "Late move reduction cutoff threshold");
     lmr_tt_history_thresh: i32 = -1000 => (-4000, 0, 64.0, 0.002, "Late move reduction TT history threshold");
-    hlp_max_depth: usize = 3 => (1, 8, 1.0, 0.002, "History leaf pruning maximum depth");
+    hlp_max_depth: usize = 4 => (1, 8, 1.0, 0.002, "History leaf pruning maximum depth");
     hlp_min_moves: usize = 4 => (1, 16, 1.0, 0.002, "History leaf pruning minimum move count");
     hlp_history_reduce: i32 = 300 => (-2000, 2000, 64.0, 0.002, "History threshold for extra late-move reduction");
     hlp_history_leaf: i32 = 0 => (-2000, 2000, 64.0, 0.002, "History threshold for pruning leaf moves");
