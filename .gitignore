@@ -130,3 +130,10 @@ evalnet/var/
 evalnet/resid/
 evalnet/forensics/
 src/bin/sampler.rs
+evalnet/gen/
+evalnet/gn/
+evalnet/timeman/
+src/bin/check_probe.rs
+src/bin/collapse_probe.rs
+/puzzles_new*.csv*
+/puzzle_gen_*.log
