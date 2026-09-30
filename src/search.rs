@@ -5555,8 +5555,9 @@ fn quiescence(
         }
 
         // Evasions, as in Stockfish: once one has shown we are not mated, only captures
-        // that do not lose material are still searched.
+        // that do not lose material are still searched. Obstocean keeps every evasion.
         if in_check
+            && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
             && !captures_royal_for_win
             && !is_loss(best_value)
             && (!is_capture || !see_ge(game, m, -74))
