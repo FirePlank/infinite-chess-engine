@@ -4,6 +4,8 @@
 # crosses a bound, and saves games + Final Summary under games/sprt. Record the decision
 # afterwards with scripts/sprt_done.sh.
 #   scripts/sprt_run.sh <name> <base-sha> <patch-file|-> <games> [variants] [elo0] [elo1] [tc]
+#   Env: SHARDS (default 40); ADJ=0 turns max-ply adjudication off, which any change to
+#   eval magnitude needs, since the 1000 cp threshold reads each engine's own score.
 set -euo pipefail
 NAME=$1 BASE=$2 PATCH=$3 GAMES=$4 VARIANTS=${5:-site} E0=${6:-0} E1=${7:-5} TC=${8:-10+0.1}
 R=$(git rev-parse --show-toplevel); W="$R/../ice-sprt-branch"
@@ -39,7 +41,8 @@ fi
 [ "$PATCH" = "-" ] || git apply "$PATCH"
 jq -n --arg n "$NAME" --arg o "$BASE" --arg v "$VARIANTS" --arg tc "$TC" \
       --argjson g "$GAMES" --argjson e0 "$E0" --argjson e1 "$E1" --argjson sh "${SHARDS:-40}" \
-      '{name:$n, old:$o, games:$g, shards:$sh, variants:$v, tc:$tc, elo0:$e0, elo1:$e1}' > .github/sprt.json
+      --argjson adj "${ADJ:-1000}" \
+      '{name:$n, old:$o, games:$g, shards:$sh, variants:$v, tc:$tc, elo0:$e0, elo1:$e1, adjudication:$adj}' > .github/sprt.json
 key() {
   { git ls-tree -r "$1" -- src Cargo.toml Cargo.lock build.rs .cargo/config.toml rust-toolchain.toml \
       | grep -v $'\tsrc/bin/'
