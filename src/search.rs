@@ -4572,7 +4572,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 extension = -3;
             } else if cut_node {
                 // On cut nodes, if TT move isn't assumed to fail high, reduce it
-                extension = -2;
+                extension = -1;
             }
         }
 
