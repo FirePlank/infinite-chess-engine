@@ -2769,6 +2769,10 @@ pub fn is_far_escape_move(m: &Move) -> bool {
     ray_far_escape_steps(&m.from, dx / steps, dy / steps) == steps
 }
 
+/// Flag bit on a cached slider distance: a check, knight-leap or critical-target
+/// square, exempt from the shallow-node per-ray cap. Distances stay far below it.
+const CAP_EXEMPT: i64 = 1 << 48;
+
 /// Distance past which a candidate square needs a reason beyond proximity to be
 /// generated. Cheap default filter; critical targets bypass it entirely.
 const BASE_INTERCEPTION_DIST: i64 = 16;
@@ -3684,13 +3688,21 @@ fn generate_sliding_moves_impl(
                 }
 
                 for (&d, &count) in &dist_counts {
-                    if d <= BASE_INTERCEPTION_DIST || count >= 2 || royal_dists.contains(&d) {
+                    if royal_dists.contains(&d) {
+                        shared_targets.push(d | CAP_EXEMPT);
+                    } else if d <= BASE_INTERCEPTION_DIST || count >= 2 {
                         shared_targets.push(d);
                     }
                 }
-                shared_targets.extend(knight_dists.iter().copied());
-                shared_targets.sort_unstable();
-                shared_targets.dedup();
+                shared_targets.extend(knight_dists.iter().map(|&d| d | CAP_EXEMPT));
+                shared_targets.sort_unstable_by_key(|&v| v & !CAP_EXEMPT);
+                shared_targets.dedup_by(|b, a| {
+                    let same = (*a & !CAP_EXEMPT) == (*b & !CAP_EXEMPT);
+                    if same {
+                        *a |= *b & CAP_EXEMPT;
+                    }
+                    same
+                });
 
                     let arc: Arc<[i64]> = Arc::from(shared_targets);
                 if !bypass_cache {
@@ -3712,7 +3724,8 @@ fn generate_sliding_moves_impl(
                 0
             };
             let mut capped_emitted = 0usize;
-            for &d in target_dists.iter() {
+            for &raw in target_dists.iter() {
+                let d = raw & !CAP_EXEMPT;
                 if d <= 0 || d > max_dist {
                     continue;
                 }
@@ -3733,7 +3746,7 @@ fn generate_sliding_moves_impl(
 
                 // Tight generation: past short range, non-king-aligned quiet
                 // destinations count against the per-ray cap.
-                if ray_cap > 0 && d > ENEMY_WIGGLE {
+                if ray_cap > 0 && d > ENEMY_WIGGLE && raw & CAP_EXEMPT == 0 {
                     let king_aligned = ek_ref.is_some_and(|ek| {
                         let ax = ek.x - sq_x;
                         let ay = ek.y - sq_y;
@@ -3760,7 +3773,9 @@ fn generate_sliding_moves_impl(
                 && ray_cap == 0
             {
                 let far = ray_far_escape_steps(from, dir_x, dir_y);
-                if far >= FAR_ESCAPE_MIN_ROOM && target_dists.binary_search(&far).is_err() {
+                if far >= FAR_ESCAPE_MIN_ROOM
+                    && target_dists.binary_search_by_key(&far, |&v| v & !CAP_EXEMPT).is_err()
+                {
                     let sq = Coordinate::new(from.x + dir_x * far, from.y + dir_y * far);
                     out.push(Move::new(*from, sq, *piece));
                 }
@@ -3772,7 +3787,10 @@ fn generate_sliding_moves_impl(
                 && let Some(ek) = ek_ref
             {
                 for d in fresh_check_dists(piece.piece_type(), from, dir_x, dir_y, ek) {
-                    if d <= max_dist && d != closest_dist && target_dists.binary_search(&d).is_err() {
+                    if d <= max_dist
+                        && d != closest_dist
+                        && target_dists.binary_search_by_key(&d, |&v| v & !CAP_EXEMPT).is_err()
+                    {
                         let (sq_x, sq_y) = (from.x + dir_x * d, from.y + dir_y * d);
                         if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
                             out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
