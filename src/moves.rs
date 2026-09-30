@@ -3765,8 +3765,59 @@ fn generate_sliding_moves_impl(
                     out.push(Move::new(*from, sq, *piece));
                 }
             }
+
+            // The cached list keeps the check squares of wherever the king stood when it
+            // was built; add the ones for where it stands now.
+            if gen_type != MoveGenType::Captures
+                && let Some(ek) = ek_ref
+            {
+                for d in fresh_check_dists(piece.piece_type(), from, dir_x, dir_y, ek) {
+                    if d <= max_dist && d != closest_dist && target_dists.binary_search(&d).is_err() {
+                        let (sq_x, sq_y) = (from.x + dir_x * d, from.y + dir_y * d);
+                        if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
+                            out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+/// Distances along (dir_x, dir_y) to squares on a king line this piece attacks along.
+#[inline]
+fn fresh_check_dists(
+    pt: PieceType,
+    from: &Coordinate,
+    dir_x: i64,
+    dir_y: i64,
+    ek: &Coordinate,
+) -> impl Iterator<Item = i64> {
+    let ortho = matches!(
+        pt,
+        PieceType::Queen | PieceType::Rook | PieceType::RoyalQueen | PieceType::Chancellor | PieceType::Amazon
+    );
+    let diag = matches!(
+        pt,
+        PieceType::Queen | PieceType::Bishop | PieceType::RoyalQueen | PieceType::Archbishop | PieceType::Amazon
+    );
+    // Each king line is a*x + b*y = c; solve it for the step count d along the ray.
+    let lines = [
+        (ortho, 1i64, 0i64, ek.x),
+        (ortho, 0, 1, ek.y),
+        (diag, 1, -1, ek.x - ek.y),
+        (diag, 1, 1, ek.x + ek.y),
+    ];
+    let (fx, fy, kx, ky) = (from.x, from.y, ek.x, ek.y);
+    lines.into_iter().filter_map(move |(on, a, b, c)| {
+        let den = a * dir_x + b * dir_y;
+        let num = c - a * fx - b * fy;
+        if !on || den == 0 || num % den != 0 {
+            return None;
+        }
+        let d = num / den;
+        (d > 0 && (fx + d * dir_x, fy + d * dir_y) != (kx, ky)).then_some(d)
+    })
 }
 
 /// Closest blocker on a ray, found in O(log n) via the spatial indices.
