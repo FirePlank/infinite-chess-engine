@@ -63,47 +63,49 @@ for _ in $(seq 60); do
 done
 fi
 echo "run $ID  https://github.com/$REPO/actions/runs/$ID"
-# Each shard posts its pair counts (ll,ld,wl+dd,wd,ww) as a commit status every few
-# minutes; sum the newest per shard and stop the run once the LLR crosses a bound.
-# `gh run watch` is avoided: it can hang without a terminal.
-# A shard whose count stays unchanged while still pending is stuck (the harness saves
-# every 10 games, minutes apart): cancel, so one shard cannot hold a test for hours.
+# Shards post pair counts as commit statuses every 3 min. Poll the run every 10 s and the
+# counts every 60 s (~440 calls/h); `gh run watch` can hang without a tty. A pending shard
+# whose count stops changing for STALL_S is stuck, so the run is cancelled.
 STALL_S=1200
 declare -A LAST_SEEN LAST_CHANGE
+run_status() { ghr gh api "repos/$REPO/actions/runs/$ID" -q .status; }
+cancel_and_wait() {
+  ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
+  until [ "$(run_status)" = completed ]; do sleep 5; done
+}
+tick=0
 while :; do
-  STATUS=$(ghr gh run view "$ID" --json status -q .status)
-  SUM=$(gh api "repos/$REPO/commits/$SHA/status?per_page=100"           -q '[.statuses[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
-              | map(max_by(.updated_at).description | split(",") | map(tonumber))
-              | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
-  OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
-  NOW=$(date +%s); STUCK=""
-  while IFS='|' read -r CTX STATE DESC; do
-    [ -n "$CTX" ] || continue
-    if [ "${LAST_SEEN[$CTX]:-}" != "$DESC" ]; then LAST_SEEN[$CTX]=$DESC; LAST_CHANGE[$CTX]=$NOW; fi
-    if [ "$STATE" = pending ] && [ $(( NOW - ${LAST_CHANGE[$CTX]} )) -ge $STALL_S ]; then STUCK="$STUCK $CTX"; fi
-  done < <(gh api "repos/$REPO/commits/$SHA/status?per_page=100"              -q '[.statuses[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
-                 | map(max_by(.updated_at)) | .[] | "\(.context)|\(.state)|\(.description)"' 2> /dev/null)
-  if [ -n "$STUCK" ]; then
-    ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
-    echo "stalled for $((STALL_S / 60)) min:$STUCK; run cancelled ($(grep '^pairs=' <<< "$OUT"))"
-    until [ "$(ghr gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
-    break
+  [ "$(run_status)" = completed ] && break
+  if (( tick % 6 == 0 )); then
+    LINES=$(gh api "repos/$REPO/commits/$SHA/status?per_page=100"       -q '[.statuses[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+          | map(max_by(.updated_at)) | .[] | "\(.context)|\(.state)|\(.description)"' 2> /dev/null || true)
+    SUM=$(awk -F'|' 'NF == 3 { split($3, c, ","); for (i = 1; i <= 5; i++) s[i] += c[i] }
+          END { printf "%d,%d,%d,%d,%d", s[1], s[2], s[3], s[4], s[5] }' <<< "$LINES")
+    OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
+    NOW=$(date +%s); STUCK=""
+    while IFS='|' read -r CTX STATE DESC; do
+      [ -n "$CTX" ] || continue
+      if [ "${LAST_SEEN[$CTX]:-}" != "$DESC" ]; then LAST_SEEN[$CTX]=$DESC; LAST_CHANGE[$CTX]=$NOW; fi
+      if [ "$STATE" = pending ] && [ $(( NOW - ${LAST_CHANGE[$CTX]} )) -ge $STALL_S ]; then STUCK="$STUCK $CTX"; fi
+    done <<< "$LINES"
+    if [ -n "$STUCK" ]; then
+      echo "stalled for $((STALL_S / 60)) min:$STUCK; cancelling ($(grep '^pairs=' <<< "$OUT"))"
+      cancel_and_wait; break
+    fi
+    if grep -q '^stop=true' <<< "$OUT"; then
+      echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
+      cancel_and_wait; break
+    fi
   fi
-  if grep -q '^stop=true' <<< "$OUT"; then
-    ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
-    echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
-    until [ "$(ghr gh run view "$ID" --json status -q .status)" = completed ]; do sleep 15; done
-    break
-  fi
-  [ "$STATUS" = completed ] && break
-  sleep 60
+  tick=$((tick + 1)); sleep 10
 done
 # Keep every game, stopped early or not: one JSON per test under games/sprt.
 # A folder per watcher process: a second watcher on the same run (a lost session's, say)
 # would otherwise extract into the same files ("The file exists") and wipe them.
 T="$R/games/sprt/.remote_${NAME}_$$"; rm -rf "$T"
-until gh run download "$ID" -p "shard-*" -D "$T"; do
-  echo "shard download failed; retrying in 60s" >&2; rm -rf "$T"; sleep 60
+# Parallel fetch (~8 s for 40 shards against ~23 s for gh run download, which stays the fallback).
+until python "$R/scripts/fetch_shards.py" "$REPO" "$ID" "$T" || { rm -rf "$T"; gh run download "$ID" -p "shard-*" -D "$T"; }; do
+  echo "shard download failed; retrying in 30s" >&2; rm -rf "$T"; sleep 30
 done
 python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
 rm -rf "$T"
