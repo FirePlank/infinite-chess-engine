@@ -196,7 +196,7 @@ search_params! {
     history_max_gravity: i32 = 16384 => (1024, 32768, 256.0, 0.002, "History gravity clamp");
     pawn_history_bonus_scale: i32 = 2 => (0, 8, 1.0, 0.002, "Pawn history bonus scale");
     pawn_history_malus_scale: i32 = 1 => (0, 8, 1.0, 0.002, "Pawn history malus scale");
-    delta_margin: i32 = 280 => (0, 512, 8.0, 0.002, "Quiescence delta pruning margin");
+    delta_margin: i32 = 360 => (0, 512, 8.0, 0.002, "Quiescence delta pruning margin");
 }
 
 // Fixed ordering offsets, never tuned.
