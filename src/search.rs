@@ -1734,11 +1734,14 @@ impl Searcher {
         in_check: bool,
         prev_move_idx: usize,
     ) {
-        if in_check || !best_move_is_quiet {
+        // A mate score is no correction to a static eval: one would pin every shared
+        // entry at the limit. Past the limit a target only saturates the average.
+        if in_check || !best_move_is_quiet || is_decisive(search_score) {
             return;
         }
 
-        let diff = search_score - static_eval;
+        let diff = (search_score - static_eval)
+            .clamp(-CORRHIST_LIMIT / CORRHIST_GRAIN, CORRHIST_LIMIT / CORRHIST_GRAIN);
         // PlayerColor is Neutral=0/White=1/Black=2. Map White->0, Black->1 so the
         // `color_idx == 0` branch below correctly selects white_nonpawn_hash for White.
         let color_idx = (game.turn as usize).saturating_sub(1);
