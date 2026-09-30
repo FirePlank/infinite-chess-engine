@@ -185,6 +185,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 /// when the wasm memory is shared, so `check_time` polls it every node batch.
 pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
 
+/// Per-search node budget for data generation (0 = none); only data_gen builds carry it.
+#[cfg(feature = "data_gen")]
+static NODE_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "data_gen")]
+pub fn set_node_limit(nodes: u64) {
+    NODE_LIMIT.store(nodes, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Per-thread node counter for aggregated NPS. Each slot is cache-line aligned so
 /// threads publishing their own counts never bounce a shared line.
 #[cfg(feature = "multithreading")]
@@ -1572,6 +1581,14 @@ impl Searcher {
             if GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
                 self.hot.stopped = true;
                 return true;
+            }
+            #[cfg(feature = "data_gen")]
+            {
+                let limit = NODE_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
+                if limit != 0 && self.hot.nodes >= limit {
+                    self.hot.stopped = true;
+                    return true;
+                }
             }
             #[cfg(feature = "multithreading")]
             if self.helper_epoch != 0

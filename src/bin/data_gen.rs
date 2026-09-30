@@ -201,6 +201,10 @@ struct Cli {
     #[arg(long, default_value_t = 15)]
     depth: usize,
 
+    /// Node budget per move (0 = none): the search stops there and uses its last
+    /// completed depth, so simple positions search deeper than busy ones.
+    #[arg(long, default_value_t = 0)]
+    nodes: u64,
     /// Hard per-move think cap; on expiry the last completed depth is used.
     #[arg(long, default_value_t = 15_000)]
     max_move_ms: u64,
@@ -890,6 +894,7 @@ fn main() {
         .build_global()
         .expect("failed to build rayon pool");
     search::set_tt_size_mb(cfg.tt_mb);
+    search::set_node_limit(cfg.nodes);
 
     ctrlc::set_handler(|| {
         if STOP.swap(true, Ordering::SeqCst) {
