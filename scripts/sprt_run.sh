@@ -38,8 +38,8 @@ if ! git diff --quiet "$BASE" HEAD -- . ':!.github/sprt.json'; then
 fi
 [ "$PATCH" = "-" ] || git apply "$PATCH"
 jq -n --arg n "$NAME" --arg o "$BASE" --arg v "$VARIANTS" --arg tc "$TC" \
-      --argjson g "$GAMES" --argjson e0 "$E0" --argjson e1 "$E1" \
-      '{name:$n, old:$o, games:$g, shards:20, variants:$v, tc:$tc, elo0:$e0, elo1:$e1}' > .github/sprt.json
+      --argjson g "$GAMES" --argjson e0 "$E0" --argjson e1 "$E1" --argjson sh "${SHARDS:-40}" \
+      '{name:$n, old:$o, games:$g, shards:$sh, variants:$v, tc:$tc, elo0:$e0, elo1:$e1}' > .github/sprt.json
 key() {
   { git ls-tree -r "$1" -- src Cargo.toml Cargo.lock build.rs .cargo/config.toml rust-toolchain.toml \
       | grep -v $'\tsrc/bin/'
@@ -69,7 +69,7 @@ STALL_S=1200
 declare -A LAST_SEEN LAST_CHANGE
 while :; do
   STATUS=$(ghr gh run view "$ID" --json status -q .status)
-  SUM=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"           -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+  SUM=$(gh api "repos/$REPO/commits/$SHA/status?per_page=100"           -q '[.statuses[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
               | map(max_by(.updated_at).description | split(",") | map(tonumber))
               | if length == 0 then [0,0,0,0,0] else transpose | map(add) end | map(tostring) | join(",")'           2> /dev/null || echo "0,0,0,0,0")
   OUT=$(python "$R/scripts/sprt_merge.py" --from-counts "$SUM" --elo0 "$E0" --elo1 "$E1")
@@ -78,7 +78,7 @@ while :; do
     [ -n "$CTX" ] || continue
     if [ "${LAST_SEEN[$CTX]:-}" != "$DESC" ]; then LAST_SEEN[$CTX]=$DESC; LAST_CHANGE[$CTX]=$NOW; fi
     if [ "$STATE" = pending ] && [ $(( NOW - ${LAST_CHANGE[$CTX]} )) -ge $STALL_S ]; then STUCK="$STUCK $CTX"; fi
-  done < <(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100"              -q '[.[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
+  done < <(gh api "repos/$REPO/commits/$SHA/status?per_page=100"              -q '[.statuses[] | select(.context | startswith("sprt/shard-"))] | group_by(.context)
                  | map(max_by(.updated_at)) | .[] | "\(.context)|\(.state)|\(.description)"' 2> /dev/null)
   if [ -n "$STUCK" ]; then
     ghr gh api -X POST "repos/$REPO/actions/runs/$ID/cancel" > /dev/null
