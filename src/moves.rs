@@ -2769,8 +2769,8 @@ pub fn is_far_escape_move(m: &Move) -> bool {
     ray_far_escape_steps(&m.from, dx / steps, dy / steps) == steps
 }
 
-/// Flag bit on a cached slider distance: a check, knight-leap or critical-target
-/// square, exempt from the shallow-node per-ray cap. Distances stay far below it.
+/// Flag bit on a cached slider distance: a compound piece's knight-leap attack square,
+/// exempt from the shallow-node per-ray cap. Distances stay far below it.
 const CAP_EXEMPT: i64 = 1 << 48;
 
 /// Distance past which a candidate square needs a reason beyond proximity to be
@@ -3688,9 +3688,7 @@ fn generate_sliding_moves_impl(
                 }
 
                 for (&d, &count) in &dist_counts {
-                    if royal_dists.contains(&d) {
-                        shared_targets.push(d | CAP_EXEMPT);
-                    } else if d <= BASE_INTERCEPTION_DIST || count >= 2 {
+                    if d <= BASE_INTERCEPTION_DIST || count >= 2 || royal_dists.contains(&d) {
                         shared_targets.push(d);
                     }
                 }
