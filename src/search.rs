@@ -4241,7 +4241,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     {
         if tt_hit_node
             && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
-            && tt_data_depth as usize >= depth.saturating_sub(3)
+            && tt_data_depth as usize >= depth.saturating_sub(4)
             && let Some(tt_v) = tt_value
             && !is_decisive(tt_v)
         {
