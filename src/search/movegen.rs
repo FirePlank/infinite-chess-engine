@@ -311,6 +311,11 @@ impl StagedMoveGen {
     }
 
     #[inline]
+    fn moves_match_opt(a: &Option<Move>, b: &Option<Move>) -> bool {
+        a.as_ref().is_some_and(|a| Self::moves_match(a, b))
+    }
+
+    #[inline]
     fn moves_match(a: &Move, b: &Option<Move>) -> bool {
         match b {
             Some(bm) => a.from == bm.from && a.to == bm.to && a.promotion == bm.promotion,
@@ -1240,6 +1245,9 @@ impl StagedMoveGen {
                     {
                         return Some(m);
                     }
+                    // A killer that doesn't fit here (another piece on its square, a
+                    // capture now) must not filter or bonus the real quiet it matches.
+                    self.killer1 = None;
                 }
 
                 MoveStage::Killer2 => {
@@ -1259,6 +1267,9 @@ impl StagedMoveGen {
                         && Self::is_pseudo_legal(game, &m)
                     {
                         return Some(m);
+                    }
+                    if !Self::moves_match_opt(&self.killer2, &self.killer1) {
+                        self.killer2 = None;
                     }
                 }
 
