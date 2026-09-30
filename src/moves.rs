@@ -2565,6 +2565,19 @@ fn generate_pawn_quiet_moves(
             }
         }
     }
+
+    // The capture stage drops non-promoting obstacle captures to keep qsearch small,
+    // so the main search would otherwise never try opening a line through one.
+    for dx in [-1i64, 1] {
+        let (cx, cy) = (from.x + dx, to_y);
+        if !promotion_ranks.contains(&cy)
+            && board
+                .get_piece(cx, cy)
+                .is_some_and(|t| t.piece_type() == PieceType::Obstacle)
+        {
+            add_pawn_move(out, *from, cx, cy, *piece, promotion_ranks);
+        }
+    }
 }
 
 /// Generate leaper moves directly into an output buffer

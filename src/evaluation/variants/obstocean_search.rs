@@ -159,6 +159,12 @@ fn generate_captures_for_piece(
     }
 }
 
+/// Non-promoting pawn x obstacle captures this capture generator keeps: away from the
+/// centre or outside the original board.
+pub fn keeps_obstacle_capture(from_x: i64, to_x: i64) -> bool {
+    (to_x <= 3 && to_x < from_x) || (to_x >= 6 && to_x > from_x) || !(1..=8).contains(&to_x)
+}
+
 /// Generate only pawn captures (including en passant) for quiescence.
 fn generate_pawn_capture_moves(
     board: &Board,
@@ -224,14 +230,9 @@ fn generate_pawn_capture_moves(
             if is_enemy_piece(&target, piece.color()) {
                 // In Obstocean, we allow pawn captures that promote to queen, are outside the "board", or go away from the center.
                 let is_neutral = target.piece_type().is_neutral_type();
-                let capturing_away = (capture_x <= 3 && capture_x < from.x)
-                    || (capture_x >= 6 && capture_x > from.x);
-                let capturing_outside = !(1..=8).contains(&capture_x);
-
                 if !is_neutral
                     || promotion_ranks.contains(&capture_y)
-                    || capturing_away
-                    || capturing_outside
+                    || keeps_obstacle_capture(from.x, capture_x)
                 {
                     add_pawn_cap_move(
                         out,

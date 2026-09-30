@@ -1124,9 +1124,16 @@ impl StagedMoveGen {
             }
         }
 
+        let obstocean = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean;
         for &m in quiets.iter() {
             if self.is_tt_move(&m)
                 || self.is_excluded(&m)
+                || (obstocean
+                    && m.piece.piece_type() == PieceType::Pawn
+                    && m.from.x != m.to.x
+                    && crate::evaluation::variants::obstocean_search::keeps_obstacle_capture(
+                        m.from.x, m.to.x,
+                    ))
                 || Self::moves_match(&m, &self.killer1)
                 || Self::moves_match(&m, &self.killer2)
             {
