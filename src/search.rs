@@ -4105,9 +4105,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         && !is_decisive(beta)
         && tt_value.is_none_or(|v| v >= prob_cut_beta)
     {
+        // Chess measured best one ply shallower than the other variants.
+        let depth_sub = probcut_depth_sub() as i32
+            + (game.eval_kind == crate::evaluation::eval_kind::EvalKind::Chess) as i32;
         let mut prob_cut_depth =
-            (depth as i32 - probcut_depth_sub() as i32 - (static_eval - beta) / probcut_divisor())
-                .max(0) as usize;
+            (depth as i32 - depth_sub - (static_eval - beta) / probcut_divisor()).max(0) as usize;
         if prob_cut_depth > depth {
             prob_cut_depth = depth;
         }
