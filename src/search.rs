@@ -1049,7 +1049,7 @@ pub struct Searcher {
     pub minor_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
 
     pub material_corrhist: Box<[[i32; CORRHIST_SIZE]; 2]>,
-    pub lastmove_corrhist: Box<[i32; LASTMOVE_CORRHIST_SIZE]>,
+    pub lastmove_corrhist: Box<[[i32; LASTMOVE_CORRHIST_SIZE]; 2]>,
 
     // Stacks to track node state for history updates
     pub in_check_history: Vec<bool>,
@@ -1197,12 +1197,7 @@ impl Searcher {
                         as *mut [[i32; CORRHIST_SIZE]; 2],
                 )
             },
-            lastmove_corrhist: unsafe {
-                Box::from_raw(
-                    Box::into_raw(vec![0i32; LASTMOVE_CORRHIST_SIZE].into_boxed_slice())
-                        as *mut [i32; LASTMOVE_CORRHIST_SIZE],
-                )
-            },
+            lastmove_corrhist: Box::new([[0; LASTMOVE_CORRHIST_SIZE]; 2]),
             tt_move_history: 0,
             reduction_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
@@ -1400,7 +1395,9 @@ impl Searcher {
         for row in self.material_corrhist.iter_mut() {
             row.fill(0);
         }
-        self.lastmove_corrhist.fill(0);
+        for row in self.lastmove_corrhist.iter_mut() {
+            row.fill(0);
+        }
 
         for row in self.low_ply_history.iter_mut() {
             row.fill(0);
@@ -1696,7 +1693,7 @@ impl Searcher {
             let mat_corr = self.material_corrhist[color_idx][mat_idx];
 
             let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
-            let lastmove_corr = self.lastmove_corrhist[lastmove_idx];
+            let lastmove_corr = self.lastmove_corrhist[color_idx][lastmove_idx];
 
             // The opponent's non-pawn structure is separate information, and its
             // slot already holds corrections learned with that side to move, so it
@@ -1777,7 +1774,7 @@ impl Searcher {
 
             let lastmove_idx = prev_move_idx & LASTMOVE_CORRHIST_MASK;
             let lm_weight = weight.min(64);
-            let lm_entry = &mut self.lastmove_corrhist[lastmove_idx];
+            let lm_entry = &mut self.lastmove_corrhist[color_idx][lastmove_idx];
             *lm_entry = ((*lm_entry as i64 * (CORRHIST_WEIGHT_SCALE - lm_weight) as i64
                 + scaled_diff as i64 * lm_weight as i64)
                 / CORRHIST_WEIGHT_SCALE as i64) as i32;
@@ -3398,6 +3395,7 @@ fn negamax_root(
 
     searcher.pv_length[0] = 0;
     searcher.follow_pv[0] = true;
+    searcher.tt_pv_stack[0] = true;
 
     // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
     // negamax_root omits them, so slot 2 otherwise never clears across the search.
@@ -4028,6 +4026,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // instead of a stale real move from an earlier sibling.
                 let ctx_backup = searcher.push_null_context(ply);
                 searcher.reduction_stack[ply] = 0;
+                searcher.stat_score_stack[ply] = 0;
 
                 game.make_null_move();
 
@@ -4539,7 +4538,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 } else {
                     NodeType::All
                 },
-                was_null_move: false,
+                was_null_move: ctx.was_null_move,
                 excluded_move: Some(m),
             });
 
@@ -5091,7 +5090,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 depth: tt_store_depth,
                 flag: tt_data_bound,
                 score: best_score,
-                static_eval: raw_eval,
+                // In check, raw_eval is borrowed from two plies up, not this position's.
+                static_eval: if in_check { INFINITY + 1 } else { raw_eval },
                 is_pv: tt_pv,
                 best_move: tt_best_move,
                 ply,
@@ -5315,9 +5315,10 @@ fn quiescence(
             (false, None, INFINITY + 1, TTFlag::None, false, None)
         };
 
-    // TT Cutoff for QSearch
+    // TT Cutoff for QSearch, with negamax's guard near the move-rule limit
     if !is_pv
         && tt_hit
+        && game.halfmove_clock < (searcher.move_rule_limit as u32).saturating_sub(4)
         && let Some(tt_s) = tt_value
     {
         let fails_high = tt_s >= beta;
