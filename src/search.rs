@@ -4753,6 +4753,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // If depth after reductions would drop to quiescence or below
                     // and history is really bad, prune this move entirely.
                     if new_depth <= 0 && value < hlp_history_leaf() {
+                        // Never searched, so it earns no malus at the next cutoff.
+                        quiets_searched.pop();
                         game.undo_move(&m, undo);
                         // Restore all five node-context fields before continuing, or
                         // in_check_history and capture_history_stack go stale.
@@ -4781,7 +4783,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 NodeType::Cut
             };
 
-            // Store reduction for hindsight depth adjustment in child nodes
+            // Store reduction for hindsight depth adjustment in child nodes; history
+            // leaf pruning's extra ply counts as reduction too.
+            let base_depth = (depth as i32) - 1 + extension;
+            let reduction = reduction.max(base_depth - new_depth);
             searcher.reduction_stack[ply] = reduction;
 
             // The first move of the node already took the full window in the
@@ -4807,7 +4812,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // LMR deeper/shallower re-search depth adjustment
                 // If reduced search returned good value, search deeper
                 // If it returned bad value, search shallower
-                let base_depth = (depth as i32) - 1 + extension;
                 let do_deeper_search =
                     (search_depth as i32) < base_depth && s > (best_score + 43 + 2 * base_depth);
                 let do_shallower_search = s < best_score + 9;
