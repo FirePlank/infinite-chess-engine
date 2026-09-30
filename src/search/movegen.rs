@@ -444,6 +444,18 @@ impl StagedMoveGen {
                 {
                     return false;
                 }
+                // As the generator: under checkmate rules the king may not castle out of,
+                // or through, an attacked square (legality only checks where it lands).
+                if game.must_escape_check() {
+                    let opp = game.turn.opponent();
+                    let idx = &game.spatial_indices;
+                    for step in 0..=2 {
+                        let sq = crate::board::Coordinate::new(m.from.x + dir * step, m.from.y);
+                        if crate::moves::is_square_attacked(&game.board, &sq, opp, idx) {
+                            return false;
+                        }
+                    }
+                }
                 return true;
             }
         }
