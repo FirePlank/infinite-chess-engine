@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Self-play data generation on GitHub runners: commits `gen: <name>` (= HEAD + the
-# generation-only node-limit patch + .github/gen.json) on the `gen` branch, waits for the
+# Self-play data generation on GitHub runners: commits `gen: <name>` (= HEAD + an optional
+# patch + .github/gen.json) on the `gen` branch, waits for the
 # run, and concatenates every shard's JSONL into evalnet/gen/<name>.jsonl.
 #   scripts/gen_run.sh <name> <games> [nodes] [variants] [seed] [shards] [patch]
 # 40 shards fill GitHub Pro's concurrent-job limit; use fewer while an SPRT is running.
@@ -17,7 +17,7 @@ else
   [ -d "$W" ] || git -C "$R" worktree add -q --detach "$W" "$BASE"
   cd "$W"
   git checkout -q -B gen "$BASE"
-  git apply "$PATCH"
+  [ "$PATCH" = "-" ] || git apply "$PATCH"
   jq -n --arg n "$NAME" --arg v "$VARIANTS" --argjson g "$GAMES" --argjson nodes "$NODES" --argjson s "$SEED" \
         --argjson sh "$SHARDS" '{name:$n, games:$g, nodes:$nodes, variants:$v, seed:$s, shards:$sh, minutes:330}' > .github/gen.json
   git add -A && git commit -q -m "gen: $NAME"
