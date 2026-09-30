@@ -825,7 +825,15 @@ pub struct ThreadResult {
 /// proven loss is never switched to.
 #[cfg(feature = "multithreading")]
 fn select_best_thread(all_results: &[ThreadResult]) -> usize {
-    let min_score = all_results.iter().map(|r| r.score).min().unwrap_or(0);
+    // A helper stopped inside its first iteration reports -INFINITY; as the minimum
+    // it would swamp every score difference, leaving only depth to decide the vote.
+    let finished = |r: &ThreadResult| r.score != -INFINITY && r.completed_depth > 0;
+    let min_score = all_results
+        .iter()
+        .filter(|r| finished(r))
+        .map(|r| r.score)
+        .min()
+        .unwrap_or(0);
 
     let move_key = |m: &Move| {
         (
@@ -839,7 +847,7 @@ fn select_best_thread(all_results: &[ThreadResult]) -> usize {
 
     let mut votes: rustc_hash::FxHashMap<(i64, i64, i64, i64, u8), i64> =
         rustc_hash::FxHashMap::default();
-    for r in all_results {
+    for r in all_results.iter().filter(|r| finished(r)) {
         let vote_value = (r.score - min_score + 14) as i64 * r.completed_depth as i64;
         *votes.entry(move_key(&r.best_move)).or_insert(0) += vote_value;
     }
@@ -850,6 +858,13 @@ fn select_best_thread(all_results: &[ThreadResult]) -> usize {
     let mut best_idx = 0;
     for (i, r) in all_results.iter().enumerate() {
         let best = &all_results[best_idx];
+        if !finished(r) {
+            continue;
+        }
+        if !finished(best) {
+            best_idx = i;
+            continue;
+        }
 
         let best_vote = votes.get(&move_key(&best.best_move)).copied().unwrap_or(0);
         let new_vote = votes.get(&move_key(&r.best_move)).copied().unwrap_or(0);
@@ -1274,6 +1289,10 @@ impl Searcher {
 
         // Reset search control
         self.hot.min_depth_required = 1;
+        // A search stopped before its first root move completes must not hand back the
+        // previous position's best move, which may be illegal here.
+        self.pv_table[0] = None;
+        self.pv_length[0] = 0;
 
         // Reset time management variables
         self.hot.tot_best_move_changes = 0.0;
@@ -2168,18 +2187,7 @@ fn search_with_searcher(
         return None;
     }
 
-    // Wall-target generation for lone-king conversions: without it the square
-    // that builds a wall is not in the move list at all past sixteen squares,
-    // because only checks escape the slider distance filter.
-    let bare_conversion = crate::evaluation::mop_up::active_mop_up(game).is_some_and(|(w, _)| {
-        let defender = if w == PlayerColor::White {
-            game.black_piece_count
-        } else {
-            game.white_piece_count
-        };
-        defender == 1
-    });
-    crate::moves::set_wall_targets(bare_conversion, &game.spatial_indices);
+    set_conversion_wall_targets(game);
 
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
@@ -2897,6 +2905,21 @@ pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
     });
 }
 
+/// Wall-target generation for lone-king conversions: without it the square that
+/// builds a wall is not in the move list at all past sixteen squares, because only
+/// checks escape the slider distance filter. Set per search, since the flag persists.
+fn set_conversion_wall_targets(game: &GameState) {
+    let bare_conversion = crate::evaluation::mop_up::active_mop_up(game).is_some_and(|(w, _)| {
+        let defender = if w == PlayerColor::White {
+            game.black_piece_count
+        } else {
+            game.white_piece_count
+        };
+        defender == 1
+    });
+    crate::moves::set_wall_targets(bare_conversion, &game.spatial_indices);
+}
+
 pub(crate) fn get_best_moves_multipv_impl(
     searcher: &mut Searcher,
     game: &mut GameState,
@@ -2956,6 +2979,13 @@ pub(crate) fn get_best_moves_multipv_impl(
             shallow_order: Vec::new(),
             deep_ref_scores: Vec::new(),
         };
+    }
+
+    set_conversion_wall_targets(game);
+    // The mid-iteration stop and the no-new-depth rule read total_time_ms, which only
+    // the single-PV loop set, so timed multi-PV ran to its hard maximum.
+    if searcher.hot.total_time_ms == 0.0 && searcher.hot.optimum_time_ms < u128::MAX {
+        searcher.hot.total_time_ms = searcher.hot.optimum_time_ms as f64;
     }
 
     // A forced move makes a gameplay search pointless, so return a static eval.
