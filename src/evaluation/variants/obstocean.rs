@@ -597,16 +597,10 @@ fn race_eval_optimized(
         }
     }
 
-    let mut s: i32 = 0;
-    if w_min < 100 && b_min < 100 {
-        let diff = b_min - w_min;
-        s += (diff as i32 * 100).clamp(-500, 500);
-    } else if w_min < 100 {
-        s += (10 - w_min).max(0) as i32 * 40;
-    } else if b_min < 100 {
-        s -= (10 - b_min).max(0) as i32 * 40;
-    }
-    s
+    // Each side's nearest runner scores on its own, so taking the opponent's last
+    // runner can only help (a race difference term dropped when one side ran out).
+    let runner = |d: i64| if d < 100 { (10 - d).max(0) as i32 * 40 } else { 0 };
+    runner(w_min) - runner(b_min)
 }
 
 /// Net inputs: the phase, three White-ahead totals, then per-side piece-type terms,
