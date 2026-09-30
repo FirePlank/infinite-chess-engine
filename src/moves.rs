@@ -918,8 +918,9 @@ impl<'de> Deserialize<'de> for LineMap {
     }
 }
 
-/// Keyed by (x, y, dir_index); value is the sorted interception distances.
-pub type SliderCache = std::cell::RefCell<FxHashMap<(i64, i64, u8), Arc<[i64]>>>;
+/// Keyed by (x, y, packed piece << 3 | dir_index): the targets depend on the mover's
+/// colour and attack lines. Value is the sorted interception distances.
+pub type SliderCache = std::cell::RefCell<FxHashMap<(i64, i64, u16), Arc<[i64]>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpatialIndices {
@@ -3300,7 +3301,7 @@ fn generate_sliding_moves_impl(
                 (1, -1) => 7,  // SE
                 _ => 0,        // fallback
             };
-            let cache_key = (from.x, from.y, dir_index);
+            let cache_key = (from.x, from.y, (piece.packed() as u16) << 3 | dir_index as u16);
 
             // A hit hands out the slice from inside the borrow: cloning the
             // handle cost a refcount bump and drop on every ray.
