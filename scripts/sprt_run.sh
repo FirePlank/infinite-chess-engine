@@ -54,7 +54,8 @@ if [ "$(key HEAD)" = "$(key "$BASE")" ]; then
   git reset -q --hard HEAD~1; exit 1
 fi
 SHA=$(git rev-parse HEAD)
-git push -q origin sprt
+# A transient network error must not leave the test commit unpushed.
+for try in 1 2 3 4 5; do git push -q origin sprt && break; [ $try = 5 ] && exit 1; sleep 10; done
 ID=""
 for _ in $(seq 60); do
   ID=$(gh run list --branch sprt --limit 10 --json databaseId,headSha,workflowName \

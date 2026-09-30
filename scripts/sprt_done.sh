@@ -18,5 +18,6 @@ else
   git commit -q --allow-empty -F "$MSG"
 fi
 rm -f "$MSG"
-git push -q origin sprt
+# A transient network error must not leave the test commit unpushed.
+for try in 1 2 3 4 5; do git push -q origin sprt && break; [ $try = 5 ] && exit 1; sleep 10; done
 echo "recorded $VERDICT: $NAME"
