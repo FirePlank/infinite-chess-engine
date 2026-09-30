@@ -1,0 +1,10 @@
+{
+  "name": "v600_vs_head_chess_obs",
+  "old": "beecaac68a013cb8edb5d5699944ef86ca336ef2",
+  "games": 2000,
+  "shards": 20,
+  "variants": "Chess,Obstocean",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5
+}
