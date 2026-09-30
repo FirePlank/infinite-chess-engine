@@ -5139,8 +5139,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let offsets = [1usize, 2, 4];
                 const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
 
+                // The opponent moved at ply - 1, so its in-check state gates the depth.
+                let prior_in_check = searcher.in_check_history[ply - 1];
                 for (idx, &plies_ago) in offsets.iter().enumerate() {
-                    if in_check && plies_ago > 2 {
+                    if prior_in_check && plies_ago > 2 {
                         break;
                     }
                     // Current node: ply. Opponent move: ply - 1.

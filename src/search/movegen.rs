@@ -1351,6 +1351,7 @@ impl StagedMoveGen {
                 }
 
                 MoveStage::EvasionInit => {
+                    self.ensure_cont_history_indices(searcher);
                     self.generate_evasions(game, searcher);
                     self.end_generated = self.moves.len();
                     self.cur = 0;
