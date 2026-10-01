@@ -228,7 +228,9 @@ impl StagedMoveGen {
             MoveStage::ProbCutInit
         };
 
-        Self::init(tt_move, 0, 0, threshold, searcher, start_stage)
+        // An unusable TT move must not be filtered out of the capture stage either: a
+        // quiet promotion is generated there, and it is ProbCut's best candidate.
+        Self::init(tt_move.filter(|_| tt_valid), 0, 0, threshold, searcher, start_stage)
     }
 
     fn init(
