@@ -693,7 +693,8 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
             let ph = own_bb & rank_mask & adj_mask != 0;
             let sup = if (1..=8).contains(&support_y) {
                 let sup_mask = 0xFFu64 << (8 * (support_y - 1) as u32);
-                own_bb & sup_mask & (adj_mask | file_mask) != 0
+                // A pawn straight behind blocks, it doesn't support.
+                own_bb & sup_mask & adj_mask != 0
             } else {
                 false
             };
@@ -705,7 +706,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                     .any(|&(nx, ny, nw)| nw == is_white && ny == y && (nx - x).abs() == 1),
                 pawns
                     .iter()
-                    .any(|&(nx, ny, nw)| nw == is_white && ny == support_y && (nx - x).abs() <= 1),
+                    .any(|&(nx, ny, nw)| nw == is_white && ny == support_y && (nx - x).abs() == 1),
             )
         };
         if phalanx || supported {
@@ -732,11 +733,13 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
             }
         }
 
+        // The rear pawn of a doubled pair is blocked by its own front pawn: not passed.
         let is_passed = if pawns_in_window {
-            enemy_bb & (adj_mask | file_mask) & ahead == 0
+            enemy_bb & (adj_mask | file_mask) & ahead == 0 && own_bb & file_mask & ahead == 0
         } else {
             !pawns.iter().any(|&(nx, ny, nw)| {
-                nw != is_white && (nx - x).abs() <= 1 && if is_white { ny > y } else { ny < y }
+                let ahead = if is_white { ny > y } else { ny < y };
+                ahead && ((nw != is_white && (nx - x).abs() <= 1) || (nw == is_white && nx == x))
             })
         };
 
