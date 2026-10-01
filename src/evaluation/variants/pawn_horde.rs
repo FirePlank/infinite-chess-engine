@@ -299,7 +299,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
 
     // King Safety (Black): the king should stay away from the horde's leading
     // front line (the most-advanced white pawn).
-    let near_front = max_pawn_y != i64::MIN && (black_king_pos.y - max_pawn_y).abs() < 3;
+    // Near means a horde pawn close below it on a nearby file: a pawn on the far flank,
+    // or one the king has already passed, can't reach it.
+    let near_front = white_pawns.iter().any(|p| {
+        (p.x - black_king_pos.x).abs() <= 2 && (1..=3).contains(&(black_king_pos.y - p.y))
+    });
     if near_front {
         // King is dangerously close to the front
         score += taper(MG_KING_NEAR_FRONT_PENALTY, EG_KING_NEAR_FRONT_PENALTY); // Penalty for Black (positive score)
