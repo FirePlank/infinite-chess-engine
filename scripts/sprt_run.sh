@@ -4,7 +4,8 @@
 # crosses a bound, and saves games + Final Summary under games/sprt. Record the decision
 # afterwards with scripts/sprt_done.sh.
 #   scripts/sprt_run.sh <name> <base-sha> <patch-file|-> <games> [variants] [elo0] [elo1] [tc]
-#   Env: SHARDS (default 40); ADJ=0 turns max-ply adjudication off, which any change to
+#   Env: SHARDS (default 40); MIN_GAMES (no early stop before that many games); ADJ=0 turns
+#   max-ply adjudication off, which any change to
 #   eval magnitude needs, since the 1000 cp threshold reads each engine's own score.
 set -euo pipefail
 NAME=$1 BASE=$2 PATCH=$3 GAMES=$4 VARIANTS=${5:-site} E0=${6:-0} E1=${7:-5} TC=${8:-10+0.1}
@@ -93,7 +94,8 @@ while :; do
       echo "stalled for $((STALL_S / 60)) min:$STUCK; cancelling ($(grep '^pairs=' <<< "$OUT"))"
       cancel_and_wait; break
     fi
-    if grep -q '^stop=true' <<< "$OUT"; then
+    # MIN_GAMES=<n> keeps a crossed bound from stopping the run before n games.
+    if grep -q '^stop=true' <<< "$OUT" && [ "$(sed -n 's/^pairs=//p' <<< "$OUT")" -ge $(( ${MIN_GAMES:-0} / 2 )) ]; then
       echo "LLR bound crossed ($(grep '^llr=' <<< "$OUT"), $(grep '^pairs=' <<< "$OUT")): run cancelled"
       cancel_and_wait; break
     fi
@@ -105,7 +107,8 @@ done
 # would otherwise extract into the same files ("The file exists") and wipe them.
 T="$R/games/sprt/.remote_${NAME}_$$"; rm -rf "$T"
 # Parallel fetch (~8 s for 40 shards against ~23 s for gh run download, which stays the fallback).
-until python "$R/scripts/fetch_shards.py" "$REPO" "$ID" "$T" || { rm -rf "$T"; gh run download "$ID" -p "shard-*" -D "$T"; }; do
+# Both are time-boxed: gh run download can hang without a terminal and never return.
+until timeout 300 python "$R/scripts/fetch_shards.py" "$REPO" "$ID" "$T" || { rm -rf "$T"; timeout 300 gh run download "$ID" -p "shard-*" -D "$T"; }; do
   echo "shard download failed; retrying in 30s" >&2; rm -rf "$T"; sleep 30
 done
 python "$R/scripts/sprt_merge.py" --label "$NAME" --old "$BASE" --elo0 "$E0" --elo1 "$E1"   --out "$R/games/sprt/games_${NAME}_remote.json" "$T"/shard-*/shard_*.json   | tee "$R/games/sprt/summary_${NAME}_remote.txt"
