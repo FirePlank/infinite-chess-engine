@@ -174,9 +174,10 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         score += neighbors * PHALANX_BONUS_PER_PAWN + supporting_pawns * SUPPORT_BONUS_PER_PAWN;
         structure += score - before;
 
-        // King Attack Tropism
+        // King Attack Tropism. A horde pawn only ever hits squares above it, so a pawn
+        // level with or past the king can never attack it.
         let dist_to_king = (pawn.x - black_king_pos.x).abs() + (pawn.y - black_king_pos.y).abs();
-        if dist_to_king <= 3 {
+        if dist_to_king <= 3 && pawn.y < black_king_pos.y {
             score += KING_ATTACK_BONUS * (4 - dist_to_king) as i32;
             tropism += KING_ATTACK_BONUS * (4 - dist_to_king) as i32;
         }
@@ -240,6 +241,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                 note(Coordinate::new(px + ox, py + oy), &mut hit);
             }
         }
+        // Black pawns move down the board, so they capture on the rank below.
+        if *ptype == PieceType::Pawn {
+            note(Coordinate::new(px - 1, py - 1), &mut hit);
+            note(Coordinate::new(px + 1, py - 1), &mut hit);
+        }
     }
     let mut breach_supported = 0;
     for c in &hit {
@@ -257,6 +263,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
 
     let (mut breakthroughs, mut on_pawns, mut idle) = (0, 0, 0);
     for (pos, ptype) in &black_pieces {
+        // The king has its own safety term below; counting it as an attacker would
+        // pull it toward the horde.
+        if ptype.is_royal() {
+            continue;
+        }
         // Breakthrough: Are we behind the pawn wall?
         if pos.y < min_pawn_y && *ptype == PieceType::Queen {
             score -= BREAKTHROUGH_BONUS; // Score is absolute, so subtract for Black advantage
