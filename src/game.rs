@@ -1128,12 +1128,22 @@ impl GameState {
     #[cold]
     #[inline(never)]
     fn ep_victim_bookkeeping(&mut self, victim: Piece, sx: i64, sy: i64, capturing: bool) {
-        use crate::search::zobrist::{material_key_at, pawn_key};
+        use crate::search::zobrist::{material_key_at, pawn_key, piece_key};
         let sign = if capturing { -1i32 } else { 1i32 };
         let is_pawn = victim.piece_type() == PieceType::Pawn;
 
         if is_pawn {
             self.pawn_hash ^= pawn_key(victim.color(), sx, sy);
+        } else {
+            let key = piece_key(victim.piece_type(), victim.color(), sx, sy);
+            if victim.color() == PlayerColor::White {
+                self.white_nonpawn_hash ^= key;
+            } else {
+                self.black_nonpawn_hash ^= key;
+            }
+            if victim.piece_type().is_minor() {
+                self.minor_hash ^= key;
+            }
         }
         // Parity-aware: a promoted bishop's material key depends on square colour.
         let mk = material_key_at(victim.piece_type(), victim.color(), sx, sy);
@@ -2009,7 +2019,7 @@ impl GameState {
                         let dir_to_block = (block_coord - our_huygen_coord).signum();
                         for j in 0..vec.len() {
                             let other_coord = vec.coords[j];
-                            if other_coord == our_huygen_coord || other_coord == checker_coord {
+                            if other_coord == our_huygen_coord {
                                 continue;
                             }
 
@@ -4359,12 +4369,16 @@ mod tests {
             game.white_pawn_count,
             game.black_pawn_count,
         );
+        let (wnp, bnp, mnh) = (game.white_nonpawn_hash, game.black_nonpawn_hash, game.minor_hash);
         game.recompute_correction_hashes();
         game.recompute_piece_counts();
         assert_eq!(ph, game.pawn_hash, "{label}: pawn_hash drifted");
         assert_eq!(mh, game.material_hash, "{label}: material_hash drifted");
         assert_eq!(wpc, game.white_pawn_count, "{label}: white_pawn_count drifted");
         assert_eq!(bpc, game.black_pawn_count, "{label}: black_pawn_count drifted");
+        assert_eq!(wnp, game.white_nonpawn_hash, "{label}: white_nonpawn_hash drifted");
+        assert_eq!(bnp, game.black_nonpawn_hash, "{label}: black_nonpawn_hash drifted");
+        assert_eq!(mnh, game.minor_hash, "{label}: minor_hash drifted");
     }
 
     /// Every incremental hash must equal a from-scratch recompute after each make,

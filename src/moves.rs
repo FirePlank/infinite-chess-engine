@@ -194,6 +194,19 @@ pub fn generate_knightrider_moves_into(
     gen_type: MoveGenType,
     out: &mut MoveList,
 ) {
+    generate_knightrider_moves_impl(board, from, piece, gen_type, None, out);
+}
+
+/// As `generate_knightrider_moves_into`, plus, given the enemy king, the quiet checks
+/// past the hop window: squares on this ray that also sit on one of the king's rays.
+fn generate_knightrider_moves_impl(
+    board: &Board,
+    from: &Coordinate,
+    piece: &Piece,
+    gen_type: MoveGenType,
+    enemy_king: Option<&Coordinate>,
+    out: &mut MoveList,
+) {
     // All 8 knight directions
     const KR_DIRS: [(i64, i64); 8] = [
         (1, 2),
@@ -309,6 +322,28 @@ pub fn generate_knightrider_moves_into(
             }
 
             k += 1;
+        }
+
+        if let Some(ek) = enemy_king {
+            // Solve from + k*d = king + j*e for each king ray e (Cramer's rule).
+            let (rx, ry) = (ek.x - from.x, ek.y - from.y);
+            for &(ex, ey) in &KR_DIRS {
+                let det = ex * dy - dx * ey;
+                if det == 0 {
+                    continue;
+                }
+                let (kn, jn) = (ex * ry - ey * rx, dx * ry - dy * rx);
+                if kn % det != 0 || jn % det != 0 {
+                    continue;
+                }
+                let (kk, j) = (kn / det, jn / det);
+                if kk > max_steps && kk < closest_k && j > 0 {
+                    let (x, y) = (from.x + dx * kk, from.y + dy * kk);
+                    if in_bounds(x, y) {
+                        out.push(Move::new(*from, Coordinate::new(x, y), *piece));
+                    }
+                }
+            }
         }
     }
 }
@@ -2486,7 +2521,14 @@ fn generate_quiets_for_piece(
         }
 
         PieceType::Knightrider => {
-            generate_knightrider_moves_into(board, from, piece, MoveGenType::Quiets, out);
+            generate_knightrider_moves_impl(
+                board,
+                from,
+                piece,
+                MoveGenType::Quiets,
+                ctx.enemy_king_pos,
+                out,
+            );
         }
         PieceType::Huygen => {
             generate_huygen_moves_into(board, from, piece, indices, MoveGenType::Quiets, out);
@@ -4990,6 +5032,23 @@ mod tests {
                 );
             }
             assert!(!kr_to(11, 22), "and stop at the step limit");
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn knightrider_quiets_include_checks_past_the_hop_window() {
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Nr0,0|K0,-500|k40,0");
+            let (from, ek) = (Coordinate::new(0, 0), Coordinate::new(40, 0));
+            let piece = Piece::new(PieceType::Knightrider, PlayerColor::White);
+            let mut moves = MoveList::new();
+            generate_knightrider_moves_impl(&game.board, &from, &piece, MoveGenType::Quiets, Some(&ek), &mut moves);
+            // (20,40) is hop 20 on the (1,2) ray and hop 20 on the king's (-1,2) ray.
+            assert!(moves.iter().any(|m| m.to.x == 20 && m.to.y == 40));
+            assert!(!moves.iter().any(|m| m.to.x == 11 && m.to.y == 22));
             reset_world_bounds();
         });
     }
