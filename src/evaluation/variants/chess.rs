@@ -769,7 +769,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         let mut shelter_mg = 0i32;
 
         for df in -1i64..=1i64 {
-            let f = (kf as i64 + df).clamp(0, 7) as usize;
+            // A corner king has one neighbour file; clamping would count its own twice.
+            let Ok(f) = usize::try_from(kf as i64 + df) else { continue };
+            if f > 7 {
+                continue;
+            }
             let file_dist = df.unsigned_abs() as usize; // 0 = king file, 1 = adjacent
             let file_rel = file_dist.min(2);
 
