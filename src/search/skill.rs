@@ -746,7 +746,6 @@ pub(crate) fn get_best_move_limited(
                 silent,
                 None,
                 None,
-                None,
             );
             let stats = result.stats.clone();
             let picker_config = if input_skill == MAX_SITE_SKILL - 1 {

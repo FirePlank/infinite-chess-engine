@@ -2852,13 +2852,12 @@ pub fn get_best_moves_multipv(
         }
 
         // MultiPV > 1: Search with special root handling to collect multiple best moves
-        get_best_moves_multipv_impl(
-            searcher, game, max_depth, multi_pv, silent, None, None, None,
-        )
+        get_best_moves_multipv_impl(searcher, game, max_depth, multi_pv, silent, None, None)
     })
 }
 
 /// Time-sliced MultiPV search, streaming a [`DepthInfo`] after every completed depth.
+/// `slice_ms` is a hard time limit (0 = run to `max_depth`).
 /// Call it repeatedly, passing `start_depth = last_reached + 1` so each slice resumes
 /// rather than re-walking. The first iteration always completes, so a slice gains one.
 pub fn analyse_position(
@@ -2900,10 +2899,10 @@ pub fn analyse_position(
             searcher.hot.iter_start_ms = 0.0;
             searcher.hot.total_time_ms = 0.0;
         }
-        // No per-node time limit: `check_time` must never abort mid-depth, so every depth
-        // completes fully and its result is deterministic. Responsiveness instead comes
-        // from the between-depth deadline (whole depths only), passed to the impl below.
-        searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
+        // `check_time` cuts the search off mid-depth once the slice is used up. That never
+        // varies a result: an interrupted depth is discarded, never streamed.
+        let limit_ms = if slice_ms == 0 { u128::MAX } else { slice_ms };
+        searcher.hot.set_time_limits(limit_ms, limit_ms, true);
         searcher.silent = true;
         searcher.thread_id = 0; // Main analysis thread owns node slot 0; helpers use 1..N.
         searcher.hot.timer.reset();
@@ -2913,11 +2912,6 @@ pub fn analyse_position(
             .map_or(i32::MAX, |v| v as i32);
         searcher.contempt = 0;
 
-        // slice_ms == 0 means "run to max_depth" (no deadline); otherwise stop after the
-        // first completed depth past the deadline, so a new position can be picked up
-        // within roughly slice_ms instead of waiting for the whole search.
-        let deadline = if slice_ms == 0 { None } else { Some(slice_ms) };
-
         get_best_moves_multipv_impl(
             searcher,
             game,
@@ -2925,7 +2919,6 @@ pub fn analyse_position(
             multi_pv,
             true,
             Some(start_depth),
-            deadline,
             Some(on_depth),
         )
     })
@@ -2970,9 +2963,6 @@ pub(crate) fn get_best_moves_multipv_impl(
     // When `Some`, resume iterative deepening at this depth instead of starting from 1
     // (relies on a warm TT from a previous slice of the same position). Used by analysis.
     resume_from_depth: Option<usize>,
-    // When `Some`, stop after finishing the first depth that ends past this elapsed-ms
-    // deadline. Only whole depths are ever committed, so results stay deterministic.
-    deadline_ms: Option<u128>,
     mut on_depth: Option<DepthCallback>,
 ) -> MultiPVResult {
     // Analysis start (streaming callback present): reset the per-thread node counters so the
@@ -3069,6 +3059,10 @@ pub(crate) fn get_best_moves_multipv_impl(
         1
     };
 
+    // Gameplay time management, which declines depths it likely can't finish. Analysis
+    // (the streaming `on_depth` callback) spends its whole time, left to `check_time`.
+    let time_managed = searcher.hot.time_limit_ms != u128::MAX && on_depth.is_none();
+
     // Iterative deepening
     for base_depth in start_depth..=max_depth {
         let depth = if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
@@ -3082,7 +3076,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         searcher.hot.tot_best_move_changes /= 2.0;
 
         // Time check at start of each iteration - but always complete depth 1
-        if searcher.hot.min_depth_required == 0 && searcher.hot.time_limit_ms != u128::MAX {
+        if searcher.hot.min_depth_required == 0 && time_managed {
             let elapsed = searcher.hot.timer.elapsed_ms() as f64;
 
             // Hard stop at maximum time
@@ -3371,7 +3365,6 @@ pub(crate) fn get_best_moves_multipv_impl(
         // A mate score is no stop condition, since a deeper search may find a shorter
         // mate. Only bail once every shown line mates within 3 plies, and only under
         // time management.
-        let time_managed = searcher.hot.time_limit_ms != u128::MAX;
         let mate_resolved = time_managed && !best_lines.is_empty() && {
             let worst = best_lines.last().unwrap().score;
             let best = best_lines[0].score;
@@ -3381,17 +3374,8 @@ pub(crate) fn get_best_moves_multipv_impl(
             break;
         }
 
-        // Analysis slicing: this depth completed, so if we're past the deadline stop here
-        // and let the caller resume at the next depth. Only whole depths are committed, so
-        // the result stays deterministic regardless of where the deadline lands.
-        if let Some(dl) = deadline_ms
-            && searcher.hot.timer.elapsed_ms() >= dl
-        {
-            break;
-        }
-
         // Soft time limit check - don't start next iteration if past 50%
-        if searcher.hot.time_limit_ms != u128::MAX {
+        if time_managed {
             let elapsed = searcher.hot.timer.elapsed_ms();
             if elapsed >= searcher.hot.time_limit_ms / 2 {
                 break;

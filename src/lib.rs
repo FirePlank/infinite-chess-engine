@@ -323,9 +323,8 @@ pub struct JsAnalyseOptions {
     /// on successive slices of the same position so the search keeps deepening instead
     /// of re-walking from depth 1.
     pub start_depth: Option<usize>,
-    /// Time budget of this slice in milliseconds; 0 or absent runs until `max_depth`
-    /// completes. Unlimited slices are deterministic, since no wall-clock abort can
-    /// vary the search tree between runs.
+    /// Time budget of this slice in milliseconds, a hard limit that may cut a depth short
+    /// (only completed depths are reported); 0 or absent runs until `max_depth` completes.
     pub slice_ms: Option<u64>,
 }
 
