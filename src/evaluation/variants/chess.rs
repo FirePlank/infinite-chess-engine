@@ -5,6 +5,29 @@ use crate::eval_net::variant_features::{NoSink, VariantLayout, VariantSink, cp, 
 use crate::game::GameState;
 use arrayvec::ArrayVec;
 
+/// A square an own pawn defends and no enemy pawn can ever attack: none on an
+/// adjacent file still ahead of it (a pawn past the square never comes back).
+fn is_outpost(game: &GameState, x: i64, y: i64, color: PlayerColor) -> bool {
+    let fwd = if color == PlayerColor::White { 1 } else { -1 };
+    let is_pawn = |px: i64, py: i64, c: PlayerColor| {
+        game.board
+            .get_piece(px, py)
+            .is_some_and(|p| p.piece_type() == PieceType::Pawn && p.color() == c)
+    };
+    let enemy = color.opponent();
+    if !is_pawn(x - 1, y - fwd, color) && !is_pawn(x + 1, y - fwd, color) {
+        return false;
+    }
+    let mut ry = y + fwd;
+    while (1..=8).contains(&ry) {
+        if is_pawn(x - 1, ry, enemy) || is_pawn(x + 1, ry, enemy) {
+            return false;
+        }
+        ry += fwd;
+    }
+    true
+}
+
 // Material Values
 
 const MG_VALUES: [i32; 6] = [82, 337, 365, 477, 1025, 0];
@@ -521,14 +544,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                 // Outpost (ranks 4-6 for white = y 4-6, for black = y 3-5)
                 let rel_rank = if is_white { y } else { 9 - y };
                 if (4..=6).contains(&rel_rank) {
-                    let f = (x - 1).clamp(0, 7) as usize;
-                    let own_pawns = if is_white { w_pawn_files } else { b_pawn_files };
-                    let enemy_pawns = if is_white { b_pawn_files } else { w_pawn_files };
-                    let pawn_protected = (f > 0 && (own_pawns & (1 << (f - 1))) != 0)
-                        || (f < 7 && (own_pawns & (1 << (f + 1))) != 0);
-                    let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
-                        || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
-                    if pawn_protected && !enemy_can_attack {
+                    if is_outpost(game, x, y, piece.color()) {
                         add!(3, ci, MG_OUTPOST_BISHOP, EG_OUTPOST_BISHOP);
                     }
                 }
@@ -552,14 +568,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                 // Outpost
                 let rel_rank = if is_white { y } else { 9 - y };
                 if (4..=6).contains(&rel_rank) {
-                    let f = (x - 1).clamp(0, 7) as usize;
-                    let own_pawns = if is_white { w_pawn_files } else { b_pawn_files };
-                    let enemy_pawns = if is_white { b_pawn_files } else { w_pawn_files };
-                    let pawn_protected = (f > 0 && (own_pawns & (1 << (f - 1))) != 0)
-                        || (f < 7 && (own_pawns & (1 << (f + 1))) != 0);
-                    let enemy_can_attack = (f > 0 && (enemy_pawns & (1 << (f - 1))) != 0)
-                        || (f < 7 && (enemy_pawns & (1 << (f + 1))) != 0);
-                    if pawn_protected && !enemy_can_attack {
+                    if is_outpost(game, x, y, piece.color()) {
                         add!(3, ci, MG_OUTPOST_KNIGHT, EG_OUTPOST_KNIGHT);
                     }
                 }
