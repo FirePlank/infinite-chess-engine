@@ -3914,6 +3914,26 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
     searcher.eval_stack[ply] = static_eval;
 
+    // The opponent's quiet move earns history by how much it improved their eval
+    // (Stockfish's static-eval-difference bonus). Kept zero-mean and small: the tuned
+    // history thresholds in LMR and leaf pruning shift if the whole table drifts.
+    if !in_check
+        && depth >= 3
+        && ply > 0
+        && ctx.excluded_move.is_none()
+        && !searcher.in_check_history[ply - 1]
+        && !searcher.capture_history_stack[ply - 1]
+        && let Some(prev) = searcher.move_history[ply - 1]
+        && (searcher.moved_piece_history[ply - 1] as usize) < 32
+    {
+        let bonus = (-2 * (searcher.eval_stack[ply - 1] + static_eval)).clamp(-300, 300);
+        let pt = searcher.moved_piece_history[ply - 1] as usize;
+        let max_h = params::history_max_gravity();
+        let adj = bonus.clamp(-max_h, max_h);
+        let entry = &mut searcher.history[hist_color(prev.piece.color())][pt][hash_move_dest(&prev)];
+        *entry += adj - ((*entry * adj.abs()) >> 14);
+    }
+
     // Compare eval to 2 plies ago. In check there is no honest static eval to
     // compare against, and late-move pruning is not gated on check.
     let mut improving = if in_check {
