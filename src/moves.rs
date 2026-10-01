@@ -2941,6 +2941,11 @@ fn find_cross_ray_targets_into(
         }
 
         let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
+        // A square from which a slider would merely guard one of its own pawns is
+        // almost never the move, and pawn-mass boards made these most of the list.
+        if !is_enemy && p.piece_type() == PieceType::Pawn {
+            continue;
+        }
 
         let wiggle = if is_enemy {
             enemy_wiggle
