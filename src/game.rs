@@ -1197,7 +1197,11 @@ impl GameState {
             return true;
         }
 
-        false
+        // Under AllPiecesCaptured the last capture ends the game too; caught here so
+        // pruning and stand-pat can't score the empty side before its move loop.
+        opponent_win_condition == WinCondition::AllPiecesCaptured
+            && current_count == 0
+            && !self.has_pieces(self.turn)
     }
 
     /// Whether the position counts as a repetition draw for search. A twofold only
