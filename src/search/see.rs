@@ -211,6 +211,47 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
         }
     }
 
+    // Huygens attack from prime distances off the 3x3 tile scan, so without this they
+    // neither attack nor defend in an exchange. (Roses measured too slow to add here.)
+    let idx = &game.spatial_indices;
+    if idx.has_huygen.iter().any(|&h| h) {
+        const BITS: u32 = 1u32 << (PieceType::Huygen as u8);
+        let target = Coordinate::new(target_x, target_y);
+        for (cx, cy, tile) in game.board.tiles.iter() {
+            if (tile.type_mask_white | tile.type_mask_black) & BITS == 0 {
+                continue;
+            }
+            let mut bits = tile.occ_white | tile.occ_black;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let p = Piece::from_packed(tile.piece[i]);
+                if p.piece_type() != PieceType::Huygen {
+                    continue;
+                }
+                let pos = Coordinate::new(cx * 8 + (i % 8) as i64, cy * 8 + (i / 8) as i64);
+                if pos != m.from
+                    && crate::moves::is_piece_attacking_square(
+                        &game.board,
+                        &p,
+                        &pos,
+                        &target,
+                        idx,
+                        &game.game_rules,
+                    )
+                {
+                    attackers.push(Attacker {
+                        value: game.get_piece_value(p.piece_type(), p.color()),
+                        color: p.color(),
+                        pos,
+                        ray_idx: None,
+                        is_royal: false,
+                    });
+                }
+            }
+        }
+    }
+
     // B. Lazy Ray Discovery (Sliding Pieces + Distant Knights/Kings)
     // We only find the FIRST blocker on each ray. One scan per line yields both of
     // its rays, in the same order as ray_dirs 0..8.
