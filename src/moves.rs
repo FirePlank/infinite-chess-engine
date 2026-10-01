@@ -2828,6 +2828,11 @@ pub fn is_far_escape_move(m: &Move) -> bool {
 /// exempt from the shallow-node per-ray cap. Distances stay far below it.
 const CAP_EXEMPT: i64 = 1 << 48;
 
+/// Flag bit on a cached slider distance proposed only by a friendly pawn it would
+/// guard: rarely the move, so shallow (tight-generation) nodes skip it.
+const IDLE_GUARD: i64 = 1 << 47;
+const DIST_FLAGS: i64 = CAP_EXEMPT | IDLE_GUARD;
+
 /// Distance past which a candidate square needs a reason beyond proximity to be
 /// generated. Cheap default filter; critical targets bypass it entirely.
 const BASE_INTERCEPTION_DIST: i64 = 16;
@@ -2886,6 +2891,7 @@ fn find_cross_ray_targets_into(
     dir_y: i64,
     dist_counts: &mut FxHashMap<i64, u8>,
     royal_dists: &mut FxHashSet<i64>,
+    idle_counts: &mut FxHashMap<i64, u8>,
     mut visited_targets: Option<&mut Vec<(Coordinate, u8)>>,
 ) {
     let board = ctx.board;
@@ -2941,11 +2947,12 @@ fn find_cross_ray_targets_into(
         }
 
         let is_enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
-        // A square from which a slider would merely guard one of its own pawns is
-        // almost never the move, and pawn-mass boards made these most of the list.
-        if !is_enemy && p.piece_type() == PieceType::Pawn {
-            continue;
-        }
+        // Guarding an own pawn is counted apart, so those squares can be tagged idle.
+        let counts: &mut FxHashMap<i64, u8> = if !is_enemy && p.piece_type() == PieceType::Pawn {
+            &mut *idle_counts
+        } else {
+            &mut *dist_counts
+        };
 
         let wiggle = if is_enemy {
             enemy_wiggle
@@ -3012,14 +3019,14 @@ fn find_cross_ray_targets_into(
                                         py,
                                         &mut undefended,
                                     ));
-                            add_dist(dist_counts, d, max_dist);
+                            add_dist(counts, d, max_dist);
                             if exempt {
                                 royal_dists.insert(d);
                             }
 
                             for w in 1..=wiggle {
-                                add_dist(dist_counts, d + w, max_dist);
-                                add_dist(dist_counts, d - w, max_dist);
+                                add_dist(counts, d + w, max_dist);
+                                add_dist(counts, d - w, max_dist);
                                 if exempt {
                                     royal_dists.insert(d + w);
                                     royal_dists.insert(d - w);
@@ -3079,14 +3086,14 @@ fn find_cross_ray_targets_into(
                                         py,
                                         &mut undefended,
                                     ));
-                            add_dist(dist_counts, d, max_dist);
+                            add_dist(counts, d, max_dist);
                             if exempt {
                                 royal_dists.insert(d);
                             }
 
                             for w in 1..=wiggle {
-                                add_dist(dist_counts, d + w, max_dist);
-                                add_dist(dist_counts, d - w, max_dist);
+                                add_dist(counts, d + w, max_dist);
+                                add_dist(counts, d - w, max_dist);
                                 if exempt {
                                     royal_dists.insert(d + w);
                                     royal_dists.insert(d - w);
@@ -3129,7 +3136,7 @@ fn find_cross_ray_targets_into(
                                         py,
                                         &mut undefended,
                                     ));
-                            add_dist(dist_counts, d, max_dist);
+                            add_dist(counts, d, max_dist);
                             if exempt {
                                 royal_dists.insert(d);
                             }
@@ -3168,7 +3175,7 @@ fn find_cross_ray_targets_into(
                                         py,
                                         &mut undefended,
                                     ));
-                            add_dist(dist_counts, d, max_dist);
+                            add_dist(counts, d, max_dist);
                             if exempt {
                                 royal_dists.insert(d);
                             }
@@ -3273,6 +3280,7 @@ fn generate_sliding_moves_impl(
     // Reuse maps across directions to avoid allocations
     let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
     let mut royal_dists: FxHashSet<i64> = FxHashSet::default();
+    let mut idle_counts: FxHashMap<i64, u8> = FxHashMap::default();
     let mut knight_dists: Vec<i64> = Vec::new();
     // Archbishop/chancellor also threaten from squares their ray logic ignores.
     let has_knight_leap = matches!(
@@ -3385,6 +3393,7 @@ fn generate_sliding_moves_impl(
                 computed = {
                 dist_counts.clear();
                 royal_dists.clear();
+                idle_counts.clear();
                 knight_dists.clear();
                 if has_knight_leap {
                     collect_knight_attack_dists(
@@ -3644,6 +3653,7 @@ fn generate_sliding_moves_impl(
                     dir_y,
                     &mut dist_counts,
                     &mut royal_dists,
+                    &mut idle_counts,
                     visited_borrow.as_deref_mut(),
                 );
 
@@ -3752,12 +3762,19 @@ fn generate_sliding_moves_impl(
                         shared_targets.push(d);
                     }
                 }
+                for (&d, &count) in &idle_counts {
+                    let real = dist_counts.get(&d).copied().unwrap_or(0);
+                    if d <= BASE_INTERCEPTION_DIST || count.saturating_add(real) >= 2 {
+                        shared_targets.push(d | IDLE_GUARD);
+                    }
+                }
                 shared_targets.extend(knight_dists.iter().map(|&d| d | CAP_EXEMPT));
-                shared_targets.sort_unstable_by_key(|&v| v & !CAP_EXEMPT);
+                shared_targets.sort_unstable_by_key(|&v| v & !DIST_FLAGS);
                 shared_targets.dedup_by(|b, a| {
-                    let same = (*a & !CAP_EXEMPT) == (*b & !CAP_EXEMPT);
+                    let same = (*a & !DIST_FLAGS) == (*b & !DIST_FLAGS);
                     if same {
-                        *a |= *b & CAP_EXEMPT;
+                        // Idle only if every proposer was an idle guard.
+                        *a = (*a & !IDLE_GUARD) | (*b & CAP_EXEMPT) | (*a & *b & IDLE_GUARD);
                     }
                     same
                 });
@@ -3783,8 +3800,8 @@ fn generate_sliding_moves_impl(
             };
             let mut capped_emitted = 0usize;
             for &raw in target_dists.iter() {
-                let d = raw & !CAP_EXEMPT;
-                if d <= 0 || d > max_dist {
+                let d = raw & !DIST_FLAGS;
+                if d <= 0 || d > max_dist || (raw & IDLE_GUARD != 0 && quiet_ray_cap > 0) {
                     continue;
                 }
                 // Skip friendly blocker
@@ -3832,7 +3849,7 @@ fn generate_sliding_moves_impl(
             {
                 let far = ray_far_escape_steps(from, dir_x, dir_y);
                 if far >= FAR_ESCAPE_MIN_ROOM
-                    && target_dists.binary_search_by_key(&far, |&v| v & !CAP_EXEMPT).is_err()
+                    && target_dists.binary_search_by_key(&far, |&v| v & !DIST_FLAGS).is_err()
                 {
                     let sq = Coordinate::new(from.x + dir_x * far, from.y + dir_y * far);
                     out.push(Move::new(*from, sq, *piece));
@@ -3847,7 +3864,7 @@ fn generate_sliding_moves_impl(
                 for d in fresh_check_dists(piece.piece_type(), from, dir_x, dir_y, ek) {
                     if d <= max_dist
                         && d != closest_dist
-                        && target_dists.binary_search_by_key(&d, |&v| v & !CAP_EXEMPT).is_err()
+                        && target_dists.binary_search_by_key(&d, |&v| v & !DIST_FLAGS).is_err()
                     {
                         let (sq_x, sq_y) = (from.x + dir_x * d, from.y + dir_y * d);
                         if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
