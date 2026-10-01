@@ -96,8 +96,10 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                     black_king_pos = coord;
                 }
                 black_pieces.push((coord, piece.piece_type()));
-                score -= game.get_piece_value(piece.piece_type(), piece.color());
+                // The king is never traded, so its value would only offset every eval
+                // (by ~282cp) against the fixed draw and mate scores.
                 if !piece.piece_type().is_royal() {
+                    score -= game.get_piece_value(piece.piece_type(), piece.color());
                     black_material += game.get_piece_value(piece.piece_type(), piece.color());
                 }
             }
