@@ -159,6 +159,7 @@ macro_rules! eval_param {
 // Indexed families (`_N`, `_A_S_R`) are read through the grouped helpers below;
 // the per-index names are what the tuners and their JSON address.
 eval_params! {
+    // Middlegame piece values
     pawn = 100;
     knight = 315 => (150, 450, 4.0, 0.002, "Knight value");
     bishop = 450 => (250, 650, 4.0, 0.002, "Bishop value");
@@ -169,12 +170,34 @@ eval_params! {
     camel = 175 => (120, 470, 4.0, 0.002, "Camel value");
     giraffe = 165 => (120, 460, 4.0, 0.002, "Giraffe value");
     zebra = 180 => (120, 460, 4.0, 0.002, "Zebra value");
-    knightrider = 900 => (500, 900, 8.0, 0.002, "Knightrider value");
+    knightrider = 900 => (500, 1100, 8.0, 0.002, "Knightrider value");
     hawk = 540 => (400, 800, 6.0, 0.002, "Hawk value");
-    archbishop = 1080 => (700, 1100, 8.0, 0.002, "Archbishop value");
+    archbishop = 1080 => (700, 1300, 8.0, 0.002, "Archbishop value");
     rose = 997 => (700, 1250, 6.0, 0.002, "Rose value");
     huygen = 330 => (155, 555, 4.0, 0.002, "Huygen value");
     chancellor = 1060 => (600, 1900, 4.0, 0.002, "Chancellor value");
+    /// Amazon was the only compound priced at the bare sum of its parts, while the
+    /// chancellor carries +245 over rook+knight and the archbishop +371.
+    amazon = 1793 => (900, 2800, 4.0, 0.002, "Amazon value");
+
+    // Endgame piece values
+    eg_knight = 345 => (150, 450, 4.0, 0.002, "Endgame knight value");
+    eg_bishop = 450 => (250, 650, 4.0, 0.002, "Endgame bishop value");
+    eg_rook = 618 => (450, 850, 6.0, 0.002, "Endgame rook value");
+    eg_guard = 252 => (120, 420, 4.0, 0.002, "Endgame guard value");
+    eg_centaur = 660 => (350, 750, 6.0, 0.002, "Endgame centaur value");
+    eg_queen = 1518 => (700, 2100, 4.0, 0.002, "Endgame queen value");
+    eg_camel = 205 => (120, 470, 4.0, 0.002, "Endgame camel value");
+    eg_giraffe = 195 => (120, 460, 4.0, 0.002, "Endgame giraffe value");
+    eg_zebra = 210 => (120, 460, 4.0, 0.002, "Endgame zebra value");
+    eg_knightrider = 910 => (500, 1100, 8.0, 0.002, "Endgame knightrider value");
+    eg_hawk = 550 => (400, 800, 6.0, 0.002, "Endgame hawk value");
+    eg_archbishop = 1080 => (700, 1300, 8.0, 0.002, "Endgame archbishop value");
+    eg_rose = 997 => (700, 1250, 6.0, 0.002, "Endgame rose value");
+    eg_huygen = 330 => (155, 555, 4.0, 0.002, "Endgame huygen value");
+    eg_chancellor = 1060 => (600, 1900, 4.0, 0.002, "Endgame chancellor value");
+    eg_amazon = 1793 => (900, 2800, 4.0, 0.002, "Endgame amazon value");
+
     mg_doubled_pawn_penalty = 10 => (0, 208, 2.0, 0.002, "Middlegame doubled pawn penalty");
     eg_doubled_pawn_penalty = 15 => (0, 212, 2.0, 0.002, "Endgame doubled pawn penalty");
     mg_bishop_pair_bonus = 57 => (0, 260, 2.0, 0.002, "Middlegame bishop pair bonus");
@@ -194,9 +217,6 @@ eval_params! {
     mg_king_defender_bonus = 18 => (0, 50, 2.0, 0.002, "Middlegame king defender bonus");
     mg_outpost_bonus = 33 => (0, 220, 2.0, 0.002, "Middlegame outpost bonus");
     eg_outpost_bonus = 56 => (0, 250, 2.0, 0.002, "Endgame outpost bonus");
-    /// Amazon was the only compound priced at the bare sum of its parts, while the
-    /// chancellor carries +245 over rook+knight and the archbishop +371.
-    amazon = 1793 => (900, 2800, 4.0, 0.002, "Amazon value");
     slider_net_bonus = 16 => (0, 80, 2.0, 0.002, "Slider net-control bonus");
     far_slider_cheb_radius = 18 => (6, 40, 2.0, 0.002, "Chebyshev radius beyond which a slider is far from the action");
     far_slider_cheb_max_excess = 40 => (10, 100, 2.0, 0.002, "Max excess distance counted for the far-slider penalty");
