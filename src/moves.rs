@@ -230,16 +230,18 @@ fn generate_knightrider_moves_impl(
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            let rx = cx * 8 + (idx % 8) as i64 - from.x;
-            let ry = cy * 8 + (idx / 8) as i64 - from.y;
+            // i128: the offset can pass i64 across the board, though the hop count
+            // (the smaller component) always fits.
+            let rx = (cx * 8 + (idx % 8) as i64) as i128 - from.x as i128;
+            let ry = (cy * 8 + (idx / 8) as i64) as i128 - from.y as i128;
             if rx == 0 || ry == 0 {
                 continue;
             }
             let (ax, ay) = (rx.abs(), ry.abs());
             let (d, k) = if ay == 2 * ax {
-                (if rx > 0 { if ry > 0 { 0 } else { 1 } } else if ry > 0 { 4 } else { 5 }, ax)
+                (if rx > 0 { if ry > 0 { 0 } else { 1 } } else if ry > 0 { 4 } else { 5 }, ax as i64)
             } else if ax == 2 * ay {
-                (if rx > 0 { if ry > 0 { 2 } else { 3 } } else if ry > 0 { 6 } else { 7 }, ay)
+                (if rx > 0 { if ry > 0 { 2 } else { 3 } } else if ry > 0 { 6 } else { 7 }, ay as i64)
             } else {
                 continue;
             };
@@ -277,8 +279,9 @@ fn generate_knightrider_moves_impl(
 
         // CRITICAL: If enemy is beyond step limit, still add the direct capture
         if captures && closest_k < i64::MAX && closest_is_enemy && closest_k > KR_STEP_LIMIT {
-            let x = from.x + dx * closest_k;
-            let y = from.y + dy * closest_k;
+            // The 2-step component of a far hop count can pass i64 before landing.
+            let x = (from.x as i128 + dx as i128 * closest_k as i128) as i64;
+            let y = (from.y as i128 + dy as i128 * closest_k as i128) as i64;
             if in_bounds(x, y) {
                 out.push(Move::new(*from, Coordinate::new(x, y), *piece));
             }
@@ -462,8 +465,9 @@ pub fn is_piece_attacking_square(
 
     // 1. Sliders (optimized via spatial indices)
     if is_slider(pt) {
-        let dx = to.x - from.x;
-        let dy = to.y - from.y;
+        // i128: attacker and target can sit at opposite ends of the board.
+        let dx = to.x as i128 - from.x as i128;
+        let dy = to.y as i128 - from.y as i128;
 
         let mut on_ray = false;
         let mut step_x = 0;
@@ -471,14 +475,14 @@ pub fn is_piece_attacking_square(
 
         if dx == 0 && dy != 0 && is_ortho_slider(pt) {
             on_ray = true;
-            step_y = dy.signum();
+            step_y = dy.signum() as i64;
         } else if dy == 0 && dx != 0 && is_ortho_slider(pt) {
             on_ray = true;
-            step_x = dx.signum();
+            step_x = dx.signum() as i64;
         } else if dx.abs() == dy.abs() && dx != 0 && is_diag_slider(pt) {
             on_ray = true;
-            step_x = dx.signum();
-            step_y = dy.signum();
+            step_x = dx.signum() as i64;
+            step_y = dy.signum() as i64;
         }
 
         if on_ray {
@@ -487,10 +491,11 @@ pub fn is_piece_attacking_square(
                 return is_clear;
             }
 
-            let (closest_dist, _) =
-                find_blocker_via_indices(board, from, step_x, step_y, indices, our_color);
-            let target_dist = dx.abs().max(dy.abs());
-            return target_dist <= closest_dist;
+            let target_dist = dx.unsigned_abs().max(dy.unsigned_abs());
+            return match find_blocker_via_indices(board, from, step_x, step_y, indices, our_color) {
+                Some((_, blocker_dist, _)) => target_dist <= blocker_dist as u128,
+                None => true,
+            };
         }
     }
 
@@ -1896,21 +1901,32 @@ pub fn is_square_attacked(
                 }
                 let kx = cx * 8 + (idx % 8) as i64;
                 let ky = cy * 8 + (idx / 8) as i64;
-                let dx = target.x - kx;
-                let dy = target.y - ky;
+                // i128: the generator captures at any range, so the attack test must
+                // too, including from the opposite end of the board.
+                let dx = target.x as i128 - kx as i128;
+                let dy = target.y as i128 - ky as i128;
                 let (ax, ay) = (dx.abs(), dy.abs());
-                let k = if ax == 2 * ay { ay } else if ay == 2 * ax { ax } else { 0 };
-                if !(1..=20).contains(&k) {
+                // The hop is (2,1) or (1,2) up to sign; k counts hops to the target.
+                let (k, sx, sy) = if ay != 0 && ax == 2 * ay {
+                    (ay, 2 * dx.signum() as i64, dy.signum() as i64)
+                } else if ax != 0 && ay == 2 * ax {
+                    (ax, dx.signum() as i64, 2 * dy.signum() as i64)
+                } else {
                     continue;
-                }
-                let (sx, sy) = (dx / k, dy / k);
-                let mut blocked = false;
-                for i in 1..k {
-                    if board.is_occupied(kx + sx * i, ky + sy * i) {
-                        blocked = true;
-                        break;
-                    }
-                }
+                };
+                // Short lines walk their squares; long ones test each piece for lying
+                // strictly between, which costs O(pieces) instead of O(distance).
+                let blocked = if k <= 20 {
+                    (1..k as i64).any(|i| board.is_occupied(kx + sx * i, ky + sy * i))
+                } else {
+                    // The hop count is read off the unit component of the hop.
+                    board.tiles.iter_all_pieces().any(|(px, py, _)| {
+                        let ox = px as i128 - kx as i128;
+                        let oy = py as i128 - ky as i128;
+                        let i = if sx.abs() == 1 { ox * sx as i128 } else { oy * sy as i128 };
+                        i > 0 && i < k && ox == i * sx as i128 && oy == i * sy as i128
+                    })
+                };
                 if !blocked {
                     return true;
                 }
@@ -1936,11 +1952,12 @@ pub fn is_square_attacked(
                         continue;
                     }
 
-                    // Calculate distance from target to this Huygens
+                    // Calculate distance from target to this Huygens (i128: the two can
+                    // sit at opposite ends of the board)
                     let dist_to_target = if dx == 0 {
-                        coord - target.y
+                        coord as i128 - target.y as i128
                     } else {
-                        coord - target.x
+                        coord as i128 - target.x as i128
                     };
 
                     // Check direction: the Huygens must be in the direction we're checking
@@ -1957,7 +1974,7 @@ pub fn is_square_attacked(
                     let abs_dist_to_target = dist_to_target.abs();
 
                     // Target must be at a prime distance from the Huygens
-                    if !is_prime_fast(abs_dist_to_target) {
+                    if !crate::utils::is_prime_u64(abs_dist_to_target as u64) {
                         continue;
                     }
 
@@ -1970,7 +1987,7 @@ pub fn is_square_attacked(
                     // Check all pieces in the line between Huygens and target
                     for (other_coord, _other_packed) in vec.iter() {
                         // Calculate distance from HUYGENS to this piece
-                        let dist_from_huygen = other_coord - huygen_coord;
+                        let dist_from_huygen = other_coord as i128 - huygen_coord as i128;
 
                         // A blocker must lie between the Huygens and the target, so its
                         // offset from the Huygens must carry the opposite sign of
@@ -1989,7 +2006,7 @@ pub fn is_square_attacked(
 
                         let abs_dist_from_huygen = dist_from_huygen.abs();
                         // If this piece is at a prime distance from the Huygens, it blocks!
-                        if is_prime_fast(abs_dist_from_huygen) {
+                        if crate::utils::is_prime_u64(abs_dist_from_huygen as u64) {
                             blocked = true;
                             break;
                         }
@@ -2249,15 +2266,18 @@ pub fn generate_sliding_capture_moves(
                 continue;
             }
 
-            // O(log n) blocker lookup - handles infinite distance
-            let (closest_dist, closest_is_enemy) =
-                find_blocker_via_indices(board, from, dx, dy, indices, our_color);
-
-            // Only add capture if blocker is an enemy piece
-            if closest_dist < i64::MAX && closest_is_enemy {
-                let x = from.x + dx * closest_dist;
-                let y = from.y + dy * closest_dist;
-                out.push(Move::new(*from, Coordinate::new(x, y), *piece));
+            // O(log n) blocker lookup. The square comes from the blocker's own
+            // coordinate: its distance can exceed any i64 across the board.
+            if let Some((c, _, true)) =
+                find_blocker_via_indices(board, from, dx, dy, indices, our_color)
+            {
+                let to = if dx == 0 {
+                    Coordinate::new(from.x, c)
+                } else {
+                    let ry = (c as i128 - from.x as i128) * (dx * dy) as i128;
+                    Coordinate::new(c, (from.y as i128 + ry) as i64)
+                };
+                out.push(Move::new(*from, to, *piece));
             }
         }
     }
@@ -2825,8 +2845,16 @@ pub fn is_far_escape_move(m: &Move) -> bool {
 }
 
 /// Flag bit on a cached slider distance: a compound piece's knight-leap attack square,
-/// exempt from the shallow-node per-ray cap. Distances stay far below it.
-const CAP_EXEMPT: i64 = 1 << 48;
+/// exempt from the shallow-node per-ray cap. The sign bit, since a distance can use
+/// every other bit of an i64 on an unbounded board.
+const CAP_EXEMPT: i64 = i64::MIN;
+
+/// `|a - b|` when it fits an i64; pieces at opposite ends of the board can be further
+/// apart than any i64 distance.
+#[inline(always)]
+fn dist_between(a: i64, b: i64) -> Option<i64> {
+    i64::try_from(a.abs_diff(b)).ok()
+}
 
 /// Distance past which a candidate square needs a reason beyond proximity to be
 /// generated. Cheap default filter; critical targets bypass it entirely.
@@ -2956,8 +2984,9 @@ fn find_cross_ray_targets_into(
         if our_attacks_ortho {
             // Vertical cross: S.x = px
             if dir_x != 0 {
-                let num = px - from.x;
-                if let Some(d) = ray_steps(num, dir_x)
+                let num = px.checked_sub(from.x);
+                if let Some(num) = num
+                    && let Some(d) = ray_steps(num, dir_x)
                     && d > 0
                     && d <= max_dist
                 {
@@ -2966,7 +2995,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_y, _)) = indices
                                 .cols
                                 .get(&px)
-                                .and_then(|pieces| pieces.find_nearest(sy, (py - sy).signum()))
+                                .and_then(|pieces| pieces.find_nearest(sy, py.cmp(&sy) as i64))
                                 .filter(|&(ny, _)| ny == py)
                         {
                             // Check visited targets (Vertical alignment = 1)
@@ -3026,8 +3055,9 @@ fn find_cross_ray_targets_into(
 
             // Horizontal cross: S.y = py
             if dir_y != 0 {
-                let num = py - from.y;
-                if let Some(d) = ray_steps(num, dir_y)
+                let num = py.checked_sub(from.y);
+                if let Some(num) = num
+                    && let Some(d) = ray_steps(num, dir_y)
                     && d > 0
                     && d <= max_dist
                 {
@@ -3036,7 +3066,7 @@ fn find_cross_ray_targets_into(
                             && let Some((_nearest_x, _)) = indices
                                 .rows
                                 .get(&py)
-                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
+                                .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
                                 .filter(|&(nx, _)| nx == px)
                         {
                             // Check visited targets (Horizontal alignment = 2)
@@ -3098,36 +3128,38 @@ fn find_cross_ray_targets_into(
             // (from.x + d*dir_x) - (from.y + d*dir_y) = px - py
             // d*(dir_x - dir_y) = (px - py) - (from.x - from.y)
             if ray_diff != 0 {
-                let num = (px - py) - (from.x - from.y);
-                if num.signum() == ray_diff.signum() && num % ray_diff == 0 {
-                    let d = num / ray_diff;
-                    if d > 0 && d <= max_dist {
-                        let sx = from.x + d * dir_x;
-                        let sy = from.y + d * dir_y;
-                        let s_diag_diff = sx - sy;
+                // Exact in i128 (x - y alone can overflow); an offset past i64 is
+                // past any ray distance too. ray_diff is +-1 or +-2, so a shift.
+                let num = i64::try_from((px as i128 - py as i128) - (from.x as i128 - from.y as i128));
+                if let Some(d) = num.ok().and_then(|n| ray_steps(n, ray_diff))
+                    && d > 0
+                    && d <= max_dist
+                {
+                    let sx = from.x + d * dir_x;
+                    let sy = from.y + d * dir_y;
+                    let s_diag_diff = sx - sy;
 
-                        if sx != px
-                            && let Some((_nearest_x, _)) = indices
-                                .diag1
-                                .get(&s_diag_diff)
-                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
-                                .filter(|&(nx, _)| nx == px)
-                        {
-                            let exempt = is_royal
-                                || (is_enemy
-                                    && d > BASE_INTERCEPTION_DIST
-                                    && is_critical_target(
-                                        board,
-                                        indices,
-                                        &p,
-                                        px,
-                                        py,
-                                        &mut undefended,
-                                    ));
-                            add_dist(dist_counts, d, max_dist);
-                            if exempt {
-                                royal_dists.insert(d);
-                            }
+                    if sx != px
+                        && let Some((_nearest_x, _)) = indices
+                            .diag1
+                            .get(&s_diag_diff)
+                            .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
+                            .filter(|&(nx, _)| nx == px)
+                    {
+                        let exempt = is_royal
+                            || (is_enemy
+                                && d > BASE_INTERCEPTION_DIST
+                                && is_critical_target(
+                                    board,
+                                    indices,
+                                    &p,
+                                    px,
+                                    py,
+                                    &mut undefended,
+                                ));
+                        add_dist(dist_counts, d, max_dist);
+                        if exempt {
+                            royal_dists.insert(d);
                         }
                     }
                 }
@@ -3137,36 +3169,36 @@ fn find_cross_ray_targets_into(
             // (from.x + d*dir_x) + (from.y + d*dir_y) = px + py
             // d*(dir_x + dir_y) = (px + py) - (from.x + from.y)
             if ray_sum != 0 {
-                let num = (px + py) - (from.x + from.y);
-                if num.signum() == ray_sum.signum() && num % ray_sum == 0 {
-                    let d = num / ray_sum;
-                    if d > 0 && d <= max_dist {
-                        let sx = from.x + d * dir_x;
-                        let sy = from.y + d * dir_y;
-                        let s_diag_sum = sx + sy;
+                let num = i64::try_from((px as i128 + py as i128) - (from.x as i128 + from.y as i128));
+                if let Some(d) = num.ok().and_then(|n| ray_steps(n, ray_sum))
+                    && d > 0
+                    && d <= max_dist
+                {
+                    let sx = from.x + d * dir_x;
+                    let sy = from.y + d * dir_y;
+                    let s_diag_sum = sx + sy;
 
-                        if sx != px
-                            && let Some((_nearest_x, _)) = indices
-                                .diag2
-                                .get(&s_diag_sum)
-                                .and_then(|pieces| pieces.find_nearest(sx, (px - sx).signum()))
-                                .filter(|&(nx, _)| nx == px)
-                        {
-                            let exempt = is_royal
-                                || (is_enemy
-                                    && d > BASE_INTERCEPTION_DIST
-                                    && is_critical_target(
-                                        board,
-                                        indices,
-                                        &p,
-                                        px,
-                                        py,
-                                        &mut undefended,
-                                    ));
-                            add_dist(dist_counts, d, max_dist);
-                            if exempt {
-                                royal_dists.insert(d);
-                            }
+                    if sx != px
+                        && let Some((_nearest_x, _)) = indices
+                            .diag2
+                            .get(&s_diag_sum)
+                            .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
+                            .filter(|&(nx, _)| nx == px)
+                    {
+                        let exempt = is_royal
+                            || (is_enemy
+                                && d > BASE_INTERCEPTION_DIST
+                                && is_critical_target(
+                                    board,
+                                    indices,
+                                    &p,
+                                    px,
+                                    py,
+                                    &mut undefended,
+                                ));
+                        add_dist(dist_counts, d, max_dist);
+                        if exempt {
+                            royal_dists.insert(d);
                         }
                     }
                 }
@@ -3217,7 +3249,9 @@ fn collect_knight_attack_dists(
         };
         let (line_c, line_p) = line.slices();
         for (&c, &packed) in line_c.iter().zip(line_p) {
-            let d = (c - base) / step;
+            let Some(d) = c.checked_sub(base).map(|n| n / step) else {
+                continue;
+            };
             if d <= 0 || d > max_dist {
                 continue;
             }
@@ -3322,11 +3356,23 @@ fn generate_sliding_moves_impl(
             let is_horizontal = dir_y == 0;
 
             let step = if is_vertical { dir_y } else { dir_x };
+            // A blocker beyond any i64 distance can only be captured: that capture is
+            // emitted from its coordinate, and every quiet square is short of it.
+            let mut far_capture: Option<i64> = None;
             let (closest_dist, closest_is_enemy) =
                 match if step > 0 { line_fwd } else { line_back } {
                     Some((c, packed)) => {
                         let p = Piece::from_packed(packed);
-                        ((c - along).abs(), p.color() != our_color && !p.piece_type().is_uncapturable())
+                        let enemy = p.color() != our_color && !p.piece_type().is_uncapturable();
+                        match dist_between(c, along) {
+                            Some(d) if d < i64::MAX => (d, enemy),
+                            _ => {
+                                if enemy {
+                                    far_capture = Some(c);
+                                }
+                                (i64::MAX, false)
+                            }
+                        }
                     }
                     None => (i64::MAX, false),
                 };
@@ -3417,8 +3463,13 @@ fn generate_sliding_moves_impl(
                             let real_idx = if rev { end - 1 - i } else { start + i };
                             let px = line_c[real_idx];
                             let packed = line_p[real_idx];
-                            let dx = px - from.x;
-                            let piece_dist = dx.abs();
+                            let Some(piece_dist) = dist_between(px, from.x) else {
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            };
 
                             // Optimization: Stop once we are beyond max_dist and the known closest blocker
                             if piece_dist > max_dist && piece_dist != closest_dist {
@@ -3488,8 +3539,13 @@ fn generate_sliding_moves_impl(
                             let real_idx = if rev { end - 1 - i } else { start + i };
                             let py = line_c[real_idx];
                             let packed = line_p[real_idx];
-                            let dy = py - from.y;
-                            let piece_dist = dy.abs();
+                            let Some(piece_dist) = dist_between(py, from.y) else {
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            };
 
                             if piece_dist > max_dist && piece_dist != closest_dist {
                                 if !rev {
@@ -3570,8 +3626,13 @@ fn generate_sliding_moves_impl(
                             let real_idx = if rev { end - 1 - i } else { start + i };
                             let px = line_c[real_idx];
                             let packed = line_p[real_idx];
-                            let dx = px - from.x;
-                            let piece_dist = dx.abs();
+                            let Some(piece_dist) = dist_between(px, from.x) else {
+                                if !rev {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            };
 
                             if piece_dist > max_dist && piece_dist != closest_dist {
                                 if !rev {
@@ -3664,36 +3725,39 @@ fn generate_sliding_moves_impl(
                             | PieceType::Amazon
                     );
 
-                    if is_horizontal {
-                        if can_ortho && kx != from.x && (kx - from.x).signum() == dir_x.signum() {
-                            let d = (kx - from.x).abs();
+                    // Coordinates are compared, not subtracted: king and slider can sit
+                    // at opposite ends of the board.
+                    let mut check_at = |t: i64, base: i64, dir: i64| {
+                        if t != base
+                            && (t > base) == (dir > 0)
+                            && let Some(d) = dist_between(t, base)
+                        {
                             add_dist(&mut dist_counts, d, max_dist);
                             royal_dists.insert(d);
                         }
-                        if can_diag && from.y != ky {
-                            let diff = (from.y - ky).abs();
-                            for tx in [kx + diff, kx - diff] {
-                                if tx != from.x && (tx - from.x).signum() == dir_x.signum() {
-                                    let d = (tx - from.x).abs();
-                                    add_dist(&mut dist_counts, d, max_dist);
-                                    royal_dists.insert(d);
-                                }
+                    };
+                    if is_horizontal {
+                        if can_ortho {
+                            check_at(kx, from.x, dir_x);
+                        }
+                        if can_diag
+                            && from.y != ky
+                            && let Some(diff) = dist_between(from.y, ky)
+                        {
+                            for tx in [kx.checked_add(diff), kx.checked_sub(diff)].into_iter().flatten() {
+                                check_at(tx, from.x, dir_x);
                             }
                         }
                     } else if is_vertical {
-                        if can_ortho && ky != from.y && (ky - from.y).signum() == dir_y.signum() {
-                            let d = (ky - from.y).abs();
-                            add_dist(&mut dist_counts, d, max_dist);
-                            royal_dists.insert(d);
+                        if can_ortho {
+                            check_at(ky, from.y, dir_y);
                         }
-                        if can_diag && from.x != kx {
-                            let diff = (from.x - kx).abs();
-                            for ty in [ky + diff, ky - diff] {
-                                if ty != from.y && (ty - from.y).signum() == dir_y.signum() {
-                                    let d = (ty - from.y).abs();
-                                    add_dist(&mut dist_counts, d, max_dist);
-                                    royal_dists.insert(d);
-                                }
+                        if can_diag
+                            && from.x != kx
+                            && let Some(diff) = dist_between(from.x, kx)
+                        {
+                            for ty in [ky.checked_add(diff), ky.checked_sub(diff)].into_iter().flatten() {
+                                check_at(ty, from.y, dir_y);
                             }
                         }
                     }
@@ -3818,6 +3882,19 @@ fn generate_sliding_moves_impl(
                 }
             }
 
+            if let Some(c) = far_capture
+                && gen_type != MoveGenType::Quiets
+            {
+                // `along` is x except on files; a diagonal's y follows x by dir_x * dir_y.
+                let to = if dir_x == 0 {
+                    Coordinate::new(from.x, c)
+                } else {
+                    let dy = (c as i128 - from.x as i128) * (dir_x * dir_y) as i128;
+                    Coordinate::new(c, (from.y as i128 + dy) as i64)
+                };
+                out.push(Move::new(*from, to, *piece));
+            }
+
             // A fully open ray is empty to the border, but the candidate window caps
             // at 256, so a slider could never run away without this far-shell escape,
             // kept deliberately outside the cached (never-invalidated) candidate list.
@@ -3891,7 +3968,8 @@ fn fresh_check_dists(
     })
 }
 
-/// Closest blocker on a ray, found in O(log n) via the spatial indices.
+/// Closest blocker on a ray, found in O(log n) via the spatial indices, as its line
+/// coordinate, its exact distance and whether it is capturable.
 #[inline]
 fn find_blocker_via_indices(
     _board: &Board,
@@ -3900,7 +3978,7 @@ fn find_blocker_via_indices(
     dir_y: i64,
     indices: &SpatialIndices,
     our_color: PlayerColor,
-) -> (i64, bool) {
+) -> Option<(i64, u64, bool)> {
     let is_vertical = dir_x == 0;
     let is_horizontal = dir_y == 0;
     let is_diag1 = dir_x == dir_y; // Moving along x-y = const
@@ -3921,21 +3999,19 @@ fn find_blocker_via_indices(
 
         // Use the new find_nearest helper
         if let Some((next_coord, packed)) = vec.find_nearest(search_val, step_dir) {
-            let dist = (next_coord - search_val).abs();
-
             // Verify this is actually in the correct direction
             if (next_coord > search_val) != (step_dir > 0) {
-                return (i64::MAX, false);
+                return None;
             }
 
             let piece = Piece::from_packed(packed);
             // Obstacles are neutral but capturable - check is_uncapturable()
             let is_enemy = piece.color() != our_color && !piece.piece_type().is_uncapturable();
-            return (dist, is_enemy);
+            return Some((next_coord, next_coord.abs_diff(search_val), is_enemy));
         }
     }
 
-    (i64::MAX, false)
+    None
 }
 
 /// Huygen move generation using precomputed primes and spatial indices.
@@ -3956,13 +4032,13 @@ pub fn generate_huygen_moves_into(
     const OPEN_RAY_LIMIT: i64 = 50;
 
     // Per-direction first prime-distance blocker, reused by the sniper pass below.
-    let mut blockers = [(i64::MAX, None); 4];
+    let mut blockers = [(i64::MAX, None, 0); 4];
     for (i, &(dx, dy)) in ORTHO_DIRECTIONS.iter().enumerate() {
         blockers[i] = find_huygen_blocker(board, from, dx, dy, indices, my_color);
     }
 
     for (di, &(dir_x, dir_y)) in ORTHO_DIRECTIONS.iter().enumerate() {
-        let (blocker_dist, blocker_color) = blockers[di];
+        let (blocker_dist, blocker_color, blocker_coord) = blockers[di];
 
         if blocker_dist < i64::MAX {
             // CASE 1: Blocker found at prime distance
@@ -3998,10 +4074,14 @@ pub fn generate_huygen_moves_into(
                 && let Some(color) = blocker_color
                 && color != my_color
             {
-                // Blocker is enemy at prime distance > 127 - generate capture
-                let to_x = from.x + dir_x * blocker_dist;
-                let to_y = from.y + dir_y * blocker_dist;
-                out.push(Move::new(*from, Coordinate::new(to_x, to_y), *piece));
+                // Blocker is enemy at prime distance > 127 - generate capture, on its own
+                // coordinate since the distance may not fit an i64.
+                let to = if dir_x != 0 {
+                    Coordinate::new(blocker_coord, from.y)
+                } else {
+                    Coordinate::new(from.x, blocker_coord)
+                };
+                out.push(Move::new(*from, to, *piece));
             }
         } else {
             // CASE 2: No blocker found at any prime distance
@@ -4051,7 +4131,7 @@ fn generate_huygen_snipes(
     from: &Coordinate,
     piece: &Piece,
     indices: &SpatialIndices,
-    blockers: &[(i64, Option<PlayerColor>); 4],
+    blockers: &[(i64, Option<PlayerColor>, i64); 4],
     out: &mut MoveList,
 ) {
     let my_color = piece.color();
@@ -4073,11 +4153,10 @@ fn generate_huygen_snipes(
         // generates every prime short of a blocker, and open-ray primes <= 3 or
         // cross-ray-aligned ones under its cap.
         let push_landing = |s_off: i64, out: &mut MoveList| {
-            let (tx, ty) = if horizontal {
-                (our + s_off, from.y)
-            } else {
-                (from.x, our + s_off)
+            let Some(t) = our.checked_add(s_off) else {
+                return;
             };
+            let (tx, ty) = if horizontal { (t, from.y) } else { (from.x, t) };
             if !in_bounds(tx, ty) {
                 return;
             }
@@ -4110,10 +4189,19 @@ fn generate_huygen_snipes(
 
         let mut max_off = 0i64;
         let mut min_off = 0i64;
+        let mut overflow = false;
         for (c, _) in vec {
-            let off = c - our;
+            let Some(off) = c.checked_sub(our) else {
+                overflow = true;
+                break;
+            };
             max_off = max_off.max(off);
             min_off = min_off.min(off);
+        }
+        // Offsets past i64 only arise with pieces at opposite ends of the board;
+        // snipes are a quiet-move nicety, so that line just goes without.
+        if overflow {
+            continue;
         }
 
         // SNIPE_TRIES candidates BEYOND the line's outermost piece on each open side.
@@ -4168,7 +4256,9 @@ fn generate_huygen_snipes(
             // Nearest prime-distance piece below/above the landing (a huygen there
             // attacks only those two). Coords are sorted, so walking outward and
             // stopping at the first hit avoids scanning the whole line.
-            let landing = our + s_off;
+            let Some(landing) = our.checked_add(s_off) else {
+                continue;
+            };
             let split = vec.coords.partition_point(|&c| c < landing);
             let probe = |o2: i64, packed2: u8| -> Option<(i64, i64, u8)> {
                 if o2 == s_off || o2 == 0 {
@@ -4269,7 +4359,7 @@ fn find_huygen_blocker(
     dir_y: i64,
     indices: &SpatialIndices,
     our_color: PlayerColor,
-) -> (i64, Option<PlayerColor>) {
+) -> (i64, Option<PlayerColor>, i64) {
     // Get the appropriate spatial index line (row or column)
     let is_horizontal = dir_x != 0;
     let line_vec = if is_horizontal {
@@ -4290,9 +4380,10 @@ fn find_huygen_blocker(
                     for i in (idx + 1)..vec.len() {
                         let coord = vec.coords[i];
                         let packed = vec.pieces[i];
-                        let dist = coord - our_coord;
+                        // Exact u64: the far end of the board can be past any i64 distance.
+                        let dist = coord.abs_diff(our_coord);
                         // O(1) prime check
-                        if is_prime_fast(dist) {
+                        if crate::utils::is_prime_u64(dist) {
                             let p = Piece::from_packed(packed);
                             // Void blocks like friendly
                             let effective_color = if p.piece_type() == PieceType::Void {
@@ -4300,7 +4391,7 @@ fn find_huygen_blocker(
                             } else {
                                 p.color()
                             };
-                            return (dist, Some(effective_color));
+                            return (i64::try_from(dist).unwrap_or(i64::MAX - 1), Some(effective_color), coord);
                         }
                     }
                 } else {
@@ -4308,16 +4399,16 @@ fn find_huygen_blocker(
                     for i in (0..idx).rev() {
                         let coord = vec.coords[i];
                         let packed = vec.pieces[i];
-                        let dist = our_coord - coord;
+                        let dist = coord.abs_diff(our_coord);
                         // O(1) prime check
-                        if is_prime_fast(dist) {
+                        if crate::utils::is_prime_u64(dist) {
                             let p = Piece::from_packed(packed);
                             let effective_color = if p.piece_type() == PieceType::Void {
                                 our_color
                             } else {
                                 p.color()
                             };
-                            return (dist, Some(effective_color));
+                            return (i64::try_from(dist).unwrap_or(i64::MAX - 1), Some(effective_color), coord);
                         }
                     }
                 }
@@ -4328,7 +4419,7 @@ fn find_huygen_blocker(
         }
     }
 
-    (i64::MAX, None)
+    (i64::MAX, None, 0)
 }
 
 /// Rose movement - Circular knightrider that spirals along knight hops.
@@ -5484,14 +5575,15 @@ mod tests {
             let from = Coordinate::new(4, 4);
 
             // Looking up (positive y)
-            let (dist, captures) = find_blocker_via_indices(
+            let (_, dist, captures) = find_blocker_via_indices(
                 &game.board,
                 &from,
                 0,
                 1,
                 &game.spatial_indices,
                 PlayerColor::White,
-            );
+            )
+            .expect("Should find a blocker");
 
             assert!(dist > 0, "Should find a blocker");
             assert!(!captures, "Own piece should not be a capture");
@@ -5903,6 +5995,135 @@ mod tests {
                 super::reset_world_bounds();
             });
         }
+    }
+
+    // Pieces can sit anywhere in i64, so a capture or check must work across the whole
+    // board: distances there pass 2^48 (once a flag bit in the slider cache) and even
+    // i64::MAX (pieces at opposite ends).
+    const FAR: i64 = PLAY_BORDER_CAP - 1;
+
+    fn far_game(icn: &str) -> GameState {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        game
+    }
+
+    fn assert_far_capture(icn: &str, from: (i64, i64), to: (i64, i64)) {
+        let game = far_game(icn);
+        let is_it = |m: &Move| (m.from.x, m.from.y, m.to.x, m.to.y) == (from.0, from.1, to.0, to.1);
+        let mut exact = MoveList::new();
+        game.get_pseudo_legal_moves_into(&mut exact);
+        assert!(exact.iter().any(is_it), "exact list misses {from:?}x{to:?} in {icn}");
+        assert!(
+            game.get_pseudo_legal_moves().iter().any(is_it),
+            "cached list misses {from:?}x{to:?} in {icn}"
+        );
+        let ctx = MoveGenContext {
+            pinned: &FxHashMap::default(),
+            special_rights: &game.special_rights,
+            en_passant: &game.en_passant,
+            game_rules: &game.game_rules,
+            indices: &game.spatial_indices,
+            enemy_king_pos: game.enemy_king_pos(),
+        };
+        let mut caps = MoveList::new();
+        get_quiescence_captures(&game.board, game.turn, &ctx, &mut caps);
+        assert!(caps.iter().any(is_it), "capture stage misses {from:?}x{to:?} in {icn}");
+    }
+
+    fn attacked(icn: &str, sq: (i64, i64), by: PlayerColor) -> bool {
+        let game = far_game(icn);
+        is_square_attacked(&game.board, &Coordinate::new(sq.0, sq.1), by, &game.spatial_indices)
+    }
+
+    #[test]
+    fn far_rook_takes_queen_past_two_to_the_48() {
+        with_bounds_lock(|| {
+            let q = 8_969_262_805_047_836_678i64;
+            assert_far_capture(
+                &format!("b 0/100 2 P1,2+|P2,2+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|p1,7+|p2,7+|p3,7+|p4,7+|p5,6|p6,7+|p7,7+|p8,7+|R1,1+|R8,1+|r1,8+|r8,8+|N2,1|N7,1|n2,8|n7,8|B3,1|B6,1|b3,8|b6,8|Q{q},8|q4,8|K5,1+|k5,8+"),
+                (8, 8),
+                (q, 8),
+            );
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn sliders_capture_from_one_end_of_the_board_to_the_other() {
+        with_bounds_lock(|| {
+            let h = FAR / 2;
+            assert_far_capture(&format!("b 0/100 2 K5,1|k5,-5|r-{FAR},8|Q{FAR},8"), (-FAR, 8), (FAR, 8));
+            assert_far_capture(&format!("b 0/100 2 K5,1|k5,-5|r8,-{FAR}|Q8,{FAR}"), (8, -FAR), (8, FAR));
+            assert_far_capture(&format!("b 0/100 2 K5,1|k5,-5|b-{h},-{h}|Q{h},{h}"), (-h, -h), (h, h));
+            assert_far_capture(&format!("b 0/100 2 K5,1|k5,-6|b-{h},{h}|Q{h},-{h}"), (-h, h), (h, -h));
+            assert_far_capture(&format!("w 0/100 2 K5,1|k5,-5|Q{FAR},8|r-{FAR},8"), (FAR, 8), (-FAR, 8));
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn far_sliders_give_check_from_the_other_end() {
+        with_bounds_lock(|| {
+            let h = FAR / 2;
+            assert!(attacked(&format!("b 0/100 2 K5,1|k-{FAR},8|Q{FAR},8"), (-FAR, 8), PlayerColor::White));
+            assert!(attacked(&format!("b 0/100 2 K5,1|k8,-{FAR}|R8,{FAR}"), (8, -FAR), PlayerColor::White));
+            assert!(attacked(&format!("b 0/100 2 K5,1|k-{h},-{h}|B{h},{h}"), (-h, -h), PlayerColor::White));
+            assert!(!attacked(&format!("b 0/100 2 K5,1|k-{FAR},8|p0,8|Q{FAR},8"), (-FAR, 8), PlayerColor::White));
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn far_knightrider_captures_and_checks() {
+        with_bounds_lock(|| {
+            let k = 2_000_000_000_000_000_000i64;
+            assert_far_capture(&format!("w 0/100 2 K5,1|k5,-5|NR0,0|q{k},{}", 2 * k), (0, 0), (k, 2 * k));
+            assert!(attacked(&format!("b 0/100 2 K5,1|k0,0|NR{k},{}", 2 * k), (0, 0), PlayerColor::White));
+            // End to end: the offset (2 * FAR in x) is past i64, the hop count is not.
+            let h = FAR / 2;
+            assert_far_capture(&format!("w 0/100 2 K5,1|k5,-5|NR-{FAR},-{h}|q{FAR},{h}"), (-FAR, -h), (FAR, h));
+            // A piece anywhere on the line between blocks it, however far out.
+            assert!(!attacked(
+                &format!("b 0/100 2 K5,1|k0,0|p1000,2000|NR{k},{}", 2 * k),
+                (0, 0),
+                PlayerColor::White
+            ));
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn far_checks_have_evasions_that_take_the_checker() {
+        with_bounds_lock(|| {
+            let k = 2_000_000_000_000_000_000i64;
+            let cases = [
+                (format!("b 0/100 2 K5,1|k0,0|NR{k},{}|q{k},-5", 2 * k), (k, -5), (k, 2 * k)),
+                (format!("b 0/100 2 K5,1|k-{FAR},8|Q{FAR},8|r{FAR},100"), (FAR, 100), (FAR, 8)),
+            ];
+            for (icn, from, to) in cases {
+                let game = far_game(&icn);
+                let mut ev = MoveList::new();
+                game.get_evasion_moves_into(&mut ev);
+                assert!(
+                    ev.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (from.0, from.1, to.0, to.1)),
+                    "evasions miss {from:?}x{to:?} in {icn}"
+                );
+            }
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn huygen_captures_and_checks_past_i64_distance() {
+        with_bounds_lock(|| {
+            // -FAR to 1031 is 9223372036854775837, a prime above i64::MAX.
+            assert!(crate::utils::is_prime_u64(9_223_372_036_854_775_837));
+            assert!(!crate::utils::is_prime_u64(9_223_372_036_854_775_839));
+            assert_far_capture(&format!("w 0/100 2 K5,1|k5,-5|HU-{FAR},3|q1031,3"), (-FAR, 3), (1031, 3));
+            assert!(attacked(&format!("b 0/100 2 K5,1|k1031,3|HU-{FAR},3"), (1031, 3), PlayerColor::White));
+            reset_world_bounds();
+        });
     }
 }
 

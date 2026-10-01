@@ -39,6 +39,16 @@ pub fn is_prime_fast(n: i64) -> bool {
     }
 }
 
+/// Primality of a distance that may exceed i64: two pieces at opposite ends of the
+/// board can be up to ~2^64 apart. Lookup table first, Miller-Rabin beyond it.
+pub fn is_prime_u64(n: u64) -> bool {
+    if n < IS_PRIME_LOOKUP.len() as u64 {
+        IS_PRIME_LOOKUP[n as usize]
+    } else {
+        !n.is_multiple_of(2) && !n.is_multiple_of(3) && miller_rabin_u64(n)
+    }
+}
+
 pub fn is_prime_i64(n: i64) -> bool {
     // i64::MIN cannot be negated; and it's even anyway, so not prime.
     if n == i64::MIN {
@@ -80,17 +90,21 @@ fn mod_pow(mut base: u128, mut exp: u128, modulus: u128) -> u128 {
 }
 
 fn is_prime_miller_rabin(n: i64) -> bool {
-    let n = n.abs();
+    let n = n.unsigned_abs();
     if n < 2 {
         return false;
     }
     if n == 2 || n == 3 {
         return true;
     }
-    if n % 2 == 0 || n % 3 == 0 {
+    if n.is_multiple_of(2) || n.is_multiple_of(3) {
         return false;
     }
+    miller_rabin_u64(n)
+}
 
+/// Miller-Rabin for odd n > 3, not divisible by 3.
+fn miller_rabin_u64(n: u64) -> bool {
     // Write n-1 as 2^s * d
     let mut d = (n - 1) as u128;
     let mut s = 0;

@@ -1886,6 +1886,29 @@ impl GameState {
 
         // 2. Capture checker or block attack (Only in single check)
         let checker_sq = checkers[0];
+        // A checker past any i64 distance, or a knightrider too many hops out to list
+        // its blocking squares, takes the exact move list instead: rare, and every
+        // evasion is verified after make anyway.
+        let far_check = match (
+            checker_sq.x.checked_sub(king_sq.x),
+            checker_sq.y.checked_sub(king_sq.y),
+        ) {
+            (Some(dx), Some(dy)) => {
+                dx.abs().max(dy.abs()) > 64
+                    && self.board.get_piece(checker_sq.x, checker_sq.y).map(|p| p.piece_type())
+                        == Some(PieceType::Knightrider)
+            }
+            _ => true,
+        };
+        if far_check {
+            for (x, y, p) in self.board.iter_pieces_by_color(our_color == PlayerColor::White) {
+                if (x, y) != (king_sq.x, king_sq.y) && p.color() == our_color {
+                    let from = Coordinate::new(x, y);
+                    get_pseudo_legal_moves_for_piece_into(&self.board, &p, &from, &ctx, out);
+                }
+            }
+            return;
+        }
         let dx_check = checker_sq.x - king_sq.x;
         let dy_check = checker_sq.y - king_sq.y;
 
