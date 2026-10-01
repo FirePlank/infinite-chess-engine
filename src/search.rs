@@ -1516,8 +1516,6 @@ impl Searcher {
         self.capture_history_stack[ply] = backup.capture;
     }
 
-    /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
-    #[inline]
     /// Adds `delta` to the continuation-history entries of the move played at
     /// `ply - 1`, keyed on its ancestors 1, 2 and 4 plies further back.
     pub fn update_prior_cont_history(&mut self, ply: usize, delta: i32) {
@@ -1550,6 +1548,8 @@ impl Searcher {
         }
     }
 
+    /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
+    #[inline]
     pub fn update_history(
         &mut self,
         color: crate::board::PlayerColor,
