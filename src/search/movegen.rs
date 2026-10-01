@@ -1049,7 +1049,8 @@ impl StagedMoveGen {
             } else {
                 game.black_royals.first().copied()
             };
-            self.pins_cache = Some(match king_pos {
+            // A king that may be captured pins nothing: moving off the line is legal.
+            self.pins_cache = Some(match king_pos.filter(|_| !game.king_capturable(game.turn)) {
                 Some(kp) => game.compute_pins(&kp, game.turn),
                 None => rustc_hash::FxHashMap::default(),
             });

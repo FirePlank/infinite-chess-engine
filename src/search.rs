@@ -150,20 +150,26 @@ pub const fn mated_in(ply: usize) -> i32 {
 }
 
 #[inline(always)]
-fn win_condition_for_side(game: &GameState, color: PlayerColor) -> WinCondition {
-    match color {
-        PlayerColor::White => game.game_rules.white_win_condition,
-        PlayerColor::Black => game.game_rules.black_win_condition,
-        PlayerColor::Neutral => WinCondition::Checkmate,
-    }
-}
-
-#[inline(always)]
 fn opponent_win_condition_for_side(game: &GameState, color: PlayerColor) -> WinCondition {
     match color {
         PlayerColor::White => game.game_rules.black_win_condition,
         PlayerColor::Black => game.game_rules.white_win_condition,
         PlayerColor::Neutral => WinCondition::Checkmate,
+    }
+}
+
+/// Whether capturing one of `victim`'s royals ends the game: always under RoyalCapture,
+/// and under AllRoyalsCaptured once only one is left.
+#[inline(always)]
+fn royal_capture_decides(game: &GameState, victim: PlayerColor) -> bool {
+    match opponent_win_condition_for_side(game, victim) {
+        WinCondition::RoyalCapture => true,
+        WinCondition::AllRoyalsCaptured => match victim {
+            PlayerColor::White => game.white_royals.len() == 1,
+            PlayerColor::Black => game.black_royals.len() == 1,
+            PlayerColor::Neutral => false,
+        },
+        _ => false,
     }
 }
 
@@ -4327,7 +4333,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
         let p_type = m.piece.piece_type();
         let is_royal_capture_win = captured_type.is_some_and(|pt| pt.is_royal())
-            && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+            && royal_capture_decides(game, game.turn.opponent());
 
         // Obstocean breakout: pawn-takes-neutral-obstacle opens the variant's key line
         // but scores as quiet since the victim is neutral. Treated as tactical for
@@ -5374,7 +5380,7 @@ fn quiescence(
     // side can stand-pat while its royal is captured on the next ply.
     let must_escape = in_check && game.must_escape_check();
     let must_resolve_royal_capture =
-        in_check && opponent_win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+        in_check && royal_capture_decides(game, game.turn);
     let tactical_check = must_escape || must_resolve_royal_capture;
 
     // Step 4. Static evaluation
@@ -5490,6 +5496,28 @@ fn quiescence(
         // In check: checkmate variants require evasions; RoyalCapture qsearch
         // uses the same narrow evasion set to resolve whether capture is forced.
         game.get_evasion_moves_into(&mut tactical_moves);
+        // Where check is not binding, taking a deciding enemy royal elsewhere wins
+        // outright, and the evasion set never contains it.
+        if !must_escape && royal_capture_decides(game, game.turn.opponent()) {
+            let pinned = rustc_hash::FxHashMap::default();
+            let ctx = MoveGenContext {
+                pinned: &pinned,
+                special_rights: &game.special_rights,
+                en_passant: &game.en_passant,
+                game_rules: &game.game_rules,
+                indices: &game.spatial_indices,
+                enemy_king_pos: game.enemy_king_pos(),
+            };
+            let mut captures = MoveList::new();
+            get_quiescence_captures(&game.board, game.turn, &ctx, &mut captures);
+            for m in captures.iter() {
+                if game.board.get_piece(m.to.x, m.to.y).is_some_and(|p| p.piece_type().is_royal())
+                    && !tactical_moves.iter().any(|e| e.from == m.from && e.to == m.to)
+                {
+                    tactical_moves.push(*m);
+                }
+            }
+        }
     } else {
         // Normal quiescence: generate captures only
         // Only quiet slider generation consults the pin map; every capture
@@ -5564,7 +5592,7 @@ fn quiescence(
         let is_recapture = prev_sq.is_some_and(|sq| sq == m.to);
 
         let captures_royal_for_win = captured.is_some_and(|p| p.piece_type().is_royal())
-            && win_condition_for_side(game, game.turn) == WinCondition::RoyalCapture;
+            && royal_capture_decides(game, game.turn.opponent());
 
         // A pawn capturing a neutral obstacle is Obstocean's defining line-opening
         // tactic, yet it scores as quiet. Exempt it from the quiet cutoff; the SEE and
@@ -5598,7 +5626,9 @@ fn quiescence(
 
         // Evasions, as in Stockfish: once one has shown we are not mated, only captures
         // that do not lose material are still searched. Obstocean keeps every evasion.
-        if in_check
+        // A check that needn't be answered searched ordinary captures, so it gets the
+        // ordinary floors below instead.
+        if tactical_check
             && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
             && !captures_royal_for_win
             && !is_loss(best_value)
@@ -5607,7 +5637,7 @@ fn quiescence(
             continue;
         }
 
-        if !captures_royal_for_win && !in_check && !is_loss(best_value) && !is_recapture {
+        if !captures_royal_for_win && !tactical_check && !is_loss(best_value) && !is_recapture {
             // A slightly losing capture can still be the point of a combination, so
             // the floor sits below zero rather than at it. Both tests are
             // thresholds, so one see_ge early-outs where a full swap would not.

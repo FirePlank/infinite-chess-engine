@@ -1539,7 +1539,8 @@ impl GameState {
             self.black_royals.first().copied()
         };
 
-        let pinned = if let Some(kp) = king_pos {
+        // A king that may be captured pins nothing: moving off the line is legal.
+        let pinned = if let Some(kp) = king_pos.filter(|_| !self.king_capturable(self.turn)) {
             self.compute_pins(&kp, self.turn)
         } else {
             rustc_hash::FxHashMap::default()
@@ -1628,7 +1629,8 @@ impl GameState {
 
         let king_pos = royals.first().copied();
 
-        let pinned = if let Some(kp) = king_pos {
+        // A king that may be captured pins nothing: moving off the line is legal.
+        let pinned = if let Some(kp) = king_pos.filter(|_| !self.king_capturable(self.turn)) {
             self.compute_pins(&kp, self.turn)
         } else {
             rustc_hash::FxHashMap::default()
