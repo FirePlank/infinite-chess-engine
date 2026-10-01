@@ -669,6 +669,8 @@ pub struct SearcherHot {
     pub time_limit_ms: u128,
     pub stopped: bool,
     pub seldepth: usize,
+    /// Depth of the current root iteration, for capping stacked extensions.
+    pub root_depth: usize,
     /// Tracks the minimum depth that must be completed before time stops are allowed.
     /// Set to 1 at search start, cleared to 0 after depth 1 completes.
     pub min_depth_required: usize,
@@ -1135,6 +1137,7 @@ impl Searcher {
                 time_limit_ms,
                 stopped: false,
                 seldepth: 0,
+                root_depth: 0,
                 min_depth_required: 1, // Must complete at least depth 1
                 optimum_time_ms: 0,
                 maximum_time_ms: 0,
@@ -3101,6 +3104,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
 
         root_scores.clear();
+        searcher.hot.root_depth = depth;
 
         // Track the MultiPV alpha threshold
         let mut multipv_alpha = -INFINITY;
@@ -3451,6 +3455,7 @@ fn negamax_root(
     searcher.pv_length[0] = 0;
     searcher.follow_pv[0] = true;
     searcher.tt_pv_stack[0] = true;
+    searcher.hot.root_depth = depth;
 
     // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
     // negamax_root omits them, so slot 2 otherwise never clears across the search.
@@ -4689,6 +4694,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // so a forced sequence of replying checks can't chain extensions forever.
         if extension == 0 && depth <= 3 && gives_check && !in_check {
             extension = 1;
+        }
+
+        // Past twice the root depth, extensions have already stacked up a long forced
+        // line; stop growing it so one branch cannot eat the whole iteration.
+        let root_depth = searcher.hot.root_depth;
+        if extension > 0 && root_depth > 0 && ply >= 2 * root_depth {
+            extension = 0;
         }
 
         // The child reads this for evaluation smoothing. Set for every move, not only
