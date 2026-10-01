@@ -115,7 +115,8 @@ fn bounded_drawish_scale_inner(game: &GameState, eval: i32, world_size: i64) -> 
     let (mut w_pawns, mut b_pawns) = (false, false);
     for (_, _, piece) in game.board.iter() {
         let pt = piece.piece_type();
-        if pt.is_royal() {
+        // Obstacles are scenery, not material: they must not abort the scan.
+        if pt.is_royal() || piece.color() == PlayerColor::Neutral {
             continue;
         }
         let white = piece.color() == PlayerColor::White;
