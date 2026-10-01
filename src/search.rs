@@ -4176,8 +4176,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         improving = improving || static_eval >= beta;
 
         // Internal iterative reductions (IIR): without a TT move, reduce depth to find one faster.
+        // An all-node is expected to fail low anyway, so it takes the deeper cut.
         if depth >= iir_min_depth() && tt_move.is_none() {
-            depth -= 2;
+            depth -= if all_node && depth >= 4 { 3 } else { 2 };
         }
     }
 
