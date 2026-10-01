@@ -956,6 +956,22 @@ impl StagedMoveGen {
             return false;
         }
 
+        // Riders whose geometry the masks below don't cover: ask the attack test. The
+        // board still has the mover on its origin, which only matters if it blocks.
+        if matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen) {
+            let mover = crate::board::Piece::new(pt, color);
+            return royals.iter().any(|k| {
+                crate::moves::is_piece_attacking_square(
+                    &game.board,
+                    &mover,
+                    &m.to,
+                    k,
+                    &game.spatial_indices,
+                    &game.game_rules,
+                )
+            });
+        }
+
         use crate::attacks::{
             CAMEL_MASK, DIAG_MASK, GIRAFFE_MASK, HAWK_MASK, KING_MASK, KNIGHT_MASK, ORTHO_MASK,
             ZEBRA_MASK,
