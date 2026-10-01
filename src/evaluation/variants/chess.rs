@@ -768,14 +768,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         let kf = (king.x - 1).clamp(0, 7) as usize;
         let mut shelter_mg = 0i32;
 
-        for df in -1i64..=1i64 {
-            // A corner king has one neighbour file; clamping would count its own twice.
-            let Ok(f) = usize::try_from(kf as i64 + df) else { continue };
-            if f > 7 {
-                continue;
-            }
-            let file_dist = df.unsigned_abs() as usize; // 0 = king file, 1 = adjacent
-            let file_rel = file_dist.min(2);
+        // Three files centred on the king's, shifted inward on the a/h file so an edge
+        // king still scores three (the far one at the outer-file weights).
+        let centre = kf.clamp(1, 6);
+        for f in centre - 1..=centre + 1 {
+            let file_rel = f.abs_diff(kf).min(2); // 0 = king file, 1 = adjacent, 2 = outer
 
             // Find closest own pawn ahead (toward promotion)
             let best_pawn_rank_dist: Option<i32> = own_pawns_arr
