@@ -1085,6 +1085,8 @@ pub struct Searcher {
 
     /// Per-ply reduction applied, so a child can adjust depth in hindsight.
     pub reduction_stack: Vec<i32>,
+    /// 1-based index of the move searched at each ply, for early-move history rules.
+    pub move_count_stack: Vec<u16>,
 
     /// Cutoffs per ply, raising LMR when the next ply fails high often.
     pub cutoff_cnt: Vec<u8>,
@@ -1221,6 +1223,7 @@ impl Searcher {
             lastmove_corrhist: Box::new([[0; LASTMOVE_CORRHIST_SIZE]; 2]),
             tt_move_history: 0,
             reduction_stack: vec![0; MAX_PLY],
+            move_count_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
             move_rule_limit: 100,             // Default, will be updated from GameState
             contempt: CONTEMPT,
@@ -1515,6 +1518,38 @@ impl Searcher {
 
     /// Gravity-style history update: scales updates based on current value and clamps to [-MAX_HISTORY, MAX_HISTORY].
     #[inline]
+    /// Adds `delta` to the continuation-history entries of the move played at
+    /// `ply - 1`, keyed on its ancestors 1, 2 and 4 plies further back.
+    pub fn update_prior_cont_history(&mut self, ply: usize, delta: i32) {
+        let Some(prev_move) = self.move_history[ply - 1] else { return };
+        if self.moved_piece_history[ply - 1] as usize >= 32 {
+            return;
+        }
+        let max_h = params::history_max_gravity();
+        let from_h = hash_coord_16(prev_move.from.x, prev_move.from.y);
+        let to_h = hash_coord_16(prev_move.to.x, prev_move.to.y);
+        const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
+        let prior_in_check = self.in_check_history[ply - 1];
+        for (idx, &plies_ago) in [1usize, 2, 4].iter().enumerate() {
+            if prior_in_check && plies_ago > 2 {
+                break;
+            }
+            let Some(tp) = (ply - 1).checked_sub(plies_ago) else { continue };
+            let Some(anc) = self.move_history[tp] else { continue };
+            let anc_piece = self.moved_piece_history[tp] as usize;
+            if anc_piece >= 32 {
+                continue;
+            }
+            let anc_to = hash_coord_16(anc.to.x, anc.to.y);
+            let anc_ic = self.in_check_history[tp] as usize;
+            let anc_cap = self.capture_history_stack[tp] as usize;
+            let adj = (delta.clamp(-max_h, max_h) * CONT_WEIGHTS[idx]) / 1024;
+            let entry = &mut self.cont_history[idx][anc_cap][anc_ic][anc_piece][anc_to][from_h][to_h];
+            let cur = *entry as i32;
+            *entry = (cur + adj - ((cur * adj.abs()) >> 14)) as i16;
+        }
+    }
+
     pub fn update_history(
         &mut self,
         color: crate::board::PlayerColor,
@@ -3525,6 +3560,7 @@ fn negamax_root(
         searcher.capture_history_stack[0] = root_is_capture;
 
         legal_moves += 1;
+        searcher.move_count_stack[0] = legal_moves.min(u16::MAX as usize) as u16;
 
         let score;
         if legal_moves == 1 {
@@ -3970,6 +4006,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // No repetition test: `is_draw` above already returned on one, and both it
         // and `is_repetition` report false inside a null subtree.
         if tt_data_depth_ok && bound_matches && node_type_matches && rule50_ok {
+            // An early quiet reply that a TT cutoff refutes was ordered too high
+            // (Stockfish's prior-move penalty on a TT cutoff).
+            if fails_high
+                && ply > 0
+                && !searcher.capture_history_stack[ply - 1]
+                && searcher.move_count_stack[ply - 1] <= 3
+            {
+                searcher.update_prior_cont_history(ply, -history_bonus_cap());
+            }
             return tt_s;
         }
 
@@ -4530,6 +4575,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         searcher.capture_history_stack[ply] = is_capture;
 
         legal_moves += 1;
+        searcher.move_count_stack[ply] = legal_moves.min(u16::MAX as usize) as u16;
 
         // Calculate per-move extension (can be negative for negative extensions).
         let mut extension: i32 = 0;
