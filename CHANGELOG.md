@@ -14,18 +14,11 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 
 ## v7.0.0 (2026-10-02)
-Commit: `V7SHA` • [compare to v6.8.0](https://github.com/FirePlank/infinite-chess-engine/compare/7c73489722927d14558812eb7fddce5b69e1c46e...V7SHA)
+Commit: `70bcc41317206ee8bbe71a651af287a047aea97e` • [compare to v6.8.0](https://github.com/FirePlank/infinite-chess-engine/compare/7c73489722927d14558812eb7fddce5b69e1c46e...70bcc41317206ee8bbe71a651af287a047aea97e)
 
 **It is about 33 Elo better than v6.8.0, and about 130 Elo better than v6.0.0.**
 
-Against v6.0.0 it scores +130.4 ± 11.0 over 3,192 games across all 17 site variants. The largest gains are in the open-board fairy variants: Palace +356, Space +305, CoaIP_NO +241, CoaIP_RO +229, CoaIP_HO +199, Classical_Plus +178, CoaIP +164 and Confined_Classical +161. 8x8 Chess and Pawn Horde are about even with v6.0.0. No v6 minor release was played against another, so the v6.1.0-v6.8.0 lines below are the accumulator rescaled to this match: one factor (0.28) for every commit, except root LMR and the qsearch/time-management group after it, which use their own head-to-head results.
-
-The v6 series came from three places:
-- **Eval-net inputs.** Slider rays, slider reach and king exposure gave the series' largest single gains. Each input is read from terms the evaluator already computes, so it costs nothing per evaluation.
-- **Movegen correctness.** A slider candidate cache keyed without the piece, check squares cached for where the king used to stand, and a shallow-node ray cap that dropped knight-leap checks.
-- **Search structure.** The singular-extension margin, the cut-node reduction, check extensions, and LMR from the second move.
-
-v7 adds late-move reductions at the root. That is the biggest search change of the series, at +23.7 Elo in a direct head-to-head.
+Against v6.0.0 it wins almost three games for every one it loses (1,756 wins, 611 losses and 825 draws over 3,192 games), and about nine for every loss in Palace and Space.
 
 ### Added
 - Root late-move reductions: from the 4th root move on, quiet non-checks take the interior LMR reduction less one, adjusted by main and pawn history, and are re-searched if they beat alpha. 8x8 Chess and Pawn Horde keep every root move at full depth
@@ -127,7 +120,7 @@ Commit: `05b5a5b695433e1ee193020ac7b8a7e07687f519` • [compare to v6.3.0](https
 **It is about 11 Elo better than v6.3.0.**
 
 ### Added
-- Slider-ray net inputs, six per side, from the line ends the slider-threat pass already looks up: rays shut by an own piece, rays whose first piece is an own pawn, and open rays. Net retrained; the largest single gain of the v6 series
+- Slider-ray net inputs, six per side, from the line ends the slider-threat pass already looks up: rays shut by an own piece, rays whose first piece is an own pawn, and open rays. Net retrained
 - Knightrider safe checks in the king-danger count: their checking squares are where the king's knight lines cross theirs
 
 ### Changed
