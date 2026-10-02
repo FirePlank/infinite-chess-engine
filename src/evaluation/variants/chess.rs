@@ -543,10 +543,8 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
 
                 // Outpost (ranks 4-6 for white = y 4-6, for black = y 3-5)
                 let rel_rank = if is_white { y } else { 9 - y };
-                if (4..=6).contains(&rel_rank) {
-                    if is_outpost(game, x, y, piece.color()) {
-                        add!(3, ci, MG_OUTPOST_BISHOP, EG_OUTPOST_BISHOP);
-                    }
+                if (4..=6).contains(&rel_rank) && is_outpost(game, x, y, piece.color()) {
+                    add!(3, ci, MG_OUTPOST_BISHOP, EG_OUTPOST_BISHOP);
                 }
             }
 
@@ -567,10 +565,8 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
 
                 // Outpost
                 let rel_rank = if is_white { y } else { 9 - y };
-                if (4..=6).contains(&rel_rank) {
-                    if is_outpost(game, x, y, piece.color()) {
-                        add!(3, ci, MG_OUTPOST_KNIGHT, EG_OUTPOST_KNIGHT);
-                    }
+                if (4..=6).contains(&rel_rank) && is_outpost(game, x, y, piece.color()) {
+                    add!(3, ci, MG_OUTPOST_KNIGHT, EG_OUTPOST_KNIGHT);
                 }
 
                 // Minor behind pawn
