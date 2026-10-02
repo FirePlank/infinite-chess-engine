@@ -3527,6 +3527,13 @@ fn negamax_root(
                 .get_piece(m.to.x, m.to.y)
                 .is_some_and(|p| !p.piece_type().is_neutral_type());
         let root_piece = m.piece.piece_type();
+        // Read before the move: making it changes the pawn hash the history is keyed by.
+        let root_hist = {
+            let idx = hash_move_dest(m);
+            let ph = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
+            searcher.history[hist_color(m.piece.color())][root_piece as usize][idx]
+                + searcher.pawn_hist(ph, root_piece as usize, idx)
+        };
 
         let undo = game.make_move(m);
 
@@ -3576,7 +3583,10 @@ fn negamax_root(
                 && m.promotion.is_none()
                 && !game.is_in_check()
             {
-                (get_lmr(depth, legal_moves) - 1).clamp(0, depth as i32 - 2) as usize
+                // History moves it as in the interior: a move that keeps producing
+                // cutoffs is reduced less, a known failure more.
+                (get_lmr(depth, legal_moves) - 1 - root_hist / 4096).clamp(0, depth as i32 - 2)
+                    as usize
             } else {
                 0
             };
