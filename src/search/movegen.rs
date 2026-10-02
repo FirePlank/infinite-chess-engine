@@ -963,16 +963,31 @@ impl StagedMoveGen {
         // Riders whose geometry the masks below don't cover: ask the attack test. The
         // board still has the mover on its origin, which only matters if it blocks.
         if matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen) {
+            use crate::moves::{ROSE_REACH, ROSE_SPAN};
             let mover = crate::board::Piece::new(pt, color);
             return royals.iter().any(|k| {
-                crate::moves::is_piece_attacking_square(
-                    &game.board,
-                    &mover,
-                    &m.to,
-                    k,
-                    &game.spatial_indices,
-                    &game.game_rules,
-                )
+                // The test generates every move of the piece, but both generators only
+                // land on their own geometry, so a royal off it is never attacked.
+                let (dx, dy) = (k.x - tx, k.y - ty);
+                let (adx, ady) = (dx.abs(), dy.abs());
+                let reachable = match pt {
+                    PieceType::Knightrider => adx > 0 && ady > 0 && (ady == 2 * adx || adx == 2 * ady),
+                    PieceType::Rose => {
+                        adx <= ROSE_SPAN
+                            && ady <= ROSE_SPAN
+                            && ROSE_REACH[(dx + ROSE_SPAN) as usize][(dy + ROSE_SPAN) as usize] != 0
+                    }
+                    _ => true,
+                };
+                reachable
+                    && crate::moves::is_piece_attacking_square(
+                        &game.board,
+                        &mover,
+                        &m.to,
+                        k,
+                        &game.spatial_indices,
+                        &game.game_rules,
+                    )
             });
         }
 
