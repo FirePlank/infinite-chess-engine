@@ -2443,7 +2443,9 @@ fn search_with_searcher(
             } else {
                 0.0
             };
-            let high_best_move_effort = if nodes_effort >= 93340.0 { 0.76 } else { 1.0 };
+            // Root LMR leaves the other root moves cheap, which raises the best move's
+            // share everywhere, so the early stop needs a higher bar than before.
+            let high_best_move_effort = if nodes_effort >= 96000.0 { 0.76 } else { 1.0 };
 
             searcher.hot.seek_mate = base_depth >= 16 && best_score.abs() >= 4000;
 
