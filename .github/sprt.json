@@ -1,0 +1,11 @@
+{
+  "name": "292_slow_eval_x2",
+  "old": "e8cbc68c1a48c2767d83ba63a8a304ac58668efa",
+  "games": 2000,
+  "shards": 40,
+  "variants": "base_only",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 1000
+}

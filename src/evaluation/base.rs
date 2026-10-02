@@ -552,6 +552,7 @@ fn tile_local_probe(
 /// HCE plus the Stage-A net residual. Added after the complexity damping so the
 /// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 pub fn evaluate(game: &GameState) -> i32 {
+    std::hint::black_box(evaluate_inner(std::hint::black_box(game)));
     if !crate::eval_net::enabled() || net_off(game) {
         return evaluate_inner(game);
     }
