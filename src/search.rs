@@ -124,6 +124,16 @@ pub const MAX_PLY: usize = 64;
 pub const MAX_QSEARCH_DEPTH: usize = 16;
 /// Qsearch ply from which a non-recapture must win material (SEE > 0) to be searched.
 const QS_EVEN_TRADE_PLY: usize = 6;
+
+/// Set by the engine's time manager to the most of the clock one move may use; read
+/// once per search into `SearcherHot::clock_cap_ms`. `u64::MAX` = no clock.
+static CLOCK_CAP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Publish the clock cap for the next search (`u64::MAX` when it is not clock-driven).
+pub fn set_clock_cap_ms(ms: u64) {
+    CLOCK_CAP_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub const INFINITY: i32 = 1_000_000;
 
 /// Far quiet slider pruning: distance at which a quiet slider move counts as
@@ -676,6 +686,9 @@ pub struct SearcherHot {
     /// Tracks the minimum depth that must be completed before time stops are allowed.
     /// Set to 1 at search start, cleared to 0 after depth 1 completes.
     pub min_depth_required: usize,
+    /// Most of the clock this move may burn before flagging (`CLOCK_CAP_MS` at search
+    /// start); `u128::MAX` when the search is not clock-driven.
+    pub clock_cap_ms: u128,
     /// Optimum time to use for this search (soft limit)
     pub optimum_time_ms: u128,
     /// Maximum time to use for this search (hard limit)
@@ -755,6 +768,8 @@ impl SearcherHot {
     /// near the full budget; a hard limit stays conservative and leaves headroom for
     /// the dynamic factors, which multiply optimum and are capped at maximum.
     pub fn set_time_limits(&mut self, opt_ms: u128, max_ms: u128, is_soft: bool) {
+        let cap = CLOCK_CAP_MS.load(std::sync::atomic::Ordering::Relaxed);
+        self.clock_cap_ms = if cap == u64::MAX { u128::MAX } else { cap as u128 };
         self.optimum_time_ms = opt_ms;
         self.maximum_time_ms = max_ms;
         self.is_soft_limit = is_soft;
@@ -1141,6 +1156,7 @@ impl Searcher {
                 seldepth: 0,
                 root_depth: 0,
                 min_depth_required: 1, // Must complete at least depth 1
+                clock_cap_ms: u128::MAX,
                 optimum_time_ms: 0,
                 maximum_time_ms: 0,
                 tot_best_move_changes: 0.0,
@@ -1666,8 +1682,26 @@ impl Searcher {
             return false;
         }
 
-        // Don't stop until we've completed at least depth 1
+        // Don't stop until we've completed at least depth 1, unless the clock itself is
+        // at stake: a capture melee can blow up one depth-1 qsearch past the whole budget,
+        // and a flag loses outright where the best move so far would not.
         if self.hot.min_depth_required > 0 {
+            if self.hot.nodes & 4095 == 0 {
+                // The clock's own cap, not the move's budget: at low clock the budget
+                // shrinks to a fraction of the increment, and cutting depth 1 there
+                // plays a half-searched move with time still on the clock.
+                let hard_limit = if self.hot.clock_cap_ms != u128::MAX {
+                    self.hot.clock_cap_ms
+                } else if self.hot.maximum_time_ms > 0 {
+                    self.hot.maximum_time_ms
+                } else {
+                    self.hot.time_limit_ms
+                };
+                if self.hot.timer.elapsed_ms() >= hard_limit {
+                    self.hot.stopped = true;
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -2477,8 +2511,12 @@ fn search_with_searcher(
         }
     }
 
+    // An iteration that never finished has no score; -INFINITY would read as a loss.
+    let best_score = if best_score == -INFINITY { 0 } else { best_score };
     searcher.hot.last_root_score = if is_decisive(best_score) { 0 } else { best_score };
-    best_move.map(|m| (m, best_score))
+    // A stop inside depth 1 may leave no searched root move; the first ordered legal
+    // move still beats returning nothing.
+    best_move.or_else(|| legal_moves.first().copied()).map(|m| (m, best_score))
 }
 
 /// Time-limited search that returns the best move, its evaluation (cp from side-to-move's

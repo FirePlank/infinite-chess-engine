@@ -614,6 +614,7 @@ impl Engine {
         const LOW_CLOCK_SURVIVE_INC_MULT: u64 = 6;
         const LOW_CLOCK_SURVIVE_FRAC: f64 = 0.9;
 
+        crate::search::set_clock_cap_ms(u64::MAX);
         let Some(clock) = self.clock else {
             // No clock info: use the fixed per-move limit as a soft limit.
             // The search can use up to this time freely without flagging risk.
@@ -730,6 +731,7 @@ impl Engine {
 
         // Final safety cap: never exceed 82.5% of remaining time
         let absolute_cap = ((remaining_ms as f64) * 0.825 - move_overhead as f64) as u64;
+        crate::search::set_clock_cap_ms(absolute_cap.max(min_think_ms));
         let optimum = optimum.min(absolute_cap.max(min_think_ms));
         let maximum = maximum.min(absolute_cap.max(min_think_ms));
 
