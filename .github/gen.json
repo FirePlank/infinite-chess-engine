@@ -1,0 +1,9 @@
+{
+  "name": "gen_v7_r1",
+  "games": 5000,
+  "nodes": 100000,
+  "variants": "site",
+  "seed": 7,
+  "shards": 20,
+  "minutes": 330
+}
