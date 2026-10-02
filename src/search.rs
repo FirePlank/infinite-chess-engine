@@ -3567,11 +3567,24 @@ fn negamax_root(
                 excluded_move: None,
             });
         } else {
+            // Late quiet root moves are reduced, never pruned: one that beats alpha is
+            // re-searched at full depth, so the root cannot lose its best move to it.
+            let root_r = if depth >= 3
+                && legal_moves >= 4
+                && !in_check
+                && !root_is_capture
+                && m.promotion.is_none()
+                && !game.is_in_check()
+            {
+                (get_lmr(depth, legal_moves) - 1).clamp(0, depth as i32 - 2) as usize
+            } else {
+                0
+            };
             // PVS: Null window first, then re-search if it improves alpha
             let mut s = -negamax(&mut NegamaxContext {
                 searcher,
                 game,
-                depth: depth - 1,
+                depth: depth - 1 - root_r,
                 ply: 1,
                 alpha: -alpha - 1,
                 beta: -alpha,
@@ -3580,6 +3593,20 @@ fn negamax_root(
                 was_null_move: false,
                 excluded_move: None,
             });
+            if root_r > 0 && s > alpha {
+                s = -negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: depth - 1,
+                    ply: 1,
+                    alpha: -alpha - 1,
+                    beta: -alpha,
+                    allow_null: true,
+                    node_type: NodeType::Cut,
+                    was_null_move: false,
+                    excluded_move: None,
+                });
+            }
             if s > alpha && s < beta {
                 s = -negamax(&mut NegamaxContext {
                     searcher,
