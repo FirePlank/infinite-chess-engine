@@ -552,7 +552,8 @@ fn tile_local_probe(
 /// HCE plus the Stage-A net residual. Added after the complexity damping so the
 /// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 pub fn evaluate(game: &GameState) -> i32 {
-    if !crate::eval_net::enabled() || net_off(game) {
+    // Diagnostic only: measures the generic net's worth in one variant.
+    if !crate::eval_net::enabled() || net_off(game) || game.variant == Some(crate::Variant::SpaceClassic) {
         return evaluate_inner(game);
     }
     let mut fc = crate::eval_net::FeatureCollector::default();

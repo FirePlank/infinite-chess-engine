@@ -1,0 +1,11 @@
+{
+  "name": "diag_spaceclassic_net_off",
+  "old": "5cd0349b4ec6b240510e5691da6878db7e565976",
+  "games": 2000,
+  "shards": 10,
+  "variants": "Space_Classic",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 1000
+}
