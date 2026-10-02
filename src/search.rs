@@ -3822,8 +3822,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // Check if we have an upcoming move that draws by repetition
-    if ply > 0 && alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
+    let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
+    if ply > 0 && alpha < draw_val && game.upcoming_repetition(ply) {
         if draw_val >= beta {
             return draw_val;
         }
@@ -4720,13 +4720,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 excluded_move: Some(m),
             });
 
-            // Re-make the TT move and restore state for child search
+            // Re-make the TT move and restore state for child search; the exclusion
+            // search ran at this ply and left its own move count in the slot.
             undo = game.make_move(&m);
             searcher.prev_move_stack[ply] = (from_hash, to_hash);
             searcher.move_history[ply] = Some(m);
             searcher.moved_piece_history[ply] = p_type as u8;
             searcher.in_check_history[ply] = in_check;
             searcher.capture_history_stack[ply] = is_capture;
+            searcher.move_count_stack[ply] = legal_moves.min(u16::MAX as usize) as u16;
 
             if searcher.hot.stopped {
                 game.undo_move(&m, undo);
@@ -5429,8 +5431,8 @@ fn quiescence(
     }
 
     // Check if we have an upcoming move that draws by repetition
-    if alpha < VALUE_DRAW && game.upcoming_repetition(ply) {
-        let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
+    let draw_val = value_draw(searcher.hot.nodes) + draw_contempt(searcher.contempt, ply);
+    if alpha < draw_val && game.upcoming_repetition(ply) {
         if draw_val >= beta {
             return draw_val;
         }

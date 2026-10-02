@@ -216,11 +216,13 @@ impl StagedMoveGen {
     ) -> Self {
         debug_assert!(!Self::is_in_check(game), "ProbCut not used when in check");
 
-        // TT move valid only if it's a capture and pseudo-legal
+        // TT move valid only if it's a pseudo-legal capture passing the same SEE
+        // threshold as every other ProbCut capture.
         let tt_move = tt_move.map(|m| Self::reconstruct_castling_partner(game, m));
         let tt_valid = tt_move.is_some()
             && Self::is_capture(game, &tt_move.unwrap())
-            && Self::is_pseudo_legal(game, &tt_move.unwrap());
+            && Self::is_pseudo_legal(game, &tt_move.unwrap())
+            && super::see_ge(game, &tt_move.unwrap(), threshold);
 
         let start_stage = if tt_valid {
             MoveStage::ProbCutTT
