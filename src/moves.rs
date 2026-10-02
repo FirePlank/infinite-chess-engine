@@ -628,7 +628,24 @@ pub fn is_piece_attacking_square(
         _ => {}
     }
 
-    // 3. Fallback for complex fairy pieces (Rose, Knightrider, etc.)
+    // 3. Fallback for complex fairy pieces (Rose, Knightrider, etc.). Their generators
+    // only land on their own geometry, so a target off it needs no move list.
+    let (rx, ry) = (to.x as i128 - from.x as i128, to.y as i128 - from.y as i128);
+    let (ax, ay) = (rx.abs(), ry.abs());
+    match pt {
+        PieceType::Knightrider if !(ax > 0 && ay > 0 && (ay == 2 * ax || ax == 2 * ay)) => {
+            return false;
+        }
+        PieceType::Rose
+            if ax > ROSE_SPAN as i128
+                || ay > ROSE_SPAN as i128
+                || ROSE_REACH[(rx as i64 + ROSE_SPAN) as usize][(ry as i64 + ROSE_SPAN) as usize]
+                    == 0 =>
+        {
+            return false;
+        }
+        _ => {}
+    }
     let mut moves = MoveList::new();
     let ctx = MoveGenContext {
         special_rights: &SpecialRights::new(),
