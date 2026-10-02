@@ -123,7 +123,7 @@ fn get_noise(seed: u64, hash: u64, amp: i32) -> i32 {
 pub const MAX_PLY: usize = 64;
 pub const MAX_QSEARCH_DEPTH: usize = 16;
 /// Qsearch ply from which a non-recapture must win material (SEE > 0) to be searched.
-const QS_EVEN_TRADE_PLY: usize = 6;
+const QS_EVEN_TRADE_PLY: usize = 4;
 
 /// Set by the engine's time manager to the most of the clock one move may use; read
 /// once per search into `SearcherHot::clock_cap_ms`. `u64::MAX` = no clock.
