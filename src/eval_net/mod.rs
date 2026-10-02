@@ -78,20 +78,29 @@ pub fn variant_residual(
 pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState, fc: &FeatureCollector) -> i32 {
     let base = feature_vector(game, fc);
     let black = game.turn == crate::board::PlayerColor::Black;
-    let mut x = [0i16; features::NET_INPUTS];
+    let mut x = [0i16; features::TYPE_NET_INPUTS];
     x[..NUM_FEATURES].copy_from_slice(&base);
     if net.perspective {
         features::to_perspective(&mut x[..NUM_FEATURES], black);
+    }
+    // A type net reads the piece-type imbalances next, side-to-move relative.
+    let mut off = NUM_FEATURES;
+    if net.n_in == features::TYPE_NET_INPUTS {
+        let sign = if net.perspective && black { -1 } else { 1 };
+        for (k, &d) in features::type_count_diffs(game).iter().enumerate() {
+            x[off + k] = (sign * d as i32 * 32).clamp(-2047, 2047) as i16;
+        }
+        off += features::TYPE_INPUTS;
     }
     // Extras run own side then opponent, each king exposure then slider rays, as far as
     // the net's width reaches (none for a 121-input net).
     let (ke, rays) = (&fc.inputs.king_exposure, &fc.inputs.slider_rays);
     let (own, opp) = if net.perspective && black { (1, 0) } else { (0, 1) };
-    let per = net.n_in.saturating_sub(NUM_FEATURES) / 2;
+    let per = net.n_in.saturating_sub(off) / 2;
     for j in 0..per {
         let side = |s: usize| if j < 3 { ke[s][j] } else { rays[s][j - 3].min(255) };
-        x[NUM_FEATURES + j] = (side(own) * 16) as i16;
-        x[NUM_FEATURES + per + j] = (side(opp) * 16) as i16;
+        x[off + j] = (side(own) * 16) as i16;
+        x[off + per + j] = (side(opp) * 16) as i16;
     }
     let r = inference::forward(net, &x).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }

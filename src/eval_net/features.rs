@@ -102,6 +102,38 @@ pub const KEXP_INPUTS: usize = 6;
 /// `--extra-pairs 22,23,24,28,29,30,31` trains them.
 pub const RAY_INPUTS: usize = 8;
 pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS + RAY_INPUTS;
+/// Piece types whose (own - opponent) count imbalance a type net reads, x32, between the
+/// base vector and the pairs (`--extra-types` in the trainer): every type but the void,
+/// the obstacle and the royals.
+pub const TYPE_SLOTS: [u8; 17] = [3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21];
+pub const TYPE_INPUTS: usize = TYPE_SLOTS.len();
+pub const TYPE_NET_INPUTS: usize = NET_INPUTS + TYPE_INPUTS;
+
+/// White-minus-Black count of each `TYPE_SLOTS` type. Material alone decides it, so one
+/// entry keyed by the material hash serves a whole line between captures.
+pub fn type_count_diffs(game: &GameState) -> [i16; TYPE_INPUTS] {
+    thread_local! {
+        static LAST: std::cell::Cell<(u64, [i16; TYPE_INPUTS])> =
+            const { std::cell::Cell::new((0, [0; TYPE_INPUTS])) };
+    }
+    let key = game.material_hash;
+    let (k, v) = LAST.with(|c| c.get());
+    if k == key && key != 0 {
+        return v;
+    }
+    let mut per_type = [0i16; 22];
+    for (_, _, p) in game.board.iter_all_pieces() {
+        let t = (p.piece_type() as usize).min(21);
+        match p.color() {
+            PlayerColor::White => per_type[t] += 1,
+            PlayerColor::Black => per_type[t] -= 1,
+            PlayerColor::Neutral => {}
+        }
+    }
+    let v = TYPE_SLOTS.map(|t| per_type[t as usize]);
+    LAST.with(|c| c.set((key, v)));
+    v
+}
 const KEXP_RADIUS: i64 = 3;
 const KEXP_NEAR: i64 = 2;
 
@@ -221,6 +253,11 @@ pub fn net_schema_hash() -> u64 {
 /// Schema of a net that also reads the slider-ray inputs.
 pub fn ray_net_schema_hash() -> u64 {
     net_schema_hash() ^ 0x5245_4143_4832_3833
+}
+
+/// Schema of a net that also reads the piece-type imbalances.
+pub fn type_net_schema_hash() -> u64 {
+    ray_net_schema_hash() ^ 0x5459_5045_5331_3700
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.

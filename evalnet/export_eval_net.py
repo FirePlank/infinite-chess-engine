@@ -64,15 +64,19 @@ def main():
     model.qat = True  # compare against the quantization-aware float path
     assert ck["in_scale"] == IN_SCALE == 64.0
     out_scale_f = float(ck["out_scale"])
-    # The engine reads two extra-input layouts: the king-exposure pairs (features.rs
-    # KingExposure), then those plus the slider-ray pairs (SliderRays), each sealed with
-    # its own schema so an engine without that layout rejects the net.
+    # The engine reads three extra-input layouts: the king-exposure pairs (features.rs
+    # KingExposure), those plus the slider-ray pairs (SliderRays), and those behind the
+    # piece-type imbalances, each sealed with its own schema so an engine without that
+    # layout rejects the net.
     schema = ck["schema"]
     extras = (list(ck.get("extra_types") or []), list(ck.get("extra_pairs") or []), ck.get("extra_ply"))
     if extras == ([], [22, 23, 24], None):
         schema ^= 0x4B45_5850_3232_3234
     elif extras == ([], [22, 23, 24, 28, 29, 30, 31], None):
         schema ^= 0x4B45_5850_3232_3234 ^ 0x5245_4143_4832_3833
+    elif extras == ([3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21], [22, 23, 24, 28, 29, 30, 31], None):
+        # Piece-type imbalances (features.rs TYPE_SLOTS) ahead of those pairs.
+        schema ^= 0x4B45_5850_3232_3234 ^ 0x5245_4143_4832_3833 ^ 0x5459_5045_5331_3700
     elif extras != ([], [], None):
         raise SystemExit(f"engine has no input layout for extras {extras}")
 
