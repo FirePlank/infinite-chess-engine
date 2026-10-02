@@ -3576,7 +3576,9 @@ fn negamax_root(
         } else {
             // Late quiet root moves are reduced, never pruned: one that beats alpha is
             // re-searched at full depth, so the root cannot lose its best move to it.
+            // 8x8 Chess has few root moves and its own tuned evaluator; it keeps full depth.
             let root_r = if depth >= 3
+                && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Chess
                 && legal_moves >= 4
                 && !in_check
                 && !root_is_capture
