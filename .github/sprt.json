@@ -1,0 +1,11 @@
+{
+  "name": "285_net_off_without_sliders_site",
+  "old": "5cd0349b4ec6b240510e5691da6878db7e565976",
+  "games": 4000,
+  "shards": 18,
+  "variants": "site",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 1000
+}

@@ -552,7 +552,7 @@ fn tile_local_probe(
 /// HCE plus the Stage-A net residual. Added after the complexity damping so the
 /// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 pub fn evaluate(game: &GameState) -> i32 {
-    if !crate::eval_net::enabled() || net_off(game) {
+    if !crate::eval_net::enabled() || net_off(game) || !has_sliders(game) {
         return evaluate_inner(game);
     }
     let mut fc = crate::eval_net::FeatureCollector::default();
@@ -563,6 +563,26 @@ pub fn evaluate(game: &GameState) -> i32 {
     } else {
         score + residual
     }
+}
+
+/// Whether either side has a rook-, bishop- or queen-like slider. The generic net's
+/// ray and king-exposure inputs only mean something with sliders on the board: in a
+/// knight-and-pawn game they read as open lines nothing can use.
+fn has_sliders(game: &GameState) -> bool {
+    thread_local! {
+        static LAST: std::cell::Cell<(u64, bool)> = const { std::cell::Cell::new((0, true)) };
+    }
+    let key = game.material_hash;
+    let (k, v) = LAST.with(|c| c.get());
+    if k == key && key != 0 {
+        return v;
+    }
+    let v = game.board.iter_all_pieces().any(|(_, _, p)| {
+        let pt = p.piece_type();
+        crate::attacks::is_ortho_slider(pt) || crate::attacks::is_diag_slider(pt)
+    });
+    LAST.with(|c| c.set((key, v)));
+    v
 }
 
 /// Against a bare king the net cannot see the mating geometry, so its residual is
