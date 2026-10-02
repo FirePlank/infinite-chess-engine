@@ -654,6 +654,27 @@ fn compute(game: &crate::game::GameState) -> bool {
 /// endgame, which game handlers must not auto-declare a draw.
 #[inline]
 fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
+    // 2B vs Q (either direction)
+    let bb_vs_q = |x: &Mat, y: &Mat| {
+        (x.bishops_lb + x.bishops_db) == 2
+            && x.queens == 0
+            && x.rooks == 0
+            && x.knights == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 2
+            && y.queens == 1
+            && y.rooks == 0
+            && y.knights == 0
+            && (y.bishops_lb + y.bishops_db) == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == 1
+    };
+    if bb_vs_q(a, b) || bb_vs_q(b, a) {
+        return true;
+    }
+
     // R+B vs Q (either direction)
     let rb_vs_q = |x: &Mat, y: &Mat| {
         x.rooks == 1
@@ -1865,5 +1886,15 @@ mod tests {
             evaluate_insufficient_material(&game),
             "K+2 Knightriders vs K is a draw"
         );
+    }
+
+    /// K+Q vs K+2B is only drawn without help, so the game goes on; the eval still
+    /// scores it as the dead draw it is.
+    #[test]
+    fn queen_vs_two_bishops_is_not_terminal() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("b 0/100 1 K4,-1|Q3,1|k3,4|b3,3|b1,1");
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        assert!(evaluate_insufficient_material(&game));
     }
 }
