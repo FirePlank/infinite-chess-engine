@@ -122,6 +122,8 @@ fn get_noise(seed: u64, hash: u64, amp: i32) -> i32 {
 
 pub const MAX_PLY: usize = 64;
 pub const MAX_QSEARCH_DEPTH: usize = 16;
+/// Qsearch ply from which a non-recapture must win material (SEE > 0) to be searched.
+const QS_EVEN_TRADE_PLY: usize = 6;
 pub const INFINITY: i32 = 1_000_000;
 
 /// Far quiet slider pruning: distance at which a quiet slider move counts as
@@ -5748,7 +5750,10 @@ fn quiescence(
             // A slightly losing capture can still be the point of a combination, so
             // the floor sits below zero rather than at it. Both tests are
             // thresholds, so one see_ge early-outs where a full swap would not.
-            let need = (-37).max(
+            // Deep in qsearch an even trade only lengthens the chain: a melee of heavy
+            // pieces trades down 16 plies wide. From there on a capture must win.
+            let floor = if qs_ply >= QS_EVEN_TRADE_PLY { 1 } else { -37 };
+            let need = floor.max(
                 alpha
                     .saturating_sub(best_value)
                     .saturating_sub(delta_margin),
