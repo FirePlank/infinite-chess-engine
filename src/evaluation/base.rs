@@ -791,6 +791,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         piece_list.clear();
                         white_pawns.clear();
                         black_pawns.clear();
+                        // Per piece_list entry: (ortho, diag) line congestion, filled
+                        // from the slider neighbour scans below.
+                        let mut slider_cong: SmallVec<[(i32, i32); 128]> = SmallVec::new();
 
                         // Main piece loop
                         for (cx, cy, tile) in game.board.tiles.iter() {
@@ -931,6 +934,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     // Neutral pieces score no activity or attack;
                                     // they only help king safety defensively.
                                     piece_list.push((x, y, piece));
+                                    slider_cong.push((0, 0));
                                 } else if pt == PieceType::Void {
                                     wall_count += 1;
                                     void_count += 1;
@@ -1082,9 +1086,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     let idx_sp = &game.spatial_indices;
                                     let own = piece.color();
                                     let mut bonus = 0;
+                                    let mut cong = (0, 0);
                                     if crate::attacks::is_ortho_slider(pt) {
                                         if let Some(l) = idx_sp.rows.get(&y) {
                                             let (f, b) = l.neighbors(x);
+                                            cong.0 += ends_congestion(f, b, x, own);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
                                             if T::WANTS_INPUTS {
@@ -1094,6 +1100,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         }
                                         if let Some(l) = idx_sp.cols.get(&x) {
                                             let (f, b) = l.neighbors(y);
+                                            cong.0 += ends_congestion(f, b, y, own);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
                                             if T::WANTS_INPUTS {
@@ -1105,6 +1112,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                     if crate::attacks::is_diag_slider(pt) {
                                         if let Some(l) = idx_sp.diag1.get(&(x - y)) {
                                             let (f, b) = l.neighbors(x);
+                                            cong.1 += ends_congestion(f, b, x, own);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
                                             if T::WANTS_INPUTS {
@@ -1114,6 +1122,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         }
                                         if let Some(l) = idx_sp.diag2.get(&(x + y)) {
                                             let (f, b) = l.neighbors(x);
+                                            cong.1 += ends_congestion(f, b, x, own);
                                             bonus += slider_threat_bonus(f, own, piece_val)
                                                 + slider_threat_bonus(b, own, piece_val);
                                             if T::WANTS_INPUTS {
@@ -1121,6 +1130,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                                 slider_rays.add(own, x, b);
                                             }
                                         }
+                                    }
+                                    if let Some(last) = slider_cong.last_mut() {
+                                        *last = cong;
                                     }
                                     if bonus > 0 {
                                         if is_white {
@@ -1515,6 +1527,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             b_attack_ready,
                             white_pawns,
                             black_pawns,
+                            &slider_cong,
                         );
 
                         let ks_metrics = KingSafetyMetrics {
@@ -1836,6 +1849,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     black_attack_ready: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
+    slider_cong: &[(i32, i32)],
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -1859,8 +1873,9 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
         fill_knightrider_rays(&rider_coords, &game.board, &mut rider_rays[..rider_coords.len()]);
     }
 
-    for &(x, y, piece) in piece_list {
+    for (i, &(x, y, piece)) in piece_list.iter().enumerate() {
         let pt = piece.piece_type();
+        let (cong_ortho, cong_diag) = slider_cong[i];
         let mut piece_score = match pt {
             PieceType::Rook => evaluate_rook(
                 game,
@@ -1872,6 +1887,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 phase,
                 white_pawns,
                 black_pawns,
+                Some(cong_ortho),
             ),
             PieceType::Queen => evaluate_queen(
                 game,
@@ -1883,6 +1899,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 phase,
                 white_pawns,
                 black_pawns,
+                Some(cong_ortho + cong_diag),
             ),
             PieceType::Bishop => evaluate_bishop(
                 game,
@@ -1894,6 +1911,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 phase,
                 white_pawns,
                 black_pawns,
+                Some(cong_diag),
             ),
             PieceType::Chancellor => {
                 let rook_eval = evaluate_rook(
@@ -1906,6 +1924,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                     white_pawns,
                     black_pawns,
+                    Some(cong_ortho),
                 );
                 rook_eval * chancellor_rook_scale() / 100
                     + evaluate_compound_leap_threats(
@@ -1928,6 +1947,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                     white_pawns,
                     black_pawns,
+                    Some(cong_diag),
                 );
                 bishop_eval * archbishop_bishop_scale() / 100
                     + evaluate_compound_leap_threats(
@@ -1950,6 +1970,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                     white_pawns,
                     black_pawns,
+                    Some(cong_ortho + cong_diag),
                 );
                 let rook_eval = evaluate_rook(
                     game,
@@ -1961,6 +1982,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                     white_pawns,
                     black_pawns,
+                    Some(cong_ortho),
                 );
                 (queen_eval * amazon_queen_scale() / 100)
                     + (rook_eval * amazon_rook_scale() / 100)
@@ -1983,6 +2005,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 phase,
                 white_pawns,
                 black_pawns,
+                Some(cong_ortho + cong_diag),
             ),
             PieceType::Knight => evaluate_knight(
                 x,
@@ -2591,6 +2614,40 @@ fn line_congestion(
     units
 }
 
+/// `line_congestion` from the two neighbours `SpatialLine::neighbors` returns for a
+/// piece standing on the line, which the main eval loop already holds for sliders.
+#[inline]
+fn ends_congestion(
+    fwd: crate::moves::LineEnd,
+    back: crate::moves::LineEnd,
+    key: i64,
+    own: PlayerColor,
+) -> i32 {
+    let wall_units = |p: Piece, d: i64| -> i32 {
+        let base = 3 - d as i32;
+        if p.piece_type().is_neutral_type() || (p.color() != own && p.piece_type() == PieceType::Pawn)
+        {
+            base
+        } else if p.color() == own {
+            base / 2
+        } else {
+            0
+        }
+    };
+    let mut units = 0;
+    if let Some((c, packed)) = fwd
+        && c - key <= 2
+    {
+        units += wall_units(Piece::from_packed(packed), c - key);
+    }
+    if let Some((c, packed)) = back
+        && key - c <= 2
+    {
+        units += wall_units(Piece::from_packed(packed), key - c);
+    }
+    units
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_rook(
     game: &GameState,
@@ -2602,6 +2659,7 @@ pub fn evaluate_rook(
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
+    congestion: Option<i32>,
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -2704,8 +2762,9 @@ pub fn evaluate_rook(
 
     {
         let idx = &game.spatial_indices;
-        let units =
-            line_congestion(idx.rows.get(&y), x, color) + line_congestion(idx.cols.get(&x), y, color);
+        let units = congestion.unwrap_or_else(|| {
+            line_congestion(idx.rows.get(&y), x, color) + line_congestion(idx.cols.get(&x), y, color)
+        });
         bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
     }
 
@@ -2747,6 +2806,7 @@ pub fn evaluate_queen(
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
+    congestion: Option<i32>,
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -2780,10 +2840,12 @@ pub fn evaluate_queen(
 
     {
         let idx = &game.spatial_indices;
-        let units = line_congestion(idx.rows.get(&y), x, color)
-            + line_congestion(idx.cols.get(&x), y, color)
-            + line_congestion(idx.diag1.get(&(x - y)), x, color)
-            + line_congestion(idx.diag2.get(&(x + y)), x, color);
+        let units = congestion.unwrap_or_else(|| {
+            line_congestion(idx.rows.get(&y), x, color)
+                + line_congestion(idx.cols.get(&x), y, color)
+                + line_congestion(idx.diag1.get(&(x - y)), x, color)
+                + line_congestion(idx.diag2.get(&(x + y)), x, color)
+        });
         bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
     }
 
@@ -2825,6 +2887,7 @@ pub fn evaluate_bishop(
     phase: i32,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
+    congestion: Option<i32>,
 ) -> i32 {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
@@ -2832,8 +2895,10 @@ pub fn evaluate_bishop(
 
     {
         let idx = &game.spatial_indices;
-        let units = line_congestion(idx.diag1.get(&(x - y)), x, color)
-            + line_congestion(idx.diag2.get(&(x + y)), x, color);
+        let units = congestion.unwrap_or_else(|| {
+            line_congestion(idx.diag1.get(&(x - y)), x, color)
+                + line_congestion(idx.diag2.get(&(x + y)), x, color)
+        });
         bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
     }
 
@@ -3168,14 +3233,20 @@ fn safe_check_units(
                 if (sx, sy) != (px, py)
                     && (sx, sy) != (kx, ky)
                     && !set.is_full()
-                    && !set.contains(&(sx, sy))
                     && king_sees(sx, sy)
+                    && !set.contains(&(sx, sy))
                     && reaches(pt, px, py, sx, sy)
                     && safe(sx, sy)
                 {
                     set.push((sx, sy));
                 }
             }
+        }
+
+        // The knight set only counts as 0, 1 or 2+ and no retain reads it, so a
+        // third square changes nothing and its attack scans can be skipped.
+        if knight.len() >= 2 {
+            continue;
         }
 
         // A knightrider checks from where one of the king's knight lines crosses one of
@@ -5135,6 +5206,7 @@ mod tests {
             MAX_PHASE,
             &[],
             &[],
+            None,
         );
         // Central bishop should have positive score
         assert!(
@@ -5161,6 +5233,7 @@ mod tests {
             MAX_PHASE,
             &[],
             &[],
+            None,
         );
         // Rook should have score for mobility etc
         assert!(score.abs() < 1000, "Rook score should be reasonable");
@@ -5184,6 +5257,7 @@ mod tests {
             MAX_PHASE,
             &[],
             &[],
+            None,
         );
         // Queen in center should have decent positional score
         assert!(score.abs() < 2000, "Queen score should be reasonable");

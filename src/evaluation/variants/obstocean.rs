@@ -798,6 +798,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                         phase,
                                         white_pawns,
                                         black_pawns,
+                                        None,
                                     ) + bishop_pawn_support(
                                         game,
                                         x,
@@ -818,6 +819,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                         phase,
                                         white_pawns,
                                         black_pawns,
+                                        None,
                                     ) + piece_pawn_escort(x, y, my_pawns, promo_rank, is_white)
                                 }
                                 PieceType::Queen | PieceType::RoyalQueen => {
@@ -831,6 +833,7 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                         phase,
                                         white_pawns,
                                         black_pawns,
+                                        None,
                                     ) + piece_pawn_escort(x, y, my_pawns, promo_rank, is_white)
                                 }
                                 _ => 0, // King: PSQT only
