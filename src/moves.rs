@@ -2,7 +2,7 @@ use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{EnPassantState, GameRules};
 use crate::rights::SpecialRights;
 use crate::utils::{PRIMES_UNDER_128, is_prime_fast};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2764,8 +2764,6 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     let min_y = COORD_MIN_Y.load(Ordering::Relaxed);
     let max_y = COORD_MAX_Y.load(Ordering::Relaxed);
 
-    const MAX_INF_DISTANCE: i64 = 256;
-
     // Saturating: at the real play border these differences exceed i64 for any
     // piece past +/-1000, and a wrapped negative reads as "no room", silently
     // deleting every move along the ray. Far escapes land out at +/-4032.
@@ -2793,8 +2791,7 @@ fn ray_border_distance(from: &Coordinate, dir_x: i64, dir_y: i64) -> Option<i64>
     } else {
         return None;
     };
-    let limit = raw.min(MAX_INF_DISTANCE);
-    if limit > 0 { Some(limit) } else { None }
+    if raw > 0 { Some(raw) } else { None }
 }
 
 /// Clear room a ray needs before a slider gets its one far escape move. Bounded
@@ -2873,38 +2870,6 @@ fn dist_between(a: i64, b: i64) -> Option<i64> {
     i64::try_from(a.abs_diff(b)).ok()
 }
 
-/// Distance past which a candidate square needs a reason beyond proximity to be
-/// generated. Cheap default filter; critical targets bypass it entirely.
-const BASE_INTERCEPTION_DIST: i64 = 16;
-
-/// Whether a target is worth reaching from any distance: an undefendable piece or
-/// a heavy piece is worth the move slot regardless of proximity. The expensive
-/// `is_square_attacked` probe only runs for candidates the distance filter drops.
-#[inline]
-fn is_critical_target(
-    board: &Board,
-    indices: &SpatialIndices,
-    target: &Piece,
-    tx: i64,
-    ty: i64,
-    undefended: &mut Option<bool>,
-) -> bool {
-    if matches!(
-        target.piece_type(),
-        PieceType::Rook
-            | PieceType::Queen
-            | PieceType::Chancellor
-            | PieceType::Archbishop
-            | PieceType::Amazon
-            | PieceType::RoyalQueen
-    ) {
-        return true;
-    }
-    *undefended.get_or_insert_with(|| {
-        !is_square_attacked(board, &Coordinate::new(tx, ty), target.color(), indices)
-    })
-}
-
 /// Steps along a direction component to cover `num`, or None if it does not land
 /// exactly or runs the wrong way. Slider and rider components are only ever +-1 or
 /// +-2, so the division the general form needs is a shift.
@@ -2930,7 +2895,6 @@ fn find_cross_ray_targets_into(
     dir_x: i64,
     dir_y: i64,
     dist_counts: &mut FxHashMap<i64, u8>,
-    royal_dists: &mut FxHashSet<i64>,
     mut visited_targets: Option<&mut Vec<(Coordinate, u8)>>,
 ) {
     let board = ctx.board;
@@ -2992,10 +2956,6 @@ fn find_cross_ray_targets_into(
         } else {
             friend_wiggle
         };
-        let is_royal = is_enemy && p.piece_type().is_royal();
-        // Probed at most once per piece, and only if some cross-ray distance
-        // actually exceeds BASE_INTERCEPTION_DIST.
-        let mut undefended: Option<bool> = None;
 
         // 1. Orthogonal Cross-Rays (if OUR piece can attack orthogonally)
         if our_attacks_ortho {
@@ -3042,29 +3002,11 @@ fn find_cross_ray_targets_into(
                             // Count this piece at distance d and wiggle distances.
                             // Exempt from the distance filter when the target is
                             // royal or otherwise worth reaching from any distance.
-                            let exempt = is_royal
-                                || (is_enemy
-                                    && d > BASE_INTERCEPTION_DIST
-                                    && is_critical_target(
-                                        board,
-                                        indices,
-                                        &p,
-                                        px,
-                                        py,
-                                        &mut undefended,
-                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if exempt {
-                                royal_dists.insert(d);
-                            }
 
                             for w in 1..=wiggle {
                                 add_dist(dist_counts, d + w, max_dist);
                                 add_dist(dist_counts, d - w, max_dist);
-                                if exempt {
-                                    royal_dists.insert(d + w);
-                                    royal_dists.insert(d - w);
-                                }
                             }
                         }
                     }
@@ -3110,29 +3052,11 @@ fn find_cross_ray_targets_into(
                                 }
                             }
 
-                            let exempt = is_royal
-                                || (is_enemy
-                                    && d > BASE_INTERCEPTION_DIST
-                                    && is_critical_target(
-                                        board,
-                                        indices,
-                                        &p,
-                                        px,
-                                        py,
-                                        &mut undefended,
-                                    ));
                             add_dist(dist_counts, d, max_dist);
-                            if exempt {
-                                royal_dists.insert(d);
-                            }
 
                             for w in 1..=wiggle {
                                 add_dist(dist_counts, d + w, max_dist);
                                 add_dist(dist_counts, d - w, max_dist);
-                                if exempt {
-                                    royal_dists.insert(d + w);
-                                    royal_dists.insert(d - w);
-                                }
                             }
                         }
                     }
@@ -3163,21 +3087,7 @@ fn find_cross_ray_targets_into(
                             .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
                             .filter(|&(nx, _)| nx == px)
                     {
-                        let exempt = is_royal
-                            || (is_enemy
-                                && d > BASE_INTERCEPTION_DIST
-                                && is_critical_target(
-                                    board,
-                                    indices,
-                                    &p,
-                                    px,
-                                    py,
-                                    &mut undefended,
-                                ));
                         add_dist(dist_counts, d, max_dist);
-                        if exempt {
-                            royal_dists.insert(d);
-                        }
                     }
                 }
             }
@@ -3202,21 +3112,7 @@ fn find_cross_ray_targets_into(
                             .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
                             .filter(|&(nx, _)| nx == px)
                     {
-                        let exempt = is_royal
-                            || (is_enemy
-                                && d > BASE_INTERCEPTION_DIST
-                                && is_critical_target(
-                                    board,
-                                    indices,
-                                    &p,
-                                    px,
-                                    py,
-                                    &mut undefended,
-                                ));
                         add_dist(dist_counts, d, max_dist);
-                        if exempt {
-                            royal_dists.insert(d);
-                        }
                     }
                 }
             }
@@ -3318,7 +3214,6 @@ fn generate_sliding_moves_impl(
 
     // Reuse maps across directions to avoid allocations
     let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
-    let mut royal_dists: FxHashSet<i64> = FxHashSet::default();
     let mut knight_dists: Vec<i64> = Vec::new();
     // Archbishop/chancellor also threaten from squares their ray logic ignores.
     let has_knight_leap = matches!(
@@ -3442,7 +3337,6 @@ fn generate_sliding_moves_impl(
             } else {
                 computed = {
                 dist_counts.clear();
-                royal_dists.clear();
                 knight_dists.clear();
                 if has_knight_leap {
                     collect_knight_attack_dists(
@@ -3502,14 +3396,6 @@ fn generate_sliding_moves_impl(
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
                             let is_target_royal = p.piece_type().is_royal();
 
-                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
-                            {
-                                if !rev {
-                                    break;
-                                } else {
-                                    continue;
-                                }
-                            }
 
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
@@ -3527,9 +3413,6 @@ fn generate_sliding_moves_impl(
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
                                 add_dist(&mut dist_counts, d, max_dist);
-                                if is_target_royal {
-                                    royal_dists.insert(d);
-                                }
                             }
                         }
                     }
@@ -3577,14 +3460,6 @@ fn generate_sliding_moves_impl(
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
                             let is_target_royal = p.piece_type().is_royal();
 
-                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
-                            {
-                                if !rev {
-                                    break;
-                                } else {
-                                    continue;
-                                }
-                            }
 
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
@@ -3602,9 +3477,6 @@ fn generate_sliding_moves_impl(
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
                                 add_dist(&mut dist_counts, d, max_dist);
-                                if is_target_royal {
-                                    royal_dists.insert(d);
-                                }
                             }
                         }
                     }
@@ -3664,14 +3536,6 @@ fn generate_sliding_moves_impl(
                                 p.color() != our_color && !p.piece_type().is_uncapturable();
                             let is_target_royal = p.piece_type().is_royal();
 
-                            if !is_enemy && !is_target_royal && piece_dist > BASE_INTERCEPTION_DIST
-                            {
-                                if !rev {
-                                    break;
-                                } else {
-                                    continue;
-                                }
-                            }
 
                             let base_wiggle = if is_enemy {
                                 ENEMY_WIGGLE
@@ -3689,9 +3553,6 @@ fn generate_sliding_moves_impl(
                             for w in -wiggle..=wiggle {
                                 let d = piece_dist + w;
                                 add_dist(&mut dist_counts, d, max_dist);
-                                if is_target_royal {
-                                    royal_dists.insert(d);
-                                }
                             }
                         }
                     }
@@ -3716,7 +3577,6 @@ fn generate_sliding_moves_impl(
                     dir_x,
                     dir_y,
                     &mut dist_counts,
-                    &mut royal_dists,
                     visited_borrow.as_deref_mut(),
                 );
 
@@ -3750,7 +3610,6 @@ fn generate_sliding_moves_impl(
                             && let Some(d) = dist_between(t, base)
                         {
                             add_dist(&mut dist_counts, d, max_dist);
-                            royal_dists.insert(d);
                         }
                     };
                     if is_horizontal {
@@ -3806,7 +3665,6 @@ fn generate_sliding_moves_impl(
                         let d = delta / step;
                         if d > 0 && d <= max_dist {
                             add_dist(&mut dist_counts, d, max_dist);
-                            royal_dists.insert(d);
                         }
                     }
                 }
@@ -3823,11 +3681,7 @@ fn generate_sliding_moves_impl(
                     shared_targets.push(closest_dist);
                 }
 
-                for (&d, &count) in &dist_counts {
-                    if d <= BASE_INTERCEPTION_DIST || count >= 2 || royal_dists.contains(&d) {
-                        shared_targets.push(d);
-                    }
-                }
+                shared_targets.extend(dist_counts.keys().copied());
                 shared_targets.extend(knight_dists.iter().map(|&d| d | CAP_EXEMPT));
                 shared_targets.sort_unstable_by_key(|&v| v & !CAP_EXEMPT);
                 shared_targets.dedup_by(|b, a| {
@@ -3912,8 +3766,8 @@ fn generate_sliding_moves_impl(
                 out.push(Move::new(*from, to, *piece));
             }
 
-            // A fully open ray is empty to the border, but the candidate window caps
-            // at 256, so a slider could never run away without this far-shell escape,
+            // A fully open ray offers only squares on other pieces' lines, so a slider
+            // could never run away without this far-shell escape,
             // kept deliberately outside the cached (never-invalidated) candidate list.
             if gen_type != MoveGenType::Captures
                 && closest_dist == i64::MAX
@@ -5157,6 +5011,23 @@ mod tests {
             // (20,40) is hop 20 on the (1,2) ray and hop 20 on the king's (-1,2) ray.
             assert!(moves.iter().any(|m| m.to.x == 20 && m.to.y == 40));
             assert!(!moves.iter().any(|m| m.to.x == 11 && m.to.y == 22));
+            reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn far_slider_reaches_a_square_attacking_a_piece() {
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            let mut game = GameState::new();
+            // The bishop's open diagonal crosses the rook's diagonal at (5,-5), 3005 steps out.
+            game.setup_position_from_icn("w B-3000,3000|K0,1|r10,0|k50,50");
+            set_slider_cache_bypass(true);
+            let mut moves = MoveList::new();
+            game.get_pseudo_legal_moves_into(&mut moves);
+            set_slider_cache_bypass(false);
+            assert!(moves.iter().any(|m| m.from == Coordinate::new(-3000, 3000)
+                && m.to == Coordinate::new(5, -5)));
             reset_world_bounds();
         });
     }
