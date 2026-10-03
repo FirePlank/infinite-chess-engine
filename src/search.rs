@@ -2555,12 +2555,21 @@ pub fn get_best_move_parallel(
     GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
 
     // Lazy SMP runs only where a thread pool was explicitly provisioned. Native
-    // builds stay single-threaded: parallelism there belongs to the caller, which
-    // must not share the global stop and TT coordination.
+    // builds stay single-threaded unless APEIRON_THREADS asks otherwise (SMP
+    // matches): parallelism there belongs to the caller, which must not share the
+    // global stop and TT coordination.
     #[cfg(target_arch = "wasm32")]
     let num_threads = rayon::current_num_threads().max(1);
     #[cfg(not(target_arch = "wasm32"))]
-    let num_threads = 1;
+    let num_threads = {
+        static NATIVE_THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *NATIVE_THREADS.get_or_init(|| {
+            std::env::var("APEIRON_THREADS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(1, |n| n.clamp(1, 64))
+        })
+    };
 
     USE_SHARED_TT.store(num_threads > 1, std::sync::atomic::Ordering::Relaxed);
 
