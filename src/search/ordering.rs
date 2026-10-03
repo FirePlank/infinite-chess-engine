@@ -85,7 +85,8 @@ pub fn score_move(
                 let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                 if prev_from_hash < 256 && prev_to_hash < 256 {
                     let (cm_piece, cm_to_x, cm_to_y) =
-                        searcher.countermoves[prev_from_hash][prev_to_hash];
+                        searcher.countermoves[crate::search::hist_color(m.piece.color())]
+                            [prev_from_hash][prev_to_hash];
                     if cm_piece != 0
                         && cm_piece == m.piece.piece_type() as u8
                         && cm_to_x == m.to.x as i32

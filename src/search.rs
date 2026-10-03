@@ -1020,7 +1020,8 @@ pub struct Searcher {
 
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
     // Stores the move that refuted the previous move (for quiet beta cutoffs).
-    pub countermoves: Box<[[(u8, i32, i32); 256]; 256]>,
+    /// `[side of the reply][previous from bucket][previous to bucket]`.
+    pub countermoves: Box<[[[(u8, i32, i32); 256]; 256]; 2]>,
 
     // Previous move info for countermove heuristic (from_hash, to_hash)
     pub prev_move_stack: Vec<(usize, usize)>,
@@ -1194,8 +1195,8 @@ impl Searcher {
             },
             countermoves: unsafe {
                 Box::from_raw(
-                    Box::into_raw(vec![(0u8, 0i32, 0i32); 256 * 256].into_boxed_slice())
-                        as *mut [[(u8, i32, i32); 256]; 256],
+                    Box::into_raw(vec![(0u8, 0i32, 0i32); 2 * 256 * 256].into_boxed_slice())
+                        as *mut [[[(u8, i32, i32); 256]; 256]; 2],
                 )
             },
             in_check_history: vec![false; MAX_PLY],
@@ -1473,7 +1474,7 @@ impl Searcher {
         }
 
         // Reset countermoves
-        for row in self.countermoves.iter_mut() {
+        for row in self.countermoves.iter_mut().flatten() {
             for val in row.iter_mut() {
                 *val = (0, 0, 0);
             }
@@ -5182,8 +5183,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 if ply > 0 && searcher.plies_from_null[ply] != 1 {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
-                        searcher.countermoves[prev_from_hash][prev_to_hash] =
-                            (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
+                        searcher.countermoves[hist_color(m.piece.color())][prev_from_hash]
+                            [prev_to_hash] = (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
                     }
                 }
 

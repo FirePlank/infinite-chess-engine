@@ -660,9 +660,9 @@ fn test_countermove_heuristic() {
     // Update countermove table
     let prev_from_hash = 10;
     let prev_to_hash = 20;
-    searcher.countermoves[prev_from_hash][prev_to_hash] = (1, 5, 5);
+    searcher.countermoves[0][prev_from_hash][prev_to_hash] = (1, 5, 5);
 
-    let (piece_type, to_x, to_y) = searcher.countermoves[prev_from_hash][prev_to_hash];
+    let (piece_type, to_x, to_y) = searcher.countermoves[0][prev_from_hash][prev_to_hash];
     assert_eq!(piece_type, 1);
     assert_eq!(to_x, 5);
     assert_eq!(to_y, 5);
@@ -672,8 +672,8 @@ fn test_countermove_heuristic() {
 fn test_countermove_beyond_i16_range() {
     // Coordinates outside i16 (-32768..32767) must not alias to a wrong destination.
     let mut searcher = Box::new(Searcher::new(1000));
-    searcher.countermoves[10][20] = (1, 40_000, -40_000);
-    let (piece_type, to_x, to_y) = searcher.countermoves[10][20];
+    searcher.countermoves[0][10][20] = (1, 40_000, -40_000);
+    let (piece_type, to_x, to_y) = searcher.countermoves[0][10][20];
     assert_eq!(piece_type, 1);
     assert_eq!(to_x, 40_000);
     assert_eq!(to_y, -40_000);

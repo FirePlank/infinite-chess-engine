@@ -667,6 +667,7 @@ impl StagedMoveGen {
             let entry = unsafe {
                 searcher
                     .countermoves
+                    .get_unchecked(crate::search::hist_color(m.piece.color()))
                     .get_unchecked(self.prev_from_hash)
                     .get_unchecked(self.prev_to_hash)
             };
@@ -1742,7 +1743,7 @@ mod tests {
 
         let mut searcher = Searcher::new(1000);
         searcher.prev_move_stack[0] = (3, 9);
-        searcher.countermoves[3][9] = (
+        searcher.countermoves[crate::search::hist_color(quiet.piece.color())][3][9] = (
             quiet.piece.piece_type() as u8,
             quiet.to.x as i32,
             quiet.to.y as i32,
