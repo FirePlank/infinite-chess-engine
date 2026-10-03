@@ -320,7 +320,7 @@ pub struct JsEngineConfig {
 pub struct JsAnalyseOptions {
     /// Number of principal variations to search (1..=legal move count).
     pub multi_pv: Option<usize>,
-    /// Depth cap for this analysis (defaults to 50).
+    /// Depth cap for this analysis (defaults to the maximum, [`search::MAX_PLY`]).
     pub max_depth: Option<usize>,
     /// Depth to resume iterative deepening at (defaults to 1). Pass `last_reached + 1`
     /// on successive slices of the same position so the search keeps deepening instead
@@ -953,7 +953,8 @@ impl Engine {
         };
         search::set_node_limit(options.max_nodes.unwrap_or(0));
         let multi_pv = options.multi_pv.unwrap_or(1).clamp(1, 16);
-        let max_depth = options.max_depth.unwrap_or(50).clamp(1, 64);
+        #[rustfmt::skip]
+        let max_depth = options.max_depth.unwrap_or(search::MAX_PLY).clamp(1, search::MAX_PLY);
         let start_depth = options.start_depth.unwrap_or(1).clamp(1, max_depth);
         let slice_ms = match options.slice_ms.unwrap_or(0) {
             0 => u128::MAX, // Unlimited: run until max_depth completes (deterministic).

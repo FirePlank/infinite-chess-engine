@@ -1216,7 +1216,7 @@ mod tests {
         for config in SKILL_CONFIGS {
             let cap = config.depth_cap.unwrap();
             assert_eq!(
-                effective_skill_depth(&game, 64, config),
+                effective_skill_depth(&game, MAX_PLY, config),
                 cap + config.mop_up_depth_bonus
             );
         }
