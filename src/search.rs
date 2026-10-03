@@ -218,8 +218,10 @@ pub fn set_node_limit(nodes: u64) {
 #[repr(align(64))]
 pub(crate) struct NodeSlot(std::sync::atomic::AtomicU64);
 
+/// No thread cap exists (the page sizes the pool to the core count), so this only has
+/// to exceed any real core count; past it, threads share slots and NPS undercounts.
 #[cfg(feature = "multithreading")]
-pub(crate) const SEARCH_NODE_SLOTS: usize = 16;
+pub(crate) const SEARCH_NODE_SLOTS: usize = 256;
 #[cfg(feature = "multithreading")]
 pub(crate) static SEARCH_THREAD_NODES: [NodeSlot; SEARCH_NODE_SLOTS] =
     [const { NodeSlot(std::sync::atomic::AtomicU64::new(0)) }; SEARCH_NODE_SLOTS];
@@ -323,6 +325,9 @@ pub const PAWN_HISTORY_SIZE: usize = 1024;
 pub const PAWN_HISTORY_MASK: u64 = (PAWN_HISTORY_SIZE - 1) as u64;
 
 /// [pawn_hash % SIZE][piece_type][to_hash] -> history score.
+/// `[side of the reply][previous from bucket][previous to bucket]` -> (piece, to x, to y).
+pub type CounterMoveTable = [[[(u8, i32, i32); 256]; 256]; 2];
+
 pub type PawnHistTable = [[[i16; 256]; 32]; PAWN_HISTORY_SIZE];
 
 /// Allocates a Box<T> with all-zero bytes without a memset (calloc: pages fault in on use).
@@ -1021,7 +1026,7 @@ pub struct Searcher {
     // Countermove heuristic [prev_from_hash][prev_to_hash] -> (piece_type, to_x, to_y)
     // Stores the move that refuted the previous move (for quiet beta cutoffs).
     /// `[side of the reply][previous from bucket][previous to bucket]`.
-    pub countermoves: Box<[[[(u8, i32, i32); 256]; 256]; 2]>,
+    pub countermoves: Box<CounterMoveTable>,
 
     // Previous move info for countermove heuristic (from_hash, to_hash)
     pub prev_move_stack: Vec<(usize, usize)>,
@@ -1196,7 +1201,7 @@ impl Searcher {
             countermoves: unsafe {
                 Box::from_raw(
                     Box::into_raw(vec![(0u8, 0i32, 0i32); 2 * 256 * 256].into_boxed_slice())
-                        as *mut [[[(u8, i32, i32); 256]; 256]; 2],
+                        as *mut CounterMoveTable,
                 )
             },
             in_check_history: vec![false; MAX_PLY],
@@ -2571,7 +2576,7 @@ pub fn get_best_move_parallel(
             std::env::var("APEIRON_THREADS")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
-                .map_or(1, |n| n.clamp(1, 64))
+                .map_or(1, |n| n.max(1))
         })
     };
 
@@ -2744,12 +2749,23 @@ pub fn stop_analysis_helpers() {
     GLOBAL_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Detached Lazy SMP helper: one continuous unbounded deepening search on a rayon
-/// thread, feeding the shared TT through the worker's JS yields. It retires within a
-/// node batch once `check_time` sees its epoch superseded.
+/// Each analysis helper's latest completed lines, tagged with its epoch, so a slice's
+/// result can be voted across threads the way Stockfish reports its best thread.
+#[cfg(feature = "multithreading")]
+static HELPER_LINES: std::sync::Mutex<Vec<(u64, Vec<PVLine>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Detached Lazy SMP analysis helper: the main thread's MultiPV search, unbounded, on a
+/// rayon thread, sharing the TT and publishing its lines for the vote. It retires within
+/// a node batch once `check_time` sees its epoch superseded.
 #[cfg(feature = "multithreading")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
+pub(crate) fn helper_run(
+    mut game: GameState,
+    epoch: u64,
+    thread_id: usize,
+    max_depth: usize,
+    multi_pv: usize,
+) {
     if HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed) != epoch {
         return; // Superseded while queued behind the previous batch.
     }
@@ -2769,6 +2785,7 @@ pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
         // Unique RNG per helper for search diversity (mirrors get_best_move_threaded).
         let base_seed = searcher.seed;
         searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
+        searcher.adopt_eval_kind(game.eval_kind);
         searcher.new_search();
 
         searcher.thread_id = thread_id;
@@ -2781,9 +2798,26 @@ pub(crate) fn helper_run(mut game: GameState, epoch: u64, thread_id: usize) {
             .game_rules
             .move_rule_limit
             .map_or(i32::MAX, |v| v as i32);
-        searcher.contempt = CONTEMPT;
-
-        let _ = search_with_searcher(searcher, &mut game, MAX_PLY);
+        // Same search as the main analysis thread (contempt 0, every MultiPV line),
+        // so a helper's lines can stand in for the main thread's when it wins the vote.
+        searcher.contempt = 0;
+        let mut publish = |info: &DepthInfo| {
+            if let Ok(mut slots) = HELPER_LINES.lock() {
+                if slots.len() <= thread_id {
+                    slots.resize(thread_id + 1, (0, Vec::new()));
+                }
+                slots[thread_id] = (epoch, info.lines.to_vec());
+            }
+        };
+        let _ = get_best_moves_multipv_impl(
+            searcher,
+            &mut game,
+            max_depth,
+            multi_pv.max(1),
+            true,
+            None,
+            Some(&mut publish),
+        );
         searcher.helper_epoch = 0;
     });
     HELPERS_LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -2982,6 +3016,38 @@ pub fn analyse_position(
     })
 }
 
+/// Swaps in a helper's lines when it wins the thread vote over the main analysis thread,
+/// as Stockfish outputs its best thread's PV once a search ends.
+#[cfg(feature = "multithreading")]
+pub fn vote_analysis_lines(result: &mut MultiPVResult) {
+    let epoch = HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    let Some(main) = result.lines.first() else {
+        return;
+    };
+    let as_vote = |line: &PVLine, thread_id: usize| ThreadResult {
+        best_move: line.mv,
+        score: line.score,
+        completed_depth: line.depth,
+        pv_length: line.pv.len(),
+        nodes: 0,
+        thread_id,
+    };
+    let Ok(slots) = HELPER_LINES.lock() else {
+        return;
+    };
+    let mut voters = vec![as_vote(main, 0)];
+    let mut sources = vec![None];
+    for (i, (e, lines)) in slots.iter().enumerate() {
+        if *e == epoch && lines.len() == result.lines.len() && let Some(top) = lines.first() {
+            voters.push(as_vote(top, i));
+            sources.push(Some(lines));
+        }
+    }
+    if let Some(lines) = sources[select_best_thread(&voters)] {
+        result.lines = lines.clone();
+    }
+}
+
 /// Sets the global seed and re-initializes the PRNG.
 /// This affects subsequent calls to functions that use GLOBAL_SEARCHER.
 pub fn set_global_params(seed: u64, noise_amp: Option<i32>) {
@@ -3026,7 +3092,7 @@ pub(crate) fn get_best_moves_multipv_impl(
     // Analysis start (streaming callback present): reset the per-thread node counters so the
     // aggregated NPS counts only this position's search, not retired helpers from the last one.
     #[cfg(feature = "multithreading")]
-    if on_depth.is_some() {
+    if on_depth.is_some() && searcher.thread_id == 0 {
         reset_search_nodes();
     }
 

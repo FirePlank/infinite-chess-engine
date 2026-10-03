@@ -146,7 +146,7 @@ fn bench_time_to_depth() {
             GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             for i in 1..threads {
                 let gc = helper_game.clone();
-                rayon::spawn(move || helper_run(gc, epoch, i));
+                rayon::spawn(move || helper_run(gc, epoch, i, target, 1));
             }
             while reached < target {
                 let start = (reached + 1).min(target);

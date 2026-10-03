@@ -282,7 +282,10 @@ pub struct JsMoveWithEval {
     pub to: String,   // "x,y"
     pub promotion: Option<String>,
     pub eval: i32,    // centipawn score from side-to-move's perspective
-    pub depth: usize, // depth reached
+    pub depth: usize, // depth limit requested
+    /// Depth the calling thread completed, and nodes summed over every search thread.
+    pub completed_depth: usize,
+    pub nodes: u64,
 }
 
 #[cfg(any(feature = "param_tuning", feature = "eval_tuning"))]
@@ -824,9 +827,9 @@ impl Engine {
         search::set_global_params(effective_seed, noise_amp);
 
         // Choose search path based on strength level.
-        let (best_move, eval) = if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
+        let (best_move, eval, nodes) = if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
             // Use strength limited search (uses global seed we just set)
-            if let Some((bm, ev, _stats)) = search::get_best_move_limited(
+            if let Some((bm, ev, stats)) = search::get_best_move_limited(
                 &mut self.game,
                 depth,
                 opt_time,
@@ -835,13 +838,13 @@ impl Engine {
                 silent,
                 is_soft_limit,
             ) {
-                (bm, ev)
+                (bm, ev, stats.nodes)
             } else {
                 return JsValue::NULL;
             }
         } else {
             // Normal search: use parallel version (handles both single and multi-threaded)
-            if let Some((bm, ev, _stats)) = search::get_best_move_parallel(
+            if let Some((bm, ev, stats)) = search::get_best_move_parallel(
                 &mut self.game,
                 depth,
                 opt_time,
@@ -849,7 +852,7 @@ impl Engine {
                 silent,
                 is_soft_limit,
             ) {
-                (bm, ev)
+                (bm, ev, stats.nodes)
             } else {
                 return JsValue::NULL;
             }
@@ -861,6 +864,8 @@ impl Engine {
             promotion: best_move.promotion.map(|p| p.to_str().to_string()),
             eval,
             depth,
+            completed_depth: search::get_completed_depth(),
+            nodes,
         };
         serde_wasm_bindgen::to_value(&js_move).unwrap()
     }
@@ -962,8 +967,8 @@ impl Engine {
         // worker's JS yields, and retire only when the epoch bumps.
         #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
         {
-            // Helpers = pool size - 1, capped at 3: the site exposes up to 4 analysis threads.
-            let num_threads = rayon::current_num_threads().max(1).min(4);
+            // Helpers = pool size - 1; the page sizes the pool, so no engine-side cap.
+            let num_threads = rayon::current_num_threads().max(1);
             if num_threads > 1 {
                 search::init_shared_tt();
                 search::USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -978,11 +983,13 @@ impl Engine {
                     search::GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
                     for i in 1..num_threads {
                         let game_clone = self.game.clone();
-                        rayon::spawn(move || search::helper_run(game_clone, epoch, i));
+                        rayon::spawn(move || {
+                            search::helper_run(game_clone, epoch, i, max_depth, multi_pv)
+                        });
                     }
                 }
 
-                let result = search::analyse_position(
+                let mut result = search::analyse_position(
                     &mut self.game,
                     max_depth,
                     start_depth,
@@ -990,6 +997,7 @@ impl Engine {
                     multi_pv,
                     &mut callback,
                 );
+                search::vote_analysis_lines(&mut result);
                 return self.analysis_result_to_js(&result);
             }
         }
