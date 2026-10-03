@@ -329,6 +329,8 @@ pub struct JsAnalyseOptions {
     /// Time budget of this slice in milliseconds, a hard limit that may cut a depth short
     /// (only completed depths are reported); 0 or absent runs until `max_depth` completes.
     pub slice_ms: Option<u64>,
+    /// Node budget per search thread, a hard limit like `slice_ms`. Only applies without one.
+    pub max_nodes: Option<u64>,
 }
 
 /// One principal variation of an analysis update.
@@ -946,8 +948,10 @@ impl Engine {
                 max_depth: None,
                 start_depth: None,
                 slice_ms: None,
+                max_nodes: None,
             },
         };
+        search::set_node_limit(options.max_nodes.unwrap_or(0));
         let multi_pv = options.multi_pv.unwrap_or(1).clamp(1, 16);
         let max_depth = options.max_depth.unwrap_or(50).clamp(1, 64);
         let start_depth = options.start_depth.unwrap_or(1).clamp(1, max_depth);

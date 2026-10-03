@@ -203,13 +203,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 /// when the wasm memory is shared, so `check_time` polls it every node batch.
 pub(crate) static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
 
-/// Per-search node budget for data generation (0 = none); only data_gen builds carry it.
-#[cfg(feature = "data_gen")]
-static NODE_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Node budget of each search thread (`u64::MAX` = none). Only searches with no time limit
+/// honor it, except in data_gen builds, where every search does.
+static NODE_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
-#[cfg(feature = "data_gen")]
+/// Sets [`NODE_LIMIT`]; 0 means none. It persists until set again.
 pub fn set_node_limit(nodes: u64) {
-    NODE_LIMIT.store(nodes, std::sync::atomic::Ordering::Relaxed);
+    let limit = if nodes == 0 { u64::MAX } else { nodes };
+    NODE_LIMIT.store(limit, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Per-thread node counter for aggregated NPS. Each slot is cache-line aligned so
@@ -1670,12 +1671,9 @@ impl Searcher {
                 return true;
             }
             #[cfg(feature = "data_gen")]
-            {
-                let limit = NODE_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
-                if limit != 0 && self.hot.nodes >= limit {
-                    self.hot.stopped = true;
-                    return true;
-                }
+            if self.hot.nodes >= NODE_LIMIT.load(std::sync::atomic::Ordering::Relaxed) {
+                self.hot.stopped = true;
+                return true;
             }
             #[cfg(feature = "multithreading")]
             if self.helper_epoch != 0
@@ -1686,8 +1684,16 @@ impl Searcher {
             }
         }
 
-        // Fast-path: no time limit (unlimited analysis slices, offline test/perft helpers).
+        // Fast-path: no time limit (unlimited or node-limited analysis, offline test/perft
+        // helpers). Timed searches never get here, so the node budget costs them nothing.
         if self.hot.time_limit_ms == u128::MAX {
+            #[cfg(not(feature = "data_gen"))] // data_gen already checks it above, for every search.
+            if self.hot.nodes & 4095 == 0
+                && self.hot.nodes >= NODE_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                self.hot.stopped = true;
+                return true;
+            }
             return false;
         }
 
