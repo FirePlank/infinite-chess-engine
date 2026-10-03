@@ -123,7 +123,8 @@ pub fn score_move(
                         let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                         let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
-                        let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece]
+                        let slot = idx + 3 * crate::search::hist_color(m.piece.color());
+                        let val = searcher.cont_history[slot][prev_cap][prev_ic][prev_piece]
                             [prev_to_hash][cur_from_hash][cur_to_hash]
                             as i32;
                         score += (val * CONT_WEIGHTS[idx]) / 1024;

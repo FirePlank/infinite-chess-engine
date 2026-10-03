@@ -707,7 +707,8 @@ impl StagedMoveGen {
         const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
             // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
-            let val = searcher.cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h]
+            let slot = idx + 3 * crate::search::hist_color(m.piece.color());
+            let val = searcher.cont_history[slot][prev_cap][prev_ic][prev_piece][prev_to_h]
                 [cur_from_hash][cur_to_hash] as i32;
             score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
