@@ -4236,34 +4236,51 @@ fn find_huygen_blocker(
     let our_coord = if is_horizontal { from.x } else { from.y };
 
     if let Some(vec) = line_vec {
-        // Scan outward from our square. An empty square (a quiet's landing, scored for
-        // its threats) has no entry, so both sides start at its insertion point.
-        let (fwd, bwd) = match vec.coords.binary_search(&our_coord) {
-            Ok(idx) => (idx + 1, idx),
-            Err(ins) => (ins, ins),
-        };
-        let first_prime = |i: usize| {
-            let coord = vec.coords[i];
-            // Exact u64: the far end of the board can be past any i64 distance.
-            let dist = coord.abs_diff(our_coord);
-            crate::utils::is_prime_u64(dist).then(|| {
-                let p = Piece::from_packed(vec.pieces[i]);
-                // Void blocks like friendly
-                let effective_color = if p.piece_type() == PieceType::Void {
-                    our_color
+        // Binary search for our position in the sorted list
+        match vec.coords.binary_search(&our_coord) {
+            Ok(idx) => {
+                // Found our position, iterate in the direction to find first blocker at prime distance
+                if (is_horizontal && dir_x > 0) || (!is_horizontal && dir_y > 0) {
+                    // Positive direction: iterate forward from idx + 1
+                    for i in (idx + 1)..vec.len() {
+                        let coord = vec.coords[i];
+                        let packed = vec.pieces[i];
+                        // Exact u64: the far end of the board can be past any i64 distance.
+                        let dist = coord.abs_diff(our_coord);
+                        // O(1) prime check
+                        if crate::utils::is_prime_u64(dist) {
+                            let p = Piece::from_packed(packed);
+                            // Void blocks like friendly
+                            let effective_color = if p.piece_type() == PieceType::Void {
+                                our_color
+                            } else {
+                                p.color()
+                            };
+                            return (i64::try_from(dist).unwrap_or(i64::MAX - 1), Some(effective_color), coord);
+                        }
+                    }
                 } else {
-                    p.color()
-                };
-                (i64::try_from(dist).unwrap_or(i64::MAX - 1), Some(effective_color), coord)
-            })
-        };
-        let found = if (is_horizontal && dir_x > 0) || (!is_horizontal && dir_y > 0) {
-            (fwd..vec.len()).find_map(first_prime)
-        } else {
-            (0..bwd).rev().find_map(first_prime)
-        };
-        if let Some(hit) = found {
-            return hit;
+                    // Negative direction: iterate backward from idx - 1
+                    for i in (0..idx).rev() {
+                        let coord = vec.coords[i];
+                        let packed = vec.pieces[i];
+                        let dist = coord.abs_diff(our_coord);
+                        // O(1) prime check
+                        if crate::utils::is_prime_u64(dist) {
+                            let p = Piece::from_packed(packed);
+                            let effective_color = if p.piece_type() == PieceType::Void {
+                                our_color
+                            } else {
+                                p.color()
+                            };
+                            return (i64::try_from(dist).unwrap_or(i64::MAX - 1), Some(effective_color), coord);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Piece not in index (shouldn't happen)
+            }
         }
     }
 
