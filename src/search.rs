@@ -4355,7 +4355,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Razoring: if eval is really low, drop to qsearch. The margin is linear so
         // it stays reachable at depth; seek_mate guards mate-finding instead of a cap.
         // Not under exclusion: qsearch would return the parent's own TT bound on the singular move.
-        if !is_pv
+        // Only at an expected all-node: a cut node still hopes for a refutation (Stockfish).
+        if all_node
             && !searcher.hot.seek_mate
             && excluded_move.is_none()
             && eval < alpha - razoring_quad() * depth as i32
