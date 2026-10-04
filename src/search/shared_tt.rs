@@ -481,14 +481,21 @@ impl SharedTranspositionTable {
                     e.score16.set(score_to_i16(adj_score));
                     e.eval16.set(store_eval);
                     e.key16.set(key16);
-                } else if old_depth >= 5
-                    && TTEntry::flag(old_gb) != TTFlag::Exact
-                    && super::is_decisive(score_from_i16(e.score16.get() as i32))
-                {
-                    // Only a decisive bound decays. Aging ordinary deep bounds costs
-                    // cutoffs table-wide; a stale mate bound is what has to lose depth
-                    // so a fresher search can replace it.
-                    e.depth8.set(old_depth - 1);
+                } else {
+                    // The deeper entry keeps its bound, but a fresh best move still
+                    // orders the next visit better than the old one.
+                    if store_move.is_some() {
+                        e.move_data.set(mdata_to_write ^ (params.hash >> 16));
+                    }
+                    if old_depth >= 5
+                        && TTEntry::flag(old_gb) != TTFlag::Exact
+                        && super::is_decisive(score_from_i16(e.score16.get() as i32))
+                    {
+                        // Only a decisive bound decays. Aging ordinary deep bounds costs
+                        // cutoffs table-wide; a stale mate bound is what has to lose depth
+                        // so a fresher search can replace it.
+                        e.depth8.set(old_depth - 1);
+                    }
                 }
                 return;
             }
