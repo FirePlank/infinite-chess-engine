@@ -1,6 +1,6 @@
 {
-  "name": "361_king_pawn_phase",
-  "old": "70ed019",
+  "name": "360_safe_path_promo_square",
+  "old": "ac2d150",
   "games": 4000,
   "shards": 40,
   "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
