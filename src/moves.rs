@@ -586,6 +586,14 @@ pub fn is_piece_attacking_square(
         PieceType::Knightrider if !(ax > 0 && ay > 0 && (ay == 2 * ax || ax == 2 * ay)) => {
             return false;
         }
+        // An enemy on the line is captured at any distance once nothing stands between,
+        // which is the generator's own rule; a far one cost it a whole-board scan.
+        PieceType::Knightrider
+            if board.get_piece(to.x, to.y).is_some_and(|t| is_enemy_piece(&t, piece.color())) =>
+        {
+            return in_bounds(to.x, to.y)
+                && knightrider_path_clear(board, from.x, from.y, to.x, to.y);
+        }
         PieceType::Rose
             if ax > ROSE_SPAN as i128
                 || ay > ROSE_SPAN as i128

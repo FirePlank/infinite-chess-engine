@@ -2589,13 +2589,9 @@ impl GameState {
                                 if t >= 1 && k >= 1 && k <= check_dist {
                                     let tx = from.x + t * ndx;
                                     let ty = from.y + t * ndy;
-                                    let mut path_clear = true;
-                                    for i in 1..t {
-                                        if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
-                                            path_clear = false;
-                                            break;
-                                        }
-                                    }
+                                    let path_clear = crate::moves::knightrider_path_clear(
+                                        &s.board, from.x, from.y, tx, ty,
+                                    );
                                     if path_clear
                                         && can_block_at(tx, ty)
                                         && (!is_huygen_checker || is_prime_fast(check_dist - k))
@@ -4983,6 +4979,18 @@ mod tests {
             game.make_move_coords(3, 3, 2, 1, None);
         }
         assert_eq!(game.repetition, 4, "the en passant position is not counted");
+    }
+
+    /// A knightrider a billion hops from a far rook check still finds its block, by
+    /// testing the pieces on its line rather than walking every hop.
+    #[test]
+    fn knightrider_blocks_a_far_check_without_walking_the_hops() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 K0,0|NR0,1000000000|r1000000000000,0|k5,5");
+        let mut out = crate::moves::MoveList::new();
+        game.get_evasion_moves_into(&mut out);
+        assert!(out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y)
+            == (0, 1_000_000_000, 2_000_000_000, 0)));
     }
 
     /// A knightrider checking from 40 hops away is still blocked exactly: the rook's
