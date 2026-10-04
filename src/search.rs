@@ -5170,7 +5170,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             };
 
             // Child type for non-first moves: alternate Cut/All
-            let alternate_type = if cut_node {
+            let child_type = if cut_node {
                 NodeType::All
             } else {
                 NodeType::Cut
@@ -5181,10 +5181,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let base_depth = (depth as i32) - 1 + extension;
             let reduction = reduction.max(base_depth - new_depth);
             searcher.reduction_stack[ply] = reduction;
-
-            // A reduced scout expects a quick refutation, so its child is a cut node
-            // whatever the parent (Stockfish); an unreduced one alternates.
-            let child_type = if reduction > 0 { NodeType::Cut } else { alternate_type };
 
             // The first move of the node already took the full window in the
             // `legal_moves == 1` arm above, so every move reaching here is scouted.
@@ -5207,7 +5203,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // Re-search at full depth if it looks promising
             if s > alpha && (reduction > 0 || s < beta) {
                 // Re-search with PV-like search if we're in PV, otherwise same child type
-                let research_type = if is_pv { NodeType::PV } else { alternate_type };
+                let research_type = if is_pv { NodeType::PV } else { child_type };
 
                 // LMR deeper/shallower re-search depth adjustment
                 // If reduced search returned good value, search deeper
