@@ -5655,7 +5655,6 @@ fn quiescence(
 
     // TT Probe in QSearch
     let hash = game.hash;
-    let alpha_orig = alpha;
     let rule50_count = game.halfmove_clock;
 
     // QSearch TT probe with depth 0
@@ -6080,13 +6079,9 @@ fn quiescence(
         best_value = (best_value + beta) / 2;
     }
 
-    let tt_flag = if best_value >= beta {
-        TTFlag::LowerBound
-    } else if best_value <= alpha_orig {
-        TTFlag::UpperBound
-    } else {
-        TTFlag::Exact
-    };
+    // Which captures qsearch tries depends on alpha, so its score is never exact for
+    // another window: store a bound either way, as Stockfish does.
+    let tt_flag = if best_value >= beta { TTFlag::LowerBound } else { TTFlag::UpperBound };
 
     store_tt_with_shared(
         searcher,
