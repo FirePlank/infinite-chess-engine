@@ -385,6 +385,7 @@ use shared_tt::SharedTranspositionTable;
 mod ordering;
 use ordering::{
     hash_coord_16, hash_move_dest, hash_move_from, sort_captures, sort_moves_root,
+    sort_qs_evasions,
 };
 
 pub mod movegen;
@@ -5875,8 +5876,11 @@ fn quiescence(
         }
     }
 
-    // Sort captures by MVV-LVA
-    sort_captures(searcher, game, &mut tactical_moves);
+    if tactical_check {
+        sort_qs_evasions(searcher, game, &mut tactical_moves);
+    } else {
+        sort_captures(searcher, game, &mut tactical_moves);
+    }
 
     // Try the TT move first if it was generated here: it caused a cutoff or was
     // best at this position before, so it is a strong first try. Only hoisted when
