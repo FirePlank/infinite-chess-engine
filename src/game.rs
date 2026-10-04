@@ -1709,20 +1709,13 @@ impl GameState {
             if pt.is_royal() {
                 // King moves: destination must not be attacked, or the mover's win
                 // condition must allow its king to be captured
-                use crate::moves::{is_square_attacked, knightrider_attacks_square_exact};
-                // The root list must be exact, so the capped rider walk inside
-                // is_square_attacked is backed up by an uncapped check here.
-                if (is_square_attacked(
+                use crate::moves::is_square_attacked;
+                if is_square_attacked(
                     &self.board,
                     &m.to,
                     self.turn.opponent(),
                     &self.spatial_indices,
-                ) || knightrider_attacks_square_exact(
-                    &self.board,
-                    &m.to,
-                    self.turn.opponent(),
-                    &self.spatial_indices,
-                )) && !self.king_capturable(self.turn)
+                ) && !self.king_capturable(self.turn)
                 {
                     illegal = true;
                 }
