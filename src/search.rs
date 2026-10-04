@@ -4205,6 +4205,15 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let adj = bonus.clamp(-max_h, max_h);
         let entry = &mut searcher.history[hist_color(prev.piece.color())][pt][hash_move_dest(&prev)];
         *entry += adj - ((*entry * adj.abs()) >> 14);
+        // A non-pawn move left the pawn structure as it found it, so the same signal
+        // also trains that structure's pawn history (Stockfish, on a TT miss).
+        if !tt_hit_node
+            && prev.piece.piece_type() != PieceType::Pawn
+            && prev.promotion.is_none()
+        {
+            let to = hash_move_dest(&prev);
+            searcher.update_pawn_history(game.pawn_hash, prev.piece.piece_type(), to, bonus);
+        }
     }
 
     // Compare eval to 2 plies ago. In check there is no honest static eval to
