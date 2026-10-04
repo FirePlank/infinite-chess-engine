@@ -1640,6 +1640,19 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                 },
                 out,
             );
+            // The quiet generator gives a royal queen its castling moves; the full
+            // list must too, or the root never sees them.
+            if piece.piece_type() == PieceType::RoyalQueen {
+                generate_castling_moves_into(
+                    board,
+                    from,
+                    piece,
+                    special_rights,
+                    game_rules,
+                    indices,
+                    out,
+                );
+            }
         }
         PieceType::Chancellor => {
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);

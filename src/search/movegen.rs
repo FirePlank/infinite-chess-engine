@@ -339,7 +339,11 @@ impl StagedMoveGen {
     /// move fails pseudo-legality and is then skipped as already-tried when generation
     /// produces it. Rebuild the partner by the same nearest-eligible rule.
     fn reconstruct_castling_partner(game: &GameState, mut m: Move) -> Move {
-        if m.partner_x != crate::moves::NO_PARTNER || !m.piece.piece_type().is_royal() {
+        // A royal queen's two-square row move without a partner is an ordinary slide.
+        if m.partner_x != crate::moves::NO_PARTNER
+            || !m.piece.piece_type().is_royal()
+            || m.piece.piece_type() == PieceType::RoyalQueen
+        {
             return m;
         }
         let dx = m.to.x - m.from.x;
@@ -426,7 +430,10 @@ impl StagedMoveGen {
         // has them, not to the king alone.
         if piece.piece_type().is_royal() {
             let dx = m.to.x - m.from.x;
-            if m.to.y == m.from.y && dx.abs() > 1 {
+            // A royal queen also slides along its row; only a partner makes it a castle.
+            let slide = piece.piece_type() == PieceType::RoyalQueen
+                && m.partner_x == crate::moves::NO_PARTNER;
+            if m.to.y == m.from.y && dx.abs() > 1 && !slide {
                 if m.partner_x == crate::moves::NO_PARTNER {
                     return false;
                 }
