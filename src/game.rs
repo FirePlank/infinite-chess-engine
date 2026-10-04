@@ -241,6 +241,10 @@ pub struct GameState {
     pub white_promo_rank: i64,
     #[serde(skip)]
     pub black_promo_rank: i64,
+    /// A side has several promotion ranks (custom ICN only), so a pawn's rank depends
+    /// on where it stands; see `white_promo_rank_for`.
+    #[serde(skip)]
+    pub multi_promo_ranks: bool,
     /// Cached royal positions for O(1) lookup. Updated incrementally in make/undo.
     #[serde(skip)]
     pub white_royals: SmallVec<[Coordinate; 1]>,
@@ -377,6 +381,32 @@ impl GameState {
         }
     }
 
+    /// The promotion rank a White pawn on rank `y` is heading for. One rank per side
+    /// (every preset) is a single flag test; several pick the next one ahead.
+    #[inline(always)]
+    pub fn white_promo_rank_for(&self, y: i64) -> i64 {
+        if self.multi_promo_ranks { self.next_promo_rank(true, y) } else { self.white_promo_rank }
+    }
+
+    /// As `white_promo_rank_for`, for a Black pawn on rank `y`.
+    #[inline(always)]
+    pub fn black_promo_rank_for(&self, y: i64) -> i64 {
+        if self.multi_promo_ranks { self.next_promo_rank(false, y) } else { self.black_promo_rank }
+    }
+
+    /// Nearest promotion rank ahead of a pawn on rank `y`; with none ahead, the side's
+    /// first rank, which the pawn is then past.
+    #[cold]
+    #[inline(never)]
+    fn next_promo_rank(&self, white: bool, y: i64) -> i64 {
+        let ranks = &self.game_rules.promotion_ranks;
+        if white {
+            ranks.white.iter().copied().filter(|&r| r > y).min().unwrap_or(self.white_promo_rank)
+        } else {
+            ranks.black.iter().copied().filter(|&r| r < y).max().unwrap_or(self.black_promo_rank)
+        }
+    }
+
     fn needs_precise_castling_rights_hash(&self) -> bool {
         self.castling_partner_counts.iter().any(|&count| count > 1)
     }
@@ -469,6 +499,7 @@ impl GameState {
             black_back_rank: 8,
             white_promo_rank: i64::MIN,
             black_promo_rank: i64::MAX,
+            multi_promo_ranks: false,
             white_royals: SmallVec::new(),
             black_royals: SmallVec::new(),
             pawn_hash: 0,
@@ -522,6 +553,7 @@ impl GameState {
             black_back_rank: 8,
             white_promo_rank: 2_000_000_000_000_000,
             black_promo_rank: -2_000_000_000_000_000,
+            multi_promo_ranks: false,
             white_royals: SmallVec::new(),
             black_royals: SmallVec::new(),
             pawn_hash: 0,
@@ -3828,6 +3860,7 @@ impl GameState {
         self.game_rules.promotion_ranks.black.clear();
         self.white_promo_rank = i64::MIN;
         self.black_promo_rank = i64::MAX;
+        self.multi_promo_ranks = false;
 
         // An absent token means the default, not the previous position's value:
         // a retained royal count makes has_lost_by_royal_capture fire at once.
@@ -3941,8 +3974,7 @@ impl GameState {
                     if parts.is_empty() {
                         continue;
                     }
-                    // Ranks are comma-separated, e.g. (8,17|1,10). Every one promotes; the
-                    // eval's single rank is the first each side's pawns reach.
+                    // Ranks are comma-separated, e.g. (8,17|1,10), and every one promotes.
                     let ranks: Vec<i64> =
                         parts[0].split(',').filter_map(|r| r.parse().ok()).collect();
                     if let (Some(&lo), Some(&hi)) = (ranks.iter().min(), ranks.iter().max()) {
@@ -4230,22 +4262,6 @@ impl GameState {
             self.black_back_rank = bk.y;
         }
 
-        // Sync optimized promotion rank fields with rule-based ones if they exist
-        if let Some(&r) = self.game_rules.promotion_ranks.white.first() {
-            self.white_promo_rank = r;
-        }
-        if let Some(&r) = self.game_rules.promotion_ranks.black.first() {
-            self.black_promo_rank = r;
-        }
-
-        // Validate promotion ranks against world bounds
-        if self.white_promo_rank < min_y || self.white_promo_rank > max_y {
-            self.white_promo_rank = i64::MIN;
-        }
-        if self.black_promo_rank < min_y || self.black_promo_rank > max_y {
-            self.black_promo_rank = i64::MAX;
-        }
-
         self.game_rules
             .promotion_ranks
             .white
@@ -4254,6 +4270,23 @@ impl GameState {
             .promotion_ranks
             .black
             .retain(|&r| r >= min_y && r <= max_y);
+        // The single cached rank is the first each side's pawns reach.
+        if let Some(&r) = self.game_rules.promotion_ranks.white.iter().min() {
+            self.white_promo_rank = r;
+        }
+        if let Some(&r) = self.game_rules.promotion_ranks.black.iter().max() {
+            self.black_promo_rank = r;
+        }
+        self.multi_promo_ranks = self.game_rules.promotion_ranks.white.len() > 1
+            || self.game_rules.promotion_ranks.black.len() > 1;
+
+        // Validate promotion ranks against world bounds
+        if self.white_promo_rank < min_y || self.white_promo_rank > max_y {
+            self.white_promo_rank = i64::MIN;
+        }
+        if self.black_promo_rank < min_y || self.black_promo_rank > max_y {
+            self.black_promo_rank = i64::MAX;
+        }
 
         // Cache starting non-pawn piece counts for phase detection
         self.init_starting_piece_counts();
@@ -4975,7 +5008,8 @@ mod tests {
         assert_eq!(game.repetition, 4, "the en passant position is not counted");
     }
 
-    /// Several promotion ranks per side all promote; the eval rank is the first reached.
+    /// Several promotion ranks per side all promote, and each pawn heads for the next
+    /// one ahead of it; only the base evaluator follows that.
     #[test]
     fn icn_parses_several_promotion_ranks() {
         let mut game = GameState::new();
@@ -4983,6 +5017,16 @@ mod tests {
         assert_eq!(game.game_rules.promotion_ranks.white, vec![8, 17]);
         assert_eq!(game.game_rules.promotion_ranks.black, vec![1, -8]);
         assert_eq!((game.white_promo_rank, game.black_promo_rank), (8, 1));
+        assert!(game.multi_promo_ranks);
+        assert_eq!(game.white_promo_rank_for(3), 8);
+        assert_eq!(game.white_promo_rank_for(10), 17);
+        assert_eq!(game.white_promo_rank_for(20), 8, "past every rank");
+        assert_eq!(game.black_promo_rank_for(5), 1);
+        assert_eq!(game.black_promo_rank_for(0), -8);
+        assert_eq!(
+            crate::evaluation::eval_kind::detect(&game),
+            crate::evaluation::eval_kind::EvalKind::Generic
+        );
         let moves = game.get_pseudo_legal_moves();
         let promotes = |m: &&Move| (m.from.y, m.to.y) == (16, 17) && m.promotion.is_some();
         assert!(moves.iter().any(|m| promotes(&m)));

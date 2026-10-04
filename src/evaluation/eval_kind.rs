@@ -49,6 +49,11 @@ pub fn detect(game: &GameState) -> EvalKind {
 /// world-bounds global and stays testable without mutating process-wide state.
 fn detect_in_region(game: &GameState, region: (i64, i64, i64, i64)) -> EvalKind {
     let (min_x, max_x, min_y, max_y) = region;
+    // The specialized evaluators read one promotion rank per side; only the base
+    // evaluator follows each pawn to the rank ahead of it.
+    if game.multi_promo_ranks {
+        return EvalKind::Generic;
+    }
     // Single board pass: obstacle count + per-side orthodox composition, plus a
     // flag for any fairy (non-orthodox, non-neutral) piece.
     let mut fairy_present = false;
