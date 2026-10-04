@@ -1,11 +1,11 @@
 {
-  "name": "343_corrhist_bound_vs_corrected_resume",
-  "old": "f29ad22",
-  "games": 1500,
+  "name": "350_rfp_quiet_tt_gate",
+  "old": "7136c40",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
+  "elo0": 0,
+  "elo1": 5,
   "adjudication": 1000
 }
