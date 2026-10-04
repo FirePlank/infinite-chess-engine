@@ -1001,6 +1001,9 @@ pub struct SpatialIndices {
     pub has_rose: [bool; 2],
     #[serde(skip)]
     pub has_knightrider: [bool; 2],
+    /// Set once any obstacle is indexed; obstacles never appear mid-game, only vanish.
+    #[serde(skip)]
+    pub has_obstacle: bool,
 }
 
 impl SpatialIndices {
@@ -1014,6 +1017,7 @@ impl SpatialIndices {
         let mut has_huygen = [false, false];
         let mut has_rose = [false, false];
         let mut has_knightrider = [false, false];
+        let mut has_obstacle = false;
 
         // BITBOARD: Use tile-based CTZ iteration for O(popcount) enumeration
         for (cx, cy, tile) in board.tiles.iter() {
@@ -1045,6 +1049,7 @@ impl SpatialIndices {
                     PieceType::Huygen => has_huygen[color_idx] = true,
                     PieceType::Rose => has_rose[color_idx] = true,
                     PieceType::Knightrider => has_knightrider[color_idx] = true,
+                    PieceType::Obstacle => has_obstacle = true,
                     _ => {}
                 }
             }
@@ -1059,6 +1064,7 @@ impl SpatialIndices {
             has_huygen,
             has_rose,
             has_knightrider,
+            has_obstacle,
         }
     }
 
@@ -1072,6 +1078,7 @@ impl SpatialIndices {
 
     /// Incrementally add a piece at (x, y) to the indices.
     pub fn add(&mut self, x: i64, y: i64, packed: u8) {
+        self.has_obstacle |= Piece::from_packed(packed).piece_type() == PieceType::Obstacle;
         self.rows.entry_or_default(y).insert(x, packed);
         self.cols.entry_or_default(x).insert(y, packed);
 
@@ -1180,6 +1187,7 @@ impl Default for SpatialIndices {
             has_huygen: [false, false],
             has_rose: [false, false],
             has_knightrider: [false, false],
+            has_obstacle: false,
         }
     }
 }
@@ -2357,7 +2365,15 @@ fn generate_quiets_for_piece(
 
         // Pawns: only forward moves (single and double push), no captures
         PieceType::Pawn => {
-            generate_pawn_quiet_moves(board, from, piece, special_rights, game_rules, out);
+            generate_pawn_quiet_moves(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices.has_obstacle,
+                out,
+            );
         }
 
         // Knight-like leapers: filter to empty squares
@@ -2601,6 +2617,7 @@ fn generate_pawn_quiet_moves(
     piece: &Piece,
     special_rights: &SpecialRights,
     game_rules: &GameRules,
+    has_obstacle: bool,
     out: &mut MoveList,
 ) {
     let direction = match piece.color() {
@@ -2665,6 +2682,9 @@ fn generate_pawn_quiet_moves(
 
     // The capture stage drops non-promoting obstacle captures to keep qsearch small,
     // so the main search would otherwise never try opening a line through one.
+    if !has_obstacle {
+        return;
+    }
     for dx in [-1i64, 1] {
         let (cx, cy) = (from.x + dx, to_y);
         if !promotion_ranks.contains(&cy)
