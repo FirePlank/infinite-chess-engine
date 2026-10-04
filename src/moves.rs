@@ -2266,7 +2266,7 @@ fn generate_castling_moves(
 /// Generate only sliding captures for quiescence search.
 /// Uses O(log n) SpatialIndices for infinite-range blocker detection.
 pub fn generate_sliding_capture_moves(
-    board: &Board,
+    _board: &Board,
     from: &Coordinate,
     piece: &Piece,
     directions: &[(i64, i64)],
@@ -2276,26 +2276,42 @@ pub fn generate_sliding_capture_moves(
     let our_color = piece.color();
 
     for &(dx_raw, dy_raw) in directions {
+        if dx_raw == 0 && dy_raw == 0 {
+            continue;
+        }
+        // Both signs of a direction share one line, so it is fetched once.
+        let (line, along) = if dx_raw == 0 {
+            (indices.cols.get(&from.x), from.y)
+        } else if dy_raw == 0 {
+            (indices.rows.get(&from.y), from.x)
+        } else if dx_raw == dy_raw {
+            (indices.diag1.get(&(from.x - from.y)), from.x)
+        } else {
+            (indices.diag2.get(&(from.x + from.y)), from.x)
+        };
+        let Some(line) = line else {
+            continue;
+        };
+        let (fwd, back) = line.neighbors(along);
+        let step = if dx_raw == 0 { dy_raw } else { dx_raw };
         for sign in [1i64, -1i64] {
-            let dx = dx_raw * sign;
-            let dy = dy_raw * sign;
-            if dx == 0 && dy == 0 {
+            let Some((c, packed)) = (if step * sign > 0 { fwd } else { back }) else {
+                continue;
+            };
+            let target = Piece::from_packed(packed);
+            if target.color() == our_color || target.piece_type().is_uncapturable() {
                 continue;
             }
-
-            // O(log n) blocker lookup. The square comes from the blocker's own
-            // coordinate: its distance can exceed any i64 across the board.
-            if let Some((c, _, true)) =
-                find_blocker_via_indices(board, from, dx, dy, indices, our_color)
-            {
-                let to = if dx == 0 {
-                    Coordinate::new(from.x, c)
-                } else {
-                    let ry = (c as i128 - from.x as i128) * (dx * dy) as i128;
-                    Coordinate::new(c, (from.y as i128 + ry) as i64)
-                };
-                out.push(Move::new(*from, to, *piece));
-            }
+            // The square comes from the blocker's own coordinate: its distance can
+            // exceed any i64 across the board.
+            let (dx, dy) = (dx_raw * sign, dy_raw * sign);
+            let to = if dx == 0 {
+                Coordinate::new(from.x, c)
+            } else {
+                let ry = (c as i128 - from.x as i128) * (dx * dy) as i128;
+                Coordinate::new(c, (from.y as i128 + ry) as i64)
+            };
+            out.push(Move::new(*from, to, *piece));
         }
     }
 }
