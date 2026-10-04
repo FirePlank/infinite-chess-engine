@@ -856,8 +856,8 @@ pub struct ThreadResult {
 /// proven loss is never switched to.
 #[cfg(feature = "multithreading")]
 fn select_best_thread(all_results: &[ThreadResult]) -> usize {
-    // A helper stopped inside its first iteration reports -INFINITY; as the minimum
-    // it would swamp every score difference, leaving only depth to decide the vote.
+    // A thread stopped inside its first iteration has no score of its own (its move is
+    // a fallback), so it must not vote; as the minimum it would also swamp the scores.
     let finished = |r: &ThreadResult| r.score != -INFINITY && r.completed_depth > 0;
     let min_score = all_results
         .iter()
@@ -886,7 +886,8 @@ fn select_best_thread(all_results: &[ThreadResult]) -> usize {
     let thread_voting_value =
         |r: &ThreadResult| -> i64 { (r.score - min_score + 14) as i64 * r.completed_depth as i64 };
 
-    let mut best_idx = 0;
+    // With no finished thread at all, the main thread's fallback move stands.
+    let mut best_idx = all_results.iter().position(|r| r.thread_id == 0).unwrap_or(0);
     for (i, r) in all_results.iter().enumerate() {
         let best = &all_results[best_idx];
         if !finished(r) {
@@ -2630,12 +2631,12 @@ pub fn get_best_move_parallel(
                     let pv_len = GLOBAL_SEARCHER
                         .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.pv_length[0].max(1)));
                     let completed_depth = GLOBAL_SEARCHER
-                        .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.completed_depth));
+                        .with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth));
 
                     let result = ThreadResult {
                         best_move,
                         score,
-                        completed_depth: completed_depth.max(1),
+                        completed_depth,
                         pv_length: pv_len,
                         nodes: stats.nodes,
                         thread_id: i,
@@ -2660,12 +2661,12 @@ pub fn get_best_move_parallel(
             let pv_len = GLOBAL_SEARCHER
                 .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.pv_length[0].max(1)));
             let completed_depth = GLOBAL_SEARCHER
-                .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.completed_depth));
+                .with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth));
 
             let result = ThreadResult {
                 best_move,
                 score,
-                completed_depth: completed_depth.max(1),
+                completed_depth,
                 pv_length: pv_len,
                 nodes: stats.nodes,
                 thread_id: 0,
