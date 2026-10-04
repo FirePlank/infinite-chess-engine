@@ -4369,14 +4369,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             rfp_max_depth()
         };
-        // A quiet TT move is a known way to do better than the static eval, which the
-        // margin cannot see; only a capture (or no) TT move may be cut here (Stockfish).
-        if !tt_pv
-            && depth < rfp_depth_cap
-            && !is_loss(beta)
-            && !is_win(eval)
-            && (tt_move.is_none() || tt_capture)
-        {
+        if !tt_pv && depth < rfp_depth_cap && !is_loss(beta) && !is_win(eval) {
             let futility_mult = if tt_hit_node {
                 rfp_mult_tt()
             } else {
