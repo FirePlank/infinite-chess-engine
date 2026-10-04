@@ -1,9 +1,9 @@
 {
-  "name": "326_huygen_quiet_threats_resume",
-  "old": "58ad371",
-  "games": 2000,
+  "name": "328_sf_pv_lmr",
+  "old": "b9a04d3",
+  "games": 4000,
   "shards": 40,
-  "variants": "CoaIP_HO",
+  "variants": "site",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
