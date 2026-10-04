@@ -1,11 +1,11 @@
 {
-  "name": "332_tt_refresh_move",
-  "old": "b9a04d3",
-  "games": 4000,
+  "name": "343_corrhist_bound_vs_corrected_resume",
+  "old": "f29ad22",
+  "games": 1500,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
+  "elo0": -10,
+  "elo1": 0,
   "adjudication": 1000
 }
