@@ -161,6 +161,8 @@ pub struct UndoMove {
     pub old_black_royals: SmallVec<[Coordinate; 1]>,
     /// Old repetition value for restoration
     pub old_repetition: i32,
+    pub old_plies_since_rights_loss: u32,
+    pub old_clock_reset_had_ep: bool,
     /// Piece captured via en passant (could be a promoted piece, not just a pawn)
     pub ep_captured_piece: Option<Piece>,
     /// Incremental castling state for O(1) restoration
@@ -293,6 +295,14 @@ pub struct GameState {
     /// Search ply distance from last null move.
     #[serde(skip)]
     pub plies_from_null: u32,
+    /// Plies since a move removed a special right. As on the site, a lost right is one-way:
+    /// no position before it can repeat, even when the right no longer mattered for play.
+    #[serde(skip)]
+    pub plies_since_rights_loss: u32,
+    /// Whether the position the halfmove clock last reset at had an en passant square. The
+    /// site counts it, capturable or not, so no later position can repeat that one.
+    #[serde(skip)]
+    pub clock_reset_had_ep: bool,
 }
 
 // For backwards compatibility, keep castling_rights as an alias
@@ -473,6 +483,8 @@ impl GameState {
             pinned_black: rustc_hash::FxHashMap::default(),
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
+            plies_since_rights_loss: 0,
+            clock_reset_had_ep: false,
             total_phase: 0,
             initial_phase: 0,
             white_royal_bonus: 50,
@@ -524,6 +536,8 @@ impl GameState {
             pinned_black: rustc_hash::FxHashMap::default(),
             move_history: Vec::with_capacity(128),
             plies_from_null: 0,
+            plies_since_rights_loss: 0,
+            clock_reset_had_ep: false,
             total_phase: 0,
             initial_phase: 0,
             white_royal_bonus: 50,
@@ -1224,6 +1238,22 @@ impl GameState {
         self.repetition != 0 && self.repetition < (ply as i32)
     }
 
+    /// How many plies back a position can still repeat: none before the last pawn move or
+    /// capture, special-right loss or null move, nor the clock-reset position if it had an
+    /// en passant square (the site's rules, which tell positions apart by both).
+    fn repetition_window(&self) -> usize {
+        let clock = self.halfmove_clock as usize;
+        let end = clock
+            .min(self.hash_stack.len())
+            .min(self.plies_from_null as usize)
+            .min(self.plies_since_rights_loss as usize);
+        if end == clock && self.clock_reset_had_ep {
+            end.saturating_sub(1)
+        } else {
+            end
+        }
+    }
+
     /// Whether some reversible move by the side to move recreates a position from the
     /// last `end` plies. An unbounded board has no cuckoo table, so the candidates are
     /// the reverses of our own recent moves, checked against the exact hash difference.
@@ -1233,10 +1263,7 @@ impl GameState {
 
         let stack_len = self.hash_stack.len();
         let history_len = self.move_history.len();
-        let end = (self.halfmove_clock as usize)
-            .min(self.plies_from_null as usize)
-            .min(stack_len)
-            .min(history_len);
+        let end = self.repetition_window().min(history_len);
         if end < 3 {
             return false;
         }
@@ -3162,6 +3189,8 @@ impl GameState {
             old_white_royals: self.white_royals.clone(),
             old_black_royals: self.black_royals.clone(),
             old_repetition: self.repetition,
+            old_plies_since_rights_loss: self.plies_since_rights_loss,
+            old_clock_reset_had_ep: self.clock_reset_had_ep,
             ep_captured_piece: None,
             old_effective_castling_rights: self.effective_castling_rights,
             old_castling_partner_counts: self.castling_partner_counts,
@@ -3497,14 +3526,19 @@ impl GameState {
             piece_type: piece.piece_type(),
         });
         self.plies_from_null += 1;
+        self.plies_since_rights_loss = if undo_info.special_rights_removed.is_empty() {
+            self.plies_since_rights_loss.saturating_add(1)
+        } else {
+            0
+        };
+        if self.halfmove_clock == 0 {
+            self.clock_reset_had_ep = self.en_passant.is_some();
+        }
 
         // Compute distance to previous occurrence for repetition detection:
         // of same position. 0 = no repetition, positive = distance to twofold, negative = threefold.
         self.repetition = 0;
-        // Positions before a null move are not reachable by real moves.
-        let end = (self.halfmove_clock as usize)
-            .min(self.hash_stack.len())
-            .min(self.plies_from_null as usize);
+        let end = self.repetition_window();
         if end >= 4 {
             let current_hash = self.hash;
             let mut i = 4usize;
@@ -3758,6 +3792,8 @@ impl GameState {
         self.black_royals = undo.old_black_royals;
         self.halfmove_clock = undo.old_halfmove_clock;
         self.repetition = undo.old_repetition;
+        self.plies_since_rights_loss = undo.old_plies_since_rights_loss;
+        self.clock_reset_had_ep = undo.old_clock_reset_had_ep;
         self.total_phase = undo.old_total_phase;
 
         // Restore castling state
@@ -4935,6 +4971,37 @@ mod tests {
         assert!(!game.is_repetition(1), "ply=1 < repetition=2, not a draw");
         assert!(!game.is_repetition(2), "ply=2 == repetition=2, not a draw");
         assert!(game.is_repetition(3), "ply=3 > repetition=2, is a draw");
+    }
+
+    /// A king losing its castling right ends the repetition window even though no castle
+    /// was possible, as on the site: the shuffle back home is a twofold, not a threefold.
+    #[test]
+    fn repetition_window_stops_at_a_lost_special_right() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 K5,1+|Q4,4|k5,8");
+        for _ in 0..2 {
+            game.make_move_coords(5, 1, 5, 2, None);
+            game.make_move_coords(5, 8, 5, 7, None);
+            game.make_move_coords(5, 2, 5, 1, None);
+            game.make_move_coords(5, 7, 5, 8, None);
+        }
+        assert_eq!(game.repetition, 4, "only the return after the lost right repeats");
+    }
+
+    /// The position right after a double push carries its en passant square, which the
+    /// site tells apart even when no pawn can take it.
+    #[test]
+    fn repetition_window_skips_an_en_passant_position() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 K5,1|N2,1|P1,2+|k5,8|n2,8");
+        game.make_move_coords(1, 2, 1, 4, None);
+        for _ in 0..2 {
+            game.make_move_coords(2, 8, 3, 6, None);
+            game.make_move_coords(2, 1, 3, 3, None);
+            game.make_move_coords(3, 6, 2, 8, None);
+            game.make_move_coords(3, 3, 2, 1, None);
+        }
+        assert_eq!(game.repetition, 4, "the en passant position is not counted");
     }
 
     #[test]
