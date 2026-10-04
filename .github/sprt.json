@@ -1,10 +1,10 @@
 {
-  "name": "326_huygen_quiet_threats_resume",
-  "old": "58ad371",
-  "games": 2000,
+  "name": "329_tt_64mb_60s",
+  "old": "b9a04d3",
+  "games": 640,
   "shards": 40,
-  "variants": "CoaIP_HO",
-  "tc": "10+0.1",
+  "variants": "site",
+  "tc": "60+0.6",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000
