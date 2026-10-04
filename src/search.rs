@@ -296,9 +296,6 @@ pub fn value_draw(nodes: u64) -> i32 {
 /// Draw aversion. Scores are side-to-move relative and the root side moves at
 /// even ply, so the sign flips with parity to make a draw cost us either way.
 const CONTEMPT: i32 = 15;
-
-/// How far below alpha a PV node's reduced scout may land and still earn a full-depth look.
-const PV_NEAR_MISS_MARGIN: i32 = 24;
 /// Node-count mask between slider-cache clears (every 16k nodes).
 const SLIDER_CACHE_CLEAR_MASK: u64 = 0x3FFF;
 #[inline(always)]
@@ -5181,29 +5178,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // A scout that fell into qsearch never consumed the slot, and a re-search
             // child must not read it as its own prior reduction.
             searcher.reduction_stack[ply] = 0;
-
-            // A PV node's reduced alternative that misses alpha by a hair is not refuted,
-            // only unresolved: settle it at full depth before the line moves past it.
-            if is_pv
-                && ply <= 2
-                && (search_depth as i32) < base_depth
-                && s <= alpha
-                && s > alpha - PV_NEAR_MISS_MARGIN
-                && !is_decisive(alpha)
-            {
-                s = -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: base_depth.max(0) as usize,
-                    ply: ply + 1,
-                    alpha: -alpha - 1,
-                    beta: -alpha,
-                    allow_null: true,
-                    node_type: child_type,
-                    was_null_move: false,
-                    excluded_move: None,
-                });
-            }
 
             // Re-search at full depth if it looks promising
             if s > alpha && (reduction > 0 || s < beta) {
