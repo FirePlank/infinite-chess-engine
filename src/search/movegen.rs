@@ -783,7 +783,56 @@ impl StagedMoveGen {
         // unlike dest-hashed history this signal does not alias at deep nodes. Gated to
         // depth >= 4, since the shallow nodes are the bulk of the tree.
         if self.depth >= 4 {
-            let (best_vv, best_sq) = Self::best_threat_victim(game, m);
+            let mover = m
+                .promotion
+                .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
+                .unwrap_or(m.piece);
+            let value_of = |pt: PieceType, c: PlayerColor| game.get_piece_value(pt, c);
+            let (best_vv, best_sq) = match crate::moves::best_capture_victim(
+                &game.board,
+                &mover,
+                &m.to,
+                &game.spatial_indices,
+                &value_of,
+            ) {
+                Some(found) => found,
+                None => {
+                    // Knightrider, rose and huygen rays still need the generator.
+                    let empty_pins = rustc_hash::FxHashMap::default();
+                    let ctx = crate::moves::MoveGenContext {
+                        special_rights: &game.special_rights,
+                        en_passant: &game.en_passant,
+                        game_rules: &game.game_rules,
+                        indices: &game.spatial_indices,
+                        enemy_king_pos: game.enemy_king_pos(),
+                        pinned: &empty_pins,
+                    };
+                    let mut caps = MoveList::new();
+                    crate::moves::generate_captures_for_piece(
+                        &game.board,
+                        &mover,
+                        &m.to,
+                        &ctx,
+                        &mut caps,
+                    );
+                    let mut bv = 0;
+                    let mut bs = None;
+                    for c in caps.iter() {
+                        if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
+                            && vic.color() != m.piece.color()
+                            && vic.color() != PlayerColor::Neutral
+                            && !vic.piece_type().is_uncapturable()
+                        {
+                            let vv = game.get_piece_value(vic.piece_type(), vic.color());
+                            if vv > bv {
+                                bv = vv;
+                                bs = Some(c.to);
+                            }
+                        }
+                    }
+                    (bv, bs)
+                }
+            };
             if best_vv > 0 {
                 let mut q = best_vv * 6;
                 // Undefended victim: no piece of the victim's color covers its square.
@@ -813,94 +862,6 @@ impl StagedMoveGen {
         }
 
         (score, Some(gives_check))
-    }
-
-    /// Most valuable enemy piece the mover would attack from its landing square.
-    pub(crate) fn best_threat_victim(
-        game: &GameState,
-        m: &Move,
-    ) -> (i32, Option<crate::board::Coordinate>) {
-        let mover = m
-            .promotion
-            .map(|pt| crate::board::Piece::new(pt, m.piece.color()))
-            .unwrap_or(m.piece);
-        let value_of = |pt: PieceType, c: PlayerColor| game.get_piece_value(pt, c);
-        match crate::moves::best_capture_victim(
-            &game.board,
-            &mover,
-            &m.to,
-            &game.spatial_indices,
-            &value_of,
-        ) {
-            Some(found) => found,
-            None => {
-                // Knightrider, rose and huygen rays still need the generator.
-                let empty_pins = rustc_hash::FxHashMap::default();
-                let ctx = crate::moves::MoveGenContext {
-                    special_rights: &game.special_rights,
-                    en_passant: &game.en_passant,
-                    game_rules: &game.game_rules,
-                    indices: &game.spatial_indices,
-                    enemy_king_pos: game.enemy_king_pos(),
-                    pinned: &empty_pins,
-                };
-                let mut caps = MoveList::new();
-                crate::moves::generate_captures_for_piece(
-                    &game.board,
-                    &mover,
-                    &m.to,
-                    &ctx,
-                    &mut caps,
-                );
-                let mut bv = 0;
-                let mut bs = None;
-                for c in caps.iter() {
-                    if let Some(vic) = game.board.get_piece(c.to.x, c.to.y)
-                        && vic.color() != m.piece.color()
-                        && vic.color() != PlayerColor::Neutral
-                        && !vic.piece_type().is_uncapturable()
-                    {
-                        let vv = game.get_piece_value(vic.piece_type(), vic.color());
-                        if vv > bv {
-                            bv = vv;
-                            bs = Some(c.to);
-                        }
-                    }
-                }
-                (bv, bs)
-            }
-        }
-    }
-
-    /// The picker's check, threat and escape terms for a quiet, for root ordering:
-    /// each root move is scored once there, so it needs no per-node memo.
-    pub(crate) fn root_quiet_tactics(game: &GameState, m: &Move) -> i32 {
-        let mut score = 0;
-        if Self::move_gives_check_fast(game, m) && super::see_ge(game, m, -75) {
-            score += 16384;
-        }
-        let attacked = |sq: &crate::board::Coordinate, by: PlayerColor| {
-            crate::moves::is_square_attacked(&game.board, sq, by, &game.spatial_indices)
-        };
-        let (best_vv, best_sq) = Self::best_threat_victim(game, m);
-        if best_vv > 0 {
-            let mut q = best_vv * 6;
-            if let Some(sq) = best_sq
-                && !attacked(&sq, m.piece.color().opponent())
-            {
-                q *= 2;
-            }
-            score += q.min(12000);
-        }
-        let mover_val = game.get_piece_value(m.piece.piece_type(), m.piece.color());
-        if mover_val >= 250
-            && attacked(&m.from, m.piece.color().opponent())
-            && !attacked(&m.to, m.piece.color().opponent())
-            && !Self::attacked_through_origin(game, m)
-        {
-            score += (mover_val * 5).min(10000);
-        }
-        score
     }
 
     /// `is_square_attacked` against a one-entry memo. The picker scores a single
