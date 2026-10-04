@@ -1,9 +1,9 @@
 {
-  "name": "322_obstacle_take_quiet_order",
-  "old": "c94406b",
-  "games": 2000,
+  "name": "325a_lmr_research_skip_only",
+  "old": "58ad371",
+  "games": 4000,
   "shards": 40,
-  "variants": "Confined_Classical",
+  "variants": "site",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,

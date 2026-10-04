@@ -5185,25 +5185,29 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // LMR deeper/shallower re-search depth adjustment
                 // If reduced search returned good value, search deeper
                 // If it returned bad value, search shallower
-                let do_deeper_search =
-                    (search_depth as i32) < base_depth && s > (best_score + 43 + 2 * base_depth);
+                let was_reduced = (search_depth as i32) < base_depth;
+                let do_deeper_search = was_reduced && s > (best_score + 43 + 2 * base_depth);
                 let do_shallower_search = s < best_score + 9;
                 let adjusted_depth = (base_depth + (do_deeper_search as i32)
                     - (do_shallower_search as i32))
                     .max(0) as usize;
 
-                s = -negamax(&mut NegamaxContext {
-                    searcher,
-                    game,
-                    depth: adjusted_depth,
-                    ply: ply + 1,
-                    alpha: -beta,
-                    beta: -alpha,
-                    allow_null: true,
-                    node_type: research_type,
-                    was_null_move: false,
-                    excluded_move: None,
-                });
+                // Off the PV the re-search takes the scout's own window, so it is only
+                // worth running deeper than the scout went.
+                if is_pv || adjusted_depth > search_depth {
+                    s = -negamax(&mut NegamaxContext {
+                        searcher,
+                        game,
+                        depth: adjusted_depth,
+                        ply: ply + 1,
+                        alpha: -beta,
+                        beta: -alpha,
+                        allow_null: true,
+                        node_type: research_type,
+                        was_null_move: false,
+                        excluded_move: None,
+                    });
+                }
 
                 // A reduced search that forced a re-search proved the quiet move good,
                 // so credit it in continuation history. The bonus is depth-proportional
