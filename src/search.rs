@@ -4694,9 +4694,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
 
             // Futility and SEE margins judge the depth the move would actually be searched at.
-            // A node once on a PV is pruned as if a ply more reduced (Stockfish's ttPv term).
-            let lmr_depth =
-                (new_depth as i32 - get_lmr(depth, legal_moves + 1) - tt_pv as i32).max(0);
+            let lmr_depth = (new_depth as i32 - get_lmr(depth, legal_moves + 1)).max(0);
 
             // A quiet promotion is tactical: quiet futility prices it at the pre-move eval,
             // a full piece short, so only SEE may prune it.
@@ -5037,15 +5035,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // after it are far likelier to be refutations than real candidates.
                 if cut_node {
                     reduction += 1;
-                }
-
-                // Moves at nodes on or once on a PV are the alternatives a line is judged
-                // against (Stockfish's ttPv block, in plies), and more so on the PV itself.
-                if tt_pv {
-                    reduction -= 2
-                        + 2 * is_pv as i32
-                        + tt_value.is_some_and(|v| v > alpha) as i32
-                        + (tt_data_depth as usize >= depth) as i32 * (1 + cut_node as i32);
                 }
 
                 // History-adjusted LMR
