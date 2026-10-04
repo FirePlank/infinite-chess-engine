@@ -1804,6 +1804,11 @@ impl GameState {
                     &self.spatial_indices,
                 ) {
                     kings_in_check.push(pos);
+                    // Two checked royals already mean the general fallback below; the
+                    // fixed-size list must not overflow on positions with more.
+                    if kings_in_check.len() > 1 {
+                        break;
+                    }
                 }
             }
             if kings_in_check.is_empty() {
