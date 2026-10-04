@@ -2754,6 +2754,11 @@ pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+/// The (max depth, MultiPV) the live helper batch was launched with: a helper stops at
+/// its own max depth, so a resume with other settings needs a fresh batch.
+#[cfg(feature = "multithreading")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) static HELPER_SETTINGS: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0));
 
 /// Stops all detached analysis helpers (and any in-flight search) immediately.
 #[cfg(feature = "multithreading")]

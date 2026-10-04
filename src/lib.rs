@@ -978,10 +978,20 @@ impl Engine {
                 search::init_shared_tt();
                 search::USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
 
-                // New position, or a resume with no batch alive (e.g. "go deeper" after the
-                // helpers retired at done): retire any previous batch, launch a fresh one.
+                // New position, a resume with no batch alive (e.g. "go deeper" after the helpers
+                // retired at done), or new settings (a helper stops at its own max depth):
+                // retire any previous batch, launch a fresh one.
+                let settings = (max_depth, multi_pv);
+                let respawn = {
+                    let mut live =
+                        search::HELPER_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+                    let changed = *live != settings;
+                    *live = settings;
+                    changed
+                };
                 if start_depth <= 1
                     || search::HELPERS_LIVE.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    || respawn
                 {
                     search::adopt_main_eval_kind(&self.game, slice_ms);
                     let epoch =
