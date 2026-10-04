@@ -69,6 +69,9 @@ type ContHistoryIndex = (usize, usize, usize, usize, usize);
 thread_local! {
     static PICKER_VECS: std::cell::RefCell<Vec<Vec<ScoredMove>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Most quiet lists outgrow the inline buffer; borrowed in place, a spilled buffer
+    /// keeps its heap capacity from node to node instead of a malloc per node.
+    static QUIET_BUF: std::cell::RefCell<MoveList> = std::cell::RefCell::new(MoveList::new());
 }
 
 impl Drop for StagedMoveGen {
@@ -1137,8 +1140,16 @@ impl StagedMoveGen {
     }
 
     fn generate_quiets(&mut self, game: &GameState, searcher: &Searcher) {
-        let mut quiets = MoveList::new();
+        QUIET_BUF.with(|buf| self.generate_quiets_into(game, searcher, &mut buf.borrow_mut()));
+    }
 
+    fn generate_quiets_into(
+        &mut self,
+        game: &GameState,
+        searcher: &Searcher,
+        quiets: &mut MoveList,
+    ) {
+        quiets.clear();
         self.ensure_pins(game);
         {
             let ctx = MoveGenContext {
@@ -1156,7 +1167,7 @@ impl StagedMoveGen {
             if tight {
                 crate::moves::set_quiet_ray_cap(TIGHT_GEN_RAY_CAP);
             }
-            get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+            get_quiet_moves_into(&game.board, game.turn, &ctx, quiets);
             if tight {
                 crate::moves::set_quiet_ray_cap(0);
             }
