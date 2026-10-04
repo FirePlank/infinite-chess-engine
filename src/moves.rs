@@ -4375,7 +4375,7 @@ const ROSE_SPIRALS_CONST: [[[(i64, i64); 7]; 2]; 8] = {
 
 /// Each spiral square numbered among the 32 distinct squares the 16 spirals visit, so
 /// move generation dedups the two spirals that share a square with one bit test.
-static ROSE_SQUARE_ID: [[[u8; 7]; 2]; 8] = {
+pub(crate) static ROSE_SQUARE_ID: [[[u8; 7]; 2]; 8] = {
     let spirals = ROSE_SPIRALS_CONST;
     let mut ids = [[[0u8; 7]; 2]; 8];
     let mut seen = [(0i64, 0i64); 112];
