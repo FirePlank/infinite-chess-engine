@@ -2833,10 +2833,12 @@ pub(crate) fn helper_run(
         // Unique RNG per helper for search diversity (mirrors get_best_move_threaded).
         let base_seed = searcher.seed;
         searcher.rng = Prng::new(base_seed.wrapping_add(thread_id as u64));
+        // Before the eval-kind clear and the new search: as thread 0 a fresh helper would
+        // wipe the shared TT and pawn history and age the TT once more.
+        searcher.thread_id = thread_id;
         searcher.adopt_eval_kind(game.eval_kind);
         searcher.new_search();
 
-        searcher.thread_id = thread_id;
         searcher.helper_epoch = epoch;
         // No time limit: only GLOBAL_STOP or an epoch bump ends this search.
         searcher.hot.set_time_limits(u128::MAX, u128::MAX, true);
