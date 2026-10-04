@@ -3120,6 +3120,8 @@ pub(crate) fn get_best_moves_multipv_impl(
         reset_search_nodes();
     }
 
+    game.recenter_windows();
+
     // Get all legal moves upfront (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
     game.get_pseudo_legal_moves_into(&mut moves);
@@ -3249,7 +3251,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
 
         root_scores.clear();
-        searcher.hot.root_depth = depth;
+        let root_in_check = enter_root_node(searcher, game, depth);
 
         // Track the MultiPV alpha threshold
         let mut multipv_alpha = -INFINITY;
@@ -3287,13 +3289,13 @@ pub(crate) fn get_best_moves_multipv_impl(
                 break;
             }
 
+            let is_capture = game.is_en_passant(m)
+                || game
+                    .board
+                    .get_piece(m.to.x, m.to.y)
+                    .is_some_and(|p| !p.piece_type().is_neutral_type());
             let undo = game.make_move(m);
-
-            let prev_entry_backup = searcher.prev_move_stack[0];
-            let prev_from_hash = hash_move_from(m);
-            let prev_to_hash = hash_move_dest(m);
-            searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
-            searcher.root_played = Some(*m);
+            let slots = enter_root_move(searcher, m, root_in_check, is_capture, move_idx + 1);
 
             // For MultiPV, we need to search all moves to get their scores.
             // First move gets aspiration window (or full), others use PVS logic.
@@ -3387,8 +3389,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                 }
             };
 
-            searcher.prev_move_stack[0] = prev_entry_backup;
             game.undo_move(m, undo);
+            leave_root_move(searcher, slots);
 
             if !searcher.hot.stopped {
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
@@ -3449,6 +3451,12 @@ pub(crate) fn get_best_moves_multipv_impl(
             // Update best_lines with results from this depth. Triangular-table PVs
             // are often truncated by TT cutoffs, so extend each displayed line by
             // walking TT moves toward the full search depth.
+            // The best line is the PV the next iteration's PV nodes follow.
+            searcher.prev_iteration_pv.clear();
+            if let Some((_, _, pv)) = root_scores.first() {
+                searcher.prev_iteration_pv.extend(pv.iter().take(MAX_PLY).copied());
+            }
+
             best_lines.clear();
             for (mv, score, pv) in root_scores.iter().take(multi_pv) {
                 let mut pv = pv.clone();
@@ -3586,6 +3594,73 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
 }
 
 /// Root negamax - special handling for root node
+/// Ply-0 slots a root move fills for its children, saved to restore once it returns.
+struct RootMoveSlots {
+    prev_move: (usize, usize),
+    mv: Option<Move>,
+    piece: u8,
+    in_check: bool,
+    capture: bool,
+}
+
+/// Slot 0's context, exactly as the interior loop fills its own ply. Without it every
+/// reply to a root move is ordered and reduced with no continuation history, the
+/// fail-low credit never reaches the root move, and qsearch sees no recapture.
+fn enter_root_move(
+    searcher: &mut Searcher,
+    m: &Move,
+    in_check: bool,
+    is_capture: bool,
+    count: usize,
+) -> RootMoveSlots {
+    let slots = RootMoveSlots {
+        prev_move: searcher.prev_move_stack[0],
+        mv: searcher.move_history[0].take(),
+        piece: searcher.moved_piece_history[0],
+        in_check: searcher.in_check_history[0],
+        capture: searcher.capture_history_stack[0],
+    };
+    searcher.prev_move_stack[0] = (hash_move_from(m), hash_move_dest(m));
+    searcher.root_played = Some(*m);
+    searcher.move_history[0] = Some(*m);
+    searcher.moved_piece_history[0] = m.piece.piece_type() as u8;
+    searcher.in_check_history[0] = in_check;
+    searcher.capture_history_stack[0] = is_capture;
+    searcher.move_count_stack[0] = count.min(u16::MAX as usize) as u16;
+    slots
+}
+
+fn leave_root_move(searcher: &mut Searcher, slots: RootMoveSlots) {
+    searcher.prev_move_stack[0] = slots.prev_move;
+    searcher.move_history[0] = slots.mv;
+    searcher.moved_piece_history[0] = slots.piece;
+    searcher.in_check_history[0] = slots.in_check;
+    searcher.capture_history_stack[0] = slots.capture;
+}
+
+/// The per-iteration root state a ply-0 negamax node would set: PV following, the
+/// ttPv flag, the grandchild slots it would clear, and the root static eval. Returns
+/// whether the root is in check.
+fn enter_root_node(searcher: &mut Searcher, game: &GameState, depth: usize) -> bool {
+    searcher.pv_length[0] = 0;
+    searcher.follow_pv[0] = true;
+    searcher.tt_pv_stack[0] = true;
+    searcher.hot.root_depth = depth;
+    searcher.cutoff_cnt[2] = 0;
+    searcher.stat_score_stack[2] = 0;
+    searcher.stat_score_stack[4] = 0;
+    let in_check = game.is_in_check();
+    // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
+    // improving tests compare against a zero root eval, i.e. against the score's sign.
+    searcher.eval_stack[0] = if in_check {
+        0
+    } else {
+        let root_raw = evaluate(game);
+        searcher.adjusted_eval(game, root_raw, 0)
+    };
+    in_check
+}
+
 fn negamax_root(
     searcher: &mut Searcher,
     game: &mut GameState,
@@ -3597,16 +3672,7 @@ fn negamax_root(
     // Save original alpha for TT flag determination
     let alpha_orig = alpha;
 
-    searcher.pv_length[0] = 0;
-    searcher.follow_pv[0] = true;
-    searcher.tt_pv_stack[0] = true;
-    searcher.hot.root_depth = depth;
-
-    // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
-    // negamax_root omits them, so slot 2 otherwise never clears across the search.
-    searcher.cutoff_cnt[2] = 0;
-    searcher.stat_score_stack[2] = 0;
-    searcher.stat_score_stack[4] = 0;
+    let in_check = enter_root_node(searcher, game, depth);
 
     let hash = game.hash;
     let mut tt_move: Option<Move> = None;
@@ -3627,17 +3693,6 @@ fn negamax_root(
         },
     ) {
         tt_move = res.best_move;
-    }
-
-    let in_check = game.is_in_check();
-
-    // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
-    // improving tests compare against a zero root eval, i.e. against the score's sign.
-    if !in_check {
-        let root_raw = evaluate(game);
-        searcher.eval_stack[0] = searcher.adjusted_eval(game, root_raw, 0);
-    } else {
-        searcher.eval_stack[0] = 0;
     }
 
     // Reorders `moves` in place, TT move first then by score, so the next iteration
@@ -3663,9 +3718,6 @@ fn negamax_root(
         // 1. Shared TT - threads benefit from each other's entries
         // 2. Slight timing differences - threads finish at different points
 
-        // Slot 0's context, exactly as the interior loop fills its own ply. Without it
-        // every reply to a root move is ordered and reduced with no continuation history,
-        // the fail-low credit never reaches the root move, and qsearch sees no recapture.
         let root_is_capture = game.is_en_passant(m)
             || game
                 .board
@@ -3681,27 +3733,8 @@ fn negamax_root(
         };
 
         let undo = game.make_move(m);
-
-        // At the root, this move becomes the previous move for child ply 1,
-        // stored as (from_hash, to_hash).
-        let prev_entry_backup = searcher.prev_move_stack[0];
-        let prev_from_hash = hash_move_from(m);
-        let prev_to_hash = hash_move_dest(m);
-        searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
-        searcher.root_played = Some(*m);
-
-        let move_history_backup = searcher.move_history[0].take();
-        let piece_history_backup = searcher.moved_piece_history[0];
-        let in_check_backup = searcher.in_check_history[0];
-        let capture_backup = searcher.capture_history_stack[0];
-
-        searcher.move_history[0] = Some(*m);
-        searcher.moved_piece_history[0] = root_piece as u8;
-        searcher.in_check_history[0] = in_check;
-        searcher.capture_history_stack[0] = root_is_capture;
-
         legal_moves += 1;
-        searcher.move_count_stack[0] = legal_moves.min(u16::MAX as usize) as u16;
+        let slots = enter_root_move(searcher, m, in_check, root_is_capture, legal_moves);
 
         let score;
         if legal_moves == 1 {
@@ -3787,13 +3820,7 @@ fn negamax_root(
         }
 
         game.undo_move(m, undo);
-
-        // Restore previous-move stack entry for root after returning from child.
-        searcher.prev_move_stack[0] = prev_entry_backup;
-        searcher.move_history[0] = move_history_backup;
-        searcher.moved_piece_history[0] = piece_history_backup;
-        searcher.in_check_history[0] = in_check_backup;
-        searcher.capture_history_stack[0] = capture_backup;
+        leave_root_move(searcher, slots);
 
         if searcher.hot.stopped {
             return best_score;
