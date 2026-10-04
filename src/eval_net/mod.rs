@@ -65,37 +65,12 @@ pub fn variant_residual(
     feats: &variant_features::VariantFeatures,
     black_to_move: bool,
 ) -> i32 {
-    let side = |black: bool| {
-        let mut x = feats.x;
-        if net.perspective {
-            layout.to_perspective(&mut x[..layout.len()], black);
-        }
-        let r = inference::forward(net, &x[..layout.len()]).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
-        if net.perspective && black { -r } else { r }
-    };
-    damp_turn(net, black_to_move, side)
-}
-
-/// Share of a perspective net's per-position side-to-move effect that is kept, over
-/// `STM_DAMP_DEN`; the rest becomes the constant `TEMPO_CP`.
-const STM_DAMP_NUM: i32 = 1;
-const STM_DAMP_DEN: i32 = 2;
-/// The nets' mean side-to-move bonus, measured over real games.
-const TEMPO_CP: i32 = 18;
-
-/// The net's per-position value of having the move flips sign with depth parity and
-/// makes the search score oscillate; keep the position's value, damp the turn part.
-/// `side(black)` is the White-ahead residual read as if that side were to move.
-#[inline]
-fn damp_turn(net: &weights::EvalNetWeights, black: bool, side: impl Fn(bool) -> i32) -> i32 {
-    let r = side(black);
-    if !net.perspective || STM_DAMP_NUM == STM_DAMP_DEN {
-        return r;
+    let mut x = feats.x;
+    if net.perspective {
+        layout.to_perspective(&mut x[..layout.len()], black_to_move);
     }
-    let other = side(!black);
-    let tempo = if black { -TEMPO_CP } else { TEMPO_CP };
-    let turn = (r - other) / 2;
-    (r + other) / 2 + (turn * STM_DAMP_NUM + tempo * (STM_DAMP_DEN - STM_DAMP_NUM)) / STM_DAMP_DEN
+    let r = inference::forward(net, &x[..layout.len()]).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
+    if net.perspective && black_to_move { -r } else { r }
 }
 
 /// Capped residual of `net` for a position whose base-HCE features are in `fc`, White-ahead.
@@ -103,20 +78,8 @@ fn damp_turn(net: &weights::EvalNetWeights, black: bool, side: impl Fn(bool) -> 
 pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState, fc: &FeatureCollector) -> i32 {
     let base = feature_vector(game, fc);
     let black = game.turn == crate::board::PlayerColor::Black;
-    damp_turn(net, black, |black| residual_as(net, game, fc, &base, black))
-}
-
-/// White-ahead residual of `net` with the inputs read as if `black` (or White) moved.
-#[inline]
-fn residual_as(
-    net: &weights::EvalNetWeights,
-    game: &crate::game::GameState,
-    fc: &FeatureCollector,
-    base: &[i16; NUM_FEATURES],
-    black: bool,
-) -> i32 {
     let mut x = [0i16; features::TYPE_NET_INPUTS];
-    x[..NUM_FEATURES].copy_from_slice(base);
+    x[..NUM_FEATURES].copy_from_slice(&base);
     if net.perspective {
         features::to_perspective(&mut x[..NUM_FEATURES], black);
     }
