@@ -109,15 +109,17 @@ pub const TYPE_SLOTS: [u8; 17] = [3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 
 pub const TYPE_INPUTS: usize = TYPE_SLOTS.len();
 pub const TYPE_NET_INPUTS: usize = NET_INPUTS + TYPE_INPUTS;
 
-/// White-minus-Black count of each `TYPE_SLOTS` type. Material alone decides it, so one
-/// entry keyed by the material hash serves a whole line between captures.
+/// White-minus-Black count of each `TYPE_SLOTS` type. Material alone decides it, so a
+/// small table keyed by the material hash serves the few compositions a search visits.
 pub fn type_count_diffs(game: &GameState) -> [i16; TYPE_INPUTS] {
+    const SLOTS: usize = 64;
     thread_local! {
-        static LAST: std::cell::Cell<(u64, [i16; TYPE_INPUTS])> =
-            const { std::cell::Cell::new((0, [0; TYPE_INPUTS])) };
+        static SEEN: std::cell::RefCell<[(u64, [i16; TYPE_INPUTS]); SLOTS]> =
+            const { std::cell::RefCell::new([(0, [0; TYPE_INPUTS]); SLOTS]) };
     }
     let key = game.material_hash;
-    let (k, v) = LAST.with(|c| c.get());
+    let slot = (key ^ (key >> 32)) as usize % SLOTS;
+    let (k, v) = SEEN.with(|c| c.borrow()[slot]);
     if k == key && key != 0 {
         return v;
     }
@@ -131,7 +133,7 @@ pub fn type_count_diffs(game: &GameState) -> [i16; TYPE_INPUTS] {
         }
     }
     let v = TYPE_SLOTS.map(|t| per_type[t as usize]);
-    LAST.with(|c| c.set((key, v)));
+    SEEN.with(|c| c.borrow_mut()[slot] = (key, v));
     v
 }
 const KEXP_RADIUS: i64 = 3;
