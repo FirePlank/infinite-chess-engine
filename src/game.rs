@@ -3864,6 +3864,8 @@ impl GameState {
         let tokens: Vec<&str> = content.split_whitespace().collect();
         let mut moves_to_play = Vec::new();
         let mut wc_list = Vec::new();
+        // `(white conditions|black conditions)` when the players' win conditions differ.
+        let mut player_wc: [Option<Vec<WinCondition>>; 2] = [None, None];
         let mut pieces_token = None;
 
         // Handle the case where it's just pieces
@@ -3903,6 +3905,14 @@ impl GameState {
                 }
                 if parts.len() > 1 {
                     self.game_rules.move_rule_limit = parts[1].parse::<u32>().ok();
+                }
+            } else if token.starts_with('(')
+                && token.ends_with(')')
+                && token[1..].starts_with(|c: char| c.is_ascii_alphabetic())
+            {
+                // Promotion rules open with a rank number, win conditions with a word.
+                for (idx, side) in token[1..token.len() - 1].split('|').take(2).enumerate() {
+                    player_wc[idx] = Some(side.split(',').filter_map(|w| w.parse().ok()).collect());
                 }
             } else if token.starts_with('(') && token.ends_with(')') {
                 // Promotion Rules: (w_rank;w_pieces|b_rank;b_pieces)
@@ -4022,8 +4032,11 @@ impl GameState {
                 .unwrap_or(false)
         });
 
-        self.game_rules.white_win_condition = WinCondition::select(&wc_list, black_has_royal);
-        self.game_rules.black_win_condition = WinCondition::select(&wc_list, white_has_royal);
+        let [white_wc, black_wc] = &player_wc;
+        self.game_rules.white_win_condition =
+            WinCondition::select(white_wc.as_ref().unwrap_or(&wc_list), black_has_royal);
+        self.game_rules.black_win_condition =
+            WinCondition::select(black_wc.as_ref().unwrap_or(&wc_list), white_has_royal);
 
         self.finalize_setup();
 
@@ -4317,6 +4330,17 @@ mod tests {
                 .any(|m| m.from.x == 5 && m.from.y == 2 && m.to.x == 4 && m.to.y == 2),
             "royal-capture king must be allowed onto the attacked file"
         );
+    }
+
+    /// The site writes differing win conditions per player as `(white|black)`, which
+    /// must not be mistaken for the promotion-rules token.
+    #[test]
+    fn per_player_win_conditions_parse() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 (8|1) (royalcapture|checkmate) K5,1+|k5,8+|Q4,1");
+        assert_eq!(game.game_rules.white_win_condition, WinCondition::RoyalCapture);
+        assert_eq!(game.game_rules.black_win_condition, WinCondition::Checkmate);
+        assert_eq!(game.game_rules.promotion_ranks.white, vec![8]);
     }
 
     /// Pawn_Horde is asymmetric: Black has the only royal, so White wins by
