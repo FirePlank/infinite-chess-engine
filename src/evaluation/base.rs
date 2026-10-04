@@ -4234,12 +4234,13 @@ fn score_passed_pawns<T: EvaluationTracer>(
             enemy_king_penalty = enemy_king_penalty.max(p);
         }
 
-        // 4. Safe Promotion Path
+        // 4. Safe Promotion Path. The line test skips both ends, so the promotion
+        // square itself must be empty too.
         let mut safe_path = is_clear_line_between_fast(
             &game.spatial_indices,
             &Coordinate::new(wx, wy),
             &Coordinate::new(wx, w_promo),
-        );
+        ) && !game.board.is_occupied(wx, w_promo);
         if safe_path {
             // Check for attacking black pawns on adjacent files in rank range [wy+2, w_promo]
             for dx in &[-1, 1] {
@@ -4317,7 +4318,7 @@ fn score_passed_pawns<T: EvaluationTracer>(
             &game.spatial_indices,
             &Coordinate::new(bx, by),
             &Coordinate::new(bx, b_promo),
-        );
+        ) && !game.board.is_occupied(bx, b_promo);
         if safe_path {
             // Check for attacking white pawns on adjacent files in rank range [b_promo-1, by-2]
             for dx in &[-1, 1] {
