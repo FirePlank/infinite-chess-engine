@@ -4176,6 +4176,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let adjusted = searcher.adjusted_eval(game, raw, prev_move_idx);
         (adjusted, raw)
     };
+    // The corrected eval before smoothing and noise: what correction history is judged by.
+    let corrected_eval = static_eval;
 
     // Apply StatScore bonus from parent move success (Evaluation Smoothing)
     if ply > 0 {
@@ -5573,12 +5575,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             None => true, // No best move counts as "quiet"
         };
 
-        // Replacement conditions:
-        // - If lower bound (failed high), score should not be below static eval
-        // - If upper bound (failed low), score should not be above static eval
+        // A bound only says the correction is off when it lies past the corrected eval:
+        // a fail high above it, a fail low below it (Stockfish).
         let should_update = match tt_data_bound {
-            TTFlag::LowerBound => best_score >= raw_eval,
-            TTFlag::UpperBound => best_score <= raw_eval,
+            TTFlag::LowerBound => best_score >= corrected_eval,
+            TTFlag::UpperBound => best_score <= corrected_eval,
             TTFlag::Exact => true,
             TTFlag::None => false, // Should never happen, but be safe
         };
