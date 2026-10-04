@@ -15,6 +15,7 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 
 ## v7.1.0 (2026-10-04)
+Commit: `be5a76f093b5688f7035397f90cf8ff508c9e02b` • [compare to v7.0.0](https://github.com/FirePlank/infinite-chess-engine/compare/70bcc41317206ee8bbe71a651af287a047aea97e...be5a76f093b5688f7035397f90cf8ff508c9e02b)
 
 ### Changed
 - The generic evaluator's net reads each piece type's count imbalance (own minus opponent, 17 types), not just total material, and is retrained from a fresh base
