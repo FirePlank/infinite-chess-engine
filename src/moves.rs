@@ -2912,7 +2912,7 @@ fn find_cross_ray_targets_into(
     ctx: &CrossRayContext,
     dir_x: i64,
     dir_y: i64,
-    dist_counts: &mut FxHashMap<i64, u8>,
+    dist_counts: &mut Vec<i64>,
     mut visited_targets: Option<&mut Vec<(Coordinate, u8)>>,
 ) {
     let board = ctx.board;
@@ -2951,12 +2951,11 @@ fn find_cross_ray_targets_into(
     let ray_diff = dir_x - dir_y;
     let ray_sum = dir_x + dir_y;
 
-    // Helper to increment piece count for a distance
+    // Only the set of distances is read, after a sort and dedup, so duplicates are fine.
     #[inline(always)]
-    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+    fn add_dist(dists: &mut Vec<i64>, d: i64, max_d: i64) {
         if d > 0 && d <= max_d {
-            let entry = map.entry(d).or_insert(0);
-            *entry = entry.saturating_add(1);
+            dists.push(d);
         }
     }
 
@@ -3231,7 +3230,7 @@ fn generate_sliding_moves_impl(
     let ek_ref = enemy_king_pos;
 
     // Reuse maps across directions to avoid allocations
-    let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
+    let mut dist_counts: Vec<i64> = Vec::new();
     let mut knight_dists: Vec<i64> = Vec::new();
     // Archbishop/chancellor also threaten from squares their ray logic ignores.
     let has_knight_leap = matches!(
@@ -3239,12 +3238,11 @@ fn generate_sliding_moves_impl(
         PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon
     );
 
-    // Helper to increment piece count for a distance
+    // Only the set of distances is read, after a sort and dedup, so duplicates are fine.
     #[inline(always)]
-    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+    fn add_dist(dists: &mut Vec<i64>, d: i64, max_d: i64) {
         if d > 0 && d <= max_d {
-            let entry = map.entry(d).or_insert(0);
-            *entry = entry.saturating_add(1);
+            dists.push(d);
         }
     }
 
@@ -3699,7 +3697,7 @@ fn generate_sliding_moves_impl(
                     shared_targets.push(closest_dist);
                 }
 
-                shared_targets.extend(dist_counts.keys().copied());
+                shared_targets.extend(dist_counts.iter().copied());
                 shared_targets.extend(knight_dists.iter().map(|&d| d | CAP_EXEMPT));
                 shared_targets.sort_unstable_by_key(|&v| v & !CAP_EXEMPT);
                 shared_targets.dedup_by(|b, a| {
