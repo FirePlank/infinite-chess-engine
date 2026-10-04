@@ -5144,22 +5144,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     - (do_shallower_search as i32))
                     .max(0) as usize;
 
-                // Keep a PV node with a decisive or deep TT entry out of qsearch by
-                // giving it a minimum depth of 1.
-                let mut pv_depth = adjusted_depth;
-                if is_pv && is_tt_move && pv_depth == 0 {
-                    let has_decisive =
-                        tt_value.is_some_and(|v| v.abs() > MATE_SCORE) && tt_data_depth > 0;
-                    let has_deep_tt = tt_data_depth > 1;
-                    if has_decisive || has_deep_tt {
-                        pv_depth = 1;
-                    }
-                }
-
                 s = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
-                    depth: pv_depth,
+                    depth: adjusted_depth,
                     ply: ply + 1,
                     alpha: -beta,
                     beta: -alpha,
