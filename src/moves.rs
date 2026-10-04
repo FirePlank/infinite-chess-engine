@@ -1625,7 +1625,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
         }
         PieceType::Queen | PieceType::RoyalQueen => {
-            let visited = std::cell::RefCell::new(Vec::with_capacity(16));
+            let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_moves_into(
                 &SlidingMoveContext {
                     board,
@@ -1687,7 +1687,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         }
         PieceType::Amazon => {
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
-            let visited = std::cell::RefCell::new(Vec::with_capacity(16));
+            let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_moves_into(
                 &SlidingMoveContext {
                     board,
@@ -2443,7 +2443,7 @@ fn generate_quiets_for_piece(
             );
         }
         PieceType::Queen => {
-            let visited = std::cell::RefCell::new(Vec::with_capacity(16));
+            let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
                     board,
@@ -2472,7 +2472,7 @@ fn generate_quiets_for_piece(
             );
         }
         PieceType::RoyalQueen => {
-            let visited = std::cell::RefCell::new(Vec::with_capacity(16));
+            let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
                     board,
@@ -2544,7 +2544,7 @@ fn generate_quiets_for_piece(
         }
         PieceType::Amazon => {
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
-            let visited = std::cell::RefCell::new(Vec::with_capacity(16));
+            let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
                     board,
