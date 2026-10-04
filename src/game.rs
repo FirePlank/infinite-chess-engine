@@ -6,7 +6,7 @@ use crate::moves::{
     Move, MoveList, SpatialIndices, get_pseudo_legal_moves, get_pseudo_legal_moves_into,
     get_pseudo_legal_moves_for_piece_into, is_square_attacked,
 };
-use crate::utils::{PRIMES_UNDER_128, is_prime_fast, is_prime_i64};
+use crate::utils::{is_prime_fast, is_prime_i64};
 use arrayvec::ArrayVec;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -967,6 +967,40 @@ impl GameState {
             }
         }
         true
+    }
+
+    /// Blocks for an orthogonal slider standing on a Huygen's check line: the squares of
+    /// its reachable stretch that lie between king and checker at a prime distance from
+    /// the checker. Walking the stretch, not the primes under 128, keeps far blocks.
+    fn huygen_line_blocks(
+        &self,
+        from: Coordinate,
+        piece: Piece,
+        king: Coordinate,
+        checker: Coordinate,
+        step: (i64, i64),
+        out: &mut MoveList,
+    ) {
+        // Bounds a stretch with no piece beyond it; a real game never reaches it.
+        const MAX_WALK: i64 = 4096;
+        let cheb = |a: Coordinate, b: Coordinate| (a.x - b.x).abs().max((a.y - b.y).abs());
+        let check_dist = cheb(king, checker);
+        for dir in [step, (-step.0, -step.1)] {
+            let reach = match self.find_first_blocker_on_ray(from.x, from.y, dir.0, dir.1) {
+                Some((bx, by)) => {
+                    let b = cheb(from, Coordinate::new(bx, by));
+                    if self.board.is_occupied_by_color(bx, by, piece.color()) { b - 1 } else { b }
+                }
+                None => MAX_WALK,
+            };
+            for t in 1..=reach.min(MAX_WALK) {
+                let sq = Coordinate::new(from.x + dir.0 * t, from.y + dir.1 * t);
+                let (dk, dc) = (cheb(sq, king), cheb(sq, checker));
+                if dk > 0 && dc > 0 && dk + dc == check_dist && is_prime_fast(dc) {
+                    out.push(Move::new(from, sq, piece));
+                }
+            }
+        }
     }
 
     /// Blocking squares for non-linear checkers (Rose). A single unblocked spiral
@@ -2196,21 +2230,7 @@ impl GameState {
                             }
                         }
                     } else {
-                        // Slider IS on the check ray - iterate primes from checker to find blocking squares
-                        for &prime in &PRIMES_UNDER_128 {
-                            if prime >= check_dist {
-                                break;
-                            }
-                            // Blocking square is at prime distance from checker, toward king
-                            let tx = checker_sq.x - step_x * prime;
-                            let ty = king_sq.y;
-                            if tx == from.x {
-                                continue;
-                            }
-                            if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
-                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
-                            }
-                        }
+                        s.huygen_line_blocks(from, *piece, king_sq, checker_sq, (step_x, 0), out);
                     }
                 } else {
                     // Check ray is vertical at x = king_sq.x = checker_sq.x
@@ -2234,21 +2254,7 @@ impl GameState {
                             }
                         }
                     } else {
-                        // Slider IS on the check ray - iterate primes from checker to find blocking squares
-                        for &prime in &PRIMES_UNDER_128 {
-                            if prime >= check_dist {
-                                break;
-                            }
-                            // Blocking square is at prime distance from checker, toward king
-                            let tx = king_sq.x;
-                            let ty = checker_sq.y - step_y * prime;
-                            if ty == from.y {
-                                continue;
-                            }
-                            if s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty)) {
-                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
-                            }
-                        }
+                        s.huygen_line_blocks(from, *piece, king_sq, checker_sq, (0, step_y), out);
                     }
                 }
             }
@@ -5006,6 +5012,18 @@ mod tests {
             game.make_move_coords(3, 3, 2, 1, None);
         }
         assert_eq!(game.repetition, 4, "the en passant position is not counted");
+    }
+
+    /// A rook on a Huygen's check line blocks 137 squares from it, past the primes under
+    /// 128 the old scan tried, so the block was missing from the evasion list.
+    #[test]
+    fn rook_on_a_huygen_check_line_blocks_far_from_the_checker() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 K0,0|R0,1|P0,3|hu0,139|k50,50");
+        assert!(game.is_in_check());
+        let mut out = crate::moves::MoveList::new();
+        game.get_evasion_moves_into(&mut out);
+        assert!(out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 1, 0, 2)));
     }
 
     /// Several promotion ranks per side all promote, and each pawn heads for the next
