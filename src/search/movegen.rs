@@ -608,6 +608,19 @@ impl StagedMoveGen {
                     &game.game_rules,
                 )
             }
+            // Exact at any range: the generator's list is capped, so a far check from it
+            // would fail a regeneration test. A void target is occupied but packs to 0.
+            PieceType::Knightrider => {
+                (target_packed != 0 || !target_occupied)
+                    && crate::moves::in_bounds(m.to.x, m.to.y)
+                    && crate::moves::knightrider_path_clear(
+                        &game.board,
+                        m.from.x,
+                        m.from.y,
+                        m.to.x,
+                        m.to.y,
+                    )
+            }
             _ => crate::moves::is_piece_attacking_square(
                 &game.board,
                 &piece,

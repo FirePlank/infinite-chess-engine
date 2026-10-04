@@ -1726,9 +1726,15 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             generate_leaper_moves_into(board, from, piece, 2, 3, MoveGenType::All, out)
         }
         // Knightrider: slide along all 8 knight directions until blocked
-        PieceType::Knightrider => {
-            generate_knightrider_moves_into(board, from, piece, MoveGenType::All, out)
-        }
+        // The enemy king adds the far quiet checks the interior's quiet stage also finds.
+        PieceType::Knightrider => generate_knightrider_moves_impl(
+            board,
+            from,
+            piece,
+            MoveGenType::All,
+            enemy_king_pos,
+            out,
+        ),
         PieceType::Centaur => {
             generate_compass_moves_into(board, from, piece, 1, MoveGenType::All, out);
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
@@ -1899,33 +1905,7 @@ pub fn is_square_attacked(
     // Same inversion as the Rose scan below: visit the real Knightriders rather than
     // probing the 160 squares they could be sliding in from.
     for &(kx, ky) in &indices.knightrider_squares[attacker_idx] {
-        // i128: the generator captures at any range, so the attack test must
-        // too, including from the opposite end of the board.
-        let dx = target.x as i128 - kx as i128;
-        let dy = target.y as i128 - ky as i128;
-        let (ax, ay) = (dx.abs(), dy.abs());
-        // The hop is (2,1) or (1,2) up to sign; k counts hops to the target.
-        let (k, sx, sy) = if ay != 0 && ax == 2 * ay {
-            (ay, 2 * dx.signum() as i64, dy.signum() as i64)
-        } else if ax != 0 && ay == 2 * ax {
-            (ax, dx.signum() as i64, 2 * dy.signum() as i64)
-        } else {
-            continue;
-        };
-        // Short lines walk their squares; long ones test each piece for lying
-        // strictly between, which costs O(pieces) instead of O(distance).
-        let blocked = if k <= 20 {
-            (1..k as i64).any(|i| board.is_occupied(kx + sx * i, ky + sy * i))
-        } else {
-            // The hop count is read off the unit component of the hop.
-            board.tiles.iter_all_pieces().any(|(px, py, _)| {
-                let ox = px as i128 - kx as i128;
-                let oy = py as i128 - ky as i128;
-                let i = if sx.abs() == 1 { ox * sx as i128 } else { oy * sy as i128 };
-                i > 0 && i < k && ox == i * sx as i128 && oy == i * sy as i128
-            })
-        };
-        if !blocked {
+        if knightrider_path_clear(board, kx, ky, target.x, target.y) {
             return true;
         }
     }
@@ -2044,6 +2024,35 @@ pub fn is_square_attacked(
     }
 
     false
+}
+
+/// Whether (tx, ty) lies on one of a knightrider's rays from (fx, fy) with every hop before
+/// it empty, at any range: i128 because the offset can pass i64 across the board.
+pub fn knightrider_path_clear(board: &Board, fx: i64, fy: i64, tx: i64, ty: i64) -> bool {
+    let dx = tx as i128 - fx as i128;
+    let dy = ty as i128 - fy as i128;
+    let (ax, ay) = (dx.abs(), dy.abs());
+    // The hop is (2,1) or (1,2) up to sign; k counts hops to the target.
+    let (k, sx, sy) = if ay != 0 && ax == 2 * ay {
+        (ay, 2 * dx.signum() as i64, dy.signum() as i64)
+    } else if ax != 0 && ay == 2 * ax {
+        (ax, dx.signum() as i64, 2 * dy.signum() as i64)
+    } else {
+        return false;
+    };
+    // Short lines walk their squares; long ones test each piece for lying strictly
+    // between, which costs O(pieces) instead of O(distance).
+    if k <= 20 {
+        !(1..k as i64).any(|i| board.is_occupied(fx + sx * i, fy + sy * i))
+    } else {
+        // The hop count is read off the unit component of the hop.
+        !board.tiles.iter_all_pieces().any(|(px, py, _)| {
+            let ox = px as i128 - fx as i128;
+            let oy = py as i128 - fy as i128;
+            let i = if sx.abs() == 1 { ox * sx as i128 } else { oy * sy as i128 };
+            i > 0 && i < k && ox == i * sx as i128 && oy == i * sy as i128
+        })
+    }
 }
 
 /// Generate only quiet (non-capture) pawn promotions for quiescence search.
