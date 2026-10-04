@@ -3941,24 +3941,18 @@ impl GameState {
                     if parts.is_empty() {
                         continue;
                     }
-                    // Parse promotion logic
-                    if let Ok(rank) = parts[0].parse::<i64>() {
+                    // Ranks are comma-separated, e.g. (8,17|1,10). Every one promotes; the
+                    // eval's single rank is the first each side's pawns reach.
+                    let ranks: Vec<i64> =
+                        parts[0].split(',').filter_map(|r| r.parse().ok()).collect();
+                    if let (Some(&lo), Some(&hi)) = (ranks.iter().min(), ranks.iter().max()) {
                         if idx == 0 {
-                            self.white_promo_rank = rank;
+                            self.white_promo_rank = lo;
+                            self.game_rules.promotion_ranks.white = ranks;
                         } else {
-                            self.black_promo_rank = rank;
+                            self.black_promo_rank = hi;
+                            self.game_rules.promotion_ranks.black = ranks;
                         }
-
-                        self.game_rules.promotion_ranks.white = if idx == 0 {
-                            vec![rank]
-                        } else {
-                            self.game_rules.promotion_ranks.white.clone()
-                        };
-                        self.game_rules.promotion_ranks.black = if idx != 0 {
-                            vec![rank]
-                        } else {
-                            self.game_rules.promotion_ranks.black.clone()
-                        };
                     }
 
                     if parts.len() > 1 {
@@ -4979,6 +4973,19 @@ mod tests {
             game.make_move_coords(3, 3, 2, 1, None);
         }
         assert_eq!(game.repetition, 4, "the en passant position is not counted");
+    }
+
+    /// Several promotion ranks per side all promote; the eval rank is the first reached.
+    #[test]
+    fn icn_parses_several_promotion_ranks() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w 0/100 1 (8,17|1,-8) K5,1|k5,30|P3,16|p3,2");
+        assert_eq!(game.game_rules.promotion_ranks.white, vec![8, 17]);
+        assert_eq!(game.game_rules.promotion_ranks.black, vec![1, -8]);
+        assert_eq!((game.white_promo_rank, game.black_promo_rank), (8, 1));
+        let moves = game.get_pseudo_legal_moves();
+        let promotes = |m: &&Move| (m.from.y, m.to.y) == (16, 17) && m.promotion.is_some();
+        assert!(moves.iter().any(|m| promotes(&m)));
     }
 
     /// A knightrider a billion hops from a far rook check still finds its block, by
