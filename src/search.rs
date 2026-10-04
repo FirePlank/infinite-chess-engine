@@ -5187,9 +5187,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // LMR deeper/shallower re-search depth adjustment
                 // If reduced search returned good value, search deeper
                 // If it returned bad value, search shallower
-                let do_deeper_search =
-                    (search_depth as i32) < base_depth && s > (best_score + 43 + 2 * base_depth);
-                let do_shallower_search = s < best_score + 9;
+                let was_reduced = (search_depth as i32) < base_depth;
+                let do_deeper_search = was_reduced && s > (best_score + 43 + 2 * base_depth);
+                // An unreduced move already searched at full depth; only a reduced one may
+                // come back a ply short of it.
+                let do_shallower_search = was_reduced && s < best_score + 9;
                 let adjusted_depth = (base_depth + (do_deeper_search as i32)
                     - (do_shallower_search as i32))
                     .max(0) as usize;
