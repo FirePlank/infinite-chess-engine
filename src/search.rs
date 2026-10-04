@@ -254,7 +254,7 @@ pub(crate) fn aggregate_search_nodes() -> u64 {
 }
 
 /// Transposition table size in MB used when (re)creating searchers and the shared TT.
-pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(64);
+pub(crate) static TT_SIZE_MB: AtomicUsize = AtomicUsize::new(16);
 
 /// Helper threads route every probe and store to the shared table, so their own
 /// table is pure waste: 16 wasm threads held 1 GB of it at the 64 MB wasm cap.
