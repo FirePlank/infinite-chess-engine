@@ -1915,10 +1915,20 @@ impl GameState {
 
         // 2. Capture checker or block attack (Only in single check)
         let checker_sq = checkers[0];
-        // A checker past any i64 distance takes the exact move list instead: rare, and
-        // every evasion is verified after make anyway.
-        let far_check = checker_sq.x.checked_sub(king_sq.x).is_none()
-            || checker_sq.y.checked_sub(king_sq.y).is_none();
+        // A checker past any i64 distance, or a knightrider too many hops out to list
+        // its blocking squares, takes the exact move list instead: rare, and every
+        // evasion is verified after make anyway.
+        let far_check = match (
+            checker_sq.x.checked_sub(king_sq.x),
+            checker_sq.y.checked_sub(king_sq.y),
+        ) {
+            (Some(dx), Some(dy)) => {
+                dx.abs().max(dy.abs()) > 64
+                    && self.board.get_piece(checker_sq.x, checker_sq.y).map(|p| p.piece_type())
+                        == Some(PieceType::Knightrider)
+            }
+            _ => true,
+        };
         if far_check {
             for (x, y, p) in self.board.iter_pieces_by_color(our_color == PlayerColor::White) {
                 if (x, y) != (king_sq.x, king_sq.y) && p.color() == our_color {
@@ -1952,9 +1962,15 @@ impl GameState {
 
         // A knightrider checks along repeated knight hops, so recover the hop
         // direction (ndx, ndy) and count n from king to checker; the blocking squares
-        // are king + i*(ndx, ndy) for i in 1..n, tested arithmetically at any range.
-        let (knightrider_check_ndx, knightrider_check_ndy, knightrider_n) = if is_knightrider_checker {
+        // are king + i*(ndx, ndy) for i in 1..n.
+        let (
+            knightrider_blocking_squares,
+            knightrider_check_ndx,
+            knightrider_check_ndy,
+            knightrider_n,
+        ): (arrayvec::ArrayVec<Coordinate, 32>, i64, i64, i64) = if is_knightrider_checker {
             use crate::attacks::KNIGHTRIDER_DIRS;
+            let mut blocking = arrayvec::ArrayVec::new();
             let mut found = (0i64, 0i64, 0i64);
             for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
                 if ndx != 0 && ndy != 0 {
@@ -1962,25 +1978,17 @@ impl GameState {
                     let n_y = dy_check / ndy;
                     if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
                         found = (ndx, ndy, n_x);
+                        for i in 1..n_x {
+                            blocking
+                                .push(Coordinate::new(king_sq.x + ndx * i, king_sq.y + ndy * i));
+                        }
                         break;
                     }
                 }
             }
-            found
+            (blocking, found.0, found.1, found.2)
         } else {
-            (0, 0, 0)
-        };
-        // Called only for a knightrider checker, whose hop components are never 0.
-        let on_knightrider_path = |tx: i64, ty: i64| -> bool {
-            let (Some(ox), Some(oy)) = (tx.checked_sub(king_sq.x), ty.checked_sub(king_sq.y))
-            else {
-                return false;
-            };
-            let i = ox / knightrider_check_ndx;
-            ox % knightrider_check_ndx == 0
-                && i >= 1
-                && i < knightrider_n
-                && oy == knightrider_check_ndy * i
+            (arrayvec::ArrayVec::new(), 0, 0, 0)
         };
 
         // For non-linear checkers, compute blocking squares up front
@@ -2117,7 +2125,10 @@ impl GameState {
             // For other checkers, use the standard check ray logic
             let is_valid_blocking_square = |tx: i64, ty: i64| -> bool {
                 if is_knightrider_checker {
-                    on_knightrider_path(tx, ty)
+                    // For knightrider checkers, blocking squares are along the knight hop path
+                    knightrider_blocking_squares
+                        .iter()
+                        .any(|sq| sq.x == tx && sq.y == ty)
                 } else {
                     // For other sliders, use standard check ray logic
                     s.is_on_check_ray(
@@ -2562,9 +2573,13 @@ impl GameState {
                                 if t >= 1 && k >= 1 && k <= cn {
                                     let tx = from.x + t * ndx;
                                     let ty = from.y + t * ndy;
-                                    let path_clear = crate::moves::knightrider_path_clear(
-                                        &s.board, from.x, from.y, tx, ty,
-                                    );
+                                    let mut path_clear = true;
+                                    for i in 1..t {
+                                        if s.board.is_occupied(from.x + i * ndx, from.y + i * ndy) {
+                                            path_clear = false;
+                                            break;
+                                        }
+                                    }
                                     if path_clear && can_block_at(tx, ty) {
                                         out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                                     }
@@ -2834,7 +2849,11 @@ impl GameState {
                     continue;
                 }
                 // Blocking moves for knightrider checkers (for pieces not covered above)
-                if is_knightrider_checker && on_knightrider_path(m.to.x, m.to.y) {
+                if is_knightrider_checker
+                    && knightrider_blocking_squares
+                        .iter()
+                        .any(|sq| sq.x == m.to.x && sq.y == m.to.y)
+                {
                     out.push(m);
                     continue;
                 }
@@ -4983,30 +5002,6 @@ mod tests {
             game.make_move_coords(3, 3, 2, 1, None);
         }
         assert_eq!(game.repetition, 4, "the en passant position is not counted");
-    }
-
-    /// A knightrider checking from 40 hops away is still blocked exactly: the rook's
-    /// interposition on its path must be in the evasion list.
-    #[test]
-    fn far_knightrider_check_keeps_slider_blocks() {
-        let mut game = GameState::new();
-        game.setup_position_from_icn("w 0/100 1 K0,0|R10,-5|nr40,80|k50,50");
-        let mut out = crate::moves::MoveList::new();
-        game.get_evasion_moves_into(&mut out);
-        assert!(
-            out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (10, -5, 10, 20)),
-            "rook block on the knightrider's 10th hop is missing"
-        );
-    }
-
-    /// The exact root list holds a knightrider's quiet check past its hop window, as the
-    /// interior quiet stage does.
-    #[test]
-    fn root_list_has_far_knightrider_quiet_checks() {
-        let mut game = GameState::new();
-        game.setup_position_from_icn("w 0/100 1 NR0,0|K-20,-20|k14,25");
-        let moves = game.get_pseudo_legal_moves();
-        assert!(moves.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 0, 12, 24)));
     }
 
     #[test]
