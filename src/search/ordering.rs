@@ -143,6 +143,9 @@ pub fn score_move(
                 score += 10 * (game.get_piece_value(promo, m.piece.color()) - attacker_val);
             }
 
+            // The interior picker's check, threat and escape terms; only the root sorts here.
+            score += super::movegen::StagedMoveGen::root_quiet_tactics(game, m);
+
             // Low-ply history bonus (same index as the writer and the staged picker).
             if ply < LOW_PLY_HISTORY_SIZE {
                 let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
