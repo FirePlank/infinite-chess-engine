@@ -10,6 +10,7 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 
 - **+30 accumulated Elo** since the last release → minor bump
 - **major bumps are manual**, triggered by running the Auto Release workflow by hand
+- **a version raised by hand** in `Cargo.toml` is released as is, and its tag restarts the accumulator
 
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 

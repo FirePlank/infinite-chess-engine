@@ -11,6 +11,7 @@ cannot re-trigger one; --force-major overrides it.
 
 Bump rule:
   * --force-major                                      -> (X+1).0.0
+  * Cargo.toml raised by hand above the last tag       -> that version as is
   * net Elo since last release tag >= MINOR_THRESHOLD  -> X.(Y+1).0
   * otherwise                                          -> no release
 
@@ -204,6 +205,7 @@ def main() -> int:
         emit_output("release", "false")
         return 0
     last_release_ref = tags[-1][3]
+    last_version = tags[-1][:3]
     last_release_sha = run(["git", "rev-parse", last_release_ref], cwd=root)
     head_sha = run(["git", "rev-parse", "HEAD"], cwd=root)
     cum_minor = cum_elo(f"{last_release_ref}..HEAD", root)
@@ -211,7 +213,12 @@ def main() -> int:
     print(f"current version : {major}.{minor}.{patch}")
     print(f"since release {last_release_ref}: {cum_minor:.1f} Elo (threshold {MINOR_THRESHOLD:.0f})")
 
-    if args.force_major:
+    # A version raised by hand ships as is; its tag then restarts the accumulator.
+    manual = not args.force_major and (major, minor, patch) > last_version
+    if manual:
+        level = "major" if major > last_version[0] else "minor" if minor > last_version[1] else "patch"
+        new_version = f"{major}.{minor}.{patch}"
+    elif args.force_major:
         level = "major"
         new_version = f"{major + 1}.0.0"
     elif cum_minor >= MINOR_THRESHOLD:
@@ -222,7 +229,7 @@ def main() -> int:
         emit_output("release", "false")
         return 0
 
-    print(f"-> {level} bump: {new_version}")
+    print(f"-> {level} {'release (set by hand)' if manual else 'bump'}: {new_version}")
 
     subjects = run(
         ["git", "log", "--no-merges", "--format=- %s", f"{last_release_ref}..HEAD"],
@@ -243,12 +250,14 @@ def main() -> int:
     emit_output("release", "true")
     emit_output("level", level)
     emit_output("version", new_version)
+    emit_output("bumped", "false" if manual else "true")
 
     if args.dry_run:
         print("\n--- dry run: notes ---\n" + notes)
         return 0
 
-    write_cargo_version(cargo, new_version)
+    if not manual:
+        write_cargo_version(cargo, new_version)
     notes_path = args.notes_file or (root / "RELEASE_NOTES.md")
     notes_path.write_text(notes, encoding="utf-8")
     print(f"wrote {cargo} and {notes_path}")
