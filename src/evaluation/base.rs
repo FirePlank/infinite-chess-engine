@@ -4139,7 +4139,12 @@ fn passer_is_unstoppable(
     defender: PlayerColor,
     defender_has_interceptor: bool,
 ) -> bool {
-    if moves_to_promo <= 0 || defender_has_interceptor {
+    // The path check stops short of the promotion square, and an obstacle, void or own
+    // piece standing on it has no reach below, yet a pawn can never push onto it.
+    if moves_to_promo <= 0
+        || defender_has_interceptor
+        || game.board.is_occupied(promo_sq.0, promo_sq.1)
+    {
         return false;
     }
     // A defender on move gets the extra tempo.
@@ -4753,6 +4758,19 @@ mod tests {
         let rays = king_rays_from_indices(&game.spatial_indices, king.x, king.y, PlayerColor::White).0;
         let pieces: Vec<_> = game.board.iter().collect();
         safe_check_units(&game, &king, PlayerColor::White, &rays, &pieces)
+    }
+
+    /// A pawn whose promotion square holds an obstacle can never push onto it, however
+    /// far away the defenders are.
+    #[test]
+    fn passer_is_not_unstoppable_onto_an_occupied_promotion_square() {
+        let unstoppable = |icn: &str| {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+            passer_is_unstoppable(&game, (5, 8), 1, PlayerColor::Black, false)
+        };
+        assert!(unstoppable("w (8;q|1;q) K1,1|k20,1|P5,7"));
+        assert!(!unstoppable("w (8;q|1;q) K1,1|k20,1|P5,7|ob5,8"));
     }
 
     #[test]
