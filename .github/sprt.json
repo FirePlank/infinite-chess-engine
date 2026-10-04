@@ -1,9 +1,9 @@
 {
-  "name": "322_obstacle_take_quiet_order",
-  "old": "c94406b",
+  "name": "326_huygen_quiet_threats",
+  "old": "58ad371",
   "games": 2000,
   "shards": 40,
-  "variants": "Confined_Classical",
+  "variants": "CoaIP_HO",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
