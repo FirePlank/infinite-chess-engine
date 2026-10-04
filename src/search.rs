@@ -1407,9 +1407,12 @@ impl Searcher {
     /// Clears TT and resets all history tables to neutral values.
     pub fn clear(&mut self) {
         self.hot.last_root_score = 0;
-        // Clear transposition table
+        // Shared tables belong to the main thread: a helper clearing them would wipe
+        // entries the others are already searching with.
         #[cfg(feature = "multithreading")]
-        if let Some(tt) = SHARED_TT.get() {
+        if self.thread_id == 0
+            && let Some(tt) = SHARED_TT.get()
+        {
             tt.clear();
         }
         self.tt.clear();
@@ -1462,10 +1465,12 @@ impl Searcher {
             row.fill(0);
         }
 
-        // Reset pawn history (racy-but-benign memset of the shared table in MT builds)
+        // Reset pawn history (shared in MT builds, so main thread only, as above)
         #[cfg(feature = "multithreading")]
-        unsafe {
-            std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+        if self.thread_id == 0 {
+            unsafe {
+                std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+            }
         }
         #[cfg(not(feature = "multithreading"))]
         for table in self.pawn_history.iter_mut() {
@@ -2604,6 +2609,7 @@ pub fn get_best_move_parallel(
 
     // Initialize Shared TT for multithreaded search (sized by set_hash_size, like the local TTs).
     init_shared_tt();
+    adopt_main_eval_kind(game, max_time_ms);
 
     // Shared storage for thread results - all threads contribute to voting
     let results: Arc<Mutex<Vec<ThreadResult>>> =
@@ -2828,6 +2834,17 @@ pub(crate) fn helper_run(
         searcher.helper_epoch = 0;
     });
     HELPERS_LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The main thread's eval-kind adoption, run before helpers start so that a kind change
+/// clears the shared tables while nothing is searching them.
+pub(crate) fn adopt_main_eval_kind(game: &GameState, time_limit_ms: u128) {
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let searcher = opt.get_or_insert_with(|| Searcher::new(time_limit_ms));
+        searcher.thread_id = 0;
+        searcher.adopt_eval_kind(game.eval_kind);
+    });
 }
 
 pub(crate) fn get_best_move_threaded(

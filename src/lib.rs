@@ -983,6 +983,7 @@ impl Engine {
                 if start_depth <= 1
                     || search::HELPERS_LIVE.load(std::sync::atomic::Ordering::Relaxed) == 0
                 {
+                    search::adopt_main_eval_kind(&self.game, slice_ms);
                     let epoch =
                         search::HELPER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     search::GLOBAL_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
