@@ -1,0 +1,11 @@
+{
+  "name": "317_net_mopup_static_s11_resume",
+  "old": "4cb9383",
+  "games": 3000,
+  "shards": 40,
+  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
+}
