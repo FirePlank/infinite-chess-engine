@@ -783,8 +783,8 @@ impl Engine {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let pre_stats = crate::search::get_current_tt_stats();
             if !silent {
+                let pre_stats = crate::search::get_current_tt_stats();
                 use crate::log;
                 let variant = self
                     .game
@@ -972,8 +972,8 @@ impl Engine {
         // worker's JS yields, and retire only when the epoch bumps.
         #[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
         {
-            // Helpers = pool size - 1; the page sizes the pool, so no engine-side cap.
-            let num_threads = rayon::current_num_threads().max(1);
+            // Helpers = pool size - 1, within the wasm memory budget.
+            let num_threads = search::wasm_search_threads();
             if num_threads > 1 {
                 search::init_shared_tt();
                 search::USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);

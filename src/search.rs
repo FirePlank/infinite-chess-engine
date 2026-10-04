@@ -958,12 +958,18 @@ fn build_search_stats(searcher: &Searcher) -> SearchStats {
 /// Return current TT statistics from the persistent global searcher, if any.
 /// When no global searcher exists yet, initializes one with default size to report capacity.
 pub fn get_current_tt_stats() -> SearchStats {
+    // Read only: creating the searcher here would allocate a full local TT before a
+    // multithreaded search switches to the shared one, and keep it unused.
     GLOBAL_SEARCHER.with(|cell| {
-        let mut opt = cell.borrow_mut();
-
-        // Ensure searcher exists so we can report its capacity/fill even before first search
-        let searcher = opt.get_or_insert_with(|| Searcher::new(4000));
-        build_search_stats(searcher)
+        cell.borrow().as_ref().map_or(
+            SearchStats {
+                nodes: 0,
+                tt_capacity: 0,
+                tt_used: 0,
+                tt_fill_permille: 0,
+            },
+            build_search_stats,
+        )
     })
 }
 
@@ -2580,7 +2586,7 @@ pub fn get_best_move_parallel(
     // matches): parallelism there belongs to the caller, which must not share the
     // global stop and TT coordination.
     #[cfg(target_arch = "wasm32")]
-    let num_threads = rayon::current_num_threads().max(1);
+    let num_threads = wasm_search_threads();
     #[cfg(not(target_arch = "wasm32"))]
     let num_threads = {
         static NATIVE_THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -2742,6 +2748,17 @@ pub fn get_best_move_parallel(
         0,
         is_soft_limit,
     )
+}
+
+/// Each search thread takes ~18 MiB (its tables and 2 MiB stack) of the 512 MiB wasm heap
+/// (`--max-memory`); with a 64 MiB TT, 20 threads leave about a tenth of it spare.
+#[cfg(target_arch = "wasm32")]
+const MAX_WASM_SEARCH_THREADS: usize = 20;
+
+/// Search threads to use from the page's pool, kept within the wasm memory budget.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn wasm_search_threads() -> usize {
+    rayon::current_num_threads().clamp(1, MAX_WASM_SEARCH_THREADS)
 }
 
 /// Analysis-helper lifecycle epoch. Bumping it (new position or stop) makes every
