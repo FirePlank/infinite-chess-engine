@@ -1570,10 +1570,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             black_pawns,
                         );
 
-                        if phase < MAX_KING_PHASE {
+                        // On the game's own starting material, like every other taper: the
+                        // raw piece sum kept big armies out of this endgame term far longer.
+                        if final_phase < MAX_KING_PHASE {
                             score += evaluate_king_positioning_traced(
                                 game,
-                                MAX_KING_PHASE - phase,
+                                MAX_KING_PHASE - final_phase,
                                 white_royal_tropisms.as_ref(),
                                 black_royal_tropisms.as_ref(),
                                 tracer,
