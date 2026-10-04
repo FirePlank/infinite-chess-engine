@@ -2104,20 +2104,22 @@ pub fn generate_pawn_quiet_promotions(
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    // If board is empty in front, we *might* have a move
     let to_y = from.y + direction;
     let to_x = from.x;
-
-    if board.is_occupied(to_x, to_y) {
-        return;
-    }
-
     let ranks = &game_rules.promotion_ranks;
     let promotion_ranks = match piece.color() {
         PlayerColor::White => &ranks.white,
         PlayerColor::Black => &ranks.black,
         PlayerColor::Neutral => unsafe { std::hint::unreachable_unchecked() },
     };
+    // Most pawns are nowhere near promotion; rule them out before any board lookup.
+    if !promotion_ranks.contains(&to_y) && !promotion_ranks.contains(&(from.y + 2 * direction)) {
+        return;
+    }
+
+    if board.is_occupied(to_x, to_y) {
+        return;
+    }
 
     let default_promos = [
         PieceType::Queen,
