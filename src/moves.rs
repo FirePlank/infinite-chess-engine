@@ -1001,6 +1001,15 @@ pub struct SpatialIndices {
     pub has_rose: [bool; 2],
     #[serde(skip)]
     pub has_knightrider: [bool; 2],
+    /// Set once any obstacle is indexed; obstacles never appear mid-game, only vanish.
+    #[serde(skip)]
+    pub has_obstacle: bool,
+    /// Squares of each colour's knightriders and roses ([0] = white), kept by add/remove
+    /// so attack tests visit those pieces instead of walking every tile.
+    #[serde(skip)]
+    pub knightrider_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2],
+    #[serde(skip)]
+    pub rose_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2],
 }
 
 impl SpatialIndices {
@@ -1014,6 +1023,9 @@ impl SpatialIndices {
         let mut has_huygen = [false, false];
         let mut has_rose = [false, false];
         let mut has_knightrider = [false, false];
+        let mut has_obstacle = false;
+        let mut knightrider_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2] = Default::default();
+        let mut rose_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2] = Default::default();
 
         // BITBOARD: Use tile-based CTZ iteration for O(popcount) enumeration
         for (cx, cy, tile) in board.tiles.iter() {
@@ -1043,8 +1055,15 @@ impl SpatialIndices {
                 };
                 match piece.piece_type() {
                     PieceType::Huygen => has_huygen[color_idx] = true,
-                    PieceType::Rose => has_rose[color_idx] = true,
-                    PieceType::Knightrider => has_knightrider[color_idx] = true,
+                    PieceType::Rose => {
+                        has_rose[color_idx] = true;
+                        rose_squares[color_idx].push((x, y));
+                    }
+                    PieceType::Knightrider => {
+                        has_knightrider[color_idx] = true;
+                        knightrider_squares[color_idx].push((x, y));
+                    }
+                    PieceType::Obstacle => has_obstacle = true,
                     _ => {}
                 }
             }
@@ -1059,6 +1078,9 @@ impl SpatialIndices {
             has_huygen,
             has_rose,
             has_knightrider,
+            has_obstacle,
+            knightrider_squares,
+            rose_squares,
         }
     }
 
@@ -1072,6 +1094,14 @@ impl SpatialIndices {
 
     /// Incrementally add a piece at (x, y) to the indices.
     pub fn add(&mut self, x: i64, y: i64, packed: u8) {
+        let piece = Piece::from_packed(packed);
+        let c = usize::from(piece.color() != PlayerColor::White);
+        match piece.piece_type() {
+            PieceType::Obstacle => self.has_obstacle = true,
+            PieceType::Knightrider => self.knightrider_squares[c].push((x, y)),
+            PieceType::Rose => self.rose_squares[c].push((x, y)),
+            _ => {}
+        }
         self.rows.entry_or_default(y).insert(x, packed);
         self.cols.entry_or_default(x).insert(y, packed);
 
@@ -1086,6 +1116,11 @@ impl SpatialIndices {
 
     /// Incrementally remove a piece at (x, y) from the indices.
     pub fn remove(&mut self, x: i64, y: i64) {
+        for list in self.knightrider_squares.iter_mut().chain(self.rose_squares.iter_mut()) {
+            if let Some(i) = list.iter().position(|&sq| sq == (x, y)) {
+                list.swap_remove(i);
+            }
+        }
         if let Some(v) = self.rows.get_mut(&y) {
             v.remove(x);
             if v.is_empty() {
@@ -1180,6 +1215,9 @@ impl Default for SpatialIndices {
             has_huygen: [false, false],
             has_rose: [false, false],
             has_knightrider: [false, false],
+            has_obstacle: false,
+            knightrider_squares: Default::default(),
+            rose_squares: Default::default(),
         }
     }
 }
@@ -1895,59 +1933,37 @@ pub fn is_square_attacked(
     } else {
         1
     };
-    // Same inversion as the Rose scan below: find the real Knightriders through the
-    // tile type mask rather than probing 160 squares they could be sliding in from.
-    if indices.has_knightrider[attacker_idx] {
-        const KR_BIT: u32 = 1u32 << (PieceType::Knightrider as u8);
-        let white = attacker_color == PlayerColor::White;
-        for (cx, cy, tile) in board.tiles.iter() {
-            let mask = if white {
-                tile.type_mask_white
-            } else {
-                tile.type_mask_black
-            };
-            if mask & KR_BIT == 0 {
-                continue;
-            }
-            let mut bits = if white { tile.occ_white } else { tile.occ_black };
-            while bits != 0 {
-                let idx = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                if Piece::from_packed(tile.piece[idx]).piece_type() != PieceType::Knightrider {
-                    continue;
-                }
-                let kx = cx * 8 + (idx % 8) as i64;
-                let ky = cy * 8 + (idx / 8) as i64;
-                // i128: the generator captures at any range, so the attack test must
-                // too, including from the opposite end of the board.
-                let dx = target.x as i128 - kx as i128;
-                let dy = target.y as i128 - ky as i128;
-                let (ax, ay) = (dx.abs(), dy.abs());
-                // The hop is (2,1) or (1,2) up to sign; k counts hops to the target.
-                let (k, sx, sy) = if ay != 0 && ax == 2 * ay {
-                    (ay, 2 * dx.signum() as i64, dy.signum() as i64)
-                } else if ax != 0 && ay == 2 * ax {
-                    (ax, dx.signum() as i64, 2 * dy.signum() as i64)
-                } else {
-                    continue;
-                };
-                // Short lines walk their squares; long ones test each piece for lying
-                // strictly between, which costs O(pieces) instead of O(distance).
-                let blocked = if k <= 20 {
-                    (1..k as i64).any(|i| board.is_occupied(kx + sx * i, ky + sy * i))
-                } else {
-                    // The hop count is read off the unit component of the hop.
-                    board.tiles.iter_all_pieces().any(|(px, py, _)| {
-                        let ox = px as i128 - kx as i128;
-                        let oy = py as i128 - ky as i128;
-                        let i = if sx.abs() == 1 { ox * sx as i128 } else { oy * sy as i128 };
-                        i > 0 && i < k && ox == i * sx as i128 && oy == i * sy as i128
-                    })
-                };
-                if !blocked {
-                    return true;
-                }
-            }
+    // Same inversion as the Rose scan below: visit the real Knightriders rather than
+    // probing the 160 squares they could be sliding in from.
+    for &(kx, ky) in &indices.knightrider_squares[attacker_idx] {
+        // i128: the generator captures at any range, so the attack test must
+        // too, including from the opposite end of the board.
+        let dx = target.x as i128 - kx as i128;
+        let dy = target.y as i128 - ky as i128;
+        let (ax, ay) = (dx.abs(), dy.abs());
+        // The hop is (2,1) or (1,2) up to sign; k counts hops to the target.
+        let (k, sx, sy) = if ay != 0 && ax == 2 * ay {
+            (ay, 2 * dx.signum() as i64, dy.signum() as i64)
+        } else if ax != 0 && ay == 2 * ax {
+            (ax, dx.signum() as i64, 2 * dy.signum() as i64)
+        } else {
+            continue;
+        };
+        // Short lines walk their squares; long ones test each piece for lying
+        // strictly between, which costs O(pieces) instead of O(distance).
+        let blocked = if k <= 20 {
+            (1..k as i64).any(|i| board.is_occupied(kx + sx * i, ky + sy * i))
+        } else {
+            // The hop count is read off the unit component of the hop.
+            board.tiles.iter_all_pieces().any(|(px, py, _)| {
+                let ox = px as i128 - kx as i128;
+                let oy = py as i128 - ky as i128;
+                let i = if sx.abs() == 1 { ox * sx as i128 } else { oy * sy as i128 };
+                i > 0 && i < k && ox == i * sx as i128 && oy == i * sy as i128
+            })
+        };
+        if !blocked {
+            return true;
         }
     }
 
@@ -2038,50 +2054,28 @@ pub fn is_square_attacked(
     }
 
     // Walk forward from the real Roses instead of probing the 112 squares one could sit
-    // on: the tile type mask finds them, and ROSE_REACH turns the spiral walk into a lookup.
-    if indices.has_rose[attacker_idx] {
-        const ROSE_BIT: u32 = 1u32 << (PieceType::Rose as u8);
-        let white = attacker_color == PlayerColor::White;
-        for (cx, cy, tile) in board.tiles.iter() {
-            let mask = if white {
-                tile.type_mask_white
-            } else {
-                tile.type_mask_black
-            };
-            if mask & ROSE_BIT == 0 {
-                continue;
+    // on; ROSE_REACH turns the spiral walk into a lookup.
+    for &(rose_x, rose_y) in &indices.rose_squares[attacker_idx] {
+        let dx = target.x - rose_x;
+        let dy = target.y - rose_y;
+        if dx.abs() > ROSE_SPAN || dy.abs() > ROSE_SPAN {
+            continue;
+        }
+        let mut reach = ROSE_REACH[(dx + ROSE_SPAN) as usize][(dy + ROSE_SPAN) as usize];
+        while reach != 0 {
+            let bit = reach.trailing_zeros() as usize;
+            reach &= reach - 1;
+            let spiral = &ROSE_SPIRALS[bit / 14][(bit % 14) / 7];
+            let hop = bit % 7;
+            let mut blocked = false;
+            for &(prev_dx, prev_dy) in spiral.iter().take(hop) {
+                if board.is_occupied(rose_x + prev_dx, rose_y + prev_dy) {
+                    blocked = true;
+                    break;
+                }
             }
-            let mut bits = if white { tile.occ_white } else { tile.occ_black };
-            while bits != 0 {
-                let idx = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                if Piece::from_packed(tile.piece[idx]).piece_type() != PieceType::Rose {
-                    continue;
-                }
-                let rose_x = cx * 8 + (idx % 8) as i64;
-                let rose_y = cy * 8 + (idx / 8) as i64;
-                let dx = target.x - rose_x;
-                let dy = target.y - rose_y;
-                if dx.abs() > ROSE_SPAN || dy.abs() > ROSE_SPAN {
-                    continue;
-                }
-                let mut reach = ROSE_REACH[(dx + ROSE_SPAN) as usize][(dy + ROSE_SPAN) as usize];
-                while reach != 0 {
-                    let bit = reach.trailing_zeros() as usize;
-                    reach &= reach - 1;
-                    let spiral = &ROSE_SPIRALS[bit / 14][(bit % 14) / 7];
-                    let hop = bit % 7;
-                    let mut blocked = false;
-                    for &(prev_dx, prev_dy) in spiral.iter().take(hop) {
-                        if board.is_occupied(rose_x + prev_dx, rose_y + prev_dy) {
-                            blocked = true;
-                            break;
-                        }
-                    }
-                    if !blocked {
-                        return true;
-                    }
-                }
+            if !blocked {
+                return true;
             }
         }
     }
@@ -2357,7 +2351,15 @@ fn generate_quiets_for_piece(
 
         // Pawns: only forward moves (single and double push), no captures
         PieceType::Pawn => {
-            generate_pawn_quiet_moves(board, from, piece, special_rights, game_rules, out);
+            generate_pawn_quiet_moves(
+                board,
+                from,
+                piece,
+                special_rights,
+                game_rules,
+                indices.has_obstacle,
+                out,
+            );
         }
 
         // Knight-like leapers: filter to empty squares
@@ -2601,6 +2603,7 @@ fn generate_pawn_quiet_moves(
     piece: &Piece,
     special_rights: &SpecialRights,
     game_rules: &GameRules,
+    has_obstacle: bool,
     out: &mut MoveList,
 ) {
     let direction = match piece.color() {
@@ -2665,6 +2668,9 @@ fn generate_pawn_quiet_moves(
 
     // The capture stage drops non-promoting obstacle captures to keep qsearch small,
     // so the main search would otherwise never try opening a line through one.
+    if !has_obstacle {
+        return;
+    }
     for dx in [-1i64, 1] {
         let (cx, cy) = (from.x + dx, to_y);
         if !promotion_ranks.contains(&cy)
@@ -2912,7 +2918,7 @@ fn find_cross_ray_targets_into(
     ctx: &CrossRayContext,
     dir_x: i64,
     dir_y: i64,
-    dist_counts: &mut FxHashMap<i64, u8>,
+    dist_counts: &mut Vec<i64>,
     mut visited_targets: Option<&mut Vec<(Coordinate, u8)>>,
 ) {
     let board = ctx.board;
@@ -2951,12 +2957,11 @@ fn find_cross_ray_targets_into(
     let ray_diff = dir_x - dir_y;
     let ray_sum = dir_x + dir_y;
 
-    // Helper to increment piece count for a distance
+    // Only the set of distances is read, after a sort and dedup, so duplicates are fine.
     #[inline(always)]
-    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+    fn add_dist(dists: &mut Vec<i64>, d: i64, max_d: i64) {
         if d > 0 && d <= max_d {
-            let entry = map.entry(d).or_insert(0);
-            *entry = entry.saturating_add(1);
+            dists.push(d);
         }
     }
 
@@ -3231,7 +3236,7 @@ fn generate_sliding_moves_impl(
     let ek_ref = enemy_king_pos;
 
     // Reuse maps across directions to avoid allocations
-    let mut dist_counts: FxHashMap<i64, u8> = FxHashMap::default();
+    let mut dist_counts: Vec<i64> = Vec::new();
     let mut knight_dists: Vec<i64> = Vec::new();
     // Archbishop/chancellor also threaten from squares their ray logic ignores.
     let has_knight_leap = matches!(
@@ -3239,12 +3244,11 @@ fn generate_sliding_moves_impl(
         PieceType::Archbishop | PieceType::Chancellor | PieceType::Amazon
     );
 
-    // Helper to increment piece count for a distance
+    // Only the set of distances is read, after a sort and dedup, so duplicates are fine.
     #[inline(always)]
-    fn add_dist(map: &mut FxHashMap<i64, u8>, d: i64, max_d: i64) {
+    fn add_dist(dists: &mut Vec<i64>, d: i64, max_d: i64) {
         if d > 0 && d <= max_d {
-            let entry = map.entry(d).or_insert(0);
-            *entry = entry.saturating_add(1);
+            dists.push(d);
         }
     }
 
@@ -3699,7 +3703,7 @@ fn generate_sliding_moves_impl(
                     shared_targets.push(closest_dist);
                 }
 
-                shared_targets.extend(dist_counts.keys().copied());
+                shared_targets.extend(dist_counts.iter().copied());
                 shared_targets.extend(knight_dists.iter().map(|&d| d | CAP_EXEMPT));
                 shared_targets.sort_unstable_by_key(|&v| v & !CAP_EXEMPT);
                 shared_targets.dedup_by(|b, a| {
@@ -4371,7 +4375,7 @@ const ROSE_SPIRALS_CONST: [[[(i64, i64); 7]; 2]; 8] = {
 
 /// Each spiral square numbered among the 32 distinct squares the 16 spirals visit, so
 /// move generation dedups the two spirals that share a square with one bit test.
-static ROSE_SQUARE_ID: [[[u8; 7]; 2]; 8] = {
+pub(crate) static ROSE_SQUARE_ID: [[[u8; 7]; 2]; 8] = {
     let spirals = ROSE_SPIRALS_CONST;
     let mut ids = [[[0u8; 7]; 2]; 8];
     let mut seen = [(0i64, 0i64); 112];

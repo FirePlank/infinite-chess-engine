@@ -221,6 +221,11 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
             if (tile.type_mask_white | tile.type_mask_black) & BITS == 0 {
                 continue;
             }
+            // Huygens jump along ranks and files only: just the target's row and column.
+            let (x0, y0) = (cx * 8, cy * 8);
+            if !(x0..x0 + 8).contains(&target_x) && !(y0..y0 + 8).contains(&target_y) {
+                continue;
+            }
             let mut bits = tile.occ_white | tile.occ_black;
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
@@ -231,6 +236,7 @@ pub(crate) fn static_exchange_eval_impl(game: &GameState, m: &Move) -> i32 {
                 }
                 let pos = Coordinate::new(cx * 8 + (i % 8) as i64, cy * 8 + (i / 8) as i64);
                 if pos != m.from
+                    && (pos.x == target_x || pos.y == target_y)
                     && crate::moves::is_piece_attacking_square(
                         &game.board,
                         &p,

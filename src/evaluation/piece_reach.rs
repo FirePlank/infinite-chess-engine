@@ -148,22 +148,29 @@ pub(crate) fn evaluate_rose_reach(
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut attack = 0i32;
     let mut defend = 0i32;
-    // At most one target per spiral, so sixteen slots cover the dedup.
-    let mut seen: [(i64, i64); 16] = [(i64::MIN, i64::MIN); 16];
-    let mut seen_n = 0usize;
+    // The 112 spiral squares are 32 distinct ones: each is read from the board at most
+    // once, and a bit per square id does the dedup.
+    let mut fetched = 0u32;
+    let mut seen = 0u32;
+    let mut occ: [Option<crate::board::Piece>; 32] = [None; 32];
 
-    for spirals_for_dir in &crate::moves::ROSE_SPIRALS {
-        for spiral_path in spirals_for_dir {
-            for &(cum_dx, cum_dy) in spiral_path.iter() {
-                let (tx, ty) = (x + cum_dx, y + cum_dy);
-                let Some(occupant) = game.board.get_piece(tx, ty) else {
+    for (spirals_for_dir, ids_for_dir) in
+        crate::moves::ROSE_SPIRALS.iter().zip(crate::moves::ROSE_SQUARE_ID.iter())
+    {
+        for (spiral_path, ids) in spirals_for_dir.iter().zip(ids_for_dir.iter()) {
+            for (&(cum_dx, cum_dy), &id) in spiral_path.iter().zip(ids.iter()) {
+                let bit = 1u32 << id;
+                if fetched & bit == 0 {
+                    fetched |= bit;
+                    occ[id as usize] = game.board.get_piece(x + cum_dx, y + cum_dy);
+                }
+                let Some(occupant) = occ[id as usize] else {
                     continue;
                 };
-                if seen[..seen_n].contains(&(tx, ty)) {
+                if seen & bit != 0 {
                     break;
                 }
-                seen[seen_n] = (tx, ty);
-                seen_n += 1;
+                seen |= bit;
 
                 let ot = occupant.piece_type();
                 if !ot.is_neutral_type() {
