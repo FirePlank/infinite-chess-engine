@@ -1718,6 +1718,10 @@ impl GameState {
                 ) && !self.king_capturable(self.turn)
                 {
                     illegal = true;
+                } else if m.partner_x != crate::moves::NO_PARTNER {
+                    // The partner still stands on the row it vacates, possibly shielding
+                    // the landing square from a rider beyond it: play the castle to see.
+                    strict = true;
                 }
             } else if rider_pins_possible || rose_pin_candidates.contains(&m.from) {
                 strict = true;
