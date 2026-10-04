@@ -263,6 +263,23 @@ pub fn sort_captures(searcher: &Searcher, game: &GameState, moves: &mut MoveList
     }
 }
 
+/// Qsearch evasions: captures by MVV-LVA ahead of every quiet, quiets by main history.
+pub fn sort_qs_evasions(searcher: &Searcher, game: &GameState, moves: &mut MoveList) {
+    moves.sort_by_cached_key(|m| {
+        let is_capture = game.is_en_passant(m)
+            || game
+                .board
+                .get_piece(m.to.x, m.to.y)
+                .is_some_and(|p| !p.piece_type().is_neutral_type());
+        -if is_capture {
+            (1 << 28) + capture_sort_key(searcher, game, m)
+        } else {
+            searcher.history[crate::search::hist_color(m.piece.color())]
+                [m.piece.piece_type() as usize][hash_move_dest(m)]
+        }
+    });
+}
+
 /// Hash move destination to 256-size index (for main history)
 #[inline]
 pub fn hash_move_dest(m: &Move) -> usize {
