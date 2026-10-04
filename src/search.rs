@@ -792,6 +792,13 @@ pub struct SearchStats {
     pub tt_fill_permille: u32,
 }
 
+/// Where an analysis call left its root: a resume of the same position continues from it.
+pub struct AnalysisResume {
+    hash: u64,
+    order: Vec<Move>,
+    lines: Vec<PVLine>,
+}
+
 /// A single PV line with its score and depth.
 #[derive(Clone, Debug)]
 pub struct PVLine {
@@ -1014,6 +1021,8 @@ pub struct Searcher {
     /// The PV of the last completed iteration, and whether this node is still
     /// walking it. Nodes on it are exempt from in-move pruning at PV nodes.
     pub prev_iteration_pv: Vec<Move>,
+    /// The last analysis call's root, for a resume of the same position.
+    pub analysis_resume: Option<AnalysisResume>,
     /// Exact move played at ply 0. The root keeps only hashed coords in
     /// prev_move_stack, and move_history is written by the interior loop.
     pub root_played: Option<Move>,
@@ -1190,6 +1199,7 @@ impl Searcher {
                 iter_start_ms: 0.0,
             },
             prev_iteration_pv: Vec::with_capacity(MAX_PLY),
+            analysis_resume: None,
             root_played: None,
             follow_pv: vec![false; MAX_PLY + 2],
             pv_table,
@@ -3221,6 +3231,16 @@ pub(crate) fn get_best_moves_multipv_impl(
     let deep_ref_depth = deep_tactic_reference_depth(max_depth);
     let mut deep_ref_scores: Vec<(Move, i32)> = Vec::new();
 
+    // A resumed analysis ("go deeper") takes the root order and lines its previous call
+    // ended with, so the next depth starts ordered and aspirated as if it never stopped.
+    if resume_from_depth.is_some_and(|d| d > 1)
+        && let Some(saved) = searcher.analysis_resume.as_ref().filter(|r| r.hash == game.hash)
+    {
+        let rank = |m: &Move| saved.order.iter().position(|o| o == m).unwrap_or(usize::MAX);
+        legal_root_moves.sort_by_key(rank);
+        best_lines = saved.lines.iter().take(multi_pv).cloned().collect();
+    }
+
     // Resume point (analysis) takes precedence; otherwise Lazy SMP helper threads
     // start at staggered depths for search diversity.
     let start_depth = if let Some(resume) = resume_from_depth {
@@ -3493,6 +3513,13 @@ pub(crate) fn get_best_moves_multipv_impl(
 
             if !silent {
                 searcher.print_multi_pv_depth(depth, &best_lines);
+            }
+            if depth_completed && on_depth.is_some() {
+                searcher.analysis_resume = Some(AnalysisResume {
+                    hash: game.hash,
+                    order: legal_root_moves.to_vec(),
+                    lines: best_lines.clone(),
+                });
             }
 
             // Only stream a completed depth to the analysis UI (a partial first depth
