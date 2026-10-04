@@ -405,6 +405,33 @@ impl StagedMoveGen {
             return false;
         }
 
+        // Only a pawn reaching its promotion rank promotes, always, and only to an allowed
+        // type; a move decoded from a colliding hash can break any of the three.
+        if m.promotion.is_some() || piece.piece_type() == PieceType::Pawn {
+            let rules = &game.game_rules;
+            let ranks = if game.turn == PlayerColor::White {
+                &rules.promotion_ranks.white
+            } else {
+                &rules.promotion_ranks.black
+            };
+            let promotes = piece.piece_type() == PieceType::Pawn && ranks.contains(&m.to.y);
+            if promotes != m.promotion.is_some() {
+                return false;
+            }
+            if let Some(pt) = m.promotion {
+                let allowed = match &rules.promotion_types {
+                    Some(types) => types.contains(&pt),
+                    None => matches!(
+                        pt,
+                        PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight
+                    ),
+                };
+                if !allowed {
+                    return false;
+                }
+            }
+        }
+
         // One tile fetch yields both the packed piece and the occupancy bit. A neutral
         // Void packs to 0 yet occupies, so pawn pushes must test occupancy rather than
         // packed == 0.
