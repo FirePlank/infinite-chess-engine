@@ -2272,9 +2272,6 @@ fn search_with_searcher(
 ) -> Option<(Move, i32)> {
     game.recenter_windows();
 
-    // Before the root list: its wall-target moves exist only while this flag is set.
-    set_conversion_wall_targets(game);
-
     // Root must bypass the slider candidate cache: it is never invalidated, so a
     // persistent GameState accumulates staleness and the root list both loses legal
     // moves and gains impossible ones (measured 84% of positions after 120 plies).
@@ -2306,6 +2303,8 @@ fn search_with_searcher(
     if legal_moves.is_empty() {
         return None;
     }
+
+    set_conversion_wall_targets(game);
 
     // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
@@ -3154,7 +3153,6 @@ pub(crate) fn get_best_moves_multipv_impl(
     }
 
     game.recenter_windows();
-    set_conversion_wall_targets(game);
 
     // Get all legal moves upfront (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
@@ -3196,6 +3194,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         };
     }
 
+    set_conversion_wall_targets(game);
     // The mid-iteration stop and the no-new-depth rule read total_time_ms, which only
     // the single-PV loop set, so timed multi-PV ran to its hard maximum.
     if searcher.hot.total_time_ms == 0.0 && searcher.hot.optimum_time_ms < u128::MAX {
@@ -4551,7 +4550,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         flag: TTFlag::LowerBound,
                         score: val,
                         static_eval: raw_eval,
-                        is_pv: tt_pv,
+                        is_pv: false,
                         best_move: Some(m),
                         ply,
                     },
@@ -5173,9 +5172,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 was_null_move: false,
                 excluded_move: None,
             });
-            // A scout that fell into qsearch never consumed the slot, and a re-search
-            // child must not read it as its own prior reduction.
-            searcher.reduction_stack[ply] = 0;
 
             // Re-search at full depth if it looks promising
             if s > alpha && (reduction > 0 || s < beta) {
@@ -5320,11 +5316,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         qidx,
                         -bonus * pawn_history_malus_scale(),
                     );
-                    // Low-ply history is keyed by destination alone, so another piece's move
-                    // to the cutoff's square would cancel its bonus.
-                    if qidx != idx {
-                        searcher.update_low_ply_history(ply, qidx, -bonus);
-                    }
+                    // Penalize other quiets in low ply history too
+                    searcher.update_low_ply_history(ply, qidx, -bonus);
                 }
 
                 // Killer move heuristic (for non-captures).
@@ -5423,7 +5416,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Adjust best value for fail high cases
     // Soften the score to prevent returning inflated values from reduced searches
-    if best_score >= beta && !is_decisive(best_score) && !is_decisive(alpha_orig) {
+    if best_score >= beta && !is_decisive(best_score) && !is_decisive(alpha) {
         best_score = (best_score * depth as i32 + beta) / (depth as i32 + 1);
     }
 
