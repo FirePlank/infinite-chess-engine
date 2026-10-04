@@ -985,9 +985,23 @@ pub fn get_completed_depth() -> usize {
     GLOBAL_SEARCHER.with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth))
 }
 
+/// Bumped by every reset. Each pool thread keeps its own searcher, which a reset on the
+/// calling thread cannot reach, so a helper drops a searcher from an older generation.
+static RESET_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A pool thread's searcher, rebuilt if a reset happened since it was made.
+fn current_searcher(opt: &mut Option<Searcher>, time_limit_ms: u128) -> &mut Searcher {
+    let generation = RESET_GEN.load(std::sync::atomic::Ordering::Relaxed);
+    if opt.as_ref().is_some_and(|s| s.reset_gen != generation) {
+        *opt = None;
+    }
+    opt.get_or_insert_with(|| Searcher::new(time_limit_ms))
+}
+
 /// Reset the global search state.
 /// Call this when starting a brand new game so old entries don't carry over.
 pub fn reset_search_state() {
+    RESET_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     GLOBAL_SEARCHER.with(|cell| {
         *cell.borrow_mut() = None;
     });
@@ -1081,6 +1095,8 @@ pub struct Searcher {
     /// The detached-helper epoch this searcher belongs to (0 = not a detached helper).
     /// check_time stops the search when the global epoch moves past it.
     pub helper_epoch: u64,
+    /// The `RESET_GEN` this searcher was built under; an older one is from a past game.
+    reset_gen: u64,
 
     // Per-ply reusable move buffers using Stack/Heap-allocated MoveList (SmallVec)
     /// Boxed so qsearch can take one out with an 8-byte move; swapping the
@@ -1239,6 +1255,7 @@ impl Searcher {
             silent: false,
             thread_id: 0,
             helper_epoch: 0,
+            reset_gen: RESET_GEN.load(std::sync::atomic::Ordering::Relaxed),
             move_buffers,
             move_history: vec![None; MAX_PLY],
             moved_piece_history: vec![0; MAX_PLY],
@@ -2828,7 +2845,7 @@ pub(crate) fn helper_run(
 
     GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();
-        let searcher = opt.get_or_insert_with(|| Searcher::new(u128::MAX));
+        let searcher = current_searcher(&mut opt, u128::MAX);
 
         // Unique RNG per helper for search diversity (mirrors get_best_move_threaded).
         let base_seed = searcher.seed;
@@ -2902,7 +2919,7 @@ pub(crate) fn get_best_move_threaded(
         let mut opt = cell.borrow_mut();
 
         // Get or create the persistent searcher
-        let searcher = opt.get_or_insert_with(|| Searcher::new(max_time_ms));
+        let searcher = current_searcher(&mut opt, max_time_ms);
 
         // If this is a helper thread, ensure it has a unique RNG state based on global seed
         if thread_id > 0 {

@@ -1372,7 +1372,9 @@ impl GameState {
                 // matches lie an even number of plies before it).
                 let mut j = hash_idx;
                 for _ in 0..4 {
-                    if j < 2 {
+                    // Past the repetition window (a lost right, an en passant position)
+                    // a matching hash is not the same position on the site.
+                    if j < 2 || stack_len - (j - 2) > end {
                         break;
                     }
                     j -= 2;

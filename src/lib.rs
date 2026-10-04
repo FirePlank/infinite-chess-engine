@@ -979,9 +979,10 @@ impl Engine {
                 search::USE_SHARED_TT.store(true, std::sync::atomic::Ordering::Relaxed);
 
                 // New position, a resume with no batch alive (e.g. "go deeper" after the helpers
-                // retired at done), or new settings (a helper stops at its own max depth):
-                // retire any previous batch, launch a fresh one.
-                let settings = (max_depth, multi_pv);
+                // retired at done), or a new MultiPV count: retire any previous batch, launch a
+                // fresh one. Helpers have no depth limit, as in Stockfish: one that stopped at
+                // the target would idle through the main thread's last and longest depth.
+                let settings = (search::MAX_PLY, multi_pv);
                 let respawn = {
                     let mut live =
                         search::HELPER_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
@@ -1000,7 +1001,7 @@ impl Engine {
                     for i in 1..num_threads {
                         let game_clone = self.game.clone();
                         rayon::spawn(move || {
-                            search::helper_run(game_clone, epoch, i, max_depth, multi_pv)
+                            search::helper_run(game_clone, epoch, i, search::MAX_PLY, multi_pv)
                         });
                     }
                 }
