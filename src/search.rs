@@ -4542,9 +4542,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 NodeType::Cut,
             );
 
-            // If qsearch held, perform regular search at reduced depth; at depth 0 that
-            // search would only repeat the qsearch. The child type flips the parent's.
-            if val >= prob_cut_beta && prob_cut_depth > 0 {
+            // If qsearch held, perform regular search at reduced depth
+            if val >= prob_cut_beta {
                 val = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
@@ -4553,7 +4552,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     alpha: -prob_cut_beta,
                     beta: -prob_cut_beta + 1,
                     allow_null: true,
-                    node_type: if cut_node { NodeType::All } else { NodeType::Cut },
+                    node_type: NodeType::Cut, // Expected cut node
                     was_null_move: false,
                     excluded_move: None,
                 });
