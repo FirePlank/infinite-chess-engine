@@ -10,8 +10,33 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 
 - **+30 accumulated Elo** since the last release → minor bump
 - **major bumps are manual**, triggered by running the Auto Release workflow by hand
+- **a version raised by hand** in `Cargo.toml` is released as is, and its tag restarts the accumulator
 
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
+
+## v7.1.0 (2026-10-04)
+Commit: `be5a76f093b5688f7035397f90cf8ff508c9e02b` • [compare to v7.0.0](https://github.com/FirePlank/infinite-chess-engine/compare/70bcc41317206ee8bbe71a651af287a047aea97e...be5a76f093b5688f7035397f90cf8ff508c9e02b)
+
+### Changed
+- The generic evaluator's net reads each piece type's count imbalance (own minus opponent, 17 types), not just total material, and is retrained from a fresh base
+- Continuation history and countermoves are kept per side; White and Black had shared every cell
+- Slider candidate squares have no distance caps, so a far slider (a bishop 4,000 squares out attacking a pinned rook) sees every cross-ray square
+- The search repeats a position only within the window the site counts: never across a lost special right, and never onto the en passant position after a clock reset
+- Analysis helpers run the main thread's MultiPV search and publish their lines, and a resumed analysis keeps the previous call's root order and lines, so "go deeper" continues instead of starting over
+- WASM searches use at most 20 threads, which fit the 512 MiB memory limit with a 64 MiB hash; no unused local TT is allocated
+- Native builds can run Lazy SMP via `APEIRON_THREADS`, and game review can search a fixed node count
+- Faster move generation and evaluation with identical node counts: sliding captures, queen quiets, quiet promotions, slider candidates, knightrider and rose attack tests, Huygen SEE, rose reach and the net's piece counts
+
+### Fixed
+- Lazy SMP: a helper that never finished an iteration voted with score 0, and helpers cleared the shared TT and pawn history when the eval kind changed
+- The MultiPV root (analysis, game review, skill levels 1-7) lacked the single-PV root's ply-0 context
+- Per-player win conditions in ICN, such as `(royalcapture|checkmate)`, were read as promotion rules
+- Knightrider checks from more than 10 hops were missing from the root list and rejected as TT and killer moves, and against a check from more than 64 squares the slider blocks were missing, so a blockable check could read as mate
+- Royal queen castling differed between the root and the interior, castles in the exact root list are verified by playing them, and TT and killer moves must carry a consistent promotion
+- ProbCut erased the TT's PV flag and skipped the SEE threshold for its TT capture; a scout that fell into qsearch left a stale reduction; fail-high softening tested the raised alpha; the low-ply history malus cancelled the cutoff bonus; wall targets were set after the root list was built; the singular exclusion search silenced the prior-move penalty; the repetition gate ignored contempt
+- An unstoppable passer was scored even with its promotion square occupied
+- Chess evaluator pawn masks for rank 8 shifted by 64
+- Evasion generation could overflow its checked-royal list instead of stopping at two
 
 ## v7.0.0 (2026-10-02)
 Commit: `70bcc41317206ee8bbe71a651af287a047aea97e` • [compare to v6.8.0](https://github.com/FirePlank/infinite-chess-engine/compare/7c73489722927d14558812eb7fddce5b69e1c46e...70bcc41317206ee8bbe71a651af287a047aea97e)

@@ -3,6 +3,7 @@ name: Auto Release
 # Accumulates the SPRT Elo reported in commit messages and cuts a minor version
 # bump when the net gain since the last release reaches 30 Elo. Major releases
 # are deliberately manual: use the "Run workflow" button on this workflow.
+# A Cargo.toml version raised by hand above the last tag is released as is.
 # On a bump it builds the wasm engine and attaches pkg/ as a zip to the release.
 # See scripts/elo_release.py for the parsing and decision logic.
 
@@ -89,10 +90,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add Cargo.toml
-          git commit -m "chore(release): v${VERSION} (${LEVEL}) [skip-release]"
+          # A version set by hand is already on main; only a computed bump needs a commit.
+          if [ "${{ steps.decide.outputs.bumped }}" = "true" ]; then
+            git add Cargo.toml
+            git commit -m "chore(release): v${VERSION} (${LEVEL}) [skip-release]"
+            git push origin HEAD:main
+          fi
           git tag "v${VERSION}"
-          git push origin HEAD:main
           git push origin "v${VERSION}"
 
           gh release create "v${VERSION}" \
