@@ -5937,7 +5937,6 @@ fn quiescence(
         let is_obstacle_take = !is_capture
             && !is_obstocean_breakout
             && !is_recapture
-            && game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean
             && captured.is_some_and(|p| p.piece_type().is_neutral_type());
         if is_obstacle_take && !in_check && qs_ply > 0 {
             continue;

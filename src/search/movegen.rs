@@ -1313,10 +1313,19 @@ impl StagedMoveGen {
                 }
 
                 MoveStage::GoodCapture => {
+                    // Outside Obstocean an obstacle take wins nothing: it waits behind the quiets.
+                    let obstocean =
+                        game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean;
                     while self.cur < self.end_captures {
                         let sm = self.moves[self.cur];
+                        let neutral_take = !obstocean
+                            && sm.m.promotion.is_none()
+                            && game
+                                .board
+                                .get_piece(sm.m.to.x, sm.m.to.y)
+                                .is_some_and(|p| p.piece_type().is_neutral_type());
 
-                        if super::see_ge(game, &sm.m, -18) {
+                        if !neutral_take && super::see_ge(game, &sm.m, -18) {
                             self.cur += 1;
                             return Some(sm.m);
                         } else {

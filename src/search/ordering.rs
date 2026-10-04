@@ -38,9 +38,12 @@ pub fn score_move(
     let ep_victim = game
         .is_en_passant(m)
         .then(|| (PieceType::Pawn, m.piece.color().opponent()));
+    // Outside Obstocean an obstacle wins nothing, so taking one sorts as a quiet.
+    let obstocean = game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean;
     let victim = game
         .board
         .get_piece(m.to.x, m.to.y)
+        .filter(|t| obstocean || m.promotion.is_some() || !t.piece_type().is_neutral_type())
         .map(|t| (t.piece_type(), t.color()))
         .or(ep_victim);
 
