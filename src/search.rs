@@ -1682,16 +1682,17 @@ impl Searcher {
     #[inline]
     pub fn check_time(&mut self) -> bool {
         // External stop request, polled even with no time limit so unlimited searches
-        // stay stoppable. Detached helpers also retire once their epoch is superseded.
+        // stay stoppable. The main thread waits for every helper to see it before it moves.
+        if self.hot.nodes & 1023 == 0 && GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+            self.hot.stopped = true;
+            return true;
+        }
+        // Detached helpers also retire once their epoch is superseded.
         if self.hot.nodes & 4095 == 0 {
             // Publish this thread's node count for thread-aggregated NPS.
             #[cfg(feature = "multithreading")]
             publish_thread_nodes(self.thread_id, self.hot.nodes);
 
-            if GLOBAL_STOP.load(std::sync::atomic::Ordering::Relaxed) {
-                self.hot.stopped = true;
-                return true;
-            }
             #[cfg(feature = "data_gen")]
             if self.hot.nodes >= NODE_LIMIT.load(std::sync::atomic::Ordering::Relaxed) {
                 self.hot.stopped = true;
@@ -2640,12 +2641,13 @@ pub fn get_best_move_parallel(
             let results_clone = Arc::clone(&results);
             let mut game_clone = game.clone();
 
+            // Helpers keep no clock of their own: they search until the main thread stops.
             s.spawn(move |_| {
                 if let Some((best_move, score, stats)) = get_best_move_threaded(
                     &mut game_clone,
                     max_depth,
-                    opt_time_ms,
-                    max_time_ms,
+                    u128::MAX,
+                    u128::MAX,
                     true, // Helpers are always silent
                     i,
                     is_soft_limit,
