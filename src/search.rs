@@ -5494,8 +5494,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Update TT Move History:
     // Tracks how reliable TT moves are: positive = TT moves tend to be best.
-    // Only update in non-PV nodes to get clean cutoff/fail statistics.
-    if !is_pv && let Some(ref bm) = best_move {
+    // Only update in non-PV nodes to get clean cutoff/fail statistics. An exclusion
+    // search has the TT move barred, so it could only ever record a miss.
+    if !is_pv && excluded_move.is_none() && let Some(ref bm) = best_move {
         // Check if best move matches the TT move
         let tt_move_matched = tt_move
             .as_ref()
