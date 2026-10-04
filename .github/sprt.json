@@ -1,11 +1,11 @@
 {
-  "name": "343_corrhist_bound_vs_corrected_resume",
-  "old": "f29ad22",
-  "games": 1500,
+  "name": "338b_unstoppable_pawn_with_net",
+  "old": "7136c40",
+  "games": 4000,
   "shards": 40,
-  "variants": "site",
+  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 1000
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
 }
