@@ -1,0 +1,11 @@
+{
+  "name": "318_search_bookkeeping_bundle_resume",
+  "old": "f2ed135",
+  "games": 1500,
+  "shards": 40,
+  "variants": "site",
+  "tc": "10+0.1",
+  "elo0": -10,
+  "elo1": 0,
+  "adjudication": 1000
+}
