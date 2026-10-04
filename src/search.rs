@@ -792,6 +792,13 @@ pub struct SearchStats {
     pub tt_fill_permille: u32,
 }
 
+/// Where an analysis call left its root: a resume of the same position continues from it.
+pub struct AnalysisResume {
+    hash: u64,
+    order: Vec<Move>,
+    lines: Vec<PVLine>,
+}
+
 /// A single PV line with its score and depth.
 #[derive(Clone, Debug)]
 pub struct PVLine {
@@ -856,8 +863,8 @@ pub struct ThreadResult {
 /// proven loss is never switched to.
 #[cfg(feature = "multithreading")]
 fn select_best_thread(all_results: &[ThreadResult]) -> usize {
-    // A helper stopped inside its first iteration reports -INFINITY; as the minimum
-    // it would swamp every score difference, leaving only depth to decide the vote.
+    // A thread stopped inside its first iteration has no score of its own (its move is
+    // a fallback), so it must not vote; as the minimum it would also swamp the scores.
     let finished = |r: &ThreadResult| r.score != -INFINITY && r.completed_depth > 0;
     let min_score = all_results
         .iter()
@@ -886,7 +893,8 @@ fn select_best_thread(all_results: &[ThreadResult]) -> usize {
     let thread_voting_value =
         |r: &ThreadResult| -> i64 { (r.score - min_score + 14) as i64 * r.completed_depth as i64 };
 
-    let mut best_idx = 0;
+    // With no finished thread at all, the main thread's fallback move stands.
+    let mut best_idx = all_results.iter().position(|r| r.thread_id == 0).unwrap_or(0);
     for (i, r) in all_results.iter().enumerate() {
         let best = &all_results[best_idx];
         if !finished(r) {
@@ -957,12 +965,18 @@ fn build_search_stats(searcher: &Searcher) -> SearchStats {
 /// Return current TT statistics from the persistent global searcher, if any.
 /// When no global searcher exists yet, initializes one with default size to report capacity.
 pub fn get_current_tt_stats() -> SearchStats {
+    // Read only: creating the searcher here would allocate a full local TT before a
+    // multithreaded search switches to the shared one, and keep it unused.
     GLOBAL_SEARCHER.with(|cell| {
-        let mut opt = cell.borrow_mut();
-
-        // Ensure searcher exists so we can report its capacity/fill even before first search
-        let searcher = opt.get_or_insert_with(|| Searcher::new(4000));
-        build_search_stats(searcher)
+        cell.borrow().as_ref().map_or(
+            SearchStats {
+                nodes: 0,
+                tt_capacity: 0,
+                tt_used: 0,
+                tt_fill_permille: 0,
+            },
+            build_search_stats,
+        )
     })
 }
 
@@ -1007,6 +1021,8 @@ pub struct Searcher {
     /// The PV of the last completed iteration, and whether this node is still
     /// walking it. Nodes on it are exempt from in-move pruning at PV nodes.
     pub prev_iteration_pv: Vec<Move>,
+    /// The last analysis call's root, for a resume of the same position.
+    pub analysis_resume: Option<AnalysisResume>,
     /// Exact move played at ply 0. The root keeps only hashed coords in
     /// prev_move_stack, and move_history is written by the interior loop.
     pub root_played: Option<Move>,
@@ -1183,6 +1199,7 @@ impl Searcher {
                 iter_start_ms: 0.0,
             },
             prev_iteration_pv: Vec::with_capacity(MAX_PLY),
+            analysis_resume: None,
             root_played: None,
             follow_pv: vec![false; MAX_PLY + 2],
             pv_table,
@@ -1406,9 +1423,12 @@ impl Searcher {
     /// Clears TT and resets all history tables to neutral values.
     pub fn clear(&mut self) {
         self.hot.last_root_score = 0;
-        // Clear transposition table
+        // Shared tables belong to the main thread: a helper clearing them would wipe
+        // entries the others are already searching with.
         #[cfg(feature = "multithreading")]
-        if let Some(tt) = SHARED_TT.get() {
+        if self.thread_id == 0
+            && let Some(tt) = SHARED_TT.get()
+        {
             tt.clear();
         }
         self.tt.clear();
@@ -1461,10 +1481,12 @@ impl Searcher {
             row.fill(0);
         }
 
-        // Reset pawn history (racy-but-benign memset of the shared table in MT builds)
+        // Reset pawn history (shared in MT builds, so main thread only, as above)
         #[cfg(feature = "multithreading")]
-        unsafe {
-            std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+        if self.thread_id == 0 {
+            unsafe {
+                std::ptr::write_bytes(shared_hist::pawn_table(), 0, 1);
+            }
         }
         #[cfg(not(feature = "multithreading"))]
         for table in self.pawn_history.iter_mut() {
@@ -2574,7 +2596,7 @@ pub fn get_best_move_parallel(
     // matches): parallelism there belongs to the caller, which must not share the
     // global stop and TT coordination.
     #[cfg(target_arch = "wasm32")]
-    let num_threads = rayon::current_num_threads().max(1);
+    let num_threads = wasm_search_threads();
     #[cfg(not(target_arch = "wasm32"))]
     let num_threads = {
         static NATIVE_THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -2603,6 +2625,7 @@ pub fn get_best_move_parallel(
 
     // Initialize Shared TT for multithreaded search (sized by set_hash_size, like the local TTs).
     init_shared_tt();
+    adopt_main_eval_kind(game, max_time_ms);
 
     // Shared storage for thread results - all threads contribute to voting
     let results: Arc<Mutex<Vec<ThreadResult>>> =
@@ -2630,12 +2653,12 @@ pub fn get_best_move_parallel(
                     let pv_len = GLOBAL_SEARCHER
                         .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.pv_length[0].max(1)));
                     let completed_depth = GLOBAL_SEARCHER
-                        .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.completed_depth));
+                        .with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth));
 
                     let result = ThreadResult {
                         best_move,
                         score,
-                        completed_depth: completed_depth.max(1),
+                        completed_depth,
                         pv_length: pv_len,
                         nodes: stats.nodes,
                         thread_id: i,
@@ -2660,12 +2683,12 @@ pub fn get_best_move_parallel(
             let pv_len = GLOBAL_SEARCHER
                 .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.pv_length[0].max(1)));
             let completed_depth = GLOBAL_SEARCHER
-                .with(|cell| cell.borrow().as_ref().map_or(1, |s| s.completed_depth));
+                .with(|cell| cell.borrow().as_ref().map_or(0, |s| s.completed_depth));
 
             let result = ThreadResult {
                 best_move,
                 score,
-                completed_depth: completed_depth.max(1),
+                completed_depth,
                 pv_length: pv_len,
                 nodes: stats.nodes,
                 thread_id: 0,
@@ -2737,6 +2760,17 @@ pub fn get_best_move_parallel(
     )
 }
 
+/// Each search thread takes ~18 MiB (its tables and 2 MiB stack) of the 512 MiB wasm heap
+/// (`--max-memory`); with a 64 MiB TT, 20 threads leave about a tenth of it spare.
+#[cfg(target_arch = "wasm32")]
+const MAX_WASM_SEARCH_THREADS: usize = 20;
+
+/// Search threads to use from the page's pool, kept within the wasm memory budget.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn wasm_search_threads() -> usize {
+    rayon::current_num_threads().clamp(1, MAX_WASM_SEARCH_THREADS)
+}
+
 /// Analysis-helper lifecycle epoch. Bumping it (new position or stop) makes every
 /// running detached helper exit at its next slice boundary.
 #[cfg(feature = "multithreading")]
@@ -2747,6 +2781,11 @@ pub(crate) static HELPER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) static HELPERS_LIVE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+/// The (max depth, MultiPV) the live helper batch was launched with: a helper stops at
+/// its own max depth, so a resume with other settings needs a fresh batch.
+#[cfg(feature = "multithreading")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) static HELPER_SETTINGS: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0));
 
 /// Stops all detached analysis helpers (and any in-flight search) immediately.
 #[cfg(feature = "multithreading")]
@@ -2827,6 +2866,17 @@ pub(crate) fn helper_run(
         searcher.helper_epoch = 0;
     });
     HELPERS_LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The main thread's eval-kind adoption, run before helpers start so that a kind change
+/// clears the shared tables while nothing is searching them.
+pub(crate) fn adopt_main_eval_kind(game: &GameState, time_limit_ms: u128) {
+    GLOBAL_SEARCHER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let searcher = opt.get_or_insert_with(|| Searcher::new(time_limit_ms));
+        searcher.thread_id = 0;
+        searcher.adopt_eval_kind(game.eval_kind);
+    });
 }
 
 pub(crate) fn get_best_move_threaded(
@@ -3102,6 +3152,8 @@ pub(crate) fn get_best_moves_multipv_impl(
         reset_search_nodes();
     }
 
+    game.recenter_windows();
+
     // Get all legal moves upfront (exact: bypasses the stale slider cache)
     let mut moves = MoveList::new();
     game.get_pseudo_legal_moves_into(&mut moves);
@@ -3179,6 +3231,16 @@ pub(crate) fn get_best_moves_multipv_impl(
     let deep_ref_depth = deep_tactic_reference_depth(max_depth);
     let mut deep_ref_scores: Vec<(Move, i32)> = Vec::new();
 
+    // A resumed analysis ("go deeper") takes the root order and lines its previous call
+    // ended with, so the next depth starts ordered and aspirated as if it never stopped.
+    if resume_from_depth.is_some_and(|d| d > 1)
+        && let Some(saved) = searcher.analysis_resume.as_ref().filter(|r| r.hash == game.hash)
+    {
+        let rank = |m: &Move| saved.order.iter().position(|o| o == m).unwrap_or(usize::MAX);
+        legal_root_moves.sort_by_key(rank);
+        best_lines = saved.lines.iter().take(multi_pv).cloned().collect();
+    }
+
     // Resume point (analysis) takes precedence; otherwise Lazy SMP helper threads
     // start at staggered depths for search diversity.
     let start_depth = if let Some(resume) = resume_from_depth {
@@ -3231,7 +3293,7 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
 
         root_scores.clear();
-        searcher.hot.root_depth = depth;
+        let root_in_check = enter_root_node(searcher, game, depth);
 
         // Track the MultiPV alpha threshold
         let mut multipv_alpha = -INFINITY;
@@ -3269,13 +3331,13 @@ pub(crate) fn get_best_moves_multipv_impl(
                 break;
             }
 
+            let is_capture = game.is_en_passant(m)
+                || game
+                    .board
+                    .get_piece(m.to.x, m.to.y)
+                    .is_some_and(|p| !p.piece_type().is_neutral_type());
             let undo = game.make_move(m);
-
-            let prev_entry_backup = searcher.prev_move_stack[0];
-            let prev_from_hash = hash_move_from(m);
-            let prev_to_hash = hash_move_dest(m);
-            searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
-            searcher.root_played = Some(*m);
+            let slots = enter_root_move(searcher, m, root_in_check, is_capture, move_idx + 1);
 
             // For MultiPV, we need to search all moves to get their scores.
             // First move gets aspiration window (or full), others use PVS logic.
@@ -3369,8 +3431,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                 }
             };
 
-            searcher.prev_move_stack[0] = prev_entry_backup;
             game.undo_move(m, undo);
+            leave_root_move(searcher, slots);
 
             if !searcher.hot.stopped {
                 let mut pv = Vec::with_capacity(searcher.pv_length[1] + 1);
@@ -3431,6 +3493,12 @@ pub(crate) fn get_best_moves_multipv_impl(
             // Update best_lines with results from this depth. Triangular-table PVs
             // are often truncated by TT cutoffs, so extend each displayed line by
             // walking TT moves toward the full search depth.
+            // The best line is the PV the next iteration's PV nodes follow.
+            searcher.prev_iteration_pv.clear();
+            if let Some((_, _, pv)) = root_scores.first() {
+                searcher.prev_iteration_pv.extend(pv.iter().take(MAX_PLY).copied());
+            }
+
             best_lines.clear();
             for (mv, score, pv) in root_scores.iter().take(multi_pv) {
                 let mut pv = pv.clone();
@@ -3445,6 +3513,13 @@ pub(crate) fn get_best_moves_multipv_impl(
 
             if !silent {
                 searcher.print_multi_pv_depth(depth, &best_lines);
+            }
+            if depth_completed && on_depth.is_some() {
+                searcher.analysis_resume = Some(AnalysisResume {
+                    hash: game.hash,
+                    order: legal_root_moves.to_vec(),
+                    lines: best_lines.clone(),
+                });
             }
 
             // Only stream a completed depth to the analysis UI (a partial first depth
@@ -3568,6 +3643,73 @@ pub fn negamax_node_count_for_depth(game: &mut GameState, depth: usize) -> u64 {
 }
 
 /// Root negamax - special handling for root node
+/// Ply-0 slots a root move fills for its children, saved to restore once it returns.
+struct RootMoveSlots {
+    prev_move: (usize, usize),
+    mv: Option<Move>,
+    piece: u8,
+    in_check: bool,
+    capture: bool,
+}
+
+/// Slot 0's context, exactly as the interior loop fills its own ply. Without it every
+/// reply to a root move is ordered and reduced with no continuation history, the
+/// fail-low credit never reaches the root move, and qsearch sees no recapture.
+fn enter_root_move(
+    searcher: &mut Searcher,
+    m: &Move,
+    in_check: bool,
+    is_capture: bool,
+    count: usize,
+) -> RootMoveSlots {
+    let slots = RootMoveSlots {
+        prev_move: searcher.prev_move_stack[0],
+        mv: searcher.move_history[0].take(),
+        piece: searcher.moved_piece_history[0],
+        in_check: searcher.in_check_history[0],
+        capture: searcher.capture_history_stack[0],
+    };
+    searcher.prev_move_stack[0] = (hash_move_from(m), hash_move_dest(m));
+    searcher.root_played = Some(*m);
+    searcher.move_history[0] = Some(*m);
+    searcher.moved_piece_history[0] = m.piece.piece_type() as u8;
+    searcher.in_check_history[0] = in_check;
+    searcher.capture_history_stack[0] = is_capture;
+    searcher.move_count_stack[0] = count.min(u16::MAX as usize) as u16;
+    slots
+}
+
+fn leave_root_move(searcher: &mut Searcher, slots: RootMoveSlots) {
+    searcher.prev_move_stack[0] = slots.prev_move;
+    searcher.move_history[0] = slots.mv;
+    searcher.moved_piece_history[0] = slots.piece;
+    searcher.in_check_history[0] = slots.in_check;
+    searcher.capture_history_stack[0] = slots.capture;
+}
+
+/// The per-iteration root state a ply-0 negamax node would set: PV following, the
+/// ttPv flag, the grandchild slots it would clear, and the root static eval. Returns
+/// whether the root is in check.
+fn enter_root_node(searcher: &mut Searcher, game: &GameState, depth: usize) -> bool {
+    searcher.pv_length[0] = 0;
+    searcher.follow_pv[0] = true;
+    searcher.tt_pv_stack[0] = true;
+    searcher.hot.root_depth = depth;
+    searcher.cutoff_cnt[2] = 0;
+    searcher.stat_score_stack[2] = 0;
+    searcher.stat_score_stack[4] = 0;
+    let in_check = game.is_in_check();
+    // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
+    // improving tests compare against a zero root eval, i.e. against the score's sign.
+    searcher.eval_stack[0] = if in_check {
+        0
+    } else {
+        let root_raw = evaluate(game);
+        searcher.adjusted_eval(game, root_raw, 0)
+    };
+    in_check
+}
+
 fn negamax_root(
     searcher: &mut Searcher,
     game: &mut GameState,
@@ -3579,16 +3721,7 @@ fn negamax_root(
     // Save original alpha for TT flag determination
     let alpha_orig = alpha;
 
-    searcher.pv_length[0] = 0;
-    searcher.follow_pv[0] = true;
-    searcher.tt_pv_stack[0] = true;
-    searcher.hot.root_depth = depth;
-
-    // Clear the grandchild cutoff/stat slots a ply-0 negamax node would reset;
-    // negamax_root omits them, so slot 2 otherwise never clears across the search.
-    searcher.cutoff_cnt[2] = 0;
-    searcher.stat_score_stack[2] = 0;
-    searcher.stat_score_stack[4] = 0;
+    let in_check = enter_root_node(searcher, game, depth);
 
     let hash = game.hash;
     let mut tt_move: Option<Move> = None;
@@ -3609,17 +3742,6 @@ fn negamax_root(
         },
     ) {
         tt_move = res.best_move;
-    }
-
-    let in_check = game.is_in_check();
-
-    // negamax never runs at ply 0, so without this the ply-1 worsening and ply-2
-    // improving tests compare against a zero root eval, i.e. against the score's sign.
-    if !in_check {
-        let root_raw = evaluate(game);
-        searcher.eval_stack[0] = searcher.adjusted_eval(game, root_raw, 0);
-    } else {
-        searcher.eval_stack[0] = 0;
     }
 
     // Reorders `moves` in place, TT move first then by score, so the next iteration
@@ -3645,9 +3767,6 @@ fn negamax_root(
         // 1. Shared TT - threads benefit from each other's entries
         // 2. Slight timing differences - threads finish at different points
 
-        // Slot 0's context, exactly as the interior loop fills its own ply. Without it
-        // every reply to a root move is ordered and reduced with no continuation history,
-        // the fail-low credit never reaches the root move, and qsearch sees no recapture.
         let root_is_capture = game.is_en_passant(m)
             || game
                 .board
@@ -3663,27 +3782,8 @@ fn negamax_root(
         };
 
         let undo = game.make_move(m);
-
-        // At the root, this move becomes the previous move for child ply 1,
-        // stored as (from_hash, to_hash).
-        let prev_entry_backup = searcher.prev_move_stack[0];
-        let prev_from_hash = hash_move_from(m);
-        let prev_to_hash = hash_move_dest(m);
-        searcher.prev_move_stack[0] = (prev_from_hash, prev_to_hash);
-        searcher.root_played = Some(*m);
-
-        let move_history_backup = searcher.move_history[0].take();
-        let piece_history_backup = searcher.moved_piece_history[0];
-        let in_check_backup = searcher.in_check_history[0];
-        let capture_backup = searcher.capture_history_stack[0];
-
-        searcher.move_history[0] = Some(*m);
-        searcher.moved_piece_history[0] = root_piece as u8;
-        searcher.in_check_history[0] = in_check;
-        searcher.capture_history_stack[0] = root_is_capture;
-
         legal_moves += 1;
-        searcher.move_count_stack[0] = legal_moves.min(u16::MAX as usize) as u16;
+        let slots = enter_root_move(searcher, m, in_check, root_is_capture, legal_moves);
 
         let score;
         if legal_moves == 1 {
@@ -3769,13 +3869,7 @@ fn negamax_root(
         }
 
         game.undo_move(m, undo);
-
-        // Restore previous-move stack entry for root after returning from child.
-        searcher.prev_move_stack[0] = prev_entry_backup;
-        searcher.move_history[0] = move_history_backup;
-        searcher.moved_piece_history[0] = piece_history_backup;
-        searcher.in_check_history[0] = in_check_backup;
-        searcher.capture_history_stack[0] = capture_backup;
+        leave_root_move(searcher, slots);
 
         if searcher.hot.stopped {
             return best_score;
@@ -5094,22 +5188,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     - (do_shallower_search as i32))
                     .max(0) as usize;
 
-                // Keep a PV node with a decisive or deep TT entry out of qsearch by
-                // giving it a minimum depth of 1.
-                let mut pv_depth = adjusted_depth;
-                if is_pv && is_tt_move && pv_depth == 0 {
-                    let has_decisive =
-                        tt_value.is_some_and(|v| v.abs() > MATE_SCORE) && tt_data_depth > 0;
-                    let has_deep_tt = tt_data_depth > 1;
-                    if has_decisive || has_deep_tt {
-                        pv_depth = 1;
-                    }
-                }
-
                 s = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
-                    depth: pv_depth,
+                    depth: adjusted_depth,
                     ply: ply + 1,
                     alpha: -beta,
                     beta: -alpha,

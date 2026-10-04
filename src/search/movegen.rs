@@ -69,6 +69,9 @@ type ContHistoryIndex = (usize, usize, usize, usize, usize);
 thread_local! {
     static PICKER_VECS: std::cell::RefCell<Vec<Vec<ScoredMove>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Most quiet lists outgrow the inline buffer; borrowed in place, a spilled buffer
+    /// keeps its heap capacity from node to node instead of a malloc per node.
+    static QUIET_BUF: std::cell::RefCell<MoveList> = std::cell::RefCell::new(MoveList::new());
 }
 
 impl Drop for StagedMoveGen {
@@ -336,7 +339,11 @@ impl StagedMoveGen {
     /// move fails pseudo-legality and is then skipped as already-tried when generation
     /// produces it. Rebuild the partner by the same nearest-eligible rule.
     fn reconstruct_castling_partner(game: &GameState, mut m: Move) -> Move {
-        if m.partner_x != crate::moves::NO_PARTNER || !m.piece.piece_type().is_royal() {
+        // A royal queen's two-square row move without a partner is an ordinary slide.
+        if m.partner_x != crate::moves::NO_PARTNER
+            || !m.piece.piece_type().is_royal()
+            || m.piece.piece_type() == PieceType::RoyalQueen
+        {
             return m;
         }
         let dx = m.to.x - m.from.x;
@@ -398,6 +405,33 @@ impl StagedMoveGen {
             return false;
         }
 
+        // Only a pawn reaching its promotion rank promotes, always, and only to an allowed
+        // type; a move decoded from a colliding hash can break any of the three.
+        if m.promotion.is_some() || piece.piece_type() == PieceType::Pawn {
+            let rules = &game.game_rules;
+            let ranks = if game.turn == PlayerColor::White {
+                &rules.promotion_ranks.white
+            } else {
+                &rules.promotion_ranks.black
+            };
+            let promotes = piece.piece_type() == PieceType::Pawn && ranks.contains(&m.to.y);
+            if promotes != m.promotion.is_some() {
+                return false;
+            }
+            if let Some(pt) = m.promotion {
+                let allowed = match &rules.promotion_types {
+                    Some(types) => types.contains(&pt),
+                    None => matches!(
+                        pt,
+                        PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight
+                    ),
+                };
+                if !allowed {
+                    return false;
+                }
+            }
+        }
+
         // One tile fetch yields both the packed piece and the occupancy bit. A neutral
         // Void packs to 0 yet occupies, so pawn pushes must test occupancy rather than
         // packed == 0.
@@ -423,7 +457,10 @@ impl StagedMoveGen {
         // has them, not to the king alone.
         if piece.piece_type().is_royal() {
             let dx = m.to.x - m.from.x;
-            if m.to.y == m.from.y && dx.abs() > 1 {
+            // A royal queen also slides along its row; only a partner makes it a castle.
+            let slide = piece.piece_type() == PieceType::RoyalQueen
+                && m.partner_x == crate::moves::NO_PARTNER;
+            if m.to.y == m.from.y && dx.abs() > 1 && !slide {
                 if m.partner_x == crate::moves::NO_PARTNER {
                     return false;
                 }
@@ -1137,8 +1174,16 @@ impl StagedMoveGen {
     }
 
     fn generate_quiets(&mut self, game: &GameState, searcher: &Searcher) {
-        let mut quiets = MoveList::new();
+        QUIET_BUF.with(|buf| self.generate_quiets_into(game, searcher, &mut buf.borrow_mut()));
+    }
 
+    fn generate_quiets_into(
+        &mut self,
+        game: &GameState,
+        searcher: &Searcher,
+        quiets: &mut MoveList,
+    ) {
+        quiets.clear();
         self.ensure_pins(game);
         {
             let ctx = MoveGenContext {
@@ -1156,7 +1201,7 @@ impl StagedMoveGen {
             if tight {
                 crate::moves::set_quiet_ray_cap(TIGHT_GEN_RAY_CAP);
             }
-            get_quiet_moves_into(&game.board, game.turn, &ctx, &mut quiets);
+            get_quiet_moves_into(&game.board, game.turn, &ctx, quiets);
             if tight {
                 crate::moves::set_quiet_ray_cap(0);
             }

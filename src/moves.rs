@@ -351,56 +351,6 @@ fn generate_knightrider_moves_impl(
     }
 }
 
-/// Exact knightrider attack test, with no hop cap. `is_square_attacked` stops its
-/// outward walk after 20 hops for speed, which is fine inside the tree but lets the
-/// ROOT call a king step legal when only a distant rider covers the square.
-pub fn knightrider_attacks_square_exact(
-    board: &Board,
-    target: &Coordinate,
-    attacker_color: PlayerColor,
-    indices: &SpatialIndices,
-) -> bool {
-    let attacker_idx = if attacker_color == PlayerColor::White {
-        0
-    } else {
-        1
-    };
-    if !indices.has_knightrider[attacker_idx] {
-        return false;
-    }
-    for (px, py, piece) in board.iter() {
-        if piece.piece_type() != PieceType::Knightrider || piece.color() != attacker_color {
-            continue;
-        }
-        let (rx, ry) = (target.x - px, target.y - py);
-        // Must sit on one of the eight knight rays at an integral hop count.
-        let (ax, ay) = (rx.abs(), ry.abs());
-        let k = if ax * 2 == ay {
-            ay / 2
-        } else if ay * 2 == ax {
-            ax / 2
-        } else {
-            continue;
-        };
-        if k == 0 {
-            continue;
-        }
-        let (sx, sy) = (rx / k, ry / k);
-        // Every intermediate landing must be empty for the ride to reach the target.
-        let mut blocked = false;
-        for step in 1..k {
-            if board.get_piece(px + sx * step, py + sy * step).is_some() {
-                blocked = true;
-                break;
-            }
-        }
-        if !blocked {
-            return true;
-        }
-    }
-    false
-}
-
 /// Check if a coordinate is within valid bounds (world border)
 #[inline]
 pub fn in_bounds(x: i64, y: i64) -> bool {
@@ -1690,6 +1640,19 @@ pub fn get_pseudo_legal_moves_for_piece_into(
                 },
                 out,
             );
+            // The quiet generator gives a royal queen its castling moves; the full
+            // list must too, or the root never sees them.
+            if piece.piece_type() == PieceType::RoyalQueen {
+                generate_castling_moves_into(
+                    board,
+                    from,
+                    piece,
+                    special_rights,
+                    game_rules,
+                    indices,
+                    out,
+                );
+            }
         }
         PieceType::Chancellor => {
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);

@@ -658,16 +658,10 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         let file_mask = 0x0101_0101_0101_0101u64 << f;
         let adj_mask = (if f > 0 { 0x0101_0101_0101_0101u64 << (f - 1) } else { 0 })
             | (if f < 7 { 0x0101_0101_0101_0101u64 << (f + 1) } else { 0 });
-        let behind = if is_white {
-            (1u64 << (8 * rk)) - 1
-        } else {
-            !0u64 << (8 * (rk + 1))
-        };
-        let ahead = if is_white {
-            !0u64 << (8 * (rk + 1))
-        } else {
-            (1u64 << (8 * rk)) - 1
-        };
+        // A pawn on rank 8 has nothing above it: a shift by 64 must give 0, not wrap.
+        let above = (!0u64).checked_shl(8 * (rk + 1)).unwrap_or(0);
+        let behind = if is_white { (1u64 << (8 * rk)) - 1 } else { above };
+        let ahead = if is_white { above } else { (1u64 << (8 * rk)) - 1 };
 
         let is_doubled = if pawns_in_window {
             (own_bb & file_mask).count_ones() > 1
