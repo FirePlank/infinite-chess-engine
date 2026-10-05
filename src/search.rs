@@ -711,7 +711,11 @@ pub struct SearcherHot {
     pub last_root_score: i32,
     /// Root is deep enough and the score decisive enough that mate hunting is on:
     /// static shortcuts stop being trustworthy.
-    pub seek_mate: bool,
+    /// Score of the root move searched first, re-read as the best once a root pass ends:
+    /// Stockfish's rootMoves[0].score, which its seekMate tests live.
+    pub root_score: i32,
+    /// seekMate threshold for the current root depth.
+    pub seek_mate_min: i32,
     /// Running scores for falling eval (circular buffer of last 4 iterations)
     pub iter_values: [i32; 4],
     /// Index into iter_values circular buffer
@@ -770,6 +774,13 @@ impl Timer {
 }
 
 impl SearcherHot {
+    /// Stockfish's seekMate: the root is won or lost by enough that pruning which hides
+    /// long mating lines is eased.
+    #[inline(always)]
+    pub fn seek_mate(&self) -> bool {
+        self.root_score != -INFINITY && self.root_score.abs() >= self.seek_mate_min
+    }
+
     /// Calculate optimum and maximum time. A soft limit cannot flag, so optimum sits
     /// near the full budget; a hard limit stays conservative and leaves headroom for
     /// the dynamic factors, which multiply optimum and are capped at maximum.
@@ -1210,7 +1221,8 @@ impl Searcher {
                 best_move_nodes: 0,
                 best_previous_average_score: 0,
                 last_root_score: 0,
-                seek_mate: false,
+                root_score: -INFINITY,
+                seek_mate_min: i32::MAX,
                 iter_values: [0; 4],
                 iter_idx: 0,
                 prev_time_reduction: 1.0,
@@ -1379,7 +1391,7 @@ impl Searcher {
         self.hot.best_move_changes = 0.0;
         self.hot.best_move_nodes = 0;
         self.hot.best_previous_average_score = self.hot.last_root_score;
-        self.hot.seek_mate = false;
+        self.hot.root_score = -INFINITY;
         self.hot.iter_values.fill(self.hot.last_root_score);
         self.hot.iter_idx = 0;
         self.hot.prev_time_reduction = 1.0;
@@ -2519,8 +2531,6 @@ fn search_with_searcher(
             // share everywhere, so the early stop needs a higher bar than before.
             let high_best_move_effort = if nodes_effort >= 96000.0 { 0.76 } else { 1.0 };
 
-            searcher.hot.seek_mate = base_depth >= 16 && best_score.abs() >= 4000;
-
             // Accumulate instability changes from this iteration
             searcher.hot.tot_best_move_changes += searcher.hot.best_move_changes;
             searcher.hot.best_move_changes = 0.0;
@@ -3493,6 +3503,9 @@ pub(crate) fn get_best_moves_multipv_impl(
                     }
                 }
                 root_scores.push((*m, score, pv));
+                if root_scores.len() == 1 {
+                    searcher.hot.root_score = score;
+                }
 
                 // Update multipv_alpha: The threshold to beat is the K-th best score found so far.
                 if root_scores.len() >= multi_pv {
@@ -3508,6 +3521,9 @@ pub(crate) fn get_best_moves_multipv_impl(
 
         if searcher.hot.stopped && root_scores.is_empty() {
             break;
+        }
+        if let Some(top) = root_scores.iter().map(|r| r.1).max() {
+            searcher.hot.root_score = top;
         }
 
         // A depth interrupted mid-way only scored some root moves, and committing
@@ -3761,6 +3777,10 @@ fn enter_root_node(searcher: &mut Searcher, game: &GameState, depth: usize) -> b
     searcher.follow_pv[0] = true;
     searcher.tt_pv_stack[0] = true;
     searcher.hot.root_depth = depth;
+    // Stockfish's seekMate bar 750 + 220000/d^2 (depth term rescaled to our 100 pawn),
+    // its base raised to 3000 so ordinary winning positions keep their full search.
+    let d = depth.max(1) as i32;
+    searcher.hot.seek_mate_min = 3000 + 105_770 / (d * d);
     searcher.cutoff_cnt[2] = 0;
     searcher.stat_score_stack[2] = 0;
     searcher.stat_score_stack[4] = 0;
@@ -3947,6 +3967,9 @@ fn negamax_root(
         if searcher.hot.stopped {
             return best_score;
         }
+        if legal_moves == 1 {
+            searcher.hot.root_score = score;
+        }
 
         if score > best_score {
             best_score = score;
@@ -4017,6 +4040,9 @@ fn negamax_root(
         },
     );
 
+    // Stockfish re-sorts rootMoves after each root search, so its rootMoves[0].score
+    // becomes the best move's score.
+    searcher.hot.root_score = best_score;
     best_score
 }
 
@@ -4536,7 +4562,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // it stays reachable at depth; seek_mate guards mate-finding instead of a cap.
         // Not under exclusion: qsearch would return the parent's own TT bound on the singular move.
         if !is_pv
-            && !searcher.hot.seek_mate
+            && !searcher.hot.seek_mate()
             && excluded_move.is_none()
             && eval < alpha - razoring_quad() * depth as i32
         {
@@ -4544,7 +4570,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // Reverse Futility Pruning (RFP)
-        let rfp_depth_cap = if searcher.hot.seek_mate {
+        let rfp_depth_cap = if searcher.hot.seek_mate() {
             6
         } else {
             rfp_max_depth()
@@ -4803,7 +4829,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
-    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() && !searcher.hot.seek_mate
+    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() && !searcher.hot.seek_mate()
     {
         if tt_hit_node
             && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
