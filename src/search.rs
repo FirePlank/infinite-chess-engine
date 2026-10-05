@@ -5037,10 +5037,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }) {
             // Singular extension margin with TT Move History adjustment.
             let tt_history_adj = searcher.tt_move_history / 150;
-            // A ttPv node's TT move has stood up on a PV before, so singularity there
-            // needs a wider gap (Stockfish).
-            let singular_beta =
-                tt_s_base - (depth as i32) * (4 + 5 * tt_pv as i32) + tt_history_adj;
+            let singular_beta = tt_s_base - (depth as i32) * 4 + tt_history_adj;
 
             // Undo the TT move so we can search from the current position
             game.undo_move(&m, undo);
