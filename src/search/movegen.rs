@@ -1325,7 +1325,9 @@ impl StagedMoveGen {
                                 .get_piece(sm.m.to.x, sm.m.to.y)
                                 .is_some_and(|p| p.piece_type().is_neutral_type());
 
-                        if !neutral_take && super::see_ge(game, &sm.m, -18) {
+                        // The SEE bar scales with the capture's score, so a capture of a big
+                        // piece may lose a little and still go first (Stockfish's -score/18).
+                        if !neutral_take && super::see_ge(game, &sm.m, -sm.score / 26) {
                             self.cur += 1;
                             return Some(sm.m);
                         } else {
