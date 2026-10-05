@@ -4006,21 +4006,24 @@ fn update_quiet_best_stats(
     ply: usize,
     depth: usize,
     in_check: bool,
+    is_tt_move: bool,
 ) {
     // Credit the quiet that cut off, and penalize the quiets tried before it.
     let idx = hash_move_dest(m);
     let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
         .min(history_bonus_cap());
+    // A TT move confirmed as best earns extra, beyond the cap (Stockfish).
+    let best_bonus = bonus + if is_tt_move { 280 } else { 0 };
 
-    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
+    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, best_bonus);
     searcher.update_pawn_history(
         pawn_hash,
         m.piece.piece_type(),
         idx,
-        bonus * pawn_history_bonus_scale(),
+        best_bonus * pawn_history_bonus_scale(),
     );
 
-    searcher.update_low_ply_history(ply, idx, bonus);
+    searcher.update_low_ply_history(ply, idx, best_bonus);
 
     // The quiets a cutoff beat are pushed down harder than it is pushed up.
     let malus = bonus * 5 / 4;
@@ -4100,11 +4103,7 @@ fn update_quiet_best_stats(
                     let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
                         [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
 
-                    let adj = if is_best {
-                        bonus.min(history_bonus_cap())
-                    } else {
-                        -malus
-                    };
+                    let adj = if is_best { best_bonus } else { -malus };
                     let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
                     // Use gravity-based update
@@ -5468,6 +5467,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     ply,
                     depth,
                     in_check,
+                    is_tt_move,
                 );
             } else if let Some(cap_type) = captured_type {
                 // Reward the capture that produced the cutoff.
@@ -5501,6 +5501,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             ply,
             depth,
             in_check,
+            tt_move.is_some_and(|t| t.from == bm.from && t.to == bm.to),
         );
     }
 
