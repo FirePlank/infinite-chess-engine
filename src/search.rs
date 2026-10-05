@@ -4826,7 +4826,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
     let mut best_is_quiet = false;
-    let mut best_capture: Option<(PieceType, PieceType)> = None;
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
@@ -5499,9 +5498,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 tt_best_move = Some(m);
                 alpha = score;
                 best_is_quiet = !is_capture;
-                best_capture = captured_type
-                    .filter(|_| is_capture)
-                    .map(|c| (m.piece.piece_type(), c));
 
                 // Update PV using triangular indexing
                 // ply stores PV at pv_table[ply * MAX_PLY..], child at pv_table[(ply+1) * MAX_PLY..]
@@ -5551,18 +5547,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 .min(history_bonus_cap());
             searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus);
         }
-    }
-
-    // Its best capture took the no-cutoff malus in the loop; it was the best move, so that
-    // is undone and the cutoff's bonus given instead (Stockfish).
-    if best_score > alpha_orig
-        && best_score < beta
-        && let Some((mover, victim)) = best_capture
-    {
-        let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
-            .min(history_bonus_cap());
-        searcher.update_capture_history(mover, victim, bonus);
-        searcher.update_capture_history(mover, victim, bonus);
     }
 
     // A PV node whose best quiet raised alpha without a cutoff still found the best
