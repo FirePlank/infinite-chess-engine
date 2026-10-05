@@ -1666,6 +1666,69 @@ impl GameState {
     /// Fill a pre-allocated buffer with pseudo-legal moves for the current side.
     /// When in check and must escape (checkmate win condition), uses the optimized
     /// evasion generator that handles long-range blocking moves correctly.
+    /// A slider pinned by a rose may only re-block the spiral it stands on, and slider
+    /// target selection never names those squares: add every spiral square it can reach
+    /// (the strict check that follows rejects any that leave the king exposed).
+    fn add_rose_pin_blocks(&self, kp: &Coordinate, out: &mut MoveList) {
+        for spirals in crate::moves::ROSE_SPIRALS.iter() {
+            for path in spirals.iter() {
+                let mut pinned_at: Option<usize> = None;
+                for (k, &(dx, dy)) in path.iter().enumerate() {
+                    let (tx, ty) = (kp.x + dx, kp.y + dy);
+                    if !crate::moves::in_bounds(tx, ty) {
+                        break;
+                    }
+                    let Some(p) = self.board.get_piece(tx, ty) else {
+                        continue;
+                    };
+                    let Some(b) = pinned_at else {
+                        if p.color() != self.turn {
+                            break;
+                        }
+                        pinned_at = Some(k);
+                        continue;
+                    };
+                    if p.piece_type() == PieceType::Rose && p.color() == self.turn.opponent() {
+                        let from = Coordinate::new(kp.x + path[b].0, kp.y + path[b].1);
+                        for (j, &(jx, jy)) in path[..=k].iter().enumerate() {
+                            if j != b {
+                                self.push_slide_to(from, Coordinate::new(kp.x + jx, kp.y + jy), out);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Adds `from -> to` if the slider on `from` reaches `to` and the list lacks it.
+    fn push_slide_to(&self, from: Coordinate, to: Coordinate, out: &mut MoveList) {
+        let Some(piece) = self.board.get_piece(from.x, from.y) else {
+            return;
+        };
+        let pt = piece.piece_type();
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        let ortho = (dx == 0) != (dy == 0) && crate::attacks::is_ortho_slider(pt);
+        let diag = dx != 0 && dx.abs() == dy.abs() && crate::attacks::is_diag_slider(pt);
+        if !(ortho || diag) || out.iter().any(|m| m.from == from && m.to == to) {
+            return;
+        }
+        let (sx, sy) = (dx.signum(), dy.signum());
+        let (mut x, mut y) = (from.x + sx, from.y + sy);
+        while (x, y) != (to.x, to.y) {
+            if self.board.is_occupied(x, y) {
+                return;
+            }
+            x += sx;
+            y += sy;
+        }
+        if self.board.get_piece(to.x, to.y).is_some_and(|p| p.color() == self.turn) {
+            return;
+        }
+        out.push(Move::new(from, to, piece));
+    }
+
     pub fn get_pseudo_legal_moves_into(&self, out: &mut MoveList) {
         // The slider candidate cache can go stale and omit legal moves, so an exact
         // list must bypass it. The interior search keeps it, where its speed matters
@@ -1786,6 +1849,7 @@ impl GameState {
                     rose_pin_candidates.push(m.to);
                 }
             }
+            self.add_rose_pin_blocks(&kp, out);
         }
 
         // Filter illegal moves (King into check, Pinned pieces leaving ray, EP check reveal)
@@ -5693,6 +5757,30 @@ mod tests {
         game.recompute_piece_counts();
 
         assert!(!game.has_non_pawn_material(PlayerColor::White));
+    }
+
+    #[test]
+    fn test_rose_pinned_slider_may_reblock_its_spiral() {
+        // The bishop is pinned by the rose's spiral 11,-3 > 9,-4 > 7,-3 > 6,-1 > 7,1 (the
+        // mirrored one is blocked on 11,1); re-blocking on 9,-4 is its only legal move.
+        let cases = [
+            ("w 0/100 1 K7,1|B6,-1|P11,1+|ro11,-3|k-20,20", (6, -1), (9, -4)),
+            ("w 0/100 1 K7,1|B6,-1|N9,2|ro11,-3|k-20,20", (6, -1), (9, -4)),
+            ("w 18/100 61 (8|1) -1000000000000000,1000000000000000,-1000000000000000,1000000000000000 gi14,15|ze12,12|p-5,9+|p14,9+|p-2,8+|p11,8+|p2,7+|p6,7+|p7,7+|P3,2+|P4,2+|P5,2+|P6,2+|P7,2+|P8,2+|P-2,1+|P11,1+|P14,0+|p4,5|P1,4|P2,3|ca3,10|p5,6|p4,6|p8,5|b4,9|gu3,8|GI5,0|r9,-7|GU6,0|ZE3,1|RO4,4|gu7,8|CA0,0|R7,-1|K7,1|k5,11|NR4,18|ro11,-3|B6,-1|r-1,0", (6, -1), (9, -4)),
+            ("[Variant \"Chess on an Infinite Plane - Roses Option\"] b 3/100 81 (8|1;n,b,r,q,gu,ch,ro) -1000000000000000,1000000000000000,-1000000000000000,1000000000000000 p11,8+|p1,7+|p2,7+|p3,7+|p6,7+|p8,7+|p10,7+|P0,2+|P2,2+|P3,2+|P5,2+|P6,2+|P8,2+|P9,2+|P10,2+|K5,1|P-2,-4+|P-1,-5+|P4,3|p4,6|p7,6|CH4,0|GU2,1|B5,0|R3,-1|p-1,5|ro5,8|P1,4|P10,-4|n3,6|P9,-3|P7,3|gu6,9|N6,3|P-3,-3|r5,10|p0,6|P11,-3|P11,3|b4,11|k3,9|r2,10|CH7,-1|GU6,1|q2,-4|gu3,10|p6,6|p-1,9|R6,18|ch4,8|RO-1,13", (4, 11), (1, 14)),
+        ];
+        for (icn, from, to) in cases {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+            game.recompute_piece_counts();
+            let mut moves = crate::moves::MoveList::new();
+            game.get_pseudo_legal_moves_into(&mut moves);
+            assert!(
+                moves.iter().any(|m| m.from == Coordinate::new(from.0, from.1)
+                    && m.to == Coordinate::new(to.0, to.1)),
+                "legal re-block {from:?} -> {to:?} missing in {icn}"
+            );
+        }
     }
 
     #[test]

@@ -1,11 +1,11 @@
 {
-  "name": "378_prior_capture_credit",
-  "old": "e56b83d",
-  "games": 4000,
-  "shards": 40,
+  "name": "387_rose_pin_reblock",
+  "old": "b719641",
+  "games": 2000,
+  "shards": 20,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
+  "elo0": -10,
+  "elo1": 0,
   "adjudication": 1000
 }
