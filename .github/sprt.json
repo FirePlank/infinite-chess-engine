@@ -1,10 +1,10 @@
 {
-  "name": "378_prior_capture_credit",
-  "old": "e56b83d",
-  "games": 4000,
-  "shards": 40,
+  "name": "386_pv_recapture_ext_resume",
+  "old": "b719641",
+  "games": 2000,
+  "shards": 20,
   "variants": "site",
-  "tc": "10+0.1",
+  "tc": "20+0.2",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000
