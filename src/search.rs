@@ -4843,7 +4843,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
 
             // Futility and SEE margins judge the depth the move would actually be searched at.
-            let lmr_depth = (new_depth as i32 - get_lmr(depth, legal_moves + 1)).max(0);
+            let lmr_depth =
+                (new_depth as i32 - get_lmr(depth, legal_moves + 1) - (!improving) as i32).max(0);
 
             // A quiet promotion is tactical: quiet futility prices it at the pre-move eval,
             // a full piece short, so only SEE may prune it.
