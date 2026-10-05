@@ -3104,10 +3104,18 @@ pub fn analyse_position(
 /// as Stockfish outputs its best thread's PV once a search ends.
 #[cfg(feature = "multithreading")]
 pub fn vote_analysis_lines(result: &mut MultiPVResult) {
+    if let Some(lines) = voted_analysis_lines(&result.lines) {
+        result.lines = lines;
+    }
+}
+
+/// The winning helper's lines when one beats the main thread's `lines` in the thread
+/// vote. Streamed depths go through it too: otherwise each depth shows the main thread
+/// and each slice end the vote winner, and a shorter mate a helper proved flickers.
+#[cfg(feature = "multithreading")]
+pub fn voted_analysis_lines(lines: &[PVLine]) -> Option<Vec<PVLine>> {
     let epoch = HELPER_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-    let Some(main) = result.lines.first() else {
-        return;
-    };
+    let main = lines.first()?;
     let as_vote = |line: &PVLine, thread_id: usize| ThreadResult {
         best_move: line.mv,
         score: line.score,
@@ -3116,20 +3124,16 @@ pub fn vote_analysis_lines(result: &mut MultiPVResult) {
         nodes: 0,
         thread_id,
     };
-    let Ok(slots) = HELPER_LINES.lock() else {
-        return;
-    };
+    let slots = HELPER_LINES.lock().ok()?;
     let mut voters = vec![as_vote(main, 0)];
     let mut sources = vec![None];
-    for (i, (e, lines)) in slots.iter().enumerate() {
-        if *e == epoch && lines.len() == result.lines.len() && let Some(top) = lines.first() {
+    for (i, (e, helper)) in slots.iter().enumerate() {
+        if *e == epoch && helper.len() == lines.len() && let Some(top) = helper.first() {
             voters.push(as_vote(top, i));
-            sources.push(Some(lines));
+            sources.push(Some(helper));
         }
     }
-    if let Some(lines) = sources[select_best_thread(&voters)] {
-        result.lines = lines.clone();
-    }
+    sources[select_best_thread(&voters)].cloned()
 }
 
 /// Sets the global seed and re-initializes the PRNG.

@@ -1006,13 +1006,21 @@ impl Engine {
                     }
                 }
 
+                // Each streamed depth shows the thread vote's winner, as the slice summary
+                // does, so the two never alternate between different threads' lines.
+                let mut voted_callback = |info: &search::DepthInfo| {
+                    match search::voted_analysis_lines(info.lines) {
+                        Some(lines) => callback(&search::DepthInfo { lines: &lines, ..*info }),
+                        None => callback(info),
+                    }
+                };
                 let mut result = search::analyse_position(
                     &mut self.game,
                     max_depth,
                     start_depth,
                     slice_ms,
                     multi_pv,
-                    &mut callback,
+                    &mut voted_callback,
                 );
                 search::vote_analysis_lines(&mut result);
                 return self.analysis_result_to_js(&result);
