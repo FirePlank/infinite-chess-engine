@@ -1,7 +1,7 @@
 {
-  "name": "382_quiet_malus_stronger",
-  "old": "8929560",
-  "games": 4000,
+  "name": "375_lmr_depth_improving_resume",
+  "old": "c322378",
+  "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
