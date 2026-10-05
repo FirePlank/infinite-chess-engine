@@ -1,11 +1,11 @@
 {
-  "name": "393_pv_credit_malus_before_best",
-  "old": "faebdb6",
-  "games": 4000,
+  "name": "397b_sf_mate_exact_r3",
+  "old": "99fdb11",
+  "games": 2000,
   "shards": 25,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
-  "adjudication": 1000
+  "elo0": -10,
+  "elo1": 0,
+  "adjudication": 0
 }
