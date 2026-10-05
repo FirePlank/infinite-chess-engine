@@ -3698,10 +3698,6 @@ fn enter_root_move(
     searcher.in_check_history[0] = in_check;
     searcher.capture_history_stack[0] = is_capture;
     searcher.move_count_stack[0] = count.min(u16::MAX as usize) as u16;
-    // Read by the reply for evaluation smoothing and its hindsight depth adjustment.
-    let (side, pt) = (hist_color(m.piece.color()), m.piece.piece_type() as usize);
-    searcher.stat_score_stack[0] = searcher.history[side][pt][hash_move_dest(m)];
-    searcher.reduction_stack[0] = 0;
     slots
 }
 
@@ -3851,7 +3847,6 @@ fn negamax_root(
                 0
             };
             // PVS: Null window first, then re-search if it improves alpha
-            searcher.reduction_stack[0] = root_r as i32;
             let mut s = -negamax(&mut NegamaxContext {
                 searcher,
                 game,
@@ -3864,7 +3859,6 @@ fn negamax_root(
                 was_null_move: false,
                 excluded_move: None,
             });
-            searcher.reduction_stack[0] = 0;
             if root_r > 0 && s > alpha {
                 s = -negamax(&mut NegamaxContext {
                     searcher,
