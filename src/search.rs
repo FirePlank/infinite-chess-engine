@@ -5357,10 +5357,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     excluded_move: None,
                 });
 
-                // A reduced search that forced a re-search proved the quiet move good,
-                // so credit it in continuation history. The bonus is depth-proportional
-                // but scaled down, since a re-search is weaker evidence than a cutoff.
-                if reduction > 0 && !is_capture && !is_promotion {
+                // A reduced quiet whose full-depth re-search still beat alpha proved
+                // good, so credit it in continuation history; a re-search the deeper
+                // look refuted earns nothing. Scaled down: weaker evidence than a cutoff.
+                if reduction > 0 && s > alpha && !is_capture && !is_promotion {
                     let lmr_bonus = 100 * depth as i32;
                     let offsets = [1usize, 2, 4];
                     const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
