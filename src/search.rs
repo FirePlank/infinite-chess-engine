@@ -5359,10 +5359,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Killer move heuristic (for non-captures).
                 // Skip when the move is already killer[0], so a repeated cutoff
                 // move doesn't shift a duplicate into killer[1] and kill that slot.
+                // A quiet promotion is never tried as a killer, so it would only evict one.
                 let already_killer0 = searcher.killers[ply][0].is_some_and(|k| {
                     k.from == m.from && k.to == m.to && k.promotion == m.promotion
                 });
-                if !already_killer0 {
+                if !already_killer0 && m.promotion.is_none() {
                     searcher.killers[ply][1] = searcher.killers[ply][0];
                     searcher.killers[ply][0] = Some(m);
                 }
@@ -5370,7 +5371,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Countermove heuristic. The destination is truncated to i32 here and
                 // at the read site alike, so a false match needs a 2^32 coordinate gap,
                 // which the far-escape shell (+/-4063) keeps out of reach.
-                if ply > 0 && searcher.plies_from_null[ply] != 1 {
+                if ply > 0 && searcher.plies_from_null[ply] != 1 && m.promotion.is_none() {
                     let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                     if prev_from_hash < 256 && prev_to_hash < 256 {
                         searcher.countermoves[hist_color(m.piece.color())][prev_from_hash]
