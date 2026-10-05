@@ -1,10 +1,10 @@
 {
-  "name": "385_null_threat_escape_20s",
-  "old": "b719641",
-  "games": 2000,
-  "shards": 20,
+  "name": "378_prior_capture_credit",
+  "old": "e56b83d",
+  "games": 4000,
+  "shards": 40,
   "variants": "site",
-  "tc": "20+0.2",
+  "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000
