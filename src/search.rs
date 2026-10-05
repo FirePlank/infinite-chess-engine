@@ -1065,8 +1065,6 @@ pub struct Searcher {
     // Static eval stack for "improving" heuristic
     // Stores eval at each ply to detect if position is improving
     pub eval_stack: Vec<i32>,
-    /// Corrected static eval per ply before history smoothing and noise.
-    corrected_eval_stack: Vec<i32>,
 
     // Best move from previous iteration
     pub best_move_root: Option<Move>,
@@ -1245,7 +1243,6 @@ impl Searcher {
             tt_pv_stack: vec![false; MAX_PLY],
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
-            corrected_eval_stack: vec![0; MAX_PLY],
             stat_score_stack: vec![0; MAX_PLY],
             best_move_root: None,
             prev_score: 0,
@@ -3736,7 +3733,6 @@ fn enter_root_node(searcher: &mut Searcher, game: &GameState, depth: usize) -> b
         let root_raw = evaluate(game);
         searcher.adjusted_eval(game, root_raw, 0)
     };
-    searcher.corrected_eval_stack[0] = searcher.eval_stack[0];
     in_check
 }
 
@@ -4205,7 +4201,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     };
     // The corrected eval before smoothing and noise: what correction history is judged by.
     let corrected_eval = static_eval;
-    searcher.corrected_eval_stack[ply] = corrected_eval;
 
     // Apply StatScore bonus from parent move success (Evaluation Smoothing)
     if ply > 0 {
@@ -4231,10 +4226,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         && let Some(prev) = searcher.move_history[ply - 1]
         && (searcher.moved_piece_history[ply - 1] as usize) < 32
     {
-        // Unsmoothed evals: the smoothing term is this same entry / 512, which would
-        // otherwise feed the entry back into its own bonus.
-        let bonus =
-            (-2 * (searcher.corrected_eval_stack[ply - 1] + corrected_eval)).clamp(-300, 300);
+        let bonus = (-2 * (searcher.eval_stack[ply - 1] + static_eval)).clamp(-300, 300);
         let pt = searcher.moved_piece_history[ply - 1] as usize;
         let max_h = params::history_max_gravity();
         let adj = bonus.clamp(-max_h, max_h);
