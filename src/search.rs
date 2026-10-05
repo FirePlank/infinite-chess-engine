@@ -3989,121 +3989,6 @@ fn promotion_dominated(pt: PieceType, allowed: u32) -> bool {
     }
 }
 
-/// Credits a best quiet in the history tables and penalizes the other quiets tried.
-#[allow(clippy::too_many_arguments)]
-fn update_quiet_best_stats(
-    searcher: &mut Searcher,
-    pawn_hash: u64,
-    m: &Move,
-    quiets_searched: &[Move],
-    ply: usize,
-    depth: usize,
-    in_check: bool,
-) {
-    // Credit the quiet that cut off, and penalize the quiets tried before it.
-    let idx = hash_move_dest(m);
-    let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
-        .min(history_bonus_cap());
-
-    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
-    searcher.update_pawn_history(
-        pawn_hash,
-        m.piece.piece_type(),
-        idx,
-        bonus * pawn_history_bonus_scale(),
-    );
-
-    searcher.update_low_ply_history(ply, idx, bonus);
-
-    for quiet in quiets_searched {
-        let qidx = hash_move_dest(quiet);
-        if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
-            continue;
-        }
-        searcher.update_history(
-            quiet.piece.color(),
-            quiet.piece.piece_type(),
-            qidx,
-            -bonus,
-        );
-        searcher.update_pawn_history(
-            pawn_hash,
-            quiet.piece.piece_type(),
-            qidx,
-            -bonus * pawn_history_malus_scale(),
-        );
-        // Low-ply history is keyed by destination alone, so another piece's move
-        // to the cutoff's square would cancel its bonus.
-        if qidx != idx {
-            searcher.update_low_ply_history(ply, qidx, -bonus);
-        }
-    }
-
-    // Killer move heuristic (for non-captures).
-    // Skip when the move is already killer[0], so a repeated cutoff
-    // move doesn't shift a duplicate into killer[1] and kill that slot.
-    // A quiet promotion is never tried as a killer, so it would only evict one.
-    let already_killer0 = searcher.killers[ply][0].is_some_and(|k| {
-        k.from == m.from && k.to == m.to && k.promotion == m.promotion
-    });
-    if !already_killer0 && m.promotion.is_none() {
-        searcher.killers[ply][1] = searcher.killers[ply][0];
-        searcher.killers[ply][0] = Some(*m);
-    }
-
-    // Countermove heuristic. The destination is truncated to i32 here and
-    // at the read site alike, so a false match needs a 2^32 coordinate gap,
-    // which the far-escape shell (+/-4063) keeps out of reach.
-    if ply > 0 && searcher.plies_from_null[ply] != 1 && m.promotion.is_none() {
-        let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
-        if prev_from_hash < 256 && prev_to_hash < 256 {
-            searcher.countermoves[hist_color(m.piece.color())][prev_from_hash]
-                [prev_to_hash] = (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
-        }
-    }
-
-    // Continuation history update
-    // Only update offsets 1, 2, 4
-    let offsets = [1usize, 2, 4];
-    const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
-
-    for (idx, &plies_ago) in offsets.iter().enumerate() {
-        if in_check && plies_ago > 2 {
-            break;
-        }
-        if ply >= plies_ago
-            && let Some(ref prev_move) = searcher.move_history[ply - plies_ago]
-        {
-            let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
-            if prev_piece < 32 {
-                let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
-                let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
-                let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
-
-                // Update all searched quiets (best with bonus, others with malus)
-                for quiet in quiets_searched {
-                    let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
-                    let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
-                    let is_best = quiet.from == m.from && quiet.to == m.to;
-
-                    let slot = idx + 3 * hist_color(quiet.piece.color());
-                    let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
-                        [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
-
-                    let raw_adj = bonus.min(history_bonus_cap());
-                    let adj = if is_best { raw_adj } else { -raw_adj };
-                    let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
-
-                    // Use gravity-based update
-                    let cur = *entry as i32;
-                    *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14))
-                        as i16;
-                }
-            }
-        }
-    }
-}
-
 fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let searcher = &mut *ctx.searcher;
     let game = &mut *ctx.game;
@@ -4739,7 +4624,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let world_size = crate::moves::get_world_size();
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
-    let mut best_is_quiet = false;
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
@@ -5407,7 +5291,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if score > alpha {
                 tt_best_move = Some(m);
                 alpha = score;
-                best_is_quiet = !is_capture;
 
                 // Update PV using triangular indexing
                 // ply stores PV at pv_table[ply * MAX_PLY..], child at pv_table[(ply+1) * MAX_PLY..]
@@ -5434,15 +5317,108 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // so children see the actual parent move rather than only a cutoff.
 
             if !is_capture {
-                update_quiet_best_stats(
-                    searcher,
+                // Credit the quiet that cut off, and penalize the quiets tried before it.
+                let idx = hash_move_dest(&m);
+                let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+
+                searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
+                searcher.update_pawn_history(
                     game.pawn_hash,
-                    &m,
-                    &quiets_searched,
-                    ply,
-                    depth,
-                    in_check,
+                    m.piece.piece_type(),
+                    idx,
+                    bonus * pawn_history_bonus_scale(),
                 );
+
+                searcher.update_low_ply_history(ply, idx, bonus);
+
+                for quiet in &quiets_searched {
+                    let qidx = hash_move_dest(quiet);
+                    if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
+                        continue;
+                    }
+                    searcher.update_history(
+                        quiet.piece.color(),
+                        quiet.piece.piece_type(),
+                        qidx,
+                        -bonus,
+                    );
+                    searcher.update_pawn_history(
+                        game.pawn_hash,
+                        quiet.piece.piece_type(),
+                        qidx,
+                        -bonus * pawn_history_malus_scale(),
+                    );
+                    // Low-ply history is keyed by destination alone, so another piece's move
+                    // to the cutoff's square would cancel its bonus.
+                    if qidx != idx {
+                        searcher.update_low_ply_history(ply, qidx, -bonus);
+                    }
+                }
+
+                // Killer move heuristic (for non-captures).
+                // Skip when the move is already killer[0], so a repeated cutoff
+                // move doesn't shift a duplicate into killer[1] and kill that slot.
+                // A quiet promotion is never tried as a killer, so it would only evict one.
+                let already_killer0 = searcher.killers[ply][0].is_some_and(|k| {
+                    k.from == m.from && k.to == m.to && k.promotion == m.promotion
+                });
+                if !already_killer0 && m.promotion.is_none() {
+                    searcher.killers[ply][1] = searcher.killers[ply][0];
+                    searcher.killers[ply][0] = Some(m);
+                }
+
+                // Countermove heuristic. The destination is truncated to i32 here and
+                // at the read site alike, so a false match needs a 2^32 coordinate gap,
+                // which the far-escape shell (+/-4063) keeps out of reach.
+                if ply > 0 && searcher.plies_from_null[ply] != 1 && m.promotion.is_none() {
+                    let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
+                    if prev_from_hash < 256 && prev_to_hash < 256 {
+                        searcher.countermoves[hist_color(m.piece.color())][prev_from_hash]
+                            [prev_to_hash] = (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
+                    }
+                }
+
+                // Continuation history update
+                // Only update offsets 1, 2, 4
+                let offsets = [1usize, 2, 4];
+                const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
+
+                for (idx, &plies_ago) in offsets.iter().enumerate() {
+                    if in_check && plies_ago > 2 {
+                        break;
+                    }
+                    if ply >= plies_ago
+                        && let Some(ref prev_move) = searcher.move_history[ply - plies_ago]
+                    {
+                        let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
+                        if prev_piece < 32 {
+                            let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
+                            let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
+                            let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
+
+                            // Update all searched quiets (best with bonus, others with malus)
+                            for quiet in &quiets_searched {
+                                let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
+                                let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
+                                let is_best = quiet.from == m.from && quiet.to == m.to;
+
+                                let slot = idx + 3 * hist_color(quiet.piece.color());
+                                let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
+                                    [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
+
+                                let raw_adj = bonus.min(history_bonus_cap());
+                                let adj = if is_best { raw_adj } else { -raw_adj };
+                                let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
+
+                                // Use gravity-based update
+                                let cur = *entry as i32;
+                                *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14))
+                                    as i16;
+                            }
+                        }
+                    }
+                }
             } else if let Some(cap_type) = captured_type {
                 // Reward the capture that produced the cutoff.
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
@@ -5457,24 +5433,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 .min(history_bonus_cap());
             searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus);
         }
-    }
-
-    // A PV node whose best quiet raised alpha without a cutoff still found the best
-    // move, so it earns the same credit a cutoff would (Stockfish).
-    if best_is_quiet
-        && best_score > alpha_orig
-        && best_score < beta
-        && let Some(bm) = best_move
-    {
-        update_quiet_best_stats(
-            searcher,
-            game.pawn_hash,
-            &bm,
-            &quiets_searched,
-            ply,
-            depth,
-            in_check,
-        );
     }
 
     // Checkmate, stalemate, or loss by capture-based variants
