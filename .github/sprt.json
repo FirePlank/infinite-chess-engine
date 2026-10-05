@@ -1,7 +1,7 @@
 {
-  "name": "355_root_slots_resume",
-  "old": "9184b3e",
-  "games": 1500,
+  "name": "356_evaldiff_unsmoothed",
+  "old": "2e3446f",
+  "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
