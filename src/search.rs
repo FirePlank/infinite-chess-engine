@@ -432,12 +432,6 @@ fn hist_color(color: crate::board::PlayerColor) -> usize {
 
 #[inline]
 fn get_lmr(depth: usize, moves: usize) -> i32 {
-    get_lmr_1024(depth, moves) >> 10
-}
-
-/// The LMR base reduction in 1/1024 plies.
-#[inline]
-fn get_lmr_1024(depth: usize, moves: usize) -> i32 {
     let table = LMR_TABLE.get_or_init(|| {
         let mut table = [[0; 256]; MAX_PLY];
         let divisor = lmr_divisor() as f32;
@@ -449,7 +443,7 @@ fn get_lmr_1024(depth: usize, moves: usize) -> i32 {
                 }
 
                 let reduction = 1.0 + (m as f32).ln() * (d as f32).ln() / divisor;
-                *entry = (reduction * 1024.0) as i32;
+                *entry = reduction as i32;
             }
         }
         table
@@ -459,7 +453,7 @@ fn get_lmr_1024(depth: usize, moves: usize) -> i32 {
     if moves >= 256 {
         let divisor = lmr_divisor() as f32;
         let reduction = 1.0 + (moves as f32).ln() * (depth as f32).ln() / divisor;
-        return (reduction * 1024.0) as i32;
+        return reduction as i32;
     }
 
     // depth can exceed MAX_PLY-1 after post-cap `depth += 1` bumps (hindsight
@@ -5172,26 +5166,24 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && !in_check
                 && !is_capture
             {
-                // Accumulated in 1/1024 plies so the history and correction terms
-                // keep their fractions until the one rounding at the end (Stockfish).
-                let mut r = get_lmr_1024(depth, legal_moves);
+                reduction = get_lmr(depth, legal_moves);
 
                 // Reduce more when position is not improving
                 if !improving {
-                    r += 1024;
+                    reduction += 1;
                 }
 
 
                 // A capturing TT move means these quiets are competing against a
                 // tactical refutation, so they earn more reduction.
                 if tt_capture {
-                    r += 1024;
+                    reduction += 1;
                 }
 
                 // A cut node is expected to fail high on an early move, so the moves
                 // after it are far likelier to be refutations than real candidates.
                 if cut_node {
-                    r += 1024;
+                    reduction += 1;
                 }
 
                 // History-adjusted LMR
@@ -5214,27 +5206,25 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         }
                     }
                 }
-                r -= (hist_score + pawn_score) / 4 + cont_score / 6;
+                reduction -= (hist_score + pawn_score) / 4096 + cont_score / 6144;
 
                 // Correction history adjustment: the correction alone, without the
                 // smoothing and noise terms static_eval also carries.
                 let correction = (corrected_eval - raw_eval) * CORRHIST_GRAIN;
-                r -= correction.abs().min(2 * 15185) * 1024 / 15185;
+                reduction -= (correction.abs() / 15185).clamp(0, 2);
 
                 // Shuffle penalty
                 if searcher.is_shuffling(game, &m, ply, is_capture) {
-                    r += 1024;
+                    reduction += 1;
                 }
 
                 // Increase reduction if next ply has a lot of fail highs
                 if ply + 1 < MAX_PLY && searcher.cutoff_cnt[ply + 1] > lmr_cutoff_thresh() {
-                    r += 1024;
+                    reduction += 1;
                     if all_node {
-                        r += 1024;
+                        reduction += 1;
                     }
                 }
-
-                reduction = r >> 10;
 
                 // If TT moves have been unreliable (low tt_move_history), reduce less
                 // since the move ordering from TT may not be trustworthy.
