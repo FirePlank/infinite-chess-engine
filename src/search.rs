@@ -4505,7 +4505,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 bonus += rfp_worsening_mult() * futility_mult / 1024;
             }
 
-            let futility_margin = futility_mult * depth as i32 - bonus;
+            // A large correction marks an eval the net misjudges here, so demand more
+            // headroom before trusting it (Stockfish).
+            let futility_margin =
+                futility_mult * depth as i32 - bonus + (corrected_eval - raw_eval).abs() * 2 / 3;
 
             // Use refined eval for margin check and return value
             if eval - futility_margin >= beta && eval >= beta {
