@@ -286,14 +286,6 @@ pub const fn is_decisive(value: i32) -> bool {
     value.abs() > MATE_SCORE
 }
 
-/// Stockfish's seekMate: a root score this far ahead eases the pruning that hides long
-/// mating lines. Its 750 + 220000/d^2 rescaled from a 208 to our 100 pawn; not for strength.
-#[inline]
-fn seek_mate_for(root_score: i32, root_depth: usize) -> bool {
-    let d = root_depth.max(1) as i32;
-    root_score.abs() >= 360 + 105_770 / (d * d)
-}
-
 pub const VALUE_DRAW: i32 = 0;
 #[inline(always)]
 pub fn value_draw(nodes: u64) -> i32 {
@@ -2368,7 +2360,6 @@ fn search_with_searcher(
 
         searcher.reset_for_iteration();
         searcher.hot.iter_start_ms = searcher.hot.timer.elapsed_ms() as f64;
-        searcher.hot.seek_mate = searcher.completed_depth > 0 && seek_mate_for(best_score, depth);
 
         // Age out PV variability metric at START of each iteration
         // Note: Decay the PERSISTED tot, not the per-iteration changes.
@@ -2450,12 +2441,7 @@ fn search_with_searcher(
         // Only take the score when the iteration finished: an interrupted search can
         // return -INFINITY or a raw aspiration bound, so a stop keeps the previous
         // completed depth's score instead.
-        // A mate a completed depth proved is kept when this one is interrupted or comes
-        // back longer or not mating: it failed to recover the mate (Stockfish forgottenMate).
-        let forgotten_mate = searcher.completed_depth > 0
-            && is_decisive(best_score)
-            && (searcher.hot.stopped || score.abs() < best_score.abs());
-        if let Some(pv_move) = searcher.pv_table[0].filter(|_| !forgotten_mate) {
+        if let Some(pv_move) = searcher.pv_table[0] {
             // Always update the best_move to the latest PV move (even if stopped,
             // the move itself is valid from a previous iteration)
             best_move = Some(pv_move);
@@ -2520,6 +2506,8 @@ fn search_with_searcher(
             // Root LMR leaves the other root moves cheap, which raises the best move's
             // share everywhere, so the early stop needs a higher bar than before.
             let high_best_move_effort = if nodes_effort >= 96000.0 { 0.76 } else { 1.0 };
+
+            searcher.hot.seek_mate = base_depth >= 16 && best_score.abs() >= 4000;
 
             // Accumulate instability changes from this iteration
             searcher.hot.tot_best_move_changes += searcher.hot.best_move_changes;
@@ -3310,7 +3298,6 @@ pub(crate) fn get_best_moves_multipv_impl(
         searcher.reset_for_iteration();
         searcher.hot.iter_start_ms = searcher.hot.timer.elapsed_ms() as f64;
         searcher.hot.tot_best_move_changes /= 2.0;
-        searcher.hot.seek_mate = best_lines.first().is_some_and(|l| seek_mate_for(l.score, depth));
 
         // Time check at start of each iteration - but always complete depth 1
         if searcher.hot.min_depth_required == 0 && time_managed {
@@ -3544,15 +3531,8 @@ pub(crate) fn get_best_moves_multipv_impl(
                 searcher.prev_iteration_pv.extend(pv.iter().take(MAX_PLY).copied());
             }
 
-            // Keep a mate an earlier depth proved over a longer or lost one (forgottenMate).
-            let forgotten_mate = best_lines.first().is_some_and(|b| {
-                is_decisive(b.score)
-                    && root_scores.first().is_none_or(|r| r.1.abs() < b.score.abs())
-            });
-            if !forgotten_mate {
-                best_lines.clear();
-            }
-            for (mv, score, pv) in root_scores.iter().take(multi_pv).filter(|_| !forgotten_mate) {
+            best_lines.clear();
+            for (mv, score, pv) in root_scores.iter().take(multi_pv) {
                 let mut pv = pv.clone();
                 searcher.extend_pv_with_tt(game, &mut pv, depth);
                 best_lines.push(PVLine {
