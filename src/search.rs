@@ -5246,7 +5246,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Ensure reduction stays in valid range [0, depth-2]. The upper
                 // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
                 // and clamp panics when min > max.
-                reduction = reduction.clamp(0, ((depth as i32) - 2).max(0));
+                // A move the reduction terms strongly favour is searched a ply deeper
+                // at PV and cut nodes (Stockfish).
+                reduction = reduction.clamp(-((!all_node) as i32), ((depth as i32) - 2).max(0));
             }
 
             // Base child depth after LMR (with singular extension if applicable)
@@ -5309,7 +5311,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // leaf pruning's extra ply counts as reduction too.
             let base_depth = (depth as i32) - 1 + extension;
             let reduction = reduction.max(base_depth - new_depth);
-            searcher.reduction_stack[ply] = reduction;
+            searcher.reduction_stack[ply] = reduction.max(0);
 
             // The first move of the node already took the full window in the
             // `legal_moves == 1` arm above, so every move reaching here is scouted.
