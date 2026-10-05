@@ -5486,8 +5486,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     }
 
     // A PV node whose best quiet raised alpha without a cutoff still found the best
-    // move, so it earns a cutoff's credit. No malus: a PV node searches every quiet,
-    // hundreds on an open board, and penalizing them all swamps the tables.
+    // move, so it earns a cutoff's credit. The malus reaches only the quiets tried before
+    // it, as at a cutoff: a PV node searches every quiet, and penalizing all swamps them.
     if best_is_quiet
         && best_score > alpha_orig
         && best_score < beta
@@ -5497,7 +5497,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher,
             game.pawn_hash,
             &bm,
-            std::slice::from_ref(&bm),
+            quiets_searched
+                .iter()
+                .position(|q| q.from == bm.from && q.to == bm.to)
+                .map_or(std::slice::from_ref(&bm), |i| &quiets_searched[..=i]),
             ply,
             depth,
             in_check,
