@@ -5086,8 +5086,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 }
                 reduction -= (hist_score + pawn_score) / 4096 + cont_score / 6144;
 
-                // Correction history adjustment
-                let correction = (static_eval - raw_eval) * CORRHIST_GRAIN;
+                // Correction history adjustment: the correction alone, without the
+                // smoothing and noise terms static_eval also carries.
+                let correction = (corrected_eval - raw_eval) * CORRHIST_GRAIN;
                 reduction -= (correction.abs() / 15185).clamp(0, 2);
 
                 // Shuffle penalty
