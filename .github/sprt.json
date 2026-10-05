@@ -1,10 +1,10 @@
 {
-  "name": "384_ttpv_lmr_minus1",
-  "old": "c322378",
-  "games": 3000,
+  "name": "382_quiet_malus_stronger",
+  "old": "8929560",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
-  "tc": "30+0.3",
+  "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000

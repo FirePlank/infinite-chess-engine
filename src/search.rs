@@ -5186,12 +5186,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction += 1;
                 }
 
-                // A position that has stood on a PV, in this search or an earlier one,
-                // is reduced a ply less, so lines already analysed keep their depth.
-                if tt_pv {
-                    reduction -= 1;
-                }
-
                 // History-adjusted LMR
                 let hist_idx = hash_move_dest(&m);
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
