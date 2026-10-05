@@ -1,11 +1,11 @@
 {
-  "name": "397g_seekmate_base3000",
-  "old": "ad94688",
+  "name": "400_pv_best_capture_credit_resume",
+  "old": "c8992d7",
   "games": 2000,
   "shards": 25,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 0
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 1000
 }
