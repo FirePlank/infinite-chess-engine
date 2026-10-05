@@ -5090,10 +5090,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if se_value < singular_beta {
                 // TT move is singular - calculate extension level
-                // A singular quiet is the surprising case, so it extends further than
-                // a singular capture (Stockfish).
-                let double_margin = (depth as i32) * 2 + (tt_capture as i32 * 20);
-                let triple_margin = (depth as i32) * 4 + (tt_capture as i32 * 40);
+                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5);
+                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10);
 
                 extension = 1;
                 if se_value < singular_beta - double_margin {
