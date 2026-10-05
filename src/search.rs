@@ -5569,7 +5569,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if prev_pt < 32 {
                 let standard_bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
-                let bonus = standard_bonus / 2;
+                // Weight the credit by how clearly the previous move refuted this node:
+                // deep, late in its move list, or far below either side's static eval.
+                let prev_in_check = searcher.in_check_history[ply - 1];
+                let scale = ((78 * depth as i32 - 312).min(194)
+                    + if all_node { 0 } else { 34 }
+                    + if searcher.move_count_stack[ply - 1] > 8 { 164 } else { 0 }
+                    + if !in_check && best_score + 121 <= corrected_eval { 141 } else { 0 }
+                    + if !prev_in_check && best_score + 99 <= -searcher.eval_stack[ply - 1] {
+                        129
+                    } else {
+                        0
+                    })
+                .max(0);
+                let bonus = standard_bonus * scale / 300;
                 let max_h = params::history_max_gravity();
 
                 // Update continuation history for opponent's previous move
