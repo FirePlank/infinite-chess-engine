@@ -1,11 +1,11 @@
 {
-  "name": "394_net_mixsrc2last_s17",
-  "old": "864a627",
+  "name": "393_pv_credit_malus_before_best",
+  "old": "faebdb6",
   "games": 4000,
   "shards": 25,
-  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
+  "variants": "site",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 0
+  "adjudication": 1000
 }
