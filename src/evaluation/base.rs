@@ -2140,6 +2140,27 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             }
             _ => 0,
         };
+
+        // Readiness scales the piece's own attacking play only: the far-slider penalty
+        // and the defender bonus below are not part of an attack.
+        let is_attacking_piece = matches!(
+            pt,
+            PieceType::Rook
+                | PieceType::Queen
+                | PieceType::RoyalQueen
+                | PieceType::Bishop
+                | PieceType::Chancellor
+                | PieceType::Archbishop
+                | PieceType::Amazon
+        );
+        if is_attacking_piece {
+            let scale = if piece.color() == PlayerColor::White {
+                white_attack_ready
+            } else {
+                black_attack_ready
+            };
+            piece_score = piece_score * scale / 100;
+        }
         let piece_val = get_piece_value_base(pt);
 
         if let Some(center) = &cloud_center {
@@ -2208,25 +2229,6 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     break; // Count once
                 }
             }
-        }
-
-        let is_attacking_piece = matches!(
-            pt,
-            PieceType::Rook
-                | PieceType::Queen
-                | PieceType::RoyalQueen
-                | PieceType::Bishop
-                | PieceType::Chancellor
-                | PieceType::Archbishop
-                | PieceType::Amazon
-        );
-        if is_attacking_piece {
-            let scale = if piece.color() == PlayerColor::White {
-                white_attack_ready
-            } else {
-                black_attack_ready
-            };
-            piece_score = piece_score * scale / 100;
         }
 
         // Riders converge toward their confined worth and leapers are paid the
