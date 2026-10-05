@@ -3999,6 +3999,7 @@ fn update_quiet_best_stats(
     ply: usize,
     depth: usize,
     in_check: bool,
+    move_count: usize,
 ) {
     // Credit the quiet that cut off, and penalize the quiets tried before it.
     let idx = hash_move_dest(m);
@@ -4015,6 +4016,10 @@ fn update_quiet_best_stats(
 
     searcher.update_low_ply_history(ply, idx, bonus);
 
+    // A cutoff found late says less about each quiet it beat, so their malus
+    // shrinks with the move count (Stockfish).
+    let malus = (bonus - 17 * (move_count as i32 - 1)).max(0);
+
     for quiet in quiets_searched {
         let qidx = hash_move_dest(quiet);
         if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
@@ -4024,18 +4029,18 @@ fn update_quiet_best_stats(
             quiet.piece.color(),
             quiet.piece.piece_type(),
             qidx,
-            -bonus,
+            -malus,
         );
         searcher.update_pawn_history(
             pawn_hash,
             quiet.piece.piece_type(),
             qidx,
-            -bonus * pawn_history_malus_scale(),
+            -malus * pawn_history_malus_scale(),
         );
         // Low-ply history is keyed by destination alone, so another piece's move
         // to the cutoff's square would cancel its bonus.
         if qidx != idx {
-            searcher.update_low_ply_history(ply, qidx, -bonus);
+            searcher.update_low_ply_history(ply, qidx, -malus);
         }
     }
 
@@ -4090,8 +4095,11 @@ fn update_quiet_best_stats(
                     let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
                         [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
 
-                    let raw_adj = bonus.min(history_bonus_cap());
-                    let adj = if is_best { raw_adj } else { -raw_adj };
+                    let adj = if is_best {
+                        bonus.min(history_bonus_cap())
+                    } else {
+                        -malus.min(history_bonus_cap())
+                    };
                     let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
                     // Use gravity-based update
@@ -5443,6 +5451,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     ply,
                     depth,
                     in_check,
+                    legal_moves,
                 );
             } else if let Some(cap_type) = captured_type {
                 // Reward the capture that produced the cutoff.
@@ -5476,6 +5485,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             ply,
             depth,
             in_check,
+            legal_moves,
         );
     }
 
