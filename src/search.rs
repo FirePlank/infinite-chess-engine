@@ -1135,6 +1135,9 @@ pub struct Searcher {
     // Stacks to track node state for history updates
     pub in_check_history: Vec<bool>,
     pub capture_history_stack: Vec<bool>,
+    /// Victim type of the capture made at each ply; read only where that ply's
+    /// capture flag is set.
+    pub captured_type_stack: Vec<u8>,
     pub tt_pv_stack: Vec<bool>,
     pub stat_score_stack: Vec<i32>,
 
@@ -1240,6 +1243,7 @@ impl Searcher {
             },
             in_check_history: vec![false; MAX_PLY],
             capture_history_stack: vec![false; MAX_PLY],
+            captured_type_stack: vec![u8::MAX; MAX_PLY],
             tt_pv_stack: vec![false; MAX_PLY],
             prev_move_stack: vec![(0, 0); MAX_PLY],
             eval_stack: vec![0; MAX_PLY],
@@ -3697,6 +3701,7 @@ fn enter_root_move(
     searcher.moved_piece_history[0] = m.piece.piece_type() as u8;
     searcher.in_check_history[0] = in_check;
     searcher.capture_history_stack[0] = is_capture;
+    searcher.captured_type_stack[0] = u8::MAX;
     searcher.move_count_stack[0] = count.min(u16::MAX as usize) as u16;
     // Read by the reply for evaluation smoothing and its hindsight depth adjustment.
     let (side, pt) = (hist_color(m.piece.color()), m.piece.piece_type() as usize);
@@ -4108,6 +4113,14 @@ fn update_quiet_best_stats(
             }
         }
     }
+}
+
+/// The type a move captures, read before it is made; u8::MAX when it captures nothing.
+fn captured_type_at(game: &GameState, m: &Move) -> u8 {
+    if game.is_en_passant(m) {
+        return PieceType::Pawn as u8;
+    }
+    game.board.get_piece(m.to.x, m.to.y).map_or(u8::MAX, |p| p.piece_type() as u8)
 }
 
 fn negamax(ctx: &mut NegamaxContext) -> i32 {
@@ -4646,6 +4659,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     .get_piece(m.to.x, m.to.y)
                     .is_some_and(|p| !p.piece_type().is_neutral_type());
             let pc_ctx = searcher.push_move_context(ply, &m, in_check, pc_is_capture);
+            searcher.captured_type_stack[ply] = captured_type_at(game, &m);
             searcher.reduction_stack[ply] = 0;
             searcher.stat_score_stack[ply] = searcher.history[hist_color(m.piece.color())]
                 [m.piece.piece_type() as usize][hash_move_dest(&m)];
@@ -5002,6 +5016,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         searcher.moved_piece_history[ply] = p_type as u8;
         searcher.in_check_history[ply] = in_check;
         searcher.capture_history_stack[ply] = is_capture;
+        searcher.captured_type_stack[ply] = captured_type.map_or(u8::MAX, |pt| pt as u8);
 
         legal_moves += 1;
         searcher.move_count_stack[ply] = legal_moves.min(u16::MAX as usize) as u16;
@@ -5633,6 +5648,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         (bonus * params::pawn_history_bonus_scale()).clamp(-max_h, max_h);
                     searcher.pawn_hist_apply(ph_idx, prev_pt, prev_idx, pawn_adj);
                 }
+            }
+        } else if prior_capture {
+            // A capture this node could not answer was a good capture (Stockfish).
+            let mover = searcher.moved_piece_history[ply - 1];
+            let victim = searcher.captured_type_stack[ply - 1];
+            if mover < 32 && victim < 32 {
+                let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+                searcher.update_capture_history(
+                    PieceType::from_u8(mover),
+                    PieceType::from_u8(victim),
+                    bonus,
+                );
             }
         }
     }
