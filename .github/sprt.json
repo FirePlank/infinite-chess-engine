@@ -1,11 +1,11 @@
 {
-  "name": "367_depth_cut_after_alpha",
-  "old": "a6cee02",
-  "games": 4000,
+  "name": "357_quiet_promo_no_killer",
+  "old": "2e3446f",
+  "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
+  "elo0": -10,
+  "elo1": 0,
   "adjudication": 1000
 }

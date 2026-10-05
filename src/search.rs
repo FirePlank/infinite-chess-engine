@@ -4644,7 +4644,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     };
 
     // New depth for child nodes
-    let mut new_depth = depth.saturating_sub(1);
+    let new_depth = depth.saturating_sub(1);
 
     // Allowed promotion pieces as a bitmask (the generator defaults to Q, R, B, N).
     let promo_mask: u32 = match game.game_rules.promotion_types.as_deref() {
@@ -5291,13 +5291,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             if score > alpha {
                 tt_best_move = Some(m);
                 alpha = score;
-
-                // The siblings after a new best move only have to prove themselves worse,
-                // so they are searched shallower (Stockfish).
-                if score < beta && depth > 3 && depth < 12 && !is_decisive(score) {
-                    depth -= 2;
-                    new_depth = depth.saturating_sub(1);
-                }
 
                 // Update PV using triangular indexing
                 // ply stores PV at pv_table[ply * MAX_PLY..], child at pv_table[(ply+1) * MAX_PLY..]
