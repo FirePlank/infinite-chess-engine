@@ -1,11 +1,11 @@
 {
-  "name": "358_lmr_corr_term_clean",
-  "old": "a6cee02",
-  "games": 2000,
+  "name": "368b_exact_pv_best_credit",
+  "old": "9ba77c8",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
+  "elo0": 0,
+  "elo1": 5,
   "adjudication": 1000
 }
