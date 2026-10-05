@@ -1881,6 +1881,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     for (i, &(x, y, piece)) in piece_list.iter().enumerate() {
         let pt = piece.piece_type();
         let (cong_ortho, cong_diag) = slider_cong[i];
+        let piece_val = get_piece_value_base(pt);
         let mut piece_score = match pt {
             PieceType::Rook => evaluate_rook(
                 game,
@@ -1937,7 +1938,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                         x,
                         y,
                         piece.color(),
-                        get_piece_value_base(pt),
+                        piece_val,
                         phase,
                     )
             }
@@ -1960,7 +1961,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                         x,
                         y,
                         piece.color(),
-                        get_piece_value_base(pt),
+                        piece_val,
                         phase,
                     )
             }
@@ -1996,7 +1997,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                         x,
                         y,
                         piece.color(),
-                        get_piece_value_base(pt),
+                        piece_val,
                         phase,
                     )
             }
@@ -2055,17 +2056,16 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     // Guarding material is a cheap piece's job; a flat defend credit
                     // rooted hawks to their dense home cluster (-114 Elo in CoaIP),
                     // the same inverse-value frame as king_defender_bonus_for.
-                    let v = get_piece_value_base(pt);
                     let r = crate::evaluation::params::king_defender_ref_value();
                     crate::evaluation::piece_reach::evaluate_leap_threats(
                         game,
                         x,
                         y,
                         piece.color(),
-                        v,
+                        piece_val,
                         phase,
                         offsets,
-                        4 * r / v.max(r),
+                        4 * r / piece_val.max(r),
                     )
                 }
             }
@@ -2097,17 +2097,16 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // branch, not a slider, and was not in the leaper arm, so a guard
             // attacking a rook scored nothing.
             PieceType::Guard => {
-                let v = get_piece_value_base(pt);
                 let r = crate::evaluation::params::king_defender_ref_value();
                 crate::evaluation::piece_reach::evaluate_leap_threats(
                     game,
                     x,
                     y,
                     piece.color(),
-                    v,
+                    piece_val,
                     phase,
                     &crate::attacks::KING_OFFSETS,
-                    4 * r / v.max(r),
+                    4 * r / piece_val.max(r),
                 )
                     + evaluate_leaper_positioning(
                         x,
@@ -2140,7 +2139,6 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             }
             _ => 0,
         };
-        let piece_val = get_piece_value_base(pt);
 
         if let Some(center) = &cloud_center {
             let dx = (2 * x - center.x).abs() / 2;
@@ -2240,7 +2238,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                 } else {
                     metrics.leaper_geometry_ctx
                 };
-                piece_score += get_piece_value_base(pt) * ctx_pct * ctx / 10000;
+                piece_score += piece_val * ctx_pct * ctx / 10000;
             }
         }
 
