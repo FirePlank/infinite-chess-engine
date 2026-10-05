@@ -625,6 +625,18 @@ pub fn probe_tt_with_shared(searcher: &Searcher, ctx: &ProbeContext) -> Option<T
     })
 }
 
+/// The best move a TT entry stores. Dispatch based on thread configuration.
+#[inline(always)]
+pub fn probe_move_with_shared(searcher: &Searcher, hash: u64) -> Option<Move> {
+    #[cfg(feature = "multithreading")]
+    if USE_SHARED_TT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(tt) = SHARED_TT.get()
+    {
+        return tt.probe_move(hash);
+    }
+    searcher.tt.probe_move(hash)
+}
+
 /// Penalize a TT entry. Dispatch based on thread configuration.
 #[inline(always)]
 pub fn penalize_tt_with_shared(searcher: &Searcher, hash: u64, penalty: u8) {
@@ -4488,6 +4500,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             played.is_some_and(|m| m.from == p.from && m.to == p.to && m.promotion == p.promotion)
         };
 
+    // The square of our piece that a failed null move showed under attack.
+    let mut threat_to: Option<crate::board::Coordinate> = None;
+
     // When in check, skip all pruning - we need to search all evasions
     if !in_check {
         // Pre-move pruning techniques
@@ -4562,8 +4577,18 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     was_null_move: true,
                     excluded_move: None,
                 });
+                // The eval stood well above beta, so a null move that still fails low
+                // faces a real threat: the reply the child stored names it.
+                let threat = (null_score < beta)
+                    .then(|| probe_move_with_shared(searcher, game.hash))
+                    .flatten();
 
                 game.unmake_null_move();
+                threat_to = threat
+                    .filter(|t| {
+                        game.board.get_piece(t.to.x, t.to.y).is_some_and(|p| p.color() == game.turn)
+                    })
+                    .map(|t| t.to);
                 game.en_passant = saved_ep;
                 game.plies_from_null = saved_plies_from_null;
                 game.repetition = saved_repetition;
@@ -5244,6 +5269,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // If TT moves have been unreliable (low tt_move_history), reduce less
                 // since the move ordering from TT may not be trustworthy.
                 if searcher.tt_move_history < lmr_tt_history_thresh() && reduction > 0 {
+                    reduction -= 1;
+                }
+
+                // A threatened piece's escapes are searched a ply deeper.
+                if threat_to == Some(m.from) {
                     reduction -= 1;
                 }
 
