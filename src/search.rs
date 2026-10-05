@@ -1068,6 +1068,8 @@ pub struct Searcher {
 
     // Best move from previous iteration
     pub best_move_root: Option<Move>,
+    /// A mate kept over a later depth's result, searched first at the next depth.
+    pub root_front: Option<Move>,
 
     // Previous iteration score for aspiration windows
     pub prev_score: i32,
@@ -1254,6 +1256,7 @@ impl Searcher {
             seed: 0,
             rng: Prng::new(0),
             completed_depth: 0,
+            root_front: None,
             last_eval_kind: None,
             last_eval_style: None,
             silent: false,
@@ -1388,6 +1391,7 @@ impl Searcher {
         self.prev_score = 0;
         self.prev_iteration_pv.clear();
         self.completed_depth = 0;
+        self.root_front = None;
         self.best_move_root = None;
 
         // Reset killers - they are position-dependent and should be fresh for a new search
@@ -2441,7 +2445,15 @@ fn search_with_searcher(
         // Only take the score when the iteration finished: an interrupted search can
         // return -INFINITY or a raw aspiration bound, so a stop keeps the previous
         // completed depth's score instead.
-        if let Some(pv_move) = searcher.pv_table[0] {
+        // Stockfish's forgottenMate and abortedLossSearch: a mate an earlier depth proved
+        // survives a depth that is interrupted or comes back longer or not mating, and an
+        // interrupted depth's loss is not trusted; the kept move is searched first next.
+        let rollback = searcher.completed_depth > 0
+            && ((is_decisive(best_score)
+                && (searcher.hot.stopped || score.abs() < best_score.abs()))
+                || (searcher.hot.stopped && is_loss(score)));
+        searcher.root_front = if rollback { best_move } else { None };
+        if let Some(pv_move) = searcher.pv_table[0].filter(|_| !rollback) {
             // Always update the best_move to the latest PV move (even if stopped,
             // the move itself is valid from a previous iteration)
             best_move = Some(pv_move);
@@ -3515,11 +3527,23 @@ pub(crate) fn get_best_moves_multipv_impl(
                 deep_ref_scores.extend(root_scores.iter().map(|entry| (entry.0, entry.1)));
             }
 
+            // Stockfish's forgottenMate: a mate an earlier depth proved is kept over this
+            // depth's longer or non-mating result, and its move is searched first next.
+            let forgotten_mate = best_lines.first().is_some_and(|b| {
+                is_decisive(b.score)
+                    && root_scores.first().is_none_or(|r| r.1.abs() < b.score.abs())
+            });
+
             // Reorder legal_root_moves by this iteration's scores for better PVS efficiency
             // at the next depth - the previous best move will be searched first
             legal_root_moves.clear();
             for (mv, _, _) in &root_scores {
                 legal_root_moves.push(*mv);
+            }
+            if forgotten_mate && let Some(kept) = best_lines.first().map(|b| b.mv)
+                && let Some(i) = legal_root_moves.iter().position(|m| *m == kept)
+            {
+                legal_root_moves[..=i].rotate_right(1);
             }
 
             // Update best_lines with results from this depth. Triangular-table PVs
@@ -3527,12 +3551,17 @@ pub(crate) fn get_best_moves_multipv_impl(
             // walking TT moves toward the full search depth.
             // The best line is the PV the next iteration's PV nodes follow.
             searcher.prev_iteration_pv.clear();
-            if let Some((_, _, pv)) = root_scores.first() {
+            if forgotten_mate {
+                let kept = &best_lines[0].pv;
+                searcher.prev_iteration_pv.extend(kept.iter().take(MAX_PLY).copied());
+            } else if let Some((_, _, pv)) = root_scores.first() {
                 searcher.prev_iteration_pv.extend(pv.iter().take(MAX_PLY).copied());
             }
 
-            best_lines.clear();
-            for (mv, score, pv) in root_scores.iter().take(multi_pv) {
+            if !forgotten_mate {
+                best_lines.clear();
+            }
+            for (mv, score, pv) in root_scores.iter().take(multi_pv).filter(|_| !forgotten_mate) {
                 let mut pv = pv.clone();
                 searcher.extend_pv_with_tt(game, &mut pv, depth);
                 best_lines.push(PVLine {
@@ -3779,6 +3808,11 @@ fn negamax_root(
         },
     ) {
         tt_move = res.best_move;
+    }
+    // A mate kept over a later depth's result is searched first, as Stockfish moves it
+    // to the front of rootMoves.
+    if let Some(front) = searcher.root_front.filter(|f| moves.contains(f)) {
+        tt_move = Some(front);
     }
 
     // Reorders `moves` in place, TT move first then by score, so the next iteration
