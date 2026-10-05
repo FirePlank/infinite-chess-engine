@@ -4016,7 +4016,7 @@ fn update_quiet_best_stats(
     searcher.update_low_ply_history(ply, idx, bonus);
 
     // The quiets a cutoff beat are pushed down harder than it is pushed up.
-    let malus = bonus * 5 / 4;
+    let malus = bonus * 3 / 2;
 
     for quiet in quiets_searched {
         let qidx = hash_move_dest(quiet);
