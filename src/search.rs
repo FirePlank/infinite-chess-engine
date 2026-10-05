@@ -3007,7 +3007,9 @@ pub fn get_best_moves_multipv(
             let mut lines: Vec<PVLine> = Vec::with_capacity(1);
             if let Some((best_move, score)) = search_with_searcher(searcher, game, max_depth) {
                 let pv = searcher.extract_pv_only(game, max_depth);
-                let depth = max_depth.min(searcher.hot.seldepth.max(1));
+                // The last fully searched depth: seldepth is a different measure, and a
+                // time stop leaves it at the interrupted iteration's reset value.
+                let depth = searcher.completed_depth.clamp(1, max_depth.max(1));
                 lines.push(PVLine {
                     mv: best_move,
                     score,
