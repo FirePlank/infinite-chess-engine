@@ -5132,6 +5132,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             extension = 1;
         }
 
+        // On the PV, a well-rated recapture on the square just taken on is near-forced;
+        // extending it resolves the exchange before the horizon (Stockfish).
+        if extension == 0
+            && is_pv
+            && ply > 0
+            && searcher.capture_history_stack[ply - 1]
+            && searcher.move_history[ply - 1].is_some_and(|pm| pm.to == m.to)
+            && let Some(cap) = captured_type.filter(|c| !c.is_neutral_type())
+            && searcher.capture_history[p_type as usize][cap as usize] > 6300
+        {
+            extension = 1;
+        }
+
         // Past twice the root depth, extensions have already stacked up a long forced
         // line; stop growing it so one branch cannot eat the whole iteration.
         let root_depth = searcher.hot.root_depth;
