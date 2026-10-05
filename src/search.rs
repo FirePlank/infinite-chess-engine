@@ -5659,7 +5659,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let mover = searcher.moved_piece_history[ply - 1];
             let victim = searcher.captured_type_stack[ply - 1];
             if mover < 32 && victim < 32 {
-                let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                let bonus = 2 * (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 searcher.update_capture_history(
                     PieceType::from_u8(mover),
