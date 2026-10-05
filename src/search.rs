@@ -4522,7 +4522,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Null move pruning: give opponent an extra move, if still >= beta, prune
         // At every non-PV node with non-pawn material (avoid zugzwang)
         if !is_pv && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
-            let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
+            // The TT-refined eval: a stored bound far from beta settles the gate
+            // better than the static guess (Stockfish).
+            let nmp_margin = eval - (nmp_depth_mult() * depth as i32) + nmp_base();
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
                 let saved_plies_from_null = game.plies_from_null;
