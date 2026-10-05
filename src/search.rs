@@ -4015,6 +4015,9 @@ fn update_quiet_best_stats(
 
     searcher.update_low_ply_history(ply, idx, bonus);
 
+    // The quiets a cutoff beat are pushed down harder than it is pushed up.
+    let malus = bonus * 5 / 4;
+
     for quiet in quiets_searched {
         let qidx = hash_move_dest(quiet);
         if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
@@ -4024,18 +4027,18 @@ fn update_quiet_best_stats(
             quiet.piece.color(),
             quiet.piece.piece_type(),
             qidx,
-            -bonus,
+            -malus,
         );
         searcher.update_pawn_history(
             pawn_hash,
             quiet.piece.piece_type(),
             qidx,
-            -bonus * pawn_history_malus_scale(),
+            -malus * pawn_history_malus_scale(),
         );
         // Low-ply history is keyed by destination alone, so another piece's move
         // to the cutoff's square would cancel its bonus.
         if qidx != idx {
-            searcher.update_low_ply_history(ply, qidx, -bonus);
+            searcher.update_low_ply_history(ply, qidx, -malus);
         }
     }
 
@@ -4090,8 +4093,11 @@ fn update_quiet_best_stats(
                     let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
                         [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
 
-                    let raw_adj = bonus.min(history_bonus_cap());
-                    let adj = if is_best { raw_adj } else { -raw_adj };
+                    let adj = if is_best {
+                        bonus.min(history_bonus_cap())
+                    } else {
+                        -malus
+                    };
                     let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
                     // Use gravity-based update
