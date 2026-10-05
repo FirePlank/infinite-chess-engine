@@ -1,0 +1,9 @@
+{
+  "name": "deep1m_d",
+  "games": 900,
+  "nodes": 1000000,
+  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
+  "seed": 80,
+  "shards": 15,
+  "minutes": 330
+}
