@@ -4120,7 +4120,8 @@ fn update_quiet_best_stats(
     let already_killer0 = searcher.killers[ply][0].is_some_and(|k| {
         k.from == m.from && k.to == m.to && k.promotion == m.promotion
     });
-    if !already_killer0 && m.promotion.is_none() {
+    // An evasion is no killer for a sibling that is not in check.
+    if !already_killer0 && m.promotion.is_none() && !in_check {
         searcher.killers[ply][1] = searcher.killers[ply][0];
         searcher.killers[ply][0] = Some(*m);
     }
