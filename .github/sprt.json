@@ -1,7 +1,7 @@
 {
-  "name": "426_pv_tt_move_skips_qsearch",
-  "old": "4f1704e",
-  "games": 4000,
+  "name": "421_tm_no_soft_midsearch_cut_resume",
+  "old": "fb50682",
+  "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
