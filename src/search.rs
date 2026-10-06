@@ -5175,11 +5175,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     extension = 3;
                 }
 
-                // Depth++ after detecting singularity, unless the extension cap below
-                // will zero this node's extension anyway.
-                if !(searcher.hot.root_depth > 0 && ply >= 2 * searcher.hot.root_depth) {
-                    depth += 1;
-                }
+                // Depth++ after detecting singularity
+                depth += 1;
             } else if se_value >= beta && !is_decisive(se_value) {
                 // Multi-cut: alternatives also beat beta, prune the whole subtree
                 let penalty = (-400 - 100 * depth as i32).max(-4000);
