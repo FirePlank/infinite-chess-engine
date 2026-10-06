@@ -710,12 +710,12 @@ pub struct SearcherHot {
     pub tot_best_move_changes: f64,
     /// Best move changes in the current iteration
     pub best_move_changes: f64,
-    /// Nodes spent on the current best move (first root move) in the current iteration
-    pub best_move_nodes: u64,
-    /// Running average score smoothed across iterations
+    /// The previous search's averaged root score: the falling-eval reference.
     pub best_previous_average_score: i32,
-    /// The previous search's root score, which seeds the falling-eval reference.
+    /// The previous search's root score, which seeds `iter_values`.
     pub last_root_score: i32,
+    /// The previous search's root score averaged over its iterations.
+    pub last_average_score: i32,
     /// Root is deep enough and the score decisive enough that mate hunting is on:
     /// static shortcuts stop being trustworthy.
     /// Score of the root move searched first, re-read as the best once a root pass ends:
@@ -727,7 +727,7 @@ pub struct SearcherHot {
     pub iter_values: [i32; 4],
     /// Index into iter_values circular buffer
     pub iter_idx: usize,
-    /// Previous time reduction factor (for smoothing across iterations)
+    /// The previous search's final time reduction: a stable last move lends time.
     pub prev_time_reduction: f64,
     /// Depth at which best move was last changed
     pub last_best_move_depth: usize,
@@ -1088,6 +1088,8 @@ pub struct Searcher {
     pub best_move_root: Option<Move>,
     /// A mate kept over a later depth's result, searched first at the next depth.
     pub root_front: Option<Move>,
+    /// Nodes spent under each root move this search, over all iterations.
+    pub root_effort: Vec<(Move, u64)>,
 
     // Previous iteration score for aspiration windows
     pub prev_score: i32,
@@ -1225,9 +1227,9 @@ impl Searcher {
                 maximum_time_ms: 0,
                 tot_best_move_changes: 0.0,
                 best_move_changes: 0.0,
-                best_move_nodes: 0,
                 best_previous_average_score: 0,
                 last_root_score: 0,
+                last_average_score: 0,
                 root_score: -INFINITY,
                 seek_mate_min: i32::MAX,
                 iter_values: [0; 4],
@@ -1276,6 +1278,7 @@ impl Searcher {
             rng: Prng::new(0),
             completed_depth: 0,
             root_front: None,
+            root_effort: Vec::new(),
             last_eval_kind: None,
             last_eval_style: None,
             silent: false,
@@ -1396,12 +1399,10 @@ impl Searcher {
         // Reset time management variables
         self.hot.tot_best_move_changes = 0.0;
         self.hot.best_move_changes = 0.0;
-        self.hot.best_move_nodes = 0;
-        self.hot.best_previous_average_score = self.hot.last_root_score;
+        self.hot.best_previous_average_score = self.hot.last_average_score;
         self.hot.root_score = -INFINITY;
         self.hot.iter_values.fill(self.hot.last_root_score);
         self.hot.iter_idx = 0;
-        self.hot.prev_time_reduction = 1.0;
         self.hot.last_best_move_depth = 0;
         self.hot.total_time_ms = 0.0;
         self.hot.iter_start_ms = 0.0;
@@ -1411,6 +1412,7 @@ impl Searcher {
         self.prev_iteration_pv.clear();
         self.completed_depth = 0;
         self.root_front = None;
+        self.root_effort.clear();
         self.best_move_root = None;
 
         // Reset killers - they are position-dependent and should be fresh for a new search
@@ -1467,6 +1469,8 @@ impl Searcher {
     /// Clears TT and resets all history tables to neutral values.
     pub fn clear(&mut self) {
         self.hot.last_root_score = 0;
+        self.hot.last_average_score = 0;
+        self.hot.prev_time_reduction = 1.0;
         // Shared tables belong to the main thread: a helper clearing them would wipe
         // entries the others are already searching with.
         #[cfg(feature = "multithreading")]
@@ -2361,6 +2365,11 @@ fn search_with_searcher(
         1
     };
 
+    // Falling eval compares against the previous search, as Stockfish does; this
+    // search's own average becomes the next one's reference.
+    let mut average_score: Option<i32> = None;
+    let mut final_time_reduction = 1.0;
+
     // Iterative deepening with aspiration windows
     for base_depth in start_depth..=max_depth {
         // Odd helpers run one depth ahead, so the TT fills with entries at a spread
@@ -2485,12 +2494,8 @@ fn search_with_searcher(
             }
 
             let coords = (pv_move.from.x, pv_move.from.y, pv_move.to.x, pv_move.to.y);
-            if let Some(prev_coords) = prev_root_move_coords {
-                // Track best move changes for instability calculation
-                if prev_coords != coords {
-                    searcher.hot.best_move_changes += 1.0;
-                    searcher.hot.last_best_move_depth = depth;
-                }
+            if prev_root_move_coords != Some(coords) {
+                searcher.hot.last_best_move_depth = depth;
             }
             prev_root_move_coords = Some(coords);
         }
@@ -2519,8 +2524,11 @@ fn search_with_searcher(
             let elapsed = searcher.hot.timer.elapsed_ms() as f64;
 
             // Effort tracking: fraction of nodes spent on the best move
+            let best_move_nodes = best_move
+                .and_then(|b| searcher.root_effort.iter().find(|(r, _)| *r == b))
+                .map_or(0, |&(_, e)| e);
             let nodes_effort = if searcher.hot.nodes > 0 {
-                (searcher.hot.best_move_nodes as f64 * 100000.0) / (searcher.hot.nodes as f64)
+                (best_move_nodes as f64 * 100000.0) / (searcher.hot.nodes as f64)
             } else {
                 0.0
             };
@@ -2580,21 +2588,18 @@ fn search_with_searcher(
             searcher.hot.iter_values[searcher.hot.iter_idx] = best_score;
             searcher.hot.iter_idx = (searcher.hot.iter_idx + 1) & 3;
 
-            // Update running average score
-            if searcher.hot.best_previous_average_score == 0 {
-                searcher.hot.best_previous_average_score = best_score;
-            } else {
-                searcher.hot.best_previous_average_score =
-                    (best_score + searcher.hot.best_previous_average_score) / 2;
-            }
-
-            searcher.hot.prev_time_reduction = time_reduction;
+            average_score = Some(average_score.map_or(best_score, |a| (best_score + a) / 2));
+            final_time_reduction = time_reduction;
         }
     }
+    searcher.hot.prev_time_reduction = final_time_reduction;
 
     // An iteration that never finished has no score; -INFINITY would read as a loss.
     let best_score = if best_score == -INFINITY { 0 } else { best_score };
     searcher.hot.last_root_score = if is_decisive(best_score) { 0 } else { best_score };
+    let average_score = average_score.unwrap_or(best_score);
+    searcher.hot.last_average_score =
+        if is_decisive(average_score) { 0 } else { average_score };
     // A stop inside depth 1 may leave no searched root move; the first ordered legal
     // move still beats returning nothing.
     best_move.or_else(|| legal_moves.first().copied()).map(|m| (m, best_score))
@@ -3840,7 +3845,7 @@ fn negamax_root(
     let mut best_move: Option<Move> = None;
     let mut legal_moves = 0;
 
-    for (move_idx, m) in moves.iter().enumerate() {
+    for m in moves.iter() {
         // Skip excluded moves (for MultiPV subsequent passes)
         if !searcher.excluded_moves.is_empty() {
             let coords = (m.from.x, m.from.y, m.to.x, m.to.y);
@@ -3967,6 +3972,10 @@ fn negamax_root(
         if legal_moves == 1 {
             searcher.hot.root_score = score;
         }
+        // Every new best after the first move counts, aspiration re-searches included.
+        if legal_moves > 1 && score > alpha && searcher.excluded_moves.is_empty() {
+            searcher.hot.best_move_changes += 1.0;
+        }
 
         if score > best_score {
             best_score = score;
@@ -3988,11 +3997,12 @@ fn negamax_root(
             }
         }
 
-        // Accumulated across iterations so it is comparable to the cumulative node
-        // count it divides; a single iteration never reaches the effort threshold.
-        // Recorded before the cutoff so a move-0 fail-high still counts.
-        if move_idx == 0 {
-            searcher.hot.best_move_nodes += searcher.hot.nodes - nodes_before_move;
+        // Per move and across iterations, as Stockfish's effort, so the best move's
+        // share compares with the cumulative node count. Recorded before the cutoff.
+        let spent = searcher.hot.nodes - nodes_before_move;
+        match searcher.root_effort.iter_mut().find(|(r, _)| r == m) {
+            Some((_, e)) => *e += spent,
+            None => searcher.root_effort.push((*m, spent)),
         }
 
         if alpha >= beta {
