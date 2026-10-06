@@ -1,6 +1,6 @@
 {
-  "name": "452_all_node_negext",
-  "old": "8052d33",
+  "name": "457_futility_skips_quiets",
+  "old": "c1d91c4",
   "games": 4000,
   "shards": 40,
   "variants": "site",
