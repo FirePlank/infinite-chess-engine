@@ -5214,22 +5214,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // The child reads this for evaluation smoothing. Set for every move, not only
-        // on a beta cutoff, or it reflects a prior sibling's subtree instead. Stockfish's
-        // statScore mix (2 x main + the last two plies' continuation), quartered to keep
-        // the scale main history alone had.
-        searcher.stat_score_stack[ply] = {
-            let main =
-                searcher.history[hist_color(m.piece.color())][p_type as usize][hash_move_dest(&m)];
-            let (cf, ct) = (hash_coord_16(m.from.x, m.from.y), hash_coord_16(m.to.x, m.to.y));
-            let side = 3 * hist_color(m.piece.color());
-            let mut cont = 0;
-            for &(ci, pc, pi, pp, pt_h) in movegen.cont_history_indices.iter() {
-                if ci < 2 {
-                    cont += searcher.cont_history[ci + side][pc][pi][pp][pt_h][cf][ct] as i32;
-                }
-            }
-            (2 * main + cont) / 4
-        };
+        // on a beta cutoff, or it reflects a prior sibling's subtree instead.
+        searcher.stat_score_stack[ply] =
+            searcher.history[hist_color(m.piece.color())][p_type as usize][hash_move_dest(&m)];
 
         let score;
         if legal_moves == 1 {
