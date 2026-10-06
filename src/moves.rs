@@ -2892,6 +2892,23 @@ fn ray_steps(num: i64, dir: i64) -> Option<i64> {
     }
 }
 
+/// Marks a friendly cross-ray target as reached along `bit`'s alignment; true when
+/// an earlier direction already reached it that way, so it is skipped.
+#[inline]
+fn friend_already_visited(visited: &mut Vec<(Coordinate, u8)>, target: Coordinate, bit: u8) -> bool {
+    for (c, m) in visited.iter_mut() {
+        if *c == target {
+            if *m & bit != 0 {
+                return true;
+            }
+            *m |= bit;
+            return false;
+        }
+    }
+    visited.push((target, bit));
+    false
+}
+
 /// Find cross-ray attack targets for sliders - optimized for infinite chess.
 #[inline]
 fn find_cross_ray_targets_into(
@@ -2945,6 +2962,90 @@ fn find_cross_ray_targets_into(
         }
     }
 
+    let vert = our_attacks_ortho && dir_x != 0;
+    let horiz = our_attacks_ortho && dir_y != 0;
+    let diag1 = our_attacks_diag && ray_diff != 0;
+    let diag2 = our_attacks_diag && ray_sum != 0;
+    let families = vert as i64 + horiz as i64 + diag1 as i64 + diag2 as i64;
+
+    // A ray square sees only its two nearest pieces on each crossing line, so a short
+    // ray walks its squares instead of scanning every piece on the board.
+    if max_dist.saturating_mul(families) <= board.len() as i64 {
+        let is_enemy_of = |packed: u8| {
+            let p = Piece::from_packed(packed);
+            p.color() != our_color && !p.piece_type().is_uncapturable()
+        };
+        // Friends a prune dropped from this ray's later alignments, as the scan does.
+        let mut skipped: smallvec::SmallVec<[Coordinate; 8]> = smallvec::SmallVec::new();
+
+        for (on, bit) in [(vert, 1u8), (horiz, 2u8)] {
+            if !on {
+                continue;
+            }
+            let mut pruned: smallvec::SmallVec<[Coordinate; 8]> = smallvec::SmallVec::new();
+            for d in 1..=max_dist {
+                let sx = from.x + d * dir_x;
+                let sy = from.y + d * dir_y;
+                let (line, along) = if bit == 1 {
+                    (indices.cols.get(&sx), sy)
+                } else {
+                    (indices.rows.get(&sy), sx)
+                };
+                let Some(line) = line else { continue };
+                let (fwd, back) = line.neighbors(along);
+                for (c, packed) in [fwd, back].into_iter().flatten() {
+                    let is_enemy = is_enemy_of(packed);
+                    if !is_enemy && let Some(visited) = visited_targets.as_deref_mut() {
+                        let target = if bit == 1 {
+                            Coordinate::new(sx, c)
+                        } else {
+                            Coordinate::new(c, sy)
+                        };
+                        if skipped.contains(&target) {
+                            continue;
+                        }
+                        if friend_already_visited(visited, target, bit) {
+                            pruned.push(target);
+                            continue;
+                        }
+                    }
+                    let wiggle = if is_enemy { enemy_wiggle } else { friend_wiggle };
+                    add_dist(dist_counts, d, max_dist);
+                    for w in 1..=wiggle {
+                        add_dist(dist_counts, d + w, max_dist);
+                        add_dist(dist_counts, d - w, max_dist);
+                    }
+                }
+            }
+            skipped.extend(pruned);
+        }
+
+        if diag1 || diag2 {
+            for d in 1..=max_dist {
+                let sx = from.x + d * dir_x;
+                let sy = from.y + d * dir_y;
+                for (on, key, is_diff) in [(diag1, sx - sy, true), (diag2, sx + sy, false)] {
+                    if !on {
+                        continue;
+                    }
+                    let map = if is_diff { &indices.diag1 } else { &indices.diag2 };
+                    let Some(line) = map.get(&key) else { continue };
+                    let (fwd, back) = line.neighbors(sx);
+                    for (c, _) in [fwd, back].into_iter().flatten() {
+                        if !skipped.is_empty() {
+                            let target = Coordinate::new(c, if is_diff { c - key } else { key - c });
+                            if skipped.contains(&target) {
+                                continue;
+                            }
+                        }
+                        add_dist(dist_counts, d, max_dist);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     // Iterate all pieces on the board once - count pieces reachable from each distance
     for (px, py, p) in board.tiles.iter_all_pieces() {
         // Skip only the piece at our exact position (can't target ourselves)
@@ -2978,28 +3079,11 @@ fn find_cross_ray_targets_into(
                                 .and_then(|pieces| pieces.find_nearest(sy, py.cmp(&sy) as i64))
                                 .filter(|&(ny, _)| ny == py)
                         {
-                            // Check visited targets (Vertical alignment = 1)
-                            if !is_enemy && let Some(visited) = visited_targets.as_deref_mut() {
-                                let target_coord = Coordinate::new(px, py);
-                                let mut found = false;
-                                let mut pruned = false;
-                                for (c, m) in visited.iter_mut() {
-                                    if *c == target_coord {
-                                        if *m & 1 != 0 {
-                                            pruned = true;
-                                        } else {
-                                            *m |= 1;
-                                        }
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if pruned {
-                                    continue;
-                                }
-                                if !found {
-                                    visited.push((target_coord, 1));
-                                }
+                            if !is_enemy
+                                && let Some(visited) = visited_targets.as_deref_mut()
+                                && friend_already_visited(visited, Coordinate::new(px, py), 1)
+                            {
+                                continue;
                             }
 
                             // Count this piece at distance d and wiggle distances.
@@ -3031,28 +3115,11 @@ fn find_cross_ray_targets_into(
                                 .and_then(|pieces| pieces.find_nearest(sx, px.cmp(&sx) as i64))
                                 .filter(|&(nx, _)| nx == px)
                         {
-                            // Check visited targets (Horizontal alignment = 2)
-                            if !is_enemy && let Some(visited) = visited_targets.as_deref_mut() {
-                                let target_coord = Coordinate::new(px, py);
-                                let mut found = false;
-                                let mut pruned = false;
-                                for (c, m) in visited.iter_mut() {
-                                    if *c == target_coord {
-                                        if *m & 2 != 0 {
-                                            pruned = true;
-                                        } else {
-                                            *m |= 2;
-                                        }
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if pruned {
-                                    continue;
-                                }
-                                if !found {
-                                    visited.push((target_coord, 2));
-                                }
+                            if !is_enemy
+                                && let Some(visited) = visited_targets.as_deref_mut()
+                                && friend_already_visited(visited, Coordinate::new(px, py), 2)
+                            {
+                                continue;
                             }
 
                             add_dist(dist_counts, d, max_dist);
