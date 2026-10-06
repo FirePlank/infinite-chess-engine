@@ -5325,6 +5325,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
+                // Expected fail-low nodes reduce about a quarter more at shallow depth,
+                // fading with depth (Stockfish's allNode term, rounded).
+                if all_node && reduction > 0 {
+                    let d = depth as i32;
+                    reduction += (reduction * 276 + 128 * d + 134) / (256 * d + 268);
+                }
+
                 // Ensure reduction stays in valid range [0, depth-2]. The upper
                 // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
                 // and clamp panics when min > max.
