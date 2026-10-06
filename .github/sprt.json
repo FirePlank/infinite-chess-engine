@@ -1,7 +1,7 @@
 {
-  "name": "403_hlp_reads_cont_history_resume",
-  "old": "c8992d7",
-  "games": 2000,
+  "name": "405_no_killers_in_check",
+  "old": "7375494",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
