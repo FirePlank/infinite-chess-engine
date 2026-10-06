@@ -2389,12 +2389,12 @@ fn search_with_searcher(
             }
 
             // Proactive stop: don't start next depth if most budget spent
-            // For hard limits (timed games), we are more conservative (50%).
+            // For hard limits (timed games), we are more conservative (60%).
             // For soft limits (fixed time), we push much closer (90%) to use all time.
             let proactive_threshold = if searcher.hot.is_soft_limit {
                 0.90
             } else {
-                0.50
+                0.60
             };
             if searcher.hot.total_time_ms > 0.0
                 && elapsed > searcher.hot.total_time_ms * proactive_threshold
