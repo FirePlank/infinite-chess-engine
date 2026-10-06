@@ -4070,12 +4070,8 @@ fn update_quiet_best_stats(
 ) {
     // Credit the quiet that cut off, and penalize the quiets tried before it.
     let idx = hash_move_dest(m);
-    // Refuting a parent move that history rated well teaches more (Stockfish).
-    let parent_stat = if ply > 0 { searcher.stat_score_stack[ply - 1] } else { 0 };
-    let bonus = ((history_bonus_base() * depth as i32 - history_bonus_sub())
-        .min(history_bonus_cap())
-        + parent_stat / 28)
-        .max(0);
+    let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+        .min(history_bonus_cap());
 
     searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
     searcher.update_pawn_history(
