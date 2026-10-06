@@ -4070,25 +4070,21 @@ fn update_quiet_best_stats(
     ply: usize,
     depth: usize,
     in_check: bool,
-    move_count: usize,
 ) {
     // Credit the quiet that cut off, and penalize the quiets tried before it.
     let idx = hash_move_dest(m);
     let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
         .min(history_bonus_cap());
-    // A refutation found late is where ordering was most wrong, so it earns more
-    // (Stockfish: bonus * (moves searched) / 256). The malus keeps the plain bonus.
-    let credit = bonus + bonus * move_count.min(64) as i32 / 256;
 
-    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, credit);
+    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
     searcher.update_pawn_history(
         pawn_hash,
         m.piece.piece_type(),
         idx,
-        credit * pawn_history_bonus_scale(),
+        bonus * pawn_history_bonus_scale(),
     );
 
-    searcher.update_low_ply_history(ply, idx, credit);
+    searcher.update_low_ply_history(ply, idx, bonus);
 
     // The quiets a cutoff beat are pushed down harder than it is pushed up.
     let malus = bonus * 5 / 4;
@@ -4169,7 +4165,7 @@ fn update_quiet_best_stats(
                         [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
 
                     let adj = if is_best {
-                        credit
+                        bonus.min(history_bonus_cap())
                     } else {
                         -malus
                     };
@@ -5536,7 +5532,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     ply,
                     depth,
                     in_check,
-                    if is_pv { 0 } else { legal_moves },
                 );
             } else if let Some(cap_type) = captured_type {
                 // Reward the capture that produced the cutoff.
@@ -5573,7 +5568,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             ply,
             depth,
             in_check,
-            0,
         );
     }
 
