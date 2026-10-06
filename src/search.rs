@@ -4723,8 +4723,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Internal iterative reductions (IIR): without a TT move, reduce depth to find one faster.
         // An all-node is expected to fail low anyway, so it takes the deeper cut.
-        // The previous iteration's PV keeps its depth, as in Stockfish.
-        if depth >= iir_min_depth() && tt_move.is_none() && !searcher.follow_pv[ply] {
+        if depth >= iir_min_depth() && tt_move.is_none() {
             depth -= if all_node && depth >= 4 { 3 } else { 2 };
         }
     }
