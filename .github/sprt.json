@@ -1,7 +1,7 @@
 {
-  "name": "412_low_ply_key_piece_dest_resume",
-  "old": "3cfaa13",
-  "games": 2000,
+  "name": "420_qs_recapture_see_floor",
+  "old": "fb50682",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
