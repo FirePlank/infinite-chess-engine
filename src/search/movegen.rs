@@ -774,7 +774,7 @@ impl StagedMoveGen {
             unsafe {
                 if let Some(row) = searcher.low_ply_history.get(self.ply) {
                     let val = *row.get_unchecked(move_hash);
-                    score += 12 * val / (1 + self.ply as i32);
+                    score += 8 * val / (1 + self.ply as i32);
                 }
             }
         }
