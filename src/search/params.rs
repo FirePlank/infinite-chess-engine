@@ -189,7 +189,7 @@ search_params! {
     sort_winning_capture: i32 = 1_000_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Winning capture ordering bonus");
     sort_killer1: i32 = 900_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Primary killer ordering bonus");
     sort_killer2: i32 = 800_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Secondary killer ordering bonus");
-    sort_countermove: i32 = 600_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Countermove ordering bonus");
+    sort_countermove: i32 = 16_384 => (0, 4_000_000, 4_096.0, 0.002, "Countermove ordering bonus: on the history scale, like a check");
     history_bonus_base: i32 = 300 => (0, 1024, 16.0, 0.002, "History bonus base");
     history_bonus_sub: i32 = 250 => (0, 1024, 16.0, 0.002, "History bonus subtraction");
     history_bonus_cap: i32 = 1536 => (64, 8192, 64.0, 0.002, "History bonus cap");
