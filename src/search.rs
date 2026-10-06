@@ -5957,14 +5957,15 @@ fn quiescence(
                 best_value = (best_value + beta) / 2;
             }
 
+            // Eval only, as Stockfish: a window-dependent blend must not cut later probes.
             if !tt_hit {
                 store_tt_with_shared(
                     searcher,
                     &StoreContext {
                         hash,
                         depth: 0,
-                        flag: TTFlag::LowerBound,
-                        score: best_value,
+                        flag: TTFlag::None,
+                        score: 0,
                         static_eval: unadjusted_static_eval,
                         is_pv: false,
                         best_move: None,
