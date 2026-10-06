@@ -3842,8 +3842,6 @@ fn negamax_root(
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
     let mut legal_moves = 0;
-    // Root quiets in search order, for the credit a new best root quiet earns.
-    let mut root_quiets = MoveList::new();
 
     for (move_idx, m) in moves.iter().enumerate() {
         // Skip excluded moves (for MultiPV subsequent passes)
@@ -3866,9 +3864,6 @@ fn negamax_root(
                 .get_piece(m.to.x, m.to.y)
                 .is_some_and(|p| !p.piece_type().is_neutral_type());
         let root_piece = m.piece.piece_type();
-        if !root_is_capture && m.promotion.is_none() {
-            root_quiets.push(*m);
-        }
         // Read before the move: making it changes the pawn hash the history is keyed by.
         let root_hist = {
             let idx = hash_move_dest(m);
@@ -3993,19 +3988,6 @@ fn negamax_root(
 
             if score > alpha {
                 alpha = score;
-                // negamax never runs at ply 0, so the root's killer and low-ply slots
-                // were never written: a quiet that takes over as best earns its credit.
-                if legal_moves > 1 && !root_is_capture && m.promotion.is_none() {
-                    update_quiet_best_stats(
-                        searcher,
-                        game.pawn_hash,
-                        m,
-                        &root_quiets,
-                        0,
-                        depth,
-                        in_check,
-                    );
-                }
             }
         }
 
