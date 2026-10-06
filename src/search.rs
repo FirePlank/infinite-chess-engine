@@ -1812,7 +1812,6 @@ impl Searcher {
                     return true;
                 }
             }
-
         }
         self.hot.stopped
     }
