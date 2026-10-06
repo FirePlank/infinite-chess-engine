@@ -6165,23 +6165,18 @@ fn quiescence(
             continue;
         }
 
-        if !captures_royal_for_win && !tactical_check && !is_loss(best_value) {
+        if !captures_royal_for_win && !tactical_check && !is_loss(best_value) && !is_recapture {
             // A slightly losing capture can still be the point of a combination, so
             // the floor sits below zero rather than at it. Both tests are
             // thresholds, so one see_ge early-outs where a full swap would not.
             // Deep in qsearch an even trade only lengthens the chain: a melee of heavy
             // pieces trades down 16 plies wide. From there on a capture must win.
-            // A recapture is spared the delta part only, as in Stockfish.
             let floor = if qs_ply >= QS_EVEN_TRADE_PLY { 1 } else { -37 };
-            let need = if is_recapture {
-                -74
-            } else {
-                floor.max(
-                    alpha
-                        .saturating_sub(best_value)
-                        .saturating_sub(delta_margin),
-                )
-            };
+            let need = floor.max(
+                alpha
+                    .saturating_sub(best_value)
+                    .saturating_sub(delta_margin),
+            );
             if !see_ge(game, m, need) {
                 continue;
             }
