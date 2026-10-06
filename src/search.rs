@@ -5206,8 +5206,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
             if se_value < singular_beta {
                 // TT move is singular - calculate extension level
-                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5);
-                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10);
+                // A large eval correction marks an unreliable eval, where a singular
+                // result earns the deeper extension sooner (Stockfish's corrValAdj).
+                let corr_adj = ((corrected_eval - raw_eval).abs() / 8).min(depth as i32);
+                let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5) - corr_adj;
+                let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10) - corr_adj;
 
                 extension = 1;
                 if se_value < singular_beta - double_margin {
