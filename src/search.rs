@@ -5556,7 +5556,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // (symmetric magnitude with the cutoff bonus).
             let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                 .min(history_bonus_cap());
-            searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus * 5 / 4);
+            searcher.update_capture_history(m.piece.piece_type(), cap_type, -malus);
         }
     }
 
