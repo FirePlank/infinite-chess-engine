@@ -2361,22 +2361,14 @@ fn search_with_searcher(
         1
     };
 
-    // Past half the move budget the main thread re-searches the same depth instead of
-    // stopping, as Stockfish does: every fourth pass still goes one deeper.
-    let mut increase_depth = true;
-    let mut search_again_counter = 0;
-
     // Iterative deepening with aspiration windows
     for base_depth in start_depth..=max_depth {
-        if !increase_depth {
-            search_again_counter += 1;
-        }
         // Odd helpers run one depth ahead, so the TT fills with entries at a spread
         // of depths rather than all at the same one.
         let depth = if searcher.thread_id > 0 && searcher.thread_id % 2 == 1 {
             (base_depth + 1).min(max_depth)
         } else {
-            base_depth.saturating_sub(3 * (search_again_counter + 1) / 4).max(1)
+            base_depth
         };
 
         searcher.reset_for_iteration();
@@ -2396,10 +2388,16 @@ fn search_with_searcher(
                 break;
             }
 
-            // A fixed per-move time has no clock to save for: stop near its end.
-            if searcher.hot.is_soft_limit
-                && searcher.hot.total_time_ms > 0.0
-                && elapsed > searcher.hot.total_time_ms * 0.90
+            // Proactive stop: don't start next depth if most budget spent
+            // For hard limits (timed games), we are more conservative (50%).
+            // For soft limits (fixed time), we push much closer (90%) to use all time.
+            let proactive_threshold = if searcher.hot.is_soft_limit {
+                0.90
+            } else {
+                0.50
+            };
+            if searcher.hot.total_time_ms > 0.0
+                && elapsed > searcher.hot.total_time_ms * proactive_threshold
             {
                 break;
             }
@@ -2491,7 +2489,7 @@ fn search_with_searcher(
                 // Track best move changes for instability calculation
                 if prev_coords != coords {
                     searcher.hot.best_move_changes += 1.0;
-                    searcher.hot.last_best_move_depth = base_depth;
+                    searcher.hot.last_best_move_depth = depth;
                 }
             }
             prev_root_move_coords = Some(coords);
@@ -2546,8 +2544,7 @@ fn search_with_searcher(
             // timeReduction: spend less time when best move is stable
             let k = 0.51;
             let center = (searcher.hot.last_best_move_depth as f64) + 12.15;
-            let time_reduction =
-                0.66 + 0.85 / (0.98 + (-k * (base_depth as f64 - center)).exp());
+            let time_reduction = 0.66 + 0.85 / (0.98 + (-k * (depth as f64 - center)).exp());
 
             let reduction = (1.43 + searcher.hot.prev_time_reduction) / (2.28 * time_reduction);
 
@@ -2578,7 +2575,6 @@ fn search_with_searcher(
                 searcher.hot.stopped = true;
                 break;
             }
-            increase_depth = searcher.hot.is_soft_limit || elapsed <= total_time * 0.50;
 
             // Update iteration tracking AFTER the time check
             searcher.hot.iter_values[searcher.hot.iter_idx] = best_score;
