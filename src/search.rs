@@ -5182,19 +5182,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.moved_piece_history[ply] = piece_history_backup;
                 searcher.in_check_history[ply] = in_check_backup;
                 searcher.capture_history_stack[ply] = capture_backup;
-                // The cut is a lower bound past the eval: evidence the correction is
-                // low, worth a half-depth update (Stockfish).
-                if se_value > corrected_eval {
-                    searcher.update_correction_history(
-                        game,
-                        depth / 2,
-                        raw_eval,
-                        se_value,
-                        true,
-                        in_check,
-                        prev_move_idx,
-                    );
-                }
                 return se_value;
             } else if tt_value.is_some_and(|v| v >= beta) {
                 // Negative extension: TT move is assumed to fail high but wasn't singular
