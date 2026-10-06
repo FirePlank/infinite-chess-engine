@@ -5598,10 +5598,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     in_check,
                 );
             } else if let Some(cap_type) = captured_type {
-                // Reward the capture that produced the cutoff.
+                // Reward the capture that produced the cutoff, half again a quiet's
+                // bonus as in Stockfish, so it outweighs the 5/4 malus of a failed one.
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
-                searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
+                searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus * 3 / 2);
             }
             break;
         } else if let Some(cap_type) = captured_type {
