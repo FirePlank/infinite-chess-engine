@@ -1817,6 +1817,12 @@ fn evaluate_mating_net(
     bonus
 }
 
+// Essential-piece lag: per move a slow essential piece is from the net, and the
+// damping that shrinks the rest of the shaping while it is away.
+const ESSENTIAL_LAG_STEP: i32 = 60;
+const ESSENTIAL_LAG_CAP: i64 = 32;
+const ESSENTIAL_DAMP: i32 = 16;
+
 /// Main logic for driving the enemy king to mate.
 #[inline(always)]
 fn evaluate_mop_up_core(
@@ -1919,7 +1925,7 @@ fn evaluate_mop_up_core(
         }
     }
 
-    evaluate_mating_net(
+    let net = evaluate_mating_net(
         game,
         kr,
         our_king,
@@ -1930,7 +1936,66 @@ fn evaluate_mop_up_core(
         winning_color,
         bounded,
         bareish,
-    )
+    );
+    if bounded {
+        return net;
+    }
+    let lag = essential_lag(game, enemy_king, winning_color);
+    if lag == 0 {
+        return net;
+    }
+    // Without its slow essentials the rest of the force cannot mate, so its
+    // confinement is worth little until they arrive and must not steer the king.
+    net * ESSENTIAL_DAMP / (ESSENTIAL_DAMP + 2 * lag) - lag * ESSENTIAL_LAG_STEP
+}
+
+/// Moves the winner needs to bring a force that can mate into the net around the
+/// enemy king: the cheapest sub-force the insufficiency tree accepts, priced by
+/// how far its slow pieces are. Sliders join from anywhere and cost nothing.
+fn essential_lag(game: &GameState, enemy_king: &Coordinate, winning_color: PlayerColor) -> i32 {
+    use super::insufficient_material::{cheapest_mating_force, material_kind};
+    let is_white = winning_color == PlayerColor::White;
+    let rules = &game.game_rules;
+    // Per kind, the join cost of each piece; the cheapest are used first.
+    let mut costs: [smallvec::SmallVec<[i64; 4]>; 13] = Default::default();
+    let mut any_slow = false;
+    for (x, y, piece) in game.board.iter_pieces_by_color(is_white) {
+        let pt = piece.piece_type();
+        let Some(kind) = material_kind(pt, x, y, winning_color, rules) else {
+            continue;
+        };
+        let (dx, dy) = ((enemy_king.x - x).abs(), (enemy_king.y - y).abs());
+        let lag = match pt {
+            // A pawn only walks forward: a king ahead is met by the pawn's own
+            // march, one beside or behind it has to be herded back in front.
+            PieceType::Pawn if kind == 9 => {
+                let ahead = (enemy_king.y - y) * if is_white { 1 } else { -1 };
+                let side = (dx - 1).max(0);
+                if ahead >= 1 {
+                    side + (ahead - 2).max(0)
+                } else {
+                    side + 2 * (1 - ahead)
+                }
+            }
+            // Leapers stop one step outside the king's reach, where they can join
+            // the net without hanging to him.
+            PieceType::Guard => (dx.max(dy) - 2).max(0),
+            PieceType::Knight => ((dx.max(dy) - 3).max(0) + 1) / 2,
+            _ => 0,
+        };
+        any_slow |= lag > 0;
+        costs[kind as usize].push(lag);
+    }
+    if !any_slow {
+        return 0;
+    }
+    for c in costs.iter_mut() {
+        c.sort_unstable();
+    }
+    let lag = cheapest_mating_force(game, is_white, |kind, n| {
+        costs[kind as usize].iter().take(n as usize).sum()
+    });
+    lag.unwrap_or(0).min(ESSENTIAL_LAG_CAP) as i32
 }
 
 #[cfg(test)]
@@ -2138,6 +2203,56 @@ mod tests {
             "approach gradient must survive a defender minor: close={} far={}",
             close_score,
             far_score
+        );
+    }
+
+    #[test]
+    fn essential_slow_pieces_are_found() {
+        let lag = |icn: &str| {
+            let g = create_test_game_from_icn(icn);
+            let k = g.black_royals[0];
+            essential_lag(&g, &k, PlayerColor::White)
+        };
+        // Without promotion K+Q cannot mate: the pawn 9 ranks below must come in.
+        assert_eq!(lag("b 0/100 1 k2,18|P2,9|K2,21|Q0,23"), 7);
+        // K+Q+N: the knight must walk in, two squares a move.
+        assert_eq!(lag("w 0/100 1 K0,0|Q3,3|N5,5|k20,20"), 6);
+        // Q+N+N: either knight will do, so the nearer one is priced.
+        assert_eq!(lag("w 0/100 1 K0,0|Q3,3|N5,5|N17,17|k20,20"), 0);
+        // Kingless 2R cannot mate: the knight (cheaper than the pawn) must join.
+        assert_eq!(lag("w 0/100 1 R0,0|R3,3|N5,5|P1,1|k20,20"), 6);
+        // With a king the two rooks mate alone, so nothing slow is needed.
+        assert_eq!(lag("w 0/100 1 K9,0|R0,0|R3,3|N5,5|P1,1|k20,20"), 0);
+        // Two kings: the tree does not count the second royal, so it says nothing.
+        assert_eq!(lag("w 0/100 1 K0,0|K3,3|R5,5|N9,9|k20,20"), 0);
+    }
+
+    #[test]
+    fn lone_king_runs_from_an_essential_pawn() {
+        // K+Q+P, pawn without promotion: every king step away from the pawn must
+        // score better for the defender than every step toward it.
+        let score = |x: i64, y: i64| {
+            let g = create_test_game_from_icn(&format!("w 0/100 1 k{x},{y}|P2,9|K2,21|Q0,23"));
+            evaluate_lone_king_endgame(
+                &g,
+                Some(&Coordinate::new(2, 21)),
+                &Coordinate::new(x, y),
+                PlayerColor::White,
+            )
+        };
+        let worst_away = [(1, 19), (3, 19), (1, 18), (3, 18)]
+            .iter()
+            .map(|&(x, y)| score(x, y))
+            .max()
+            .unwrap();
+        let best_toward = [(1, 17), (2, 17), (3, 17)]
+            .iter()
+            .map(|&(x, y)| score(x, y))
+            .min()
+            .unwrap();
+        assert!(
+            worst_away < best_toward,
+            "away {worst_away} toward {best_toward}"
         );
     }
 

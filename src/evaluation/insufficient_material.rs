@@ -77,7 +77,7 @@ fn can_pawn_promote(y: i64, color: PlayerColor, game_rules: &crate::game::GameRu
 
 // Material counts for one color.
 // u8 is sufficient: the caller bails out at >= 6 total pieces, so no count exceeds 5.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Mat {
     kings: u8,
     queens: u8,
@@ -117,6 +117,114 @@ impl Mat {
             + self.huygens
             + self.others
     }
+}
+
+/// The `Mat` slot a piece counts in, as a bit index for [`essential_kinds`]: a
+/// pawn that can still promote counts as the piece it would become.
+pub(crate) fn material_kind(
+    pt: PieceType,
+    x: i64,
+    y: i64,
+    color: PlayerColor,
+    rules: &crate::game::GameRules,
+) -> Option<u8> {
+    let pt = if pt == PieceType::Pawn && can_pawn_promote(y, color, rules) {
+        get_best_promotion_piece(rules).unwrap_or(PieceType::Queen)
+    } else {
+        pt
+    };
+    Some(match pt {
+        PieceType::Queen => 0,
+        PieceType::Rook => 1,
+        PieceType::Knight => 2,
+        PieceType::Bishop if (x + y) % 2 == 0 => 3,
+        PieceType::Bishop => 4,
+        PieceType::Chancellor => 5,
+        PieceType::Archbishop => 6,
+        PieceType::Hawk => 7,
+        PieceType::Guard => 8,
+        PieceType::Pawn => 9,
+        PieceType::Amazon => 10,
+        PieceType::Knightrider => 11,
+        PieceType::Huygen => 12,
+        _ => return None,
+    })
+}
+
+impl Mat {
+    fn slot(&mut self, kind: u8) -> &mut u8 {
+        match kind {
+            0 => &mut self.queens,
+            1 => &mut self.rooks,
+            2 => &mut self.knights,
+            3 => &mut self.bishops_lb,
+            4 => &mut self.bishops_db,
+            5 => &mut self.chancellors,
+            6 => &mut self.archbishops,
+            7 => &mut self.hawks,
+            8 => &mut self.guards,
+            9 => &mut self.pawns,
+            10 => &mut self.amazons,
+            11 => &mut self.knightriders,
+            _ => &mut self.huygens,
+        }
+    }
+}
+
+/// The cheapest sub-force of `white`'s army that could mate a bare king on an
+/// unbounded board, priced by `cost(kind, n)` for using `n` pieces of a
+/// [`material_kind`]. `None` when the decision tree cannot speak for the army.
+pub(crate) fn cheapest_mating_force(
+    game: &crate::game::GameState,
+    white: bool,
+    cost: impl Fn(u8, u8) -> i64,
+) -> Option<i64> {
+    const KINDS: u8 = 13;
+    let (w, b) = count_both(&game.board, &game.game_rules);
+    let full = if white { w } else { b };
+    // The tree reads small armies only and does not count extra royals.
+    if full.kings + full.royal_centaurs > 1 || full.others > 0 {
+        return None;
+    }
+    let mut have = [0u8; KINDS as usize];
+    let mut base = Mat {
+        kings: full.kings,
+        royal_centaurs: full.royal_centaurs,
+        ..Mat::default()
+    };
+    let mut probe = full.clone();
+    for kind in 0..KINDS {
+        have[kind as usize] = *probe.slot(kind);
+    }
+    let mut best: Option<i64> = None;
+    // Depth-first over per-kind counts, at most four non-royals per sub-force.
+    fn walk(
+        kind: u8,
+        left: u8,
+        have: &[u8; 13],
+        sub: &mut Mat,
+        spent: i64,
+        cost: &dyn Fn(u8, u8) -> i64,
+        best: &mut Option<i64>,
+    ) {
+        if best.is_some_and(|b| spent >= b) {
+            return;
+        }
+        if kind == 13 {
+            if sub.non_royal() > 0 && !is_insufficient(sub) {
+                *best = Some(spent);
+            }
+            return;
+        }
+        for n in 0..=have[kind as usize].min(left) {
+            *sub.slot(kind) = n;
+            let extra = if n == 0 { 0 } else { cost(kind, n) };
+            walk(kind + 1, left - n, have, sub, spent + extra, cost, best);
+        }
+        *sub.slot(kind) = 0;
+    }
+    walk(0, 4, &have, &mut base, 0, &cost, &mut best);
+    best
 }
 
 /// Helper: checks if all "exotic" pieces are zero.
@@ -183,6 +291,18 @@ fn is_insufficient(m: &Mat) -> bool {
         && m.knights == 0
         && m.pawns == 0
         && no_exotic_pieces(m)
+    {
+        return true;
+    }
+
+    // Without a king, two of queen/rook/bishop/knight cannot mate an unbounded board,
+    // not even as a helpmate; only two queens can.
+    if m.kings == 0
+        && m.royal_centaurs == 0
+        && m.pawns == 0
+        && no_exotic_pieces(m)
+        && m.queens < 2
+        && m.queens + m.rooks + m.knights + m.bishops_lb + m.bishops_db == 2
     {
         return true;
     }
@@ -1292,6 +1412,48 @@ mod tests {
             evaluate_insufficient_material(&game),
             "K+Q vs K insufficient on infinite board"
         );
+    }
+
+    #[test]
+    fn test_kingless_pairs_are_insufficient() {
+        let army = |pieces: &[(i64, i64, PieceType)], king: bool| {
+            let mut all: Vec<_> = pieces
+                .iter()
+                .map(|&(x, y, pt)| (x, y, pt, PlayerColor::White))
+                .collect();
+            if king {
+                all.push((5, 5, PieceType::King, PlayerColor::White));
+            }
+            all.push((10, 10, PieceType::King, PlayerColor::Black));
+            create_test_game_with_pieces(&all)
+        };
+        for second in [PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
+            let pair = [(0, 0, PieceType::Queen), (3, 1, second)];
+            let bare = army(&pair, false);
+            assert!(evaluate_insufficient_material(&bare), "Q+{second:?}");
+            assert!(
+                evaluate_insufficient_material_game_handler(&bare),
+                "Q+{second:?}"
+            );
+            // With its king the same pair mates.
+            assert!(
+                !evaluate_insufficient_material(&army(&pair, true)),
+                "K+Q+{second:?}"
+            );
+        }
+        assert!(evaluate_insufficient_material(&army(
+            &[(0, 0, PieceType::Rook), (3, 1, PieceType::Rook)],
+            false
+        )));
+        // Two queens, or an amazon with any partner, mate without a king.
+        assert!(!evaluate_insufficient_material(&army(
+            &[(0, 0, PieceType::Queen), (3, 1, PieceType::Queen)],
+            false
+        )));
+        assert!(!evaluate_insufficient_material(&army(
+            &[(0, 0, PieceType::Amazon), (3, 1, PieceType::Rook)],
+            false
+        )));
     }
 
     #[test]

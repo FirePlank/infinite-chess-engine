@@ -51,33 +51,36 @@ fn compute_mop_up_term(game: &GameState) -> i32 {
     }
 }
 
-/// A pawnless leader whose force could never mate a bare king can't win no matter
-/// the material lead; the insufficient-material rules fire only once the board is
-/// nearly empty, so without this the eval claims full material up to the draw.
-fn apply_pawnless_scale(game: &GameState, eval: i32) -> i32 {
-    if eval == 0 {
-        return eval;
-    }
-    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
-        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
-    {
-        return eval;
-    }
-    if game.white_royals.len() != 1 || game.black_royals.len() != 1 {
-        return eval;
-    }
-    let leader_white = (eval > 0) == (game.turn == PlayerColor::White);
-    let (pawns, pieces) = if leader_white {
-        (game.white_pawn_count, game.white_piece_count)
-    } else {
-        (game.black_pawn_count, game.black_piece_count)
+/// A side that has to checkmate but whose army never could is never ahead: its score
+/// is capped at zero, and the search still finds any mate the opponent walks into.
+/// A side that wins another way (e.g. capturing every piece) is never capped.
+fn apply_cannot_mate_cap(game: &GameState, eval: i32) -> i32 {
+    // The tree counts neither a second royal of ours nor a second enemy one, and
+    // several enemy royals open mates it does not know (one check on two kings).
+    let cannot_mate = |white: bool| {
+        let (win_condition, royals, enemy_royals) = if white {
+            (
+                game.game_rules.white_win_condition,
+                game.white_royals.len(),
+                game.black_royals.len(),
+            )
+        } else {
+            (
+                game.game_rules.black_win_condition,
+                game.black_royals.len(),
+                game.white_royals.len(),
+            )
+        };
+        win_condition == crate::game::WinCondition::Checkmate
+            && royals <= 1
+            && enemy_royals <= 1
+            && insufficient_material::side_cannot_mate(game, white)
     };
-    // King plus at most four pieces: bigger forces always have mating material.
-    if pawns > 0 || pieces > 5 {
-        return eval;
-    }
-    if insufficient_material::side_cannot_mate(game, leader_white) {
-        eval / 8
+    // `eval` is from the side to move's view.
+    let mover_white = game.turn == PlayerColor::White;
+    let leader_white = if eval > 0 { mover_white } else { !mover_white };
+    if eval != 0 && cannot_mate(leader_white) {
+        0
     } else {
         eval
     }
@@ -231,7 +234,7 @@ pub fn evaluate(game: &GameState) -> i32 {
 
     apply_rule50_damping(
         game,
-        apply_pawnless_scale(game, apply_bounded_drawish_scale(game, raw_eval + mop_up)),
+        apply_cannot_mate_cap(game, apply_bounded_drawish_scale(game, raw_eval + mop_up)),
         mop_up != 0,
     )
 }
@@ -283,6 +286,23 @@ mod tests {
             unscaled.abs() > scaled.abs(),
             "capture-all must keep the full score ({unscaled}) that checkmate rules damp ({scaled})"
         );
+    }
+
+    #[test]
+    fn test_side_that_cannot_mate_is_never_ahead() {
+        // No white royal, so Black wins by capturing everything; White still has to
+        // mate and Q+R alone never can, so White's material edge is capped at zero.
+        let game = create_test_game_from_icn("w 3 R-10,6|Q-4,3|k-2,4");
+        assert_eq!(evaluate_wrapper(&game), 0);
+        // The capture-all side is never capped.
+        let black_ahead = create_test_game_from_icn("w 3 R-10,6|k-2,4|q5,5|r6,6");
+        assert!(evaluate_wrapper(&black_ahead) < -500);
+        // Enemy pieces do not lift the cap: a helpmate is left to the search.
+        let knight = create_test_game_from_icn("w 3 Q-4,3|k-2,4|n9,9");
+        assert_eq!(evaluate_wrapper(&knight), 0);
+        // Two enemy royals: one check can hit both, so the cap stays off.
+        let two_kings = create_test_game_from_icn("w 3 R-10,6|Q-4,3|k-2,4|k9,9");
+        assert!(evaluate_wrapper(&two_kings) > 0);
     }
 
     #[test]
