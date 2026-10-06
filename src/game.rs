@@ -210,10 +210,6 @@ pub struct GameState {
     pub white_pawn_count: u16,
     #[serde(skip)]
     pub black_pawn_count: u16,
-    /// Every piece on the board at the start, pawns and royals included: the time
-    /// manager reads the share still standing as a forecast of the game's length.
-    #[serde(skip)]
-    pub starting_piece_total: u16,
     /// Starting piece counts (non-pawn) for game phase calculation
     /// Set once when game is initialized, never changes
     #[serde(skip)]
@@ -492,7 +488,6 @@ impl GameState {
             black_piece_count: 0,
             white_pawn_count: 0,
             black_pawn_count: 0,
-            starting_piece_total: 0,
             starting_white_pieces: 0,
             starting_black_pieces: 0,
             starting_white_royals: 0,
@@ -547,7 +542,6 @@ impl GameState {
             black_piece_count: 0,
             white_pawn_count: 0,
             black_pawn_count: 0,
-            starting_piece_total: 0,
             starting_white_pieces: 0,
             starting_black_pieces: 0,
             starting_white_royals: 0,
@@ -1109,11 +1103,7 @@ impl GameState {
     pub fn init_starting_piece_counts(&mut self) {
         let mut white: u16 = 0;
         let mut black: u16 = 0;
-        let mut total: u16 = 0;
         for (_, _, piece) in self.board.iter() {
-            if piece.color() != PlayerColor::Neutral {
-                total = total.saturating_add(1);
-            }
             if piece.piece_type() != PieceType::Pawn && piece.color() != PlayerColor::Neutral {
                 match piece.color() {
                     PlayerColor::White => white += 1,
@@ -1124,7 +1114,6 @@ impl GameState {
         }
         self.starting_white_pieces = white;
         self.starting_black_pieces = black;
-        self.starting_piece_total = total;
     }
 
     #[inline]

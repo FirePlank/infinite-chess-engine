@@ -672,27 +672,7 @@ impl Engine {
         } else {
             ((scaled_time as f64) * 11.2) as i64
         };
-        // Game ply estimation based on fullmove number
-        // In chess, typically ply = (fullmove_number - 1) * 2 + (is_black ? 1 : 0)
-        let ply = self
-            .game
-            .fullmove_number
-            .saturating_sub(1)
-            .saturating_mul(2) as f64
-            + if self.game.turn == PlayerColor::Black {
-                1.0
-            } else {
-                0.0
-            };
-
-        // A game that has traded down faster than usual for its ply ends sooner. Over 24k
-        // games the remaining length tracks (0.15 + share of pieces left) against the
-        // typical share 1/(1 + ply/200); ply alone predicts it about 6% worse.
-        let piece_share = (self.game.white_piece_count + self.game.black_piece_count) as f64
-            / self.game.starting_piece_total.max(1) as f64;
-        let length_factor =
-            ((0.15 + piece_share) / (0.15 + 1.0 / (1.0 + ply / 200.0))).clamp(0.6, 1.4);
-        let centi_mtg = ((centi_mtg as f64 * length_factor) as i64).max(100); // At least 1 move
+        let centi_mtg = centi_mtg.max(100); // At least 1 move expected
 
         // timeLeft: total time we can use considering increment and overhead
         // Formula: remaining + inc * (MTG - 1) - overhead * (2 + MTG)
@@ -711,6 +691,19 @@ impl Engine {
         // Optimum and maximum time constants
         let opt_constant = (0.0032116 + 0.000321123 * log_time_sec).min(0.00508017);
         let max_constant = (3.3977 + 3.0395 * log_time_sec).max(2.94761);
+
+        // Game ply estimation based on fullmove number
+        // In chess, typically ply = (fullmove_number - 1) * 2 + (is_black ? 1 : 0)
+        let ply = self
+            .game
+            .fullmove_number
+            .saturating_sub(1)
+            .saturating_mul(2) as f64
+            + if self.game.turn == PlayerColor::Black {
+                1.0
+            } else {
+                0.0
+            };
 
         // optScale: percentage of timeLeft to use for this move
         // Multiply by originalTimeAdjust to prevent overspending
