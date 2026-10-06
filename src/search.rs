@@ -316,7 +316,7 @@ pub const CORRHIST_WEIGHT_SCALE: i32 = 256; // Weight scaling for updates
 
 // Low Ply History constants:
 // Tracks which moves were successful at low plies (near root)
-pub const LOW_PLY_HISTORY_SIZE: usize = 6; // Only track first 6 plies
+pub const LOW_PLY_HISTORY_SIZE: usize = 4; // Only track first 4 plies
 pub const LOW_PLY_HISTORY_ENTRIES: usize = 4096; // Move hash entries per ply
 pub const LOW_PLY_HISTORY_MASK: usize = LOW_PLY_HISTORY_ENTRIES - 1;
 
