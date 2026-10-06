@@ -5042,6 +5042,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 if !in_check && adj_lmr_depth < 13 && !is_obstocean_breakout {
                     let no_best = if best_move.is_none() { 161 } else { 0 };
                     let futility_value = static_eval + 42 + no_best + 127 * adj_lmr_depth;
+                    // Hopeless even with two plies of history credit: the later quiets
+                    // are ordered worse and searched shallower, so stop generating them.
+                    if static_eval + 42 + no_best + 127 * (lmr_depth + 2) <= alpha {
+                        movegen.skip_quiet_moves();
+                    }
                     if futility_value <= alpha {
                         // Guard: don't overwrite mate scores with futility value
                         if best_score <= futility_value && !is_decisive(best_score) {

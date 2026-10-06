@@ -1,10 +1,10 @@
 {
-  "name": "426_pv_tt_move_skips_qsearch_ltc",
-  "old": "d6f7842",
-  "games": 3000,
+  "name": "457_futility_skips_quiets",
+  "old": "c1d91c4",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
-  "tc": "20+0.2",
+  "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000
