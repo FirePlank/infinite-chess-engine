@@ -6141,6 +6141,8 @@ fn quiescence(
 
     let mut legal_moves = 0;
     let delta_margin = delta_margin();
+    // The stand-pat, before any capture raises best_value; only meaningful out of check.
+    let stand_pat = best_value;
 
     let prev_sq = if ply > 0 {
         searcher
@@ -6271,6 +6273,21 @@ fn quiescence(
         }
 
         legal_moves += 1;
+
+        // A capture that clears beta even if the capturing piece is then lost cuts
+        // without a search (Ethereal's pessimistic bound). A check could do more.
+        if !tactical_check
+            && !is_decisive(stand_pat)
+            && let Some(victim) = captured.filter(|p| !p.piece_type().is_neutral_type())
+            && stand_pat + game.get_piece_value(victim.piece_type(), victim.color())
+                - game.get_piece_value(m.piece.piece_type(), m.piece.color())
+                > beta
+            && !game.is_in_check()
+        {
+            game.undo_move(m, undo);
+            searcher.move_buffers[ply] = Some(tactical_moves);
+            return beta;
+        }
 
         // Deeper qsearch nodes read the previous move and continuation-history offsets
         // from here, so without the full context they see an earlier sibling's values.

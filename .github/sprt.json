@@ -1,6 +1,6 @@
 {
-  "name": "457_futility_skips_quiets",
-  "old": "c1d91c4",
+  "name": "458_qs_pessimistic_cut",
+  "old": "8052d33",
   "games": 4000,
   "shards": 40,
   "variants": "site",
