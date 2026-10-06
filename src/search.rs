@@ -4139,6 +4139,10 @@ fn update_quiet_best_stats(
     let offsets = [1usize, 2, 4];
     const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
 
+    // Plies agreeing that a move is good scale its update up (Stockfish's
+    // consistency multipliers, indexed by the positive entries seen so far).
+    const CONSISTENCY: [i32; 4] = [94, 103, 110, 106];
+    let mut contexts = [None; 3];
     for (idx, &plies_ago) in offsets.iter().enumerate() {
         if in_check && plies_ago > 2 {
             break;
@@ -4148,33 +4152,40 @@ fn update_quiet_best_stats(
         {
             let prev_piece = searcher.moved_piece_history[ply - plies_ago] as usize;
             if prev_piece < 32 {
-                let prev_to_hash = hash_coord_16(prev_move.to.x, prev_move.to.y);
-                let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
-                let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
-
-                // Update all searched quiets (best with bonus, others with malus)
-                for quiet in quiets_searched {
-                    let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
-                    let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
-                    let is_best = quiet.from == m.from && quiet.to == m.to;
-
-                    let slot = idx + 3 * hist_color(quiet.piece.color());
-                    let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
-                        [prev_piece][prev_to_hash][q_from_hash][q_to_hash];
-
-                    let adj = if is_best {
-                        bonus.min(history_bonus_cap())
-                    } else {
-                        -malus
-                    };
-                    let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
-
-                    // Use gravity-based update
-                    let cur = *entry as i32;
-                    *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14))
-                        as i16;
-                }
+                contexts[idx] = Some((
+                    searcher.capture_history_stack[ply - plies_ago] as usize,
+                    searcher.in_check_history[ply - plies_ago] as usize,
+                    prev_piece,
+                    hash_coord_16(prev_move.to.x, prev_move.to.y),
+                ));
             }
+        }
+    }
+
+    // Update all searched quiets (best with bonus, others with malus)
+    for quiet in quiets_searched {
+        let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
+        let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
+        let is_best = quiet.from == m.from && quiet.to == m.to;
+        let adj = if is_best {
+            bonus.min(history_bonus_cap())
+        } else {
+            -malus
+        };
+        let mut positive = 0;
+        for (idx, ctx) in contexts.iter().enumerate() {
+            let Some((prev_cap, prev_ic, prev_piece, prev_to_hash)) = *ctx else {
+                continue;
+            };
+            let slot = idx + 3 * hist_color(quiet.piece.color());
+            let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic][prev_piece]
+                [prev_to_hash][q_from_hash][q_to_hash];
+            positive += (*entry > 0) as usize;
+            let weighted_adj = adj * CONT_WEIGHTS[idx] / 1024 * CONSISTENCY[positive] / 100;
+
+            // Use gravity-based update
+            let cur = *entry as i32;
+            *entry = (cur + weighted_adj - ((cur * weighted_adj.abs()) >> 14)) as i16;
         }
     }
 }
