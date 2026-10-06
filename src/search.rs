@@ -4732,9 +4732,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // If we have a good enough capture and a reduced search returns a value
     // much above beta, we can prune.
     let prob_cut_beta = beta + probcut_margin() - if improving { probcut_improving() } else { 0 };
-    // Guard: don't ProbCut when beta is a mate score
-    if !is_pv
-        && !in_check
+    // Guard: don't ProbCut when beta is a mate score. PV nodes ProbCut too (Stockfish).
+    if !in_check
         && depth >= probcut_min_depth()
         && !is_decisive(beta)
         && tt_value.is_none_or(|v| v >= prob_cut_beta)
