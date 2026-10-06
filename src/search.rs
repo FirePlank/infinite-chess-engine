@@ -5348,18 +5348,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             {
                 let idx = hash_move_dest(&m);
                 let ph_idx = (parent_pawn_hash & PAWN_HISTORY_MASK) as usize;
-                let mut value = searcher.history[hist_color(m.piece.color())][p_type as usize]
-                    [idx]
+                let value = searcher.history[hist_color(m.piece.color())][p_type as usize][idx]
                     + searcher.pawn_hist(ph_idx, p_type as usize, idx);
-                // A move that follows the last two plies well is no stranger, as in the
-                // quiet pruning and LMR stats.
-                let (cf, ct) = (hash_coord_16(m.from.x, m.from.y), hash_coord_16(m.to.x, m.to.y));
-                let side = 3 * hist_color(m.piece.color());
-                for &(ci, pc, pi, pp, pt_h) in movegen.cont_history_indices.iter() {
-                    if ci < 2 {
-                        value += searcher.cont_history[ci + side][pc][pi][pp][pt_h][cf][ct] as i32;
-                    }
-                }
 
                 if value < hlp_history_reduce() {
                     // Extra reduction based on poor history
