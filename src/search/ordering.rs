@@ -145,7 +145,7 @@ pub fn score_move(
             // Low-ply history bonus (same index as the writer and the staged picker).
             if ply < LOW_PLY_HISTORY_SIZE {
                 let move_hash = crate::search::low_ply_key(m);
-                score += 8 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
+                score += 12 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
             }
         }
     }
