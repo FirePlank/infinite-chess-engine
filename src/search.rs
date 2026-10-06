@@ -4837,8 +4837,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
     // We cache the TT probe result here to avoid re-probing
-    // In check too, as in Stockfish: an evasion is the likeliest single good move.
-    let se_conditions = if depth >= 6 && tt_move.is_some() && !searcher.hot.seek_mate()
+    let se_conditions = if depth >= 6 && !in_check && tt_move.is_some() && !searcher.hot.seek_mate()
     {
         if tt_hit_node
             && (tt_data_bound == TTFlag::LowerBound || tt_data_bound == TTFlag::Exact)
