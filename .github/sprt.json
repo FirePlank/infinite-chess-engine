@@ -1,11 +1,11 @@
 {
-  "name": "397g_seekmate_base3000",
-  "old": "ad94688",
-  "games": 2000,
-  "shards": 25,
+  "name": "402_late_cutoff_credit",
+  "old": "c8992d7",
+  "games": 4000,
+  "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 0
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 1000
 }
