@@ -6005,9 +6005,8 @@ fn quiescence(
 
         // Stand pat logic
         if best_value >= beta {
-            // Stockfish's blends, leaning toward beta: the stand-pat overstates.
             if !is_decisive(best_value) {
-                best_value = (441 * best_value + 583 * beta) / 1024;
+                best_value = (best_value + beta) / 2;
             }
 
             // Eval only, as Stockfish: a window-dependent blend must not cut later probes.
@@ -6317,7 +6316,7 @@ fn quiescence(
     searcher.move_buffers[ply] = Some(tactical_moves);
 
     if !is_decisive(best_value) && best_value > beta {
-        best_value = (462 * best_value + 562 * beta) / 1024;
+        best_value = (best_value + beta) / 2;
     }
 
     let tt_flag = if best_value >= beta {
