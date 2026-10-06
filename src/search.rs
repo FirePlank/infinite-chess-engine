@@ -4083,18 +4083,14 @@ fn update_quiet_best_stats(
 
     searcher.update_low_ply_history(ply, low_ply_key(m), bonus);
 
-    // The quiets a cutoff beat are pushed down harder than it is pushed up, the first
-    // tried hardest: ordering ranked them best, so they misled it most (Stockfish).
+    // The quiets a cutoff beat are pushed down harder than it is pushed up.
     let malus = bonus * 5 / 4;
 
-    let mut tried_malus = malus * 1159 / 1024;
     for quiet in quiets_searched {
         let qidx = hash_move_dest(quiet);
         if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
             continue;
         }
-        tried_malus = tried_malus * 921 / 1024;
-        let malus = tried_malus;
         searcher.update_history(
             quiet.piece.color(),
             quiet.piece.piece_type(),
@@ -4157,7 +4153,6 @@ fn update_quiet_best_stats(
                 let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                 // Update all searched quiets (best with bonus, others with malus)
-                let mut tried_malus = malus * 1159 / 1024;
                 for quiet in quiets_searched {
                     let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
                     let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
@@ -4170,8 +4165,7 @@ fn update_quiet_best_stats(
                     let adj = if is_best {
                         bonus.min(history_bonus_cap())
                     } else {
-                        tried_malus = tried_malus * 921 / 1024;
-                        -tried_malus
+                        -malus
                     };
                     let weighted_adj = (adj * CONT_WEIGHTS[idx]) / 1024;
 
