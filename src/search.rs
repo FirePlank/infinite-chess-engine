@@ -1173,6 +1173,9 @@ pub struct Searcher {
 
     /// Cutoffs per ply, raising LMR when the next ply fails high often.
     pub cutoff_cnt: Vec<u8>,
+    /// Null-move cutoffs among the siblings at each ply: once a few siblings cut,
+    /// the parent's move is likely bad everywhere, so null tries come easier.
+    pub nmp_fail_high: Vec<u8>,
 
     /// Dynamic move rule limit (e.g. 100 for 50-move rule)
     pub move_rule_limit: i32,
@@ -1315,6 +1318,7 @@ impl Searcher {
             reduction_stack: vec![0; MAX_PLY],
             move_count_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
+            nmp_fail_high: vec![0; MAX_PLY + 2],
             move_rule_limit: 100,             // Default, will be updated from GameState
             contempt: CONTEMPT,
             low_ply_history: unsafe {
@@ -3779,6 +3783,7 @@ fn enter_root_node(searcher: &mut Searcher, game: &GameState, depth: usize) -> b
     let d = depth.max(1) as i32;
     searcher.hot.seek_mate_min = 3000 + 105_770 / (d * d);
     searcher.cutoff_cnt[2] = 0;
+    searcher.nmp_fail_high[1] = 0;
     searcher.stat_score_stack[2] = 0;
     searcher.stat_score_stack[4] = 0;
     let in_check = game.is_in_check();
@@ -4243,6 +4248,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     if searcher.hot.nodes & SLIDER_CACHE_CLEAR_MASK == 0 {
         game.spatial_indices.slider_cache.borrow_mut().clear();
     }
+    searcher.nmp_fail_high[ply + 1] = 0;
     // Initialize cutoff count for grandchild ply
     if ply + 2 < MAX_PLY {
         searcher.cutoff_cnt[ply + 2] = 0;
@@ -4599,7 +4605,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Null move pruning: give opponent an extra move, if still >= beta, prune
         // At every non-PV node with non-pawn material (avoid zugzwang)
         if !is_pv && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
-            let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32) + nmp_base();
+            let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32)
+                + nmp_base()
+                + 50 * searcher.nmp_fail_high[ply] as i32;
             if nmp_margin >= beta && game.has_non_pawn_material(game.turn) {
                 let saved_ep = game.en_passant;
                 let saved_plies_from_null = game.plies_from_null;
@@ -4661,9 +4669,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                         });
 
                         if verify_score >= beta {
+                            let n = &mut searcher.nmp_fail_high[ply];
+                            *n = n.saturating_add(1);
                             return null_score;
                         }
                     } else {
+                        let n = &mut searcher.nmp_fail_high[ply];
+                        *n = n.saturating_add(1);
                         return null_score;
                     }
                 }

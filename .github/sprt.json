@@ -1,7 +1,7 @@
 {
-  "name": "421_tm_no_soft_midsearch_cut_resume",
-  "old": "fb50682",
-  "games": 2000,
+  "name": "425_nmp_prior_fail_high",
+  "old": "4f1704e",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
