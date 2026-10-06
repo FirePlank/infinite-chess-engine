@@ -1,7 +1,7 @@
 {
-  "name": "410_lmr_research_credit_cap_resume",
-  "old": "2203bb9",
-  "games": 2000,
+  "name": "411_cont_malus_skip_best_bucket",
+  "old": "3cfaa13",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",

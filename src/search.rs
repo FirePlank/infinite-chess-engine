@@ -4156,10 +4156,20 @@ fn update_quiet_best_stats(
                 let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
                 // Update all searched quiets (best with bonus, others with malus)
+                let (b_from_hash, b_to_hash) =
+                    (hash_coord_16(m.from.x, m.from.y), hash_coord_16(m.to.x, m.to.y));
                 for quiet in quiets_searched {
                     let q_from_hash = hash_coord_16(quiet.from.x, quiet.from.y);
                     let q_to_hash = hash_coord_16(quiet.to.x, quiet.to.y);
                     let is_best = quiet.from == m.from && quiet.to == m.to;
+                    // A quiet sharing the best move's bucket would cancel its credit, as
+                    // the main, pawn and low-ply updates already skip.
+                    if !is_best
+                        && quiet.piece.piece_type() == m.piece.piece_type()
+                        && (q_from_hash, q_to_hash) == (b_from_hash, b_to_hash)
+                    {
+                        continue;
+                    }
 
                     let slot = idx + 3 * hist_color(quiet.piece.color());
                     let entry = &mut searcher.cont_history[slot][prev_cap][prev_ic]
