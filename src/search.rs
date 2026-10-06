@@ -5455,7 +5455,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // so credit it in continuation history. The bonus is depth-proportional
                 // but scaled down, since a re-search is weaker evidence than a cutoff.
                 if reduction > 0 && !is_capture && !is_promotion {
-                    let lmr_bonus = 100 * depth as i32;
+                    // Capped like a cutoff's credit, which a re-search must not outweigh.
+                    let lmr_bonus = (100 * depth as i32).min(history_bonus_cap());
                     let offsets = [1usize, 2, 4];
                     const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
 
