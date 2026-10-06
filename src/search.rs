@@ -5548,23 +5548,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
-                // The quiets ordered above it were worse, as at a quiet cutoff.
-                let malus = bonus * 5 / 4;
-                for quiet in &quiets_searched {
-                    let qidx = hash_move_dest(quiet);
-                    searcher.update_history(
-                        quiet.piece.color(),
-                        quiet.piece.piece_type(),
-                        qidx,
-                        -malus,
-                    );
-                    searcher.update_pawn_history(
-                        game.pawn_hash,
-                        quiet.piece.piece_type(),
-                        qidx,
-                        -malus * pawn_history_malus_scale(),
-                    );
-                }
             }
             break;
         } else if let Some(cap_type) = captured_type {
