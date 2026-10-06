@@ -656,7 +656,9 @@ impl StagedMoveGen {
             let history_score =
                 searcher.history[crate::search::hist_color(m.piece.color())][pt_idx][hist_idx];
 
-            10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8) + (history_score / 8)
+            // No LVA term, as Stockfish: capture history keyed by mover and victim
+            // learns which attacker is safe.
+            10 * (victim_val + promo_gain) + (cap_hist / 8) + (history_score / 8)
         } else if game.is_en_passant(m) {
             // The victim sits beside m.to, not on it, so the branch above scores a
             // real pawn capture as 0 and sorts it below every other capture.
