@@ -6211,18 +6211,13 @@ fn quiescence(
             // Deep in qsearch an even trade only lengthens the chain: a melee of heavy
             // pieces trades down 16 plies wide. From there on a capture must win.
             let floor = if qs_ply >= QS_EVEN_TRADE_PLY { 1 } else { -37 };
-            let delta_need = alpha
-                .saturating_sub(best_value)
-                .saturating_sub(delta_margin);
-            if !see_ge(game, m, floor.max(delta_need)) {
-                // A checking capture keeps only the SEE floor, as Stockfish exempts
-                // checks from futility: the delta part would drop the checks pruning spares.
-                let check_spared = delta_need > floor
-                    && StagedMoveGen::move_gives_check_fast(game, m)
-                    && see_ge(game, m, floor);
-                if !check_spared {
-                    continue;
-                }
+            let need = floor.max(
+                alpha
+                    .saturating_sub(best_value)
+                    .saturating_sub(delta_margin),
+            );
+            if !see_ge(game, m, need) {
+                continue;
             }
         }
 
