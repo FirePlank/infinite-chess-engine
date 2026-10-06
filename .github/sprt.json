@@ -1,7 +1,7 @@
 {
-  "name": "428_nmp_improving",
-  "old": "4f1704e",
-  "games": 4000,
+  "name": "430_qs_standpat_eval_only_store_resume",
+  "old": "a3d9dc3",
+  "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
