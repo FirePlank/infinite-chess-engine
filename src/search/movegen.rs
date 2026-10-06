@@ -755,14 +755,13 @@ impl StagedMoveGen {
         let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
 
-        // Read at equal weight, as Stockfish: the per-ply weights are already
-        // applied when the entries are updated.
+        const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
             // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
             let slot = idx + 3 * crate::search::hist_color(m.piece.color());
             let val = searcher.cont_history[slot][prev_cap][prev_ic][prev_piece][prev_to_h]
                 [cur_from_hash][cur_to_hash] as i32;
-            score += val;
+            score += (val * CONT_WEIGHTS[idx]) / 1024;
         }
 
         let gives_check = Self::move_gives_check_fast(game, m);
