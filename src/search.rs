@@ -5240,9 +5240,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             } else if tt_value.is_some_and(|v| v >= beta) {
                 // Negative extension: TT move is assumed to fail high but wasn't singular
                 extension = -3;
-            } else if cut_node || tt_value.is_some_and(|v| v < beta) {
-                // A TT move not assumed to fail high is reduced on cut nodes, and on
-                // all-nodes whose stored score is a stale fail-low guess (Ethereal).
+            } else if cut_node {
+                // On cut nodes, if TT move isn't assumed to fail high, reduce it
                 extension = -1;
             }
         }
