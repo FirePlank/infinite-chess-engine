@@ -423,6 +423,13 @@ pub(crate) fn init_shared_tt() {
 /// Indexed by [depth][moves_searched].
 static LMR_TABLE: OnceLock<[[i32; 256]; MAX_PLY]> = OnceLock::new();
 
+/// Low-ply history key: destination and piece. The first plies revisit nearly the same
+/// positions, so the generalising aliasing deeper tables want only costs precision here.
+#[inline(always)]
+pub(crate) fn low_ply_key(m: &Move) -> usize {
+    (hash_move_dest(m) | ((m.piece.piece_type() as usize & 15) << 8)) & LOW_PLY_HISTORY_MASK
+}
+
 /// Side index for the quiet-history tables. PlayerColor is Neutral=0/White=1/Black=2
 /// and a mover is never Neutral, so this maps White->0 and Black->1.
 #[inline(always)]
@@ -4084,7 +4091,7 @@ fn update_quiet_best_stats(
         bonus * pawn_history_bonus_scale(),
     );
 
-    searcher.update_low_ply_history(ply, idx, bonus);
+    searcher.update_low_ply_history(ply, low_ply_key(m), bonus);
 
     // The quiets a cutoff beat are pushed down harder than it is pushed up.
     let malus = bonus * 5 / 4;
@@ -4106,10 +4113,10 @@ fn update_quiet_best_stats(
             qidx,
             -malus * pawn_history_malus_scale(),
         );
-        // Low-ply history is keyed by destination alone, so another piece's move
-        // to the cutoff's square would cancel its bonus.
-        if qidx != idx {
-            searcher.update_low_ply_history(ply, qidx, -malus);
+        // A quiet sharing the cutoff move's key would cancel its bonus.
+        let qkey = low_ply_key(quiet);
+        if qkey != low_ply_key(m) {
+            searcher.update_low_ply_history(ply, qkey, -malus);
         }
     }
 
