@@ -712,8 +712,7 @@ impl Engine {
             * original_time_adjust;
 
         // maxScale: multiplier from optimum to maximum
-        // Stockfish caps the whole sum, not just the constant.
-        let max_scale = (max_constant + ply / 11.9847).min(6.67704);
+        let max_scale = max_constant.min(6.67704) + ply / 11.9847;
 
         // Calculate optimum and maximum allocations
         let optimum = (opt_scale * time_left) as u64;
