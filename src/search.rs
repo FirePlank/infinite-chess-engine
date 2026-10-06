@@ -4725,8 +4725,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             let pc_ctx = searcher.push_move_context(ply, &m, in_check, pc_is_capture);
             searcher.captured_type_stack[ply] = captured_type_at(game, &m);
             searcher.reduction_stack[ply] = 0;
-            searcher.stat_score_stack[ply] = searcher.history[hist_color(m.piece.color())]
-                [m.piece.piece_type() as usize][hash_move_dest(&m)];
+            // Quiet history says nothing about a capture.
+            searcher.stat_score_stack[ply] = 0;
 
             let undo = game.make_move(&m);
 
@@ -5204,9 +5204,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // The child reads this for evaluation smoothing. Set for every move, not only
-        // on a beta cutoff, or it reflects a prior sibling's subtree instead.
-        searcher.stat_score_stack[ply] =
-            searcher.history[hist_color(m.piece.color())][p_type as usize][hash_move_dest(&m)];
+        // on a beta cutoff, or it reflects a prior sibling's subtree instead. Quiet
+        // history says nothing about a capture.
+        searcher.stat_score_stack[ply] = if is_capture {
+            0
+        } else {
+            searcher.history[hist_color(m.piece.color())][p_type as usize][hash_move_dest(&m)]
+        };
 
         let score;
         if legal_moves == 1 {
