@@ -5106,10 +5106,8 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             continue;
         }
 
-        // Record quiet moves searched at this node for history maluses. Only the
-        // first 32 moves count, as in Stockfish: the long tail is mostly noise.
-        let malus_tracked = !is_capture && !is_promotion && legal_moves <= 32;
-        if malus_tracked {
+        // Record quiet moves searched at this node for history maluses
+        if !is_capture && !is_promotion {
             quiets_searched.push(m);
         }
 
@@ -5424,9 +5422,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     // and history is really bad, prune this move entirely.
                     if new_depth <= 0 && value < hlp_history_leaf() {
                         // Never searched, so it earns no malus at the next cutoff.
-                        if malus_tracked {
-                            quiets_searched.pop();
-                        }
+                        quiets_searched.pop();
                         game.undo_move(&m, undo);
                         // Restore all five node-context fields before continuing, or
                         // in_check_history and capture_history_stack go stale.
