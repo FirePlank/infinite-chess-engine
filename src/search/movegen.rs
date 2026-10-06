@@ -652,11 +652,8 @@ impl StagedMoveGen {
                 .copied()
                 .unwrap_or(0);
 
-            let hist_idx = hash_move_dest(m);
-            let history_score =
-                searcher.history[crate::search::hist_color(m.piece.color())][pt_idx][hist_idx];
-
-            10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8) + (history_score / 8)
+            // Captures never write main history, so it would read quiet statistics here.
+            10 * (victim_val + promo_gain) - attacker_val + (cap_hist / 8)
         } else if game.is_en_passant(m) {
             // The victim sits beside m.to, not on it, so the branch above scores a
             // real pawn capture as 0 and sorts it below every other capture.
