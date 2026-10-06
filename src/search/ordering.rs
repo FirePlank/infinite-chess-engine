@@ -10,7 +10,6 @@ use super::params::{
 
 /// Low-ply history table size for moves at shallow depths
 pub const LOW_PLY_HISTORY_SIZE: usize = crate::search::LOW_PLY_HISTORY_SIZE;
-pub const LOW_PLY_HISTORY_MASK: usize = crate::search::LOW_PLY_HISTORY_MASK;
 
 /// Score a single move for ordering purposes.
 /// Returns higher score for better moves.
@@ -145,7 +144,7 @@ pub fn score_move(
 
             // Low-ply history bonus (same index as the writer and the staged picker).
             if ply < LOW_PLY_HISTORY_SIZE {
-                let move_hash = hash_move_dest(m) & LOW_PLY_HISTORY_MASK;
+                let move_hash = crate::search::low_ply_key(m);
                 score += 8 * searcher.low_ply_history[ply][move_hash] / (1 + ply as i32);
             }
         }
