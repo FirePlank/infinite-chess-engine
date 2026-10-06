@@ -6136,6 +6136,8 @@ fn quiescence(
 
     let mut legal_moves = 0;
     let delta_margin = delta_margin();
+    // What a capture pruned for being short of alpha is assumed worth (Stockfish).
+    let futility_base = best_value.saturating_add(delta_margin);
 
     let prev_sq = if ply > 0 {
         searcher
@@ -6224,6 +6226,11 @@ fn quiescence(
                     .saturating_sub(delta_margin),
             );
             if !see_ge(game, m, need) {
+                // Pruned for falling short of alpha, the move still bounds the node
+                // from above at the futility base rather than at the stand-pat.
+                if need > floor {
+                    best_value = best_value.max(alpha.min(futility_base));
+                }
                 continue;
             }
         }
