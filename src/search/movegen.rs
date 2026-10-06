@@ -4,7 +4,7 @@
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
 use super::{
-    LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_16,
+    LOW_PLY_HISTORY_MASK, LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_16,
     hash_move_dest,
 };
 use crate::board::{PieceType, PlayerColor};
@@ -770,7 +770,7 @@ impl StagedMoveGen {
         }
 
         if self.ply < LOW_PLY_HISTORY_SIZE {
-            let move_hash = crate::search::low_ply_key(m);
+            let move_hash = idx & LOW_PLY_HISTORY_MASK;
             unsafe {
                 if let Some(row) = searcher.low_ply_history.get(self.ply) {
                     let val = *row.get_unchecked(move_hash);
