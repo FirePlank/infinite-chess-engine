@@ -381,7 +381,7 @@ impl StagedMoveGen {
 
     /// Pseudo-legal check - verifies piece exists, correct color/type, and path validation
     #[inline]
-    pub(crate) fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
+    fn is_pseudo_legal(game: &GameState, m: &Move) -> bool {
         use crate::tiles::{local_index, tile_coords};
 
         // 1. Fast Tile Access

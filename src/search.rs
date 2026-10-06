@@ -4187,49 +4187,6 @@ fn captured_type_at(game: &GameState, m: &Move) -> u8 {
     game.board.get_piece(m.to.x, m.to.y).map_or(u8::MAX, |p| p.piece_type() as u8)
 }
 
-/// A deep TT cutoff is taken only if the TT move's own entry agrees which side of beta
-/// the line lands on; a disagreement means one of them is stale (Stockfish).
-fn tt_cut_refuted_by_child(
-    searcher: &Searcher,
-    game: &mut GameState,
-    tt_move: Option<Move>,
-    tt_s: i32,
-    beta: i32,
-    depth: usize,
-    ply: usize,
-) -> bool {
-    let Some(m) = tt_move else {
-        return false;
-    };
-    if depth < 8 || is_decisive(tt_s) || !StagedMoveGen::is_pseudo_legal(game, &m) {
-        return false;
-    }
-    let undo = game.make_move(&m);
-    let child = if game.is_move_illegal() {
-        None
-    } else {
-        probe_tt_with_shared(
-            searcher,
-            &ProbeContext {
-                hash: game.hash,
-                alpha: -beta,
-                beta: -beta + 1,
-                depth: 0,
-                ply: ply + 1,
-                rule50_count: game.halfmove_clock,
-                rule_limit: searcher.move_rule_limit,
-            },
-        )
-    };
-    game.undo_move(&m, undo);
-    match child {
-        Some(res) if res.tt_score != INFINITY + 1 && res.flag != TTFlag::None => {
-            (tt_s >= beta) != (-res.tt_score >= beta)
-        }
-        _ => false,
-    }
-}
-
 fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let searcher = &mut *ctx.searcher;
     let game = &mut *ctx.game;
@@ -4560,9 +4517,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             {
                 searcher.update_prior_cont_history(ply, -history_bonus_cap());
             }
-            if !tt_cut_refuted_by_child(searcher, game, tt_move, tt_s, beta, depth, ply) {
-                return tt_s;
-            }
+            return tt_s;
         }
 
         // Deep enough and on the right side of the window, but holding the opposite
