@@ -5139,6 +5139,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let is_tt_move = tt_move
             .filter(|tt_m| m.from == tt_m.from && m.to == tt_m.to && m.promotion == tt_m.promotion)
             .is_some();
+        // A PV's TT move backed by a real search never drops straight into qsearch, as
+        // in Stockfish: the PV tail keeps a ply of search instead of a stand-pat.
+        let pv_tt_move_deep = is_tt_move
+            && tt_value.is_some_and(|v| (is_decisive(v) && tt_data_depth > 0) || tt_data_depth > 1);
 
         if let Some((tt_s_base, singular_depth)) = se_conditions.filter(|_| {
             is_tt_move
@@ -5272,7 +5276,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // depth-0 child dropping straight to qsearch never clears the slot, so
             // clear it here or it stays stale from an earlier node at this ply.
             searcher.reduction_stack[ply] = 0;
-            let new_depth = ((depth as i32) - 1 + extension).max(0) as usize;
+            let mut new_depth = ((depth as i32) - 1 + extension).max(0) as usize;
+            if is_pv && pv_tt_move_deep {
+                new_depth = new_depth.max(1);
+            }
             score = -negamax(&mut NegamaxContext {
                 searcher,
                 game,
@@ -5481,7 +5488,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let do_shallower_search = s < best_score + 9;
                 let adjusted_depth = (base_depth + (do_deeper_search as i32)
                     - (do_shallower_search as i32))
-                    .max(0) as usize;
+                    .max((is_pv && pv_tt_move_deep) as i32) as usize;
 
                 s = -negamax(&mut NegamaxContext {
                     searcher,
