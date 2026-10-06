@@ -192,7 +192,7 @@ search_params! {
     sort_countermove: i32 = 600_000 => (100_000, 4_000_000, 50_000.0, 0.002, "Countermove ordering bonus");
     history_bonus_base: i32 = 300 => (0, 1024, 16.0, 0.002, "History bonus base");
     history_bonus_sub: i32 = 250 => (0, 1024, 16.0, 0.002, "History bonus subtraction");
-    history_bonus_cap: i32 = 1792 => (64, 8192, 64.0, 0.002, "History bonus cap");
+    history_bonus_cap: i32 = 1536 => (64, 8192, 64.0, 0.002, "History bonus cap");
     history_max_gravity: i32 = 16384 => (1024, 32768, 256.0, 0.002, "History gravity clamp");
     pawn_history_bonus_scale: i32 = 2 => (0, 8, 1.0, 0.002, "Pawn history bonus scale");
     pawn_history_malus_scale: i32 = 1 => (0, 8, 1.0, 0.002, "Pawn history malus scale");
