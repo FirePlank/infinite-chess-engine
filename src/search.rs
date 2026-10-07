@@ -4395,6 +4395,28 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         false
     };
 
+    // A position no checkmate can ever come from is scored like a tablebase draw:
+    // exact, stored deep, before any static eval or correction can touch it.
+    if ply > 0
+        && ctx.excluded_move.is_none()
+        && crate::evaluation::insufficient_material::is_dead_draw(game)
+    {
+        store_tt_with_shared(
+            searcher,
+            &StoreContext {
+                hash,
+                depth: (depth + 6).min(MAX_PLY - 1),
+                flag: TTFlag::Exact,
+                score: 0,
+                static_eval: INFINITY + 1,
+                is_pv: tt_pv,
+                best_move: None,
+                ply,
+            },
+        );
+        return 0;
+    }
+
     // Static evaluation for pruning decisions
     let prev_move_idx = if ply > 0 {
         let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
