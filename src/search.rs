@@ -5056,7 +5056,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let futility_value = static_eval + 42 + no_best + 127 * adj_lmr_depth;
                     // Hopeless even with two plies of history credit: the later quiets
                     // are ordered worse and searched shallower, so stop generating them.
-                    if static_eval + 42 + no_best + 127 * (lmr_depth + 1) <= alpha {
+                    if static_eval + 42 + no_best + 127 * (lmr_depth + 2) <= alpha {
                         movegen.skip_quiet_moves();
                     }
                     if futility_value <= alpha {
