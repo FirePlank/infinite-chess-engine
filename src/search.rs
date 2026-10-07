@@ -4666,7 +4666,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
         // Null move pruning: give opponent an extra move, if still >= beta, prune
         // At every non-PV node with non-pawn material (avoid zugzwang)
-        if !is_pv && allow_null && depth >= nmp_min_depth() && !is_loss(beta) {
+        // An opponent move that history says keeps working is where the static eval most
+        // likely misses a threat; no free tempo after it (Stockfish Classic).
+        if !is_pv
+            && allow_null
+            && depth >= nmp_min_depth()
+            && !is_loss(beta)
+            && (ply == 0 || searcher.stat_score_stack[ply - 1] < 8000)
+        {
             // An improving side gets the null try more easily, as in Stockfish.
             let nmp_margin = static_eval - (nmp_depth_mult() * depth as i32)
                 + nmp_base()
