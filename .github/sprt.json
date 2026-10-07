@@ -1,7 +1,7 @@
 {
-  "name": "485_lmr_stat_vs_parent_resume",
-  "old": "8c9fc35",
-  "games": 2000,
+  "name": "490_tt_fail_low_quiet_malus",
+  "old": "20923fd",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",

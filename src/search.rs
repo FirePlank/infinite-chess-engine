@@ -4560,6 +4560,22 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             {
                 searcher.update_prior_cont_history(ply, -history_bonus_cap());
             }
+            // A quiet TT move behind a fail-low cutoff did not hold: push it down in the
+            // main history (Stockfish Classic).
+            if !fails_high
+                && let Some(tm) = tt_move
+                && !game.board.is_occupied(tm.to.x, tm.to.y)
+                && tm.promotion.is_none()
+            {
+                let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+                searcher.update_history(
+                    tm.piece.color(),
+                    tm.piece.piece_type(),
+                    hash_move_dest(&tm),
+                    -malus,
+                );
+            }
             if !tt_cut_refuted_by_child(searcher, game, tt_move, tt_s, beta, depth, ply) {
                 return tt_s;
             }
