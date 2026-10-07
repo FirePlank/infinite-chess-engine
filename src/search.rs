@@ -4775,14 +4775,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         let threshold = prob_cut_beta - static_eval;
         let mut probcut_gen = StagedMoveGen::new_probcut(tt_move, threshold, searcher, game);
 
-        // A capture ordered past the first few rarely clears the raised bar when the
-        // best ones did not; each failed try costs a qsearch and a reduced search.
-        let mut probcut_tries = 0;
-        let probcut_max_tries = 2 + 2 * cut_node as usize;
         while let Some(m) = probcut_gen.next(game, searcher) {
-            if probcut_tries >= probcut_max_tries {
-                break;
-            }
             // The singular search must not consult the move it is excluding.
             if excluded_move.as_ref().is_some_and(|ex| {
                 ex.from == m.from && ex.to == m.to && ex.promotion == m.promotion
@@ -4813,7 +4806,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.pop_move_context(ply, pc_ctx);
                 continue;
             }
-            probcut_tries += 1;
 
             // Preliminary qsearch to verify
             let mut val = -quiescence(
