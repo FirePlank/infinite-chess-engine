@@ -1672,40 +1672,25 @@ mod tests {
         );
     }
 
-    // Two guards cannot force mate, though a bare king can walk into one: the eval
-    // scores it dead, the game goes on. A defending knight changes neither.
+    // Two or three guards cannot force mate, though a bare king can walk into one: the
+    // eval scores it dead, the game goes on. A defending knight changes neither.
     #[test]
-    fn test_king_2guards_vs_king_is_helpmate_only() {
+    fn test_king_guards_vs_king_is_helpmate_only() {
         use PieceType as P;
         let (white, black) = (PlayerColor::White, PlayerColor::Black);
-        let mut pieces = vec![
-            (0, 0, P::King, white),
-            (1, 0, P::Guard, white),
-            (2, 0, P::Guard, white),
-            (5, 5, P::King, black),
-        ];
-        for defender in [None, Some((9, 3, P::Knight, black))] {
-            pieces.extend(defender);
-            let game = create_test_game_with_pieces(&pieces);
-            assert!(evaluate_insufficient_material(&game), "{pieces:?}");
-            assert!(!evaluate_insufficient_material_game_handler(&game), "{pieces:?}");
-            assert!(side_cannot_mate(&game, true), "{pieces:?}");
+        for guards in [2, 3] {
+            let mut pieces = vec![(0, 0, P::King, white), (5, 5, P::King, black)];
+            pieces.extend((1..=guards).map(|x| (x, 0, P::Guard, white)));
+            // With three guards the knight makes six pieces, past the table.
+            let knight = (guards == 2).then_some((9, 3, P::Knight, black));
+            for defender in [None, knight] {
+                pieces.extend(defender);
+                let game = create_test_game_with_pieces(&pieces);
+                assert!(evaluate_insufficient_material(&game), "{pieces:?}");
+                assert!(!evaluate_insufficient_material_game_handler(&game), "{pieces:?}");
+                assert!(side_cannot_mate(&game, true), "{pieces:?}");
+            }
         }
-    }
-
-    #[test]
-    fn test_king_3guards_vs_king_sufficient() {
-        let game = create_test_game_with_pieces(&[
-            (0, 0, PieceType::King, PlayerColor::White),
-            (1, 0, PieceType::Guard, PlayerColor::White),
-            (2, 0, PieceType::Guard, PlayerColor::White),
-            (3, 0, PieceType::Guard, PlayerColor::White),
-            (5, 5, PieceType::King, PlayerColor::Black),
-        ]);
-        assert!(
-            !evaluate_insufficient_material(&game),
-            "K+3 Guards vs K is sufficient on the unbounded board"
-        );
     }
 
     // [3] A lone archbishop (knight+bishop compound) cannot mate on the unbounded board.
