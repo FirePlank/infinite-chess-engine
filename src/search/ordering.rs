@@ -114,8 +114,8 @@ pub fn score_move(
             let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
 
             // ply_offset_idx: 0 -> 1 ply ago, 1 -> 2 plies ago, 2 -> 4 plies ago
-            let offsets = [1usize, 2, 4];
-            const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
+            let offsets = [1usize, 2, 4, 6];
+            const CONT_WEIGHTS: [i32; 4] = [1024, 712, 410, 412];
             for (idx, &plies_ago) in offsets.iter().enumerate() {
                 if ply >= plies_ago
                     && let Some(ref prev_move) = searcher.move_history[ply - plies_ago]
@@ -126,7 +126,7 @@ pub fn score_move(
                         let prev_ic = searcher.in_check_history[ply - plies_ago] as usize;
                         let prev_cap = searcher.capture_history_stack[ply - plies_ago] as usize;
 
-                        let slot = idx + 3 * crate::search::hist_color(m.piece.color());
+                        let slot = idx + 4 * crate::search::hist_color(m.piece.color());
                         let val = searcher.cont_history[slot][prev_cap][prev_ic][prev_piece]
                             [prev_to_hash][cur_from_hash][cur_to_hash]
                             as i32;
