@@ -5616,13 +5616,16 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             // so children see the actual parent move rather than only a cutoff.
 
             if !is_capture {
+                // A cutoff that clears beta by a margin is firmer evidence than one at the
+                // edge of a volatile eval: credit it a ply deeper (Stockfish Classic).
+                let decisive = score > beta + 100 && !is_decisive(score);
                 update_quiet_best_stats(
                     searcher,
                     game.pawn_hash,
                     &m,
                     &quiets_searched,
                     ply,
-                    depth,
+                    depth + decisive as usize,
                     in_check,
                 );
             } else if let Some(cap_type) = captured_type {
