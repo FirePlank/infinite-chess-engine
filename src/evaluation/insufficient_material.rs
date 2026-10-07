@@ -1,42 +1,65 @@
-use crate::board::{Board, PieceType, PlayerColor};
+//! Insufficient material. Unbounded boards read the generated mating-set table
+//! ([`mating_sets`]); bounded boards still use the hand rules below.
+
+use super::mating_sets::{self, CAP, KINDS, ROYAL_KINDS};
+use crate::board::{Board, Piece, PieceType, PlayerColor};
+use crate::game::{GameRules, GameState};
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+const CACHE_SET_BITS: u32 = 11;
 
 thread_local! {
-    /// Keyed by (material_hash, bordered): the verdict depends on whether the
-    /// board is bounded, and this cache outlives a set_position variant switch.
-    static MATERIAL_CACHE: RefCell<FxHashMap<(u64, bool), bool>> = RefCell::new(FxHashMap::default());
+    /// Two-way sets keyed by material and pawn hash, most recent first. An entry is
+    /// the key with bit 0 set as a valid flag over the [`verdict`] bits.
+    static MATERIAL_CACHE: [Cell<u64>; 2 << CACHE_SET_BITS] =
+        const { [const { Cell::new(0) }; 2 << CACHE_SET_BITS] };
 }
 
 pub fn clear_material_cache() {
-    MATERIAL_CACHE.with(|cache| cache.borrow_mut().clear());
+    MATERIAL_CACHE.with(|cache| cache.iter().for_each(|e| e.set(0)));
     NO_MATE_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 thread_local! {
     /// Keyed by (material_hash, white?, bordered): whether that side's force
-    /// alone could ever mate a bare king.
+    /// alone could ever mate the enemy royals.
     static NO_MATE_CACHE: RefCell<FxHashMap<(u64, bool, bool), bool>> =
         RefCell::new(FxHashMap::default());
 }
 
-/// True when `white`'s pawnless force could not mate a bare king even unopposed:
+#[inline]
+fn is_bordered() -> bool {
+    crate::moves::get_world_size() <= 200
+}
+
+/// True when `white`'s force could not mate the enemy royals even unopposed:
 /// however far ahead it is, the game is a draw unless the defender helps.
-pub fn side_cannot_mate(game: &crate::game::GameState, white: bool) -> bool {
-    let bordered = crate::moves::get_world_size() <= 200;
+pub fn side_cannot_mate(game: &GameState, white: bool) -> bool {
+    let bordered = is_bordered();
+    // Pawn verdicts depend on the pawns' ranks, which the material hash omits.
+    let pawns = if white { game.white_pawn_count } else { game.black_pawn_count };
     let key = (game.material_hash, white, bordered);
-    if let Some(v) = NO_MATE_CACHE.with(|c| c.borrow().get(&key).copied()) {
+    if pawns == 0
+        && let Some(v) = NO_MATE_CACHE.with(|c| c.borrow().get(&key).copied())
+    {
         return v;
     }
-    let (w, b) = count_both(&game.board, &game.game_rules);
-    let m = if white { &w } else { &b };
     let v = if bordered {
-        is_insufficient_bordered(m)
+        // The bounded rules count neither a second royal nor a second enemy one.
+        let (w, b) = count_both(&game.board, &game.game_rules);
+        game.white_royals.len() <= 1
+            && game.black_royals.len() <= 1
+            && is_insufficient_bordered(if white { &w } else { &b })
     } else {
-        // The unbounded decision tree assumes at most three non-royal attackers.
-        // Larger minor armies can mate despite matching its small-army rules.
-        m.non_royal() <= 3 && is_insufficient(m)
+        let mut army = Army::default();
+        army.push_side(game, white, false)
+            && army.push_side(game, !white, true)
+            && army.dead(&army.promotion_kinds(&game.game_rules))
     };
+    if pawns > 0 {
+        return v;
+    }
     NO_MATE_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > 4096 {
@@ -48,7 +71,7 @@ pub fn side_cannot_mate(game: &crate::game::GameState, white: bool) -> bool {
 }
 
 #[inline]
-fn get_best_promotion_piece(game_rules: &crate::game::GameRules) -> Option<PieceType> {
+fn get_best_promotion_piece(game_rules: &GameRules) -> Option<PieceType> {
     game_rules
         .promotion_types
         .as_ref()
@@ -62,7 +85,7 @@ fn get_best_promotion_piece(game_rules: &crate::game::GameRules) -> Option<Piece
 }
 
 #[inline]
-fn can_pawn_promote(y: i64, color: PlayerColor, game_rules: &crate::game::GameRules) -> bool {
+fn can_pawn_promote(y: i64, color: PlayerColor, game_rules: &GameRules) -> bool {
     let promo_ranks = match color {
         PlayerColor::White => &game_rules.promotion_ranks.white,
         PlayerColor::Black => &game_rules.promotion_ranks.black,
@@ -75,8 +98,344 @@ fn can_pawn_promote(y: i64, color: PlayerColor, game_rules: &crate::game::GameRu
     }
 }
 
-// Material counts for one color.
-// u8 is sufficient: the caller bails out at >= 6 total pieces, so no count exceeds 5.
+/// Up to [`CAP`] pieces as table symbols; bit `i` of `promotes` marks a pawn
+/// that can still promote.
+#[derive(Default, Clone, Copy)]
+struct Army {
+    syms: [u8; CAP],
+    promotes: u8,
+    len: usize,
+}
+
+impl Army {
+    /// Every colored piece, in one board pass; `None` past [`CAP`].
+    #[inline]
+    fn gather(game: &GameState) -> Option<Army> {
+        let mut army = Army::default();
+        let rules = &game.game_rules;
+        game.board
+            .iter_colored()
+            .all(|(x, y, p)| army.push(x, y, p, rules))
+            .then_some(army)
+    }
+
+    /// Like [`Army::gather`], but `None` as well when a void is on the board.
+    #[inline]
+    fn gather_without_voids(game: &GameState) -> Option<Army> {
+        let mut army = Army::default();
+        let rules = &game.game_rules;
+        game.board
+            .iter_all_pieces()
+            .all(|(x, y, p)| p.piece_type() != PieceType::Void && army.push(x, y, p, rules))
+            .then_some(army)
+    }
+
+    /// `white`'s pieces facing only the enemy royals.
+    #[inline]
+    fn alone(&self, white: bool) -> Army {
+        let mut army = Army::default();
+        for i in 0..self.len {
+            let s = self.syms[i];
+            if (s < KINDS) == white || mating_sets::is_royal_symbol(s) {
+                army.promotes |= ((self.promotes >> i) & 1) << army.len;
+                army.syms[army.len] = s;
+                army.len += 1;
+            }
+        }
+        army
+    }
+
+    /// Adds one side's pieces, or only its royals. False once past [`CAP`].
+    #[inline]
+    fn push_side(&mut self, game: &GameState, white: bool, royals_only: bool) -> bool {
+        let rules = &game.game_rules;
+        if royals_only {
+            let royals = if white { &game.white_royals } else { &game.black_royals };
+            return royals.iter().all(|c| match game.board.get_piece(c.x, c.y) {
+                Some(p) => self.push(c.x, c.y, p, rules),
+                None => true,
+            });
+        }
+        game.board
+            .iter_pieces_by_color(white)
+            .all(|(x, y, p)| self.push(x, y, p, rules))
+    }
+
+    #[inline]
+    fn push(&mut self, x: i64, y: i64, piece: Piece, rules: &GameRules) -> bool {
+        let Some(s) = mating_sets::symbol(piece.piece_type(), piece.color(), x, y) else {
+            return true;
+        };
+        if self.len == CAP {
+            return false;
+        }
+        if piece.piece_type() == PieceType::Pawn && can_pawn_promote(y, piece.color(), rules) {
+            self.promotes |= 1 << self.len;
+        }
+        self.syms[self.len] = s;
+        self.len += 1;
+        true
+    }
+
+    /// Whether no checkmate is possible with these pieces, whatever the pawns
+    /// promote to among `kinds`.
+    #[inline]
+    fn dead(&self, kinds: &[u8]) -> bool {
+        if self.promotes == 0 {
+            return mating_sets::is_dead(&self.syms[..self.len]);
+        }
+        let mut syms = self.syms;
+        dead_with_promotions(&mut syms, self.len, self.promotes, 0, kinds, None)
+    }
+
+    /// The table kinds a pawn may promote to, a bishop as both square colors;
+    /// empty when no pawn here can promote.
+    fn promotion_kinds(&self, rules: &GameRules) -> smallvec::SmallVec<[u8; 8]> {
+        const DEFAULT: [PieceType; 4] = [
+            PieceType::Queen,
+            PieceType::Rook,
+            PieceType::Bishop,
+            PieceType::Knight,
+        ];
+        let mut kinds = smallvec::SmallVec::new();
+        if self.promotes == 0 {
+            return kinds;
+        }
+        for &pt in rules.promotion_types.as_deref().unwrap_or(&DEFAULT) {
+            if pt == PieceType::Bishop {
+                kinds.extend([5, 6]);
+            } else if let Some(s) = mating_sets::symbol(pt, PlayerColor::White, 0, 0) {
+                kinds.push(s);
+            }
+        }
+        kinds
+    }
+}
+
+/// Tries every outcome of the promotable pawns from `from` on: option 0 keeps the
+/// pawn, option `o` promotes to `kinds[o - 1]`. Like pawns after one of the same
+/// color only take options from its own on, so each multiset is tried once.
+fn dead_with_promotions(
+    syms: &mut [u8; CAP],
+    len: usize,
+    promotes: u8,
+    from: usize,
+    kinds: &[u8],
+    prev: Option<(u8, usize)>,
+) -> bool {
+    let Some(i) = (from..len).find(|&i| promotes & (1 << i) != 0) else {
+        return mating_sets::is_dead(&syms[..len]);
+    };
+    let pawn = syms[i];
+    let color_base = pawn - pawn % KINDS;
+    let start = match prev {
+        Some((p, o)) if p == pawn => o,
+        _ => 0,
+    };
+    let dead = (start..=kinds.len()).all(|o| {
+        syms[i] = if o == 0 { pawn } else { color_base + kinds[o - 1] };
+        dead_with_promotions(syms, len, promotes, i + 1, kinds, Some((pawn, o)))
+    });
+    syms[i] = pawn;
+    dead
+}
+
+/// Non-royal piece kinds, as [`material_kind`] numbers them.
+pub(crate) const MATERIAL_KINDS: usize = (KINDS - ROYAL_KINDS) as usize;
+/// The [`material_kind`] of a pawn that cannot promote.
+pub(crate) const PAWN_MATERIAL_KIND: u8 = mating_sets::PAWN_KIND - ROYAL_KINDS;
+
+/// The non-royal kind a piece counts as, for [`cheapest_mating_force`]: a pawn
+/// that can still promote counts as the piece it would become.
+pub(crate) fn material_kind(
+    pt: PieceType,
+    x: i64,
+    y: i64,
+    color: PlayerColor,
+    rules: &GameRules,
+) -> Option<u8> {
+    let pt = if pt == PieceType::Pawn && can_pawn_promote(y, color, rules) {
+        get_best_promotion_piece(rules).unwrap_or(PieceType::Queen)
+    } else {
+        pt
+    };
+    let s = mating_sets::symbol(pt, color, x, y)?;
+    (!mating_sets::is_royal_symbol(s)).then(|| s % KINDS - ROYAL_KINDS)
+}
+
+/// The cheapest sub-force of `white`'s army that could mate the enemy royals
+/// alone on an unbounded board, priced by `cost(kind, n)` for using `n` pieces of
+/// a [`material_kind`]. `None` when no tabled sub-force mates.
+pub(crate) fn cheapest_mating_force(
+    game: &GameState,
+    white: bool,
+    cost: impl Fn(u8, u8) -> i64,
+) -> Option<i64> {
+    let own_royals = if white { &game.white_royals } else { &game.black_royals };
+    let mut base = Army::default();
+    if own_royals.len() > 1
+        || !base.push_side(game, white, true)
+        || !base.push_side(game, !white, true)
+        || base.len == own_royals.len()
+    {
+        return None;
+    }
+    let color = if white { PlayerColor::White } else { PlayerColor::Black };
+    let mut have = [0u8; MATERIAL_KINDS];
+    for (x, y, p) in game.board.iter_pieces_by_color(white) {
+        if let Some(kind) = material_kind(p.piece_type(), x, y, color, &game.game_rules) {
+            have[kind as usize] += 1;
+        }
+    }
+    let first = (if white { 0 } else { KINDS }) + ROYAL_KINDS;
+    let mut best: Option<i64> = None;
+    // Depth-first over per-kind counts, as many non-royals as the table holds.
+    #[allow(clippy::too_many_arguments)]
+    fn walk(
+        kind: usize,
+        sub: &mut Army,
+        have: &[u8; MATERIAL_KINDS],
+        first: u8,
+        used: u8,
+        spent: i64,
+        cost: &dyn Fn(u8, u8) -> i64,
+        best: &mut Option<i64>,
+    ) {
+        if best.is_some_and(|b| spent >= b) {
+            return;
+        }
+        if kind == MATERIAL_KINDS {
+            if used > 0 && !mating_sets::is_dead(&sub.syms[..sub.len]) {
+                *best = Some(spent);
+            }
+            return;
+        }
+        let start = sub.len;
+        for n in 0..=have[kind] {
+            if n > 0 {
+                if sub.len == CAP {
+                    break;
+                }
+                sub.syms[sub.len] = first + kind as u8;
+                sub.len += 1;
+            }
+            let extra = if n == 0 { 0 } else { cost(kind as u8, n) };
+            walk(kind + 1, sub, have, first, used + n, spent + extra, cost, best);
+        }
+        sub.len = start;
+    }
+    walk(0, &mut base, &have, first, 0, 0, &cost, &mut best);
+    best
+}
+
+/// Unbounded: dead when no mate is possible at all, or when neither side can
+/// mate the other's royals alone, so any mate needs the defender's own help.
+fn compute_unbounded(game: &GameState) -> bool {
+    let Some(all) = Army::gather(game) else {
+        return false;
+    };
+    let kinds = all.promotion_kinds(&game.game_rules);
+    all.dead(&kinds) || (all.alone(true).dead(&kinds) && all.alone(false).dead(&kinds))
+}
+
+#[inline]
+fn compute(game: &GameState) -> bool {
+    if is_bordered() {
+        compute_bordered(game)
+    } else {
+        compute_unbounded(game)
+    }
+}
+
+/// [`verdict`] bit: the eval scores the position as 0.
+const SCORED_ZERO: u64 = 2;
+/// [`verdict`] bit: no checkmate is possible at all, so it is a certain draw.
+const DEAD: u64 = 4;
+
+/// Both insufficient-material verdicts as [`SCORED_ZERO`] and [`DEAD`] bits, cached.
+#[inline]
+fn verdict(game: &GameState) -> u64 {
+    if (game.white_piece_count + game.black_piece_count) as usize > CAP {
+        return 0;
+    }
+    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
+    {
+        return 0;
+    }
+    // The pawn hash pins each pawn's square, which decides whether it can promote.
+    let salt = if is_bordered() { 0x9E37_79B9_7F4A_7C15 } else { 0 };
+    let key = game.material_hash ^ game.pawn_hash.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    let tag = (key ^ salt) & !7;
+    let set = 2 * (tag >> (64 - CACHE_SET_BITS)) as usize;
+    MATERIAL_CACHE.with(|cache| {
+        let (first, second) = (cache[set].get(), cache[set + 1].get());
+        if first & !6 == tag | 1 {
+            return first;
+        }
+        if second & !6 == tag | 1 {
+            cache[set].set(second);
+            cache[set + 1].set(first);
+            return second;
+        }
+        let dead = is_dead(game);
+        let bits = if dead {
+            SCORED_ZERO | DEAD
+        } else if compute(game) {
+            SCORED_ZERO
+        } else {
+            0
+        };
+        cache[set + 1].set(first);
+        cache[set].set(tag | 1 | bits);
+        tag | 1 | bits
+    })
+}
+
+/// Whether the position is scored as a dead draw: no mate is possible, or only
+/// one the defender would have to help with. Helpmate-only games still go on.
+#[inline]
+pub fn evaluate_insufficient_material(game: &GameState) -> bool {
+    verdict(game) & SCORED_ZERO != 0
+}
+
+/// Whether no checkmate is possible at all: a certain draw, which search may score
+/// without looking further. A helpmate-only position is not one.
+#[inline]
+pub fn is_dead_draw(game: &GameState) -> bool {
+    verdict(game) & DEAD != 0
+}
+
+/// Whether the position is a draw by insufficient material for game handlers:
+/// no checkmate of either side is possible at all, not even a helpmate.
+#[inline]
+pub fn evaluate_insufficient_material_game_handler(game: &GameState) -> bool {
+    if (game.white_piece_count + game.black_piece_count) as usize > CAP {
+        return false;
+    }
+    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
+        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
+    {
+        return false;
+    }
+    is_dead(game)
+}
+
+/// [`evaluate_insufficient_material_game_handler`] past its gates.
+fn is_dead(game: &GameState) -> bool {
+    // A void can wall a royal in where the table assumes open board, so the game
+    // goes on; the eval still scores it as dead.
+    let Some(all) = Army::gather_without_voids(game) else {
+        return false;
+    };
+    if is_bordered() {
+        return compute_game_handler(game);
+    }
+    all.dead(&all.promotion_kinds(&game.game_rules))
+}
+
+// Material counts for one color, for the bounded-board rules.
+// u8 is sufficient: callers bail out above CAP total pieces.
 #[derive(Debug, Default, Clone)]
 struct Mat {
     kings: u8,
@@ -94,8 +453,8 @@ struct Mat {
     knightriders: u8,
     huygens: u8,
     royal_centaurs: u8,
-    /// Non-royal types with no insufficiency rule of their own: Centaur, Rose,
-    /// Camel, Giraffe, Zebra.
+    /// Types with no insufficiency rule of their own: Centaur, Rose, Camel,
+    /// Giraffe, Zebra, and the Royal Queen, which counts as mating when bounded.
     others: u8,
 }
 
@@ -119,112 +478,28 @@ impl Mat {
     }
 }
 
-/// The `Mat` slot a piece counts in, as a bit index for [`essential_kinds`]: a
-/// pawn that can still promote counts as the piece it would become.
-pub(crate) fn material_kind(
-    pt: PieceType,
-    x: i64,
-    y: i64,
-    color: PlayerColor,
-    rules: &crate::game::GameRules,
-) -> Option<u8> {
-    let pt = if pt == PieceType::Pawn && can_pawn_promote(y, color, rules) {
-        get_best_promotion_piece(rules).unwrap_or(PieceType::Queen)
-    } else {
-        pt
-    };
-    Some(match pt {
-        PieceType::Queen => 0,
-        PieceType::Rook => 1,
-        PieceType::Knight => 2,
-        PieceType::Bishop if (x + y) % 2 == 0 => 3,
-        PieceType::Bishop => 4,
-        PieceType::Chancellor => 5,
-        PieceType::Archbishop => 6,
-        PieceType::Hawk => 7,
-        PieceType::Guard => 8,
-        PieceType::Pawn => 9,
-        PieceType::Amazon => 10,
-        PieceType::Knightrider => 11,
-        PieceType::Huygen => 12,
-        _ => return None,
-    })
-}
-
-impl Mat {
-    fn slot(&mut self, kind: u8) -> &mut u8 {
-        match kind {
-            0 => &mut self.queens,
-            1 => &mut self.rooks,
-            2 => &mut self.knights,
-            3 => &mut self.bishops_lb,
-            4 => &mut self.bishops_db,
-            5 => &mut self.chancellors,
-            6 => &mut self.archbishops,
-            7 => &mut self.hawks,
-            8 => &mut self.guards,
-            9 => &mut self.pawns,
-            10 => &mut self.amazons,
-            11 => &mut self.knightriders,
-            _ => &mut self.huygens,
-        }
-    }
-}
-
-/// The cheapest sub-force of `white`'s army that could mate a bare king on an
-/// unbounded board, priced by `cost(kind, n)` for using `n` pieces of a
-/// [`material_kind`]. `None` when the decision tree cannot speak for the army.
-pub(crate) fn cheapest_mating_force(
-    game: &crate::game::GameState,
-    white: bool,
-    cost: impl Fn(u8, u8) -> i64,
-) -> Option<i64> {
-    const KINDS: u8 = 13;
+/// Bounded boards: both sides individually insufficient, or only royals left.
+fn compute_bordered(game: &GameState) -> bool {
     let (w, b) = count_both(&game.board, &game.game_rules);
-    let full = if white { w } else { b };
-    // The tree reads small armies only and does not count extra royals.
-    if full.kings + full.royal_centaurs > 1 || full.others > 0 {
-        return None;
-    }
-    let mut have = [0u8; KINDS as usize];
-    let mut base = Mat {
-        kings: full.kings,
-        royal_centaurs: full.royal_centaurs,
-        ..Mat::default()
-    };
-    let mut probe = full.clone();
-    for kind in 0..KINDS {
-        have[kind as usize] = *probe.slot(kind);
-    }
-    let mut best: Option<i64> = None;
-    // Depth-first over per-kind counts, at most four non-royals per sub-force.
-    fn walk(
-        kind: u8,
-        left: u8,
-        have: &[u8; 13],
-        sub: &mut Mat,
-        spent: i64,
-        cost: &dyn Fn(u8, u8) -> i64,
-        best: &mut Option<i64>,
-    ) {
-        if best.is_some_and(|b| spent >= b) {
-            return;
+    if w.non_royal() == 0 && b.non_royal() == 0 {
+        if w.kings > 0 && b.kings > 0 && w.royal_centaurs == 0 && b.royal_centaurs == 0 {
+            return true;
         }
-        if kind == 13 {
-            if sub.non_royal() > 0 && !is_insufficient(sub) {
-                *best = Some(spent);
-            }
-            return;
+        if w.royal_centaurs > 0 && b.royal_centaurs > 0 && w.kings == 0 && b.kings == 0 {
+            return true;
         }
-        for n in 0..=have[kind as usize].min(left) {
-            *sub.slot(kind) = n;
-            let extra = if n == 0 { 0 } else { cost(kind, n) };
-            walk(kind + 1, left - n, have, sub, spent + extra, cost, best);
-        }
-        *sub.slot(kind) = 0;
     }
-    walk(0, 4, &have, &mut base, 0, &cost, &mut best);
-    best
+    if game.white_royals.len() >= 2 || game.black_royals.len() >= 2 {
+        return false;
+    }
+    is_insufficient_bordered(&w) && is_insufficient_bordered(&b)
+}
+
+/// Bounded-board game handler: [`compute_bordered`] minus the combinations where
+/// a helpmate is possible despite both sides being individually insufficient.
+fn compute_game_handler(game: &GameState) -> bool {
+    let (w, b) = count_both(&game.board, &game.game_rules);
+    compute_bordered(game) && !is_helpmate_only_combo(&w, &b)
 }
 
 /// Helper: checks if all "exotic" pieces are zero.
@@ -238,282 +513,6 @@ fn no_exotic_pieces(m: &Mat) -> bool {
         && m.knightriders == 0
         && m.huygens == 0
         && m.others == 0
-}
-
-// Decision tree for insufficient material detection.
-#[inline]
-fn is_insufficient(m: &Mat) -> bool {
-    // No mating rule covers these, so never declare the draw.
-    if m.others > 0 {
-        return false;
-    }
-    // INSUFFICIENT CASES (return true - cannot deliver mate)
-    // Only royals - no other pieces
-    if no_exotic_pieces(m)
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-    {
-        return true;
-    }
-
-    // Single queen
-    if m.queens == 1
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Less than 4 knights
-    if m.knights < 4
-        && m.queens == 0
-        && m.rooks == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Less than 4 bishops
-    if m.bishops_lb + m.bishops_db < 4
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Without a king, two of queen/rook/bishop/knight cannot mate an unbounded board,
-    // not even as a helpmate; only two queens can.
-    if m.kings == 0
-        && m.royal_centaurs == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-        && m.queens < 2
-        && m.queens + m.rooks + m.knights + m.bishops_lb + m.bishops_db == 2
-    {
-        return true;
-    }
-
-    // Single Chancellor alone
-    if m.chancellors == 1
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-        && m.archbishops == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    // Up to 2 guards alone (3 guards are needed to force mate on the unbounded board)
-    if m.guards <= 2
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.chancellors == 0
-        && m.archbishops == 0
-        && m.hawks == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    // N with bishops
-    if m.knights <= 2
-        && (m.bishops_lb + m.bishops_db) >= 1
-        && m.bishops_lb.min(m.bishops_db) <= 1
-        && m.queens == 0
-        && m.rooks == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Hawk + bishops of a single color (opposite-color pair is a win)
-    if m.hawks == 1
-        && (m.bishops_lb + m.bishops_db) >= 1
-        && m.bishops_lb.min(m.bishops_db) <= 1
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.chancellors == 0
-        && m.archbishops == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    // Up to 2 hawks alone (pure leapers cannot force mate on the unbounded board)
-    if m.hawks >= 1
-        && m.hawks <= 2
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.chancellors == 0
-        && m.archbishops == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    // AB + bishops of a single color (opposite-color pair is a win)
-    if m.archbishops == 1
-        && (m.bishops_lb + m.bishops_db) >= 1
-        && (m.bishops_lb == 0 || m.bishops_db == 0)
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.chancellors == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-    // AB alone, or AB with up to 2 knights
-    if m.archbishops == 1
-        && m.knights <= 2
-        && m.queens == 0
-        && m.rooks == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.chancellors == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    // R alone
-    if m.rooks == 1
-        && m.queens == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // R+N alone
-    if m.rooks == 1
-        && m.knights == 1
-        && m.queens == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // R+single bishop
-    if m.rooks == 1
-        && m.bishops_lb + m.bishops_db == 1
-        && m.queens == 0
-        && m.knights == 0
-        && m.pawns == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Pawns 1-3 alone
-    if m.pawns >= 1
-        && m.pawns <= 3
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && no_exotic_pieces(m)
-    {
-        return true;
-    }
-
-    // Huygens 1-4 alone
-    if m.huygens >= 1
-        && m.huygens <= 4
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.chancellors == 0
-        && m.archbishops == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.knightriders == 0
-    {
-        return true;
-    }
-
-    // Up to 2 knightriders alone (a rider cannot pin a king to a nonexistent edge)
-    if m.knightriders >= 1
-        && m.knightriders <= 2
-        && m.queens == 0
-        && m.rooks == 0
-        && m.knights == 0
-        && m.bishops_lb == 0
-        && m.bishops_db == 0
-        && m.chancellors == 0
-        && m.archbishops == 0
-        && m.hawks == 0
-        && m.guards == 0
-        && m.pawns == 0
-        && m.amazons == 0
-        && m.huygens == 0
-    {
-        return true;
-    }
-
-    false
 }
 
 /// Bordered variant (smaller map).
@@ -620,7 +619,7 @@ fn count_both(board: &Board, rules: &crate::game::GameRules) -> (Mat, Mat) {
         };
 
         match ept {
-            PieceType::King | PieceType::RoyalQueen => m.kings += 1,
+            PieceType::King => m.kings += 1,
             PieceType::RoyalCentaur => m.royal_centaurs += 1,
             PieceType::Queen => m.queens += 1,
             PieceType::Rook => m.rooks += 1,
@@ -653,127 +652,10 @@ fn count_both(board: &Board, rules: &crate::game::GameRules) -> (Mat, Mat) {
     (w, b)
 }
 
-/// Returns true if the position is a draw by insufficient material.
-#[inline]
-pub fn evaluate_insufficient_material(game: &crate::game::GameState) -> bool {
-    if (game.white_piece_count + game.black_piece_count) >= 6 {
-        return false;
-    }
-
-    // Only check insufficient material if both sides have checkmate as win condition
-    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
-        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
-    {
-        return false;
-    }
-
-    let hash = (game.material_hash, crate::moves::get_world_size() <= 200);
-    let has_pawns = game.white_pawn_count > 0 || game.black_pawn_count > 0;
-
-    if !has_pawns {
-        let cached = MATERIAL_CACHE.with(|c| c.borrow().get(&hash).copied());
-        if let Some(result) = cached {
-            return result;
-        }
-    }
-
-    let result = compute(game);
-
-    if !has_pawns {
-        MATERIAL_CACHE.with(|c| {
-            let mut c = c.borrow_mut();
-            if c.len() > 4096 {
-                c.clear();
-            }
-            c.insert(hash, result);
-        });
-    }
-
-    result
-}
-
-#[inline(always)]
-fn compute(game: &crate::game::GameState) -> bool {
-    let bordered = crate::moves::get_world_size() <= 200;
-    let (w, b) = count_both(&game.board, &game.game_rules);
-
-    let w_nr = w.non_royal();
-    let b_nr = b.non_royal();
-
-    // Special: only royals on both sides
-    if w_nr == 0 && b_nr == 0 {
-        if w.kings > 0 && b.kings > 0 && w.royal_centaurs == 0 && b.royal_centaurs == 0 {
-            return true;
-        }
-        if w.royal_centaurs > 0 && b.royal_centaurs > 0 && w.kings == 0 && b.kings == 0 {
-            return true;
-        }
-    }
-
-    // Special: multiple royals on either side
-    if game.white_royals.len() >= 2 || game.black_royals.len() >= 2 {
-        return false;
-    }
-
-    // Special: royal centaur vs amazon (unbounded)
-    if !bordered {
-        if b.royal_centaurs == 1
-            && w.amazons == 1
-            && w_nr == 1
-            && b_nr == 0
-            && w.kings == 0
-            && w.royal_centaurs == 0
-            && b.kings == 0
-        {
-            return true;
-        }
-        if w.royal_centaurs == 1
-            && b.amazons == 1
-            && b_nr == 1
-            && w_nr == 0
-            && b.kings == 0
-            && b.royal_centaurs == 0
-            && w.kings == 0
-        {
-            return true;
-        }
-    }
-
-    // Cross-color: K+R vs K+R (unbounded)
-    if !bordered
-        && w.kings >= 1
-        && b.kings >= 1
-        && w.rooks == 1
-        && b.rooks == 1
-        && w_nr == 1
-        && b_nr == 1
-    {
-        return true;
-    }
-
-    // Check both attack directions (decision tree directly)
-    // Both sides must have a king to reach here (due to checkmate win condition requirement)
-    let w_insuff = if bordered {
-        is_insufficient_bordered(&w)
-    } else {
-        is_insufficient(&w)
-    };
-    if !w_insuff {
-        return false;
-    }
-    let b_insuff = if bordered {
-        is_insufficient_bordered(&b)
-    } else {
-        is_insufficient(&b)
-    };
-
-    w_insuff && b_insuff
-}
-
 /// Whether two individually-insufficient sides still combine into a helpmate-possible
 /// endgame, which game handlers must not auto-declare a draw.
 #[inline]
-fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
+fn is_helpmate_only_combo(a: &Mat, b: &Mat) -> bool {
     // 2B vs Q (either direction)
     let bb_vs_q = |x: &Mat, y: &Mat| {
         (x.bishops_lb + x.bishops_db) == 2
@@ -963,294 +845,185 @@ fn is_helpmate_only_combo(a: &Mat, b: &Mat, bordered: bool) -> bool {
         return true;
     }
 
-    // Bounded-only helpmate combos
-    if bordered {
-        let b_vs_b_opposite = |x: &Mat, y: &Mat| {
-            let x_b = x.bishops_lb + x.bishops_db;
-            let y_b = y.bishops_lb + y.bishops_db;
-            x.queens == 0
-                && x.rooks == 0
-                && x.knights == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == x_b
-                && x_b >= 1
-                && x.bishops_lb > 0
-                && x.bishops_db == 0
-                && y.queens == 0
-                && y.rooks == 0
-                && y.knights == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == y_b
-                && y_b >= 1
-                && y.bishops_db > 0
-                && y.bishops_lb == 0
-        };
-        if b_vs_b_opposite(a, b) || b_vs_b_opposite(b, a) {
-            return true;
-        }
-
-        // N vs B (either direction)
-        let n_vs_b = |x: &Mat, y: &Mat| {
-            x.knights == 1
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 1
-                && (y.bishops_lb + y.bishops_db) == 1
-                && y.queens == 0
-                && y.rooks == 0
-                && y.knights == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == 1
-        };
-        if n_vs_b(a, b) || n_vs_b(b, a) {
-            return true;
-        }
-
-        // N vs N (either direction)
-        let n_vs_n = |x: &Mat, y: &Mat| {
-            x.knights == 1
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 1
-                && y.knights == 1
-                && y.queens == 0
-                && y.rooks == 0
-                && (y.bishops_lb + y.bishops_db) == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == 1
-        };
-        if n_vs_n(a, b) || n_vs_n(b, a) {
-            return true;
-        }
-
-        // N vs 2+ same-color bishops (n_vs_b covers the 1-bishop case above)
-        let n_vs_many_b = |x: &Mat, y: &Mat| {
-            let y_b = y.bishops_lb + y.bishops_db;
-            x.knights == 1
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 1
-                && y_b >= 2
-                && (y.bishops_lb == 0 || y.bishops_db == 0)
-                && y.queens == 0
-                && y.rooks == 0
-                && y.knights == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == y_b
-        };
-        if n_vs_many_b(a, b) || n_vs_many_b(b, a) {
-            return true;
-        }
-
-        // K+2N vs K: helpmate is possible on a bounded board.
-        let two_n_vs_none = |x: &Mat, y: &Mat| {
-            x.knights == 2
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 2
-                && y.non_royal() == 0
-        };
-        if two_n_vs_none(a, b) || two_n_vs_none(b, a) {
-            return true;
-        }
-
-        // 2N vs N
-        let two_n_vs_n = |x: &Mat, y: &Mat| {
-            x.knights == 2
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 2
-                && y.knights == 1
-                && y.queens == 0
-                && y.rooks == 0
-                && (y.bishops_lb + y.bishops_db) == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == 1
-        };
-        if two_n_vs_n(a, b) || two_n_vs_n(b, a) {
-            return true;
-        }
-
-        // 2N vs same-color bishop(s)
-        let two_n_vs_b = |x: &Mat, y: &Mat| {
-            let y_b = y.bishops_lb + y.bishops_db;
-            x.knights == 2
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 2
-                && y_b >= 1
-                && (y.bishops_lb == 0 || y.bishops_db == 0)
-                && y.queens == 0
-                && y.rooks == 0
-                && y.knights == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == y_b
-        };
-        if two_n_vs_b(a, b) || two_n_vs_b(b, a) {
-            return true;
-        }
-
-        // 2N vs 2N
-        let two_n_vs_two_n = |x: &Mat, y: &Mat| {
-            x.knights == 2
-                && x.queens == 0
-                && x.rooks == 0
-                && (x.bishops_lb + x.bishops_db) == 0
-                && x.pawns == 0
-                && no_exotic_pieces(x)
-                && x.non_royal() == 2
-                && y.knights == 2
-                && y.queens == 0
-                && y.rooks == 0
-                && (y.bishops_lb + y.bishops_db) == 0
-                && y.pawns == 0
-                && no_exotic_pieces(y)
-                && y.non_royal() == 2
-        };
-        if two_n_vs_two_n(a, b) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Game-handler variant of `compute`.  Uses raw pawn counts (no pawn→promotion
-/// substitution) and excludes cross-board combinations where helpmate is possible
-/// despite both sides being individually insufficient.
-#[inline(always)]
-fn compute_game_handler(game: &crate::game::GameState) -> bool {
-    let bordered = crate::moves::get_world_size() <= 200;
-    let (w, b) = count_both(&game.board, &game.game_rules);
-
-    let w_nr = w.non_royal();
-    let b_nr = b.non_royal();
-
-    // Special: only royals on both sides
-    if w_nr == 0 && b_nr == 0 {
-        if w.kings > 0 && b.kings > 0 && w.royal_centaurs == 0 && b.royal_centaurs == 0 {
-            return true;
-        }
-        if w.royal_centaurs > 0 && b.royal_centaurs > 0 && w.kings == 0 && b.kings == 0 {
-            return true;
-        }
-    }
-
-    // Special: multiple royals on either side
-    if game.white_royals.len() >= 2 || game.black_royals.len() >= 2 {
-        return false;
-    }
-
-    // Special: royal centaur vs amazon (unbounded)
-    if !bordered {
-        if b.royal_centaurs == 1
-            && w.amazons == 1
-            && w_nr == 1
-            && b_nr == 0
-            && w.kings == 0
-            && w.royal_centaurs == 0
-            && b.kings == 0
-        {
-            return true;
-        }
-        if w.royal_centaurs == 1
-            && b.amazons == 1
-            && b_nr == 1
-            && w_nr == 0
-            && b.kings == 0
-            && b.royal_centaurs == 0
-            && w.kings == 0
-        {
-            return true;
-        }
-    }
-
-    // Cross-color: K+R vs K+R (unbounded)
-    if !bordered
-        && w.kings >= 1
-        && b.kings >= 1
-        && w.rooks == 1
-        && b.rooks == 1
-        && w_nr == 1
-        && b_nr == 1
-    {
+    let b_vs_b_opposite = |x: &Mat, y: &Mat| {
+        let x_b = x.bishops_lb + x.bishops_db;
+        let y_b = y.bishops_lb + y.bishops_db;
+        x.queens == 0
+            && x.rooks == 0
+            && x.knights == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == x_b
+            && x_b >= 1
+            && x.bishops_lb > 0
+            && x.bishops_db == 0
+            && y.queens == 0
+            && y.rooks == 0
+            && y.knights == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == y_b
+            && y_b >= 1
+            && y.bishops_db > 0
+            && y.bishops_lb == 0
+    };
+    if b_vs_b_opposite(a, b) || b_vs_b_opposite(b, a) {
         return true;
     }
 
-    let w_insuff = if bordered {
-        is_insufficient_bordered(&w)
-    } else {
-        is_insufficient(&w)
+    // N vs B (either direction)
+    let n_vs_b = |x: &Mat, y: &Mat| {
+        x.knights == 1
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 1
+            && (y.bishops_lb + y.bishops_db) == 1
+            && y.queens == 0
+            && y.rooks == 0
+            && y.knights == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == 1
     };
-    if !w_insuff {
-        return false;
+    if n_vs_b(a, b) || n_vs_b(b, a) {
+        return true;
     }
-    let b_insuff = if bordered {
-        is_insufficient_bordered(&b)
-    } else {
-        is_insufficient(&b)
+
+    // N vs N (either direction)
+    let n_vs_n = |x: &Mat, y: &Mat| {
+        x.knights == 1
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 1
+            && y.knights == 1
+            && y.queens == 0
+            && y.rooks == 0
+            && (y.bishops_lb + y.bishops_db) == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == 1
     };
-    if !b_insuff {
-        return false;
+    if n_vs_n(a, b) || n_vs_n(b, a) {
+        return true;
     }
 
-    // Both sides are individually insufficient. Check for helpmate-only combos
-    // that game handlers must not auto-declare as draws.
-    if is_helpmate_only_combo(&w, &b, bordered) {
-        return false;
+    // N vs 2+ same-color bishops (n_vs_b covers the 1-bishop case above)
+    let n_vs_many_b = |x: &Mat, y: &Mat| {
+        let y_b = y.bishops_lb + y.bishops_db;
+        x.knights == 1
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 1
+            && y_b >= 2
+            && (y.bishops_lb == 0 || y.bishops_db == 0)
+            && y.queens == 0
+            && y.rooks == 0
+            && y.knights == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == y_b
+    };
+    if n_vs_many_b(a, b) || n_vs_many_b(b, a) {
+        return true;
     }
 
-    true
-}
-
-/// Whether the position is a draw by insufficient material for game handlers. Unlike
-/// `evaluate_insufficient_material` it neither substitutes pawns with their best
-/// promotion nor treats helpmate-only endgames as draws.
-#[inline]
-pub fn evaluate_insufficient_material_game_handler(game: &crate::game::GameState) -> bool {
-    if (game.white_piece_count + game.black_piece_count) >= 6 {
-        return false;
+    // K+2N vs K: helpmate is possible on a bounded board.
+    let two_n_vs_none = |x: &Mat, y: &Mat| {
+        x.knights == 2
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 2
+            && y.non_royal() == 0
+    };
+    if two_n_vs_none(a, b) || two_n_vs_none(b, a) {
+        return true;
     }
 
-    if game.game_rules.white_win_condition != crate::game::WinCondition::Checkmate
-        || game.game_rules.black_win_condition != crate::game::WinCondition::Checkmate
-    {
-        return false;
+    // 2N vs N
+    let two_n_vs_n = |x: &Mat, y: &Mat| {
+        x.knights == 2
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 2
+            && y.knights == 1
+            && y.queens == 0
+            && y.rooks == 0
+            && (y.bishops_lb + y.bishops_db) == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == 1
+    };
+    if two_n_vs_n(a, b) || two_n_vs_n(b, a) {
+        return true;
     }
 
-    compute_game_handler(game)
+    // 2N vs same-color bishop(s)
+    let two_n_vs_b = |x: &Mat, y: &Mat| {
+        let y_b = y.bishops_lb + y.bishops_db;
+        x.knights == 2
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 2
+            && y_b >= 1
+            && (y.bishops_lb == 0 || y.bishops_db == 0)
+            && y.queens == 0
+            && y.rooks == 0
+            && y.knights == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == y_b
+    };
+    if two_n_vs_b(a, b) || two_n_vs_b(b, a) {
+        return true;
+    }
+
+    // 2N vs 2N
+    let two_n_vs_two_n = |x: &Mat, y: &Mat| {
+        x.knights == 2
+            && x.queens == 0
+            && x.rooks == 0
+            && (x.bishops_lb + x.bishops_db) == 0
+            && x.pawns == 0
+            && no_exotic_pieces(x)
+            && x.non_royal() == 2
+            && y.knights == 2
+            && y.queens == 0
+            && y.rooks == 0
+            && (y.bishops_lb + y.bishops_db) == 0
+            && y.pawns == 0
+            && no_exotic_pieces(y)
+            && y.non_royal() == 2
+    };
+    if two_n_vs_two_n(a, b) {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::board::{Board, Piece, PieceType, PlayerColor};
-    use crate::game::{GameRules, GameState, PromotionRanks};
+    use crate::game::{GameRules, GameState, PromotionRanks, WinCondition};
 
     fn create_test_game_with_pieces(pieces: &[(i64, i64, PieceType, PlayerColor)]) -> GameState {
         let mut game = GameState::new();
@@ -1266,24 +1039,27 @@ mod tests {
         game
     }
 
-    /// infinitechess.org's insuffmat table lists no scenario containing a
-    /// centaur, rose, camel, giraffe or zebra, so `isSubsumedBy` can never match
-    /// one and the site always calls such a position sufficient. These five were
-    /// dropped on the floor here, making a won position adjudicate as a draw.
+    /// Two centaurs plus a king mate; two camels, giraffes, zebras or roses
+    /// never can, not even as a helpmate.
     #[test]
-    fn unlisted_fairy_armies_are_never_called_insufficient() {
+    fn fairy_pairs_follow_the_table() {
         use PieceType as P;
-        for pt in [P::Centaur, P::Rose, P::Camel, P::Giraffe, P::Zebra] {
+        for (pt, dead) in [
+            (P::Centaur, false),
+            (P::Rose, true),
+            (P::Camel, true),
+            (P::Giraffe, true),
+            (P::Zebra, true),
+        ] {
             let game = create_test_game_with_pieces(&[
                 (0, 0, P::King, PlayerColor::White),
                 (1, 5, pt, PlayerColor::White),
                 (0, 4, pt, PlayerColor::White),
                 (0, 2, P::King, PlayerColor::Black),
             ]);
-            assert!(
-                !evaluate_insufficient_material(&game),
-                "two {pt:?} plus a king is not an insufficient-material draw"
-            );
+            assert_eq!(evaluate_insufficient_material(&game), dead, "K+2 {pt:?}");
+            let handler = evaluate_insufficient_material_game_handler(&game);
+            assert_eq!(handler, dead, "K+2 {pt:?}");
         }
     }
 
@@ -1880,19 +1656,16 @@ mod tests {
         );
     }
 
-    // [2] Two guards cannot force mate on the unbounded board (3 are needed).
+    // Two guards cannot force mate, but a bare king can walk into one.
     #[test]
-    fn test_king_2guards_vs_king_insufficient() {
+    fn test_king_2guards_vs_king_can_helpmate() {
         let game = create_test_game_with_pieces(&[
             (0, 0, PieceType::King, PlayerColor::White),
             (1, 0, PieceType::Guard, PlayerColor::White),
             (2, 0, PieceType::Guard, PlayerColor::White),
             (5, 5, PieceType::King, PlayerColor::Black),
         ]);
-        assert!(
-            evaluate_insufficient_material(&game),
-            "K+2 Guards vs K is a draw on the unbounded board"
-        );
+        assert!(!evaluate_insufficient_material(&game), "K+2 Guards vs K");
     }
 
     #[test]
@@ -1990,7 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn test_king_hawk_opposite_bishops_vs_king_insufficient() {
+    fn test_king_hawk_opposite_bishops_vs_king_can_helpmate() {
         // Opposite-color bishops: (1,1) even parity, (1,2) odd parity.
         let game = create_test_game_with_pieces(&[
             (0, 0, PieceType::King, PlayerColor::White),
@@ -2000,8 +1773,8 @@ mod tests {
             (5, 5, PieceType::King, PlayerColor::Black),
         ]);
         assert!(
-            evaluate_insufficient_material(&game),
-            "K+Hawk+opposite-color Bishops vs K is a draw"
+            !evaluate_insufficient_material(&game),
+            "K+Hawk+opposite-color Bishops vs K"
         );
     }
 
@@ -2048,6 +1821,66 @@ mod tests {
             evaluate_insufficient_material(&game),
             "K+2 Knightriders vs K is a draw"
         );
+    }
+
+    #[test]
+    fn a_void_keeps_the_game_going_but_scores_dead() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w K0,0|Q3,1|k10,10|vo20,20");
+        assert!(evaluate_insufficient_material(&game));
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+    }
+
+    #[test]
+    fn promotable_pawns_count_every_promotion() {
+        let mut game = GameState::new();
+        // Two queens mate a king, so two pawns that can still promote might.
+        game.setup_position_from_icn("w (8;q,r,b,n|1;q,r,b,n) K0,0|P3,2|P5,2|k10,10");
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        // Past their promotion rank they stay pawns, which never mate.
+        game.setup_position_from_icn("w (8;q,r,b,n|1;q,r,b,n) K0,0|P3,9|P5,9|k10,10");
+        assert!(evaluate_insufficient_material_game_handler(&game));
+        assert!(evaluate_insufficient_material(&game));
+    }
+
+    #[test]
+    fn a_side_without_royals_is_tabled() {
+        use PieceType as P;
+        let black = PlayerColor::Black;
+        let game = create_test_game_with_pieces(&[
+            (0, 0, P::RoyalQueen, black),
+            (3, 1, P::Queen, black),
+            (5, 5, P::Knight, black),
+        ]);
+        assert!(evaluate_insufficient_material_game_handler(&game));
+        let white = PlayerColor::White;
+        let game = create_test_game_with_pieces(&[
+            (0, 0, P::Queen, white),
+            (3, 1, P::Queen, white),
+            (10, 10, P::King, black),
+        ]);
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        assert!(!evaluate_insufficient_material(&game));
+    }
+
+    /// A lone knight can never mate, so White is capped; Black wins by capturing
+    /// every piece, so the position is no draw and Black stays uncapped.
+    #[test]
+    fn a_capture_all_opponent_keeps_the_game_alive() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w N0,0|k10,10");
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        assert!(!evaluate_insufficient_material(&game));
+        assert!(side_cannot_mate(&game, true));
+        assert_eq!(game.game_rules.black_win_condition, WinCondition::AllPiecesCaptured);
+    }
+
+    #[test]
+    fn a_royal_queen_mates_like_a_queen() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w K0,0|rq10,10|q12,13");
+        assert!(!evaluate_insufficient_material(&game));
+        assert!(!evaluate_insufficient_material_game_handler(&game));
     }
 
     /// K+Q vs K+2B is only drawn without help, so the game goes on; the eval still

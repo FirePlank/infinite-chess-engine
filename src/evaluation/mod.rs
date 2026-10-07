@@ -5,6 +5,7 @@ pub mod base;
 pub mod eval_kind;
 pub mod helpers;
 pub mod insufficient_material;
+pub mod mating_sets;
 pub mod mop_up;
 pub mod params;
 pub mod piece_reach;
@@ -55,25 +56,13 @@ fn compute_mop_up_term(game: &GameState) -> i32 {
 /// is capped at zero, and the search still finds any mate the opponent walks into.
 /// A side that wins another way (e.g. capturing every piece) is never capped.
 fn apply_cannot_mate_cap(game: &GameState, eval: i32) -> i32 {
-    // The tree counts neither a second royal of ours nor a second enemy one, and
-    // several enemy royals open mates it does not know (one check on two kings).
     let cannot_mate = |white: bool| {
-        let (win_condition, royals, enemy_royals) = if white {
-            (
-                game.game_rules.white_win_condition,
-                game.white_royals.len(),
-                game.black_royals.len(),
-            )
+        let win_condition = if white {
+            game.game_rules.white_win_condition
         } else {
-            (
-                game.game_rules.black_win_condition,
-                game.black_royals.len(),
-                game.white_royals.len(),
-            )
+            game.game_rules.black_win_condition
         };
         win_condition == crate::game::WinCondition::Checkmate
-            && royals <= 1
-            && enemy_royals <= 1
             && insufficient_material::side_cannot_mate(game, white)
     };
     // `eval` is from the side to move's view.
