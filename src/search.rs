@@ -4073,40 +4073,45 @@ fn update_quiet_best_stats(
     let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
         .min(history_bonus_cap());
 
-    searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
-    searcher.update_pawn_history(
-        pawn_hash,
-        m.piece.piece_type(),
-        idx,
-        bonus * pawn_history_bonus_scale(),
-    );
-
-    searcher.update_low_ply_history(ply, low_ply_key(m), bonus);
-
     // The quiets a cutoff beat are pushed down harder than it is pushed up.
     let malus = bonus * 5 / 4;
+    // Near the leaves almost any decent first quiet cuts; crediting that spreads noise
+    // over aliased buckets, so only the killer and countermove learn it (Ethereal).
+    let easy_cut = quiets_searched.len() <= 1 && depth <= 3;
 
-    for quiet in quiets_searched {
-        let qidx = hash_move_dest(quiet);
-        if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
-            continue;
-        }
-        searcher.update_history(
-            quiet.piece.color(),
-            quiet.piece.piece_type(),
-            qidx,
-            -malus,
-        );
+    if !easy_cut {
+        searcher.update_history(m.piece.color(), m.piece.piece_type(), idx, bonus);
         searcher.update_pawn_history(
             pawn_hash,
-            quiet.piece.piece_type(),
-            qidx,
-            -malus * pawn_history_malus_scale(),
+            m.piece.piece_type(),
+            idx,
+            bonus * pawn_history_bonus_scale(),
         );
-        // A quiet sharing the cutoff move's key would cancel its bonus.
-        let qkey = low_ply_key(quiet);
-        if qkey != low_ply_key(m) {
-            searcher.update_low_ply_history(ply, qkey, -malus);
+
+        searcher.update_low_ply_history(ply, low_ply_key(m), bonus);
+
+        for quiet in quiets_searched {
+            let qidx = hash_move_dest(quiet);
+            if quiet.piece.piece_type() == m.piece.piece_type() && qidx == idx {
+                continue;
+            }
+            searcher.update_history(
+                quiet.piece.color(),
+                quiet.piece.piece_type(),
+                qidx,
+                -malus,
+            );
+            searcher.update_pawn_history(
+                pawn_hash,
+                quiet.piece.piece_type(),
+                qidx,
+                -malus * pawn_history_malus_scale(),
+            );
+            // A quiet sharing the cutoff move's key would cancel its bonus.
+            let qkey = low_ply_key(quiet);
+            if qkey != low_ply_key(m) {
+                searcher.update_low_ply_history(ply, qkey, -malus);
+            }
         }
     }
 
@@ -4132,6 +4137,10 @@ fn update_quiet_best_stats(
             searcher.countermoves[hist_color(m.piece.color())][prev_from_hash]
                 [prev_to_hash] = (m.piece.piece_type() as u8, m.to.x as i32, m.to.y as i32);
         }
+    }
+
+    if easy_cut {
+        return;
     }
 
     // Continuation history update
