@@ -6153,6 +6153,9 @@ fn quiescence(
 
     let mut legal_moves = 0;
     let delta_margin = delta_margin();
+    // The bar each capture must clear is set by the stand-pat, not the running best: a
+    // sibling's search result says nothing about the next capture's gain (Stockfish).
+    let stand_pat = best_value;
 
     let prev_sq = if ply > 0 {
         searcher
@@ -6237,7 +6240,7 @@ fn quiescence(
             let floor = if qs_ply >= QS_EVEN_TRADE_PLY { 1 } else { -37 };
             let need = floor.max(
                 alpha
-                    .saturating_sub(best_value)
+                    .saturating_sub(stand_pat)
                     .saturating_sub(delta_margin),
             );
             if !see_ge(game, m, need) {
