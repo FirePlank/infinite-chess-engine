@@ -5261,7 +5261,44 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 searcher.capture_history_stack[ply] = capture_backup;
                 return se_value;
             } else if tt_value.is_some_and(|v| v >= beta) {
-                // Negative extension: TT move is assumed to fail high but wasn't singular
+                // A deeper exclusion probe aimed at beta itself can prove the multi-cut the
+                // shallow one missed (Stockfish Classic); failing that, the TT move is
+                // assumed to fail high but isn't singular, so it takes the negative extension.
+                game.undo_move(&m, undo);
+                searcher.prev_move_stack[ply] = prev_entry_backup;
+                searcher.move_history[ply] = move_history_backup;
+                searcher.moved_piece_history[ply] = piece_history_backup;
+                searcher.in_check_history[ply] = in_check_backup;
+                searcher.capture_history_stack[ply] = capture_backup;
+                let probe = negamax(&mut NegamaxContext {
+                    searcher,
+                    game,
+                    depth: (depth + 3) / 2,
+                    ply,
+                    alpha: beta - 1,
+                    beta,
+                    allow_null: false,
+                    node_type: if cut_node {
+                        NodeType::Cut
+                    } else {
+                        NodeType::All
+                    },
+                    was_null_move: ctx.was_null_move,
+                    excluded_move: Some(m),
+                });
+                if searcher.hot.stopped {
+                    return 0;
+                }
+                if probe >= beta {
+                    return beta;
+                }
+                undo = game.make_move(&m);
+                searcher.prev_move_stack[ply] = (from_hash, to_hash);
+                searcher.move_history[ply] = Some(m);
+                searcher.moved_piece_history[ply] = p_type as u8;
+                searcher.in_check_history[ply] = in_check;
+                searcher.capture_history_stack[ply] = is_capture;
+                searcher.move_count_stack[ply] = legal_moves.min(u16::MAX as usize) as u16;
                 extension = -3;
             } else if cut_node {
                 // On cut nodes, if TT move isn't assumed to fail high, reduce it
