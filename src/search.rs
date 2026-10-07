@@ -5405,6 +5405,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
+                // A late parent move makes this an expected cut node, whose refutation has
+                // to be found at full strength (Stockfish Classic, scaled to board width).
+                let late_parent = if world_size <= LMP_BOUNDED_WORLD { 25 } else { 40 };
+                if ply > 0 && searcher.move_count_stack[ply - 1] as usize > late_parent {
+                    reduction -= 1;
+                }
+
                 // Ensure reduction stays in valid range [0, depth-2]. The upper
                 // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
                 // and clamp panics when min > max.
