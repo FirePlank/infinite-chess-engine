@@ -4576,7 +4576,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             return alpha;
         }
-        // The mirror case: a lower bound one ply short far above beta.
+        // Likewise a lower bound one ply short far above beta almost never falls below it.
         if fails_high
             && rule50_ok
             && (tt_data_depth as usize) + 1 >= depth
