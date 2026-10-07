@@ -4395,6 +4395,28 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         false
     };
 
+    // A position no checkmate can ever come from is scored like a tablebase draw:
+    // exact, stored deep, before any static eval or correction can touch it.
+    if ply > 0
+        && ctx.excluded_move.is_none()
+        && crate::evaluation::insufficient_material::is_dead_draw(game)
+    {
+        store_tt_with_shared(
+            searcher,
+            &StoreContext {
+                hash,
+                depth: (depth + 6).min(MAX_PLY - 1),
+                flag: TTFlag::Exact,
+                score: 0,
+                static_eval: INFINITY + 1,
+                is_pv: tt_pv,
+                best_move: None,
+                ply,
+            },
+        );
+        return 0;
+    }
+
     // Static evaluation for pruning decisions
     let prev_move_idx = if ply > 0 {
         let (from_hash, to_hash) = searcher.prev_move_stack[ply - 1];
@@ -4559,6 +4581,22 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && searcher.move_count_stack[ply - 1] <= 3
             {
                 searcher.update_prior_cont_history(ply, -history_bonus_cap());
+            }
+            // A quiet TT move behind a fail-low cutoff did not hold: push it down in the
+            // main history (Stockfish Classic).
+            if !fails_high
+                && let Some(tm) = tt_move
+                && !game.board.is_occupied(tm.to.x, tm.to.y)
+                && tm.promotion.is_none()
+            {
+                let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap());
+                searcher.update_history(
+                    tm.piece.color(),
+                    tm.piece.piece_type(),
+                    hash_move_dest(&tm),
+                    -malus,
+                );
             }
             if !tt_cut_refuted_by_child(searcher, game, tt_move, tt_s, beta, depth, ply) {
                 return tt_s;
