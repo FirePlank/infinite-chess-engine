@@ -97,3 +97,11 @@ Replays game corpora and writes the eval net's training records: the HCE feature
 ```bash
 cargo run --release --bin export_eval_features --features data_gen -- --sprt-dir games/sprt --out evalnet/mix.bin
 ```
+
+### 10. Insufficient-Material Table Builder (`insuffmat_build.rs`)
+
+Builds `src/evaluation/insuffmat_unbounded.bin`, one bit per piece set of up to 5 pieces, from infinitechess.org's generated mating-set tables (`mates-N.tsv`, `draws-N.txt`). It fails if any set is neither a listed draw nor contains a listed mate. Rerun it whenever the site regenerates its tables.
+
+```bash
+cargo run --release --bin insuffmat_build -- <tables dir>
+```

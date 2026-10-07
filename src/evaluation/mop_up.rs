@@ -1950,14 +1950,16 @@ fn evaluate_mop_up_core(
 }
 
 /// Moves the winner needs to bring a force that can mate into the net around the
-/// enemy king: the cheapest sub-force the insufficiency tree accepts, priced by
+/// enemy king: the cheapest sub-force the mating-set table accepts, priced by
 /// how far its slow pieces are. Sliders join from anywhere and cost nothing.
 fn essential_lag(game: &GameState, enemy_king: &Coordinate, winning_color: PlayerColor) -> i32 {
-    use super::insufficient_material::{cheapest_mating_force, material_kind};
+    use super::insufficient_material::{
+        MATERIAL_KINDS, PAWN_MATERIAL_KIND, cheapest_mating_force, material_kind,
+    };
     let is_white = winning_color == PlayerColor::White;
     let rules = &game.game_rules;
     // Per kind, the join cost of each piece; the cheapest are used first.
-    let mut costs: [smallvec::SmallVec<[i64; 4]>; 13] = Default::default();
+    let mut costs: [smallvec::SmallVec<[i64; 4]>; MATERIAL_KINDS] = Default::default();
     let mut any_slow = false;
     for (x, y, piece) in game.board.iter_pieces_by_color(is_white) {
         let pt = piece.piece_type();
@@ -1968,7 +1970,7 @@ fn essential_lag(game: &GameState, enemy_king: &Coordinate, winning_color: Playe
         let lag = match pt {
             // A pawn only walks forward: a king ahead is met by the pawn's own
             // march, one beside or behind it has to be herded back in front.
-            PieceType::Pawn if kind == 9 => {
+            PieceType::Pawn if kind == PAWN_MATERIAL_KIND => {
                 let ahead = (enemy_king.y - y) * if is_white { 1 } else { -1 };
                 let side = (dx - 1).max(0);
                 if ahead >= 1 {
@@ -2219,11 +2221,11 @@ mod tests {
         assert_eq!(lag("w 0/100 1 K0,0|Q3,3|N5,5|k20,20"), 6);
         // Q+N+N: either knight will do, so the nearer one is priced.
         assert_eq!(lag("w 0/100 1 K0,0|Q3,3|N5,5|N17,17|k20,20"), 0);
-        // Kingless 2R cannot mate: the knight (cheaper than the pawn) must join.
-        assert_eq!(lag("w 0/100 1 R0,0|R3,3|N5,5|P1,1|k20,20"), 6);
+        // Kingless 2R+N cannot mate even with help: the far pawn must join too.
+        assert_eq!(lag("w 0/100 1 R0,0|R3,3|N5,5|P1,1|k20,20"), ESSENTIAL_LAG_CAP as i32);
         // With a king the two rooks mate alone, so nothing slow is needed.
         assert_eq!(lag("w 0/100 1 K9,0|R0,0|R3,3|N5,5|P1,1|k20,20"), 0);
-        // Two kings: the tree does not count the second royal, so it says nothing.
+        // Two kings: the force is not priced, so nothing is needed.
         assert_eq!(lag("w 0/100 1 K0,0|K3,3|R5,5|N9,9|k20,20"), 0);
     }
 
