@@ -1173,6 +1173,9 @@ pub struct Searcher {
 
     /// Cutoffs per ply, raising LMR when the next ply fails high often.
     pub cutoff_cnt: Vec<u8>,
+    /// Whether each ply's node found a TT entry, so a child can tell the parent's
+    /// first non-TT move apart.
+    pub tt_hit_stack: Vec<bool>,
 
     /// Dynamic move rule limit (e.g. 100 for 50-move rule)
     pub move_rule_limit: i32,
@@ -1315,6 +1318,7 @@ impl Searcher {
             reduction_stack: vec![0; MAX_PLY],
             move_count_stack: vec![0; MAX_PLY],
             cutoff_cnt: vec![0; MAX_PLY + 2], // +2 for (ply+2) access pattern
+            tt_hit_stack: vec![false; MAX_PLY + 2],
             move_rule_limit: 100,             // Default, will be updated from GameState
             contempt: CONTEMPT,
             low_ply_history: unsafe {
@@ -4384,6 +4388,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         } else {
             (false, None, None, INFINITY + 1, 0, false, TTFlag::None)
         };
+    searcher.tt_hit_stack[ply] = tt_hit_node;
 
     // Check if TT move is a capture (for RFP and Singular Extensions)
     let tt_capture = if let Some(m) = tt_move {
@@ -5629,6 +5634,19 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let bonus = (history_bonus_base() * depth as i32 - history_bonus_sub())
                     .min(history_bonus_cap());
                 searcher.update_capture_history(m.piece.piece_type(), cap_type, bonus);
+            }
+            // The parent's first non-TT quiet reply, refuted here, was ordered too high
+            // (Stockfish's early-reply penalty).
+            if ply > 0
+                && !searcher.capture_history_stack[ply - 1]
+                && searcher.move_count_stack[ply - 1] as usize
+                    == 1 + searcher.tt_hit_stack[ply - 1] as usize
+            {
+                let malus = (history_bonus_base() * depth as i32 - history_bonus_sub())
+                    .min(history_bonus_cap())
+                    * 5
+                    / 4;
+                searcher.update_prior_cont_history(ply, -malus * 713 / 1024);
             }
             break;
         } else if let Some(cap_type) = captured_type {
