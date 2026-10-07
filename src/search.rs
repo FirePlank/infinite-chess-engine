@@ -2422,16 +2422,14 @@ fn search_with_searcher(
                     break;
                 }
 
-                // The fail-soft result predicts the true score better than the previous
-                // iteration did, so the widened bound is set from it and the opposite bound
-                // closes in (Stockfish).
                 if result <= alpha {
+                    // Failed low - widen alpha
                     window_size *= aspiration_fail_mult();
-                    beta = (alpha + beta) / 2;
-                    alpha = result.saturating_sub(window_size).max(-INFINITY);
+                    alpha = searcher.prev_score - window_size;
                 } else if result >= beta {
+                    // Failed high - widen beta
                     window_size *= aspiration_fail_mult();
-                    beta = result.saturating_add(window_size).min(INFINITY);
+                    beta = searcher.prev_score + window_size;
                 } else {
                     // Score within window
                     break;
