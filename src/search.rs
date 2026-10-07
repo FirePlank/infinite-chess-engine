@@ -4577,6 +4577,20 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             return alpha;
         }
+        // Two plies short, the same holds at twice the margin.
+        let margin2 = 2 * (100 + 15 * depth as i32);
+        if (tt_data_depth as usize) + 2 == depth
+            && rule50_ok
+            && !is_decisive(tt_s)
+            && ((!fails_high
+                && (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+                && tt_s + margin2 <= alpha)
+                || (fails_high
+                    && (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
+                    && tt_s - margin2 >= beta))
+        {
+            return if fails_high { beta } else { alpha };
+        }
         // Likewise a lower bound one ply short far above beta almost never falls below it.
         if fails_high
             && rule50_ok
