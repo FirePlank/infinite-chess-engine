@@ -4566,13 +4566,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         // An upper bound one ply short but far under alpha almost never re-searches
-        // above it, so it cuts too (Ethereal's TT research margin).
+        // above it, so it cuts too (Ethereal's TT research margin). Deeper entries drift
+        // more between depths, so the margin grows with depth.
         if !fails_high
             && rule50_ok
             && (tt_data_depth as usize) + 1 >= depth
             && (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
             && !is_decisive(tt_s)
-            && tt_s + 175 <= alpha
+            && tt_s + 100 + 15 * depth as i32 <= alpha
         {
             return alpha;
         }
@@ -4582,7 +4583,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && (tt_data_depth as usize) + 1 >= depth
             && (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
             && !is_decisive(tt_s)
-            && tt_s - 175 >= beta
+            && tt_s - 100 - 15 * depth as i32 >= beta
         {
             return beta;
         }
