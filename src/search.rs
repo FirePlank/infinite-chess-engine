@@ -4572,7 +4572,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             && (tt_data_depth as usize) + 1 >= depth
             && (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
             && !is_decisive(tt_s)
-            && tt_s + 175 <= alpha
+            && tt_s + 125 <= alpha
         {
             return alpha;
         }
