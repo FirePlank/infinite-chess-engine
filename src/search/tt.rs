@@ -423,9 +423,10 @@ impl LocalTranspositionTable {
                     }
                     return;
                 }
-                // Priority = depth (+PV bonus), penalized by generation age.
+                // Priority = depth (+PV bonus), penalized by generation age. Age counts
+                // double, as in Stockfish: an entry from an earlier move yields sooner.
                 let priority = (e.depth as i32 + 3 + if e.is_pv() { 2 } else { 0 })
-                    - (e.relative_age(self.generation) as i32);
+                    - 2 * (e.relative_age(self.generation) as i32);
                 if priority < worst {
                     worst = priority;
                     replace_idx = i;
