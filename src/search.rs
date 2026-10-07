@@ -4749,7 +4749,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         && !in_check
         && depth >= probcut_min_depth()
         && !is_decisive(beta)
-        && tt_value.is_none_or(|v| v >= prob_cut_beta)
+        && (tt_value.is_none_or(|v| v >= prob_cut_beta) || (tt_data_depth as usize) + 3 < depth)
     {
         // Chess measured best one ply shallower than the other variants.
         let depth_sub = probcut_depth_sub() as i32
