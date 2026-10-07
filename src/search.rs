@@ -5004,34 +5004,18 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 let ph_idx = (game.pawn_hash & PAWN_HISTORY_MASK) as usize;
                 let pawn_h = searcher.pawn_hist(ph_idx, p_type as usize, hist_idx);
                 let mut cont_h = 0i32;
-                let mut cont_min = i32::MAX;
                 {
                     let cf = hash_coord_16(m.from.x, m.from.y);
                     let ct = hash_coord_16(m.to.x, m.to.y);
                     let side = 3 * hist_color(m.piece.color());
                     for &(ci, pc, pi, pp, pt_h) in movegen.cont_history_indices.iter() {
                         if ci < 2 {
-                            let v =
+                            cont_h +=
                                 searcher.cont_history[ci + side][pc][pi][pp][pt_h][cf][ct] as i32;
-                            cont_h += v;
-                            cont_min = cont_min.min(v);
                         }
                     }
                 }
                 let history = main_hist + pawn_h + cont_h;
-
-                // One badly failing continuation context is enough to prune near the
-                // leaves; a sum lets main history dilute it (Ethereal). Killers keep theirs.
-                let is_killer = searcher.killers[ply]
-                    .iter()
-                    .any(|k| k.is_some_and(|k| k.from == m.from && k.to == m.to));
-                if lmr_depth <= 3 - improving as i32
-                    && cont_min < if improving { -2500 } else { -1000 }
-                    && !is_killer
-                    && !is_obstocean_breakout
-                {
-                    continue;
-                }
 
                 // History-based pruning: skip moves with very bad history
                 if history < -4083 * depth as i32 && !is_obstocean_breakout {
