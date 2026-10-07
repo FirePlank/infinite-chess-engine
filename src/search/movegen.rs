@@ -125,7 +125,7 @@ pub struct StagedMoveGen {
     excluded_move: Option<Move>,
 
     // Pre-calculated continuation history pointers for the current ply.
-    pub(crate) cont_history_indices: smallvec::SmallVec<[ContHistoryIndex; 4]>,
+    pub(crate) cont_history_indices: smallvec::SmallVec<[ContHistoryIndex; 3]>,
 
     // Side-to-move pin map, computed once per node and shared by the capture
     // and quiet stages.
@@ -755,10 +755,10 @@ impl StagedMoveGen {
         let cur_from_hash = hash_coord_16(m.from.x, m.from.y);
         let cur_to_hash = hash_coord_16(m.to.x, m.to.y);
 
-        const CONT_WEIGHTS: [i32; 4] = [1024, 712, 410, 412];
+        const CONT_WEIGHTS: [i32; 3] = [1024, 712, 410];
         for &(idx, prev_cap, prev_ic, prev_piece, prev_to_h) in &self.cont_history_indices {
             // Access: cont_history[idx][prev_cap][prev_ic][prev_piece][prev_to_h][cur_from_hash][cur_to_hash]
-            let slot = idx + 4 * crate::search::hist_color(m.piece.color());
+            let slot = idx + 3 * crate::search::hist_color(m.piece.color());
             let val = searcher.cont_history[slot][prev_cap][prev_ic][prev_piece][prev_to_h]
                 [cur_from_hash][cur_to_hash] as i32;
             score += (val * CONT_WEIGHTS[idx]) / 1024;
@@ -1109,7 +1109,7 @@ impl StagedMoveGen {
             return;
         }
         let ply = self.ply;
-        let offsets = [1usize, 2, 4, 6];
+        let offsets = [1usize, 2, 4];
         for (idx, &plies_ago) in offsets.iter().enumerate() {
             if let Some(prev_idx) = ply.checked_sub(plies_ago)
                 && let Some(Some(prev_move)) = searcher.move_history.get(prev_idx)
