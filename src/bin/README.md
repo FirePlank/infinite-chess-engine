@@ -100,8 +100,16 @@ cargo run --release --bin export_eval_features --features data_gen -- --sprt-dir
 
 ### 10. Insufficient-Material Table Builder (`insuffmat_build.rs`)
 
-Builds `src/evaluation/insuffmat_unbounded.bin`, one bit per piece set of up to 5 pieces, from infinitechess.org's generated mating-set tables (`mates-N.tsv`, `draws-N.txt`). It fails if any set is neither a listed draw nor contains a listed mate. Rerun it whenever the site regenerates its tables.
+Builds `src/evaluation/insuffmat_unbounded.bin`, two bits per piece set of up to 5 pieces: whether any mate is possible, from infinitechess.org's generated mating-set tables (`mates-N.tsv`, `draws-N.txt`), and whether an army can only mate with the defender's help, from `src/evaluation/insuffmat_helpmate_only.txt`. It fails if any set is neither a listed draw nor contains a listed mate. Rerun it whenever the site regenerates its tables.
 
 ```bash
-cargo run --release --bin insuffmat_build -- <tables dir>
+cargo run --release --bin insuffmat_build -- <tables dir> src/evaluation/insuffmat_helpmate_only.txt
+```
+
+### 11. Forced-Mate Classifier (`forced_gen.rs`)
+
+Labels every army that can mate a lone set of royals as forced, helpmate-only or unknown. Helpmate-only is only ever proved, by a walk back from every checkmate on a frame that only gives the attacker extra power; unknown is treated as forced. Its `escape.txt` is the helpmate-only list above; `FORCED_VERIFY=<list>` re-checks a list with the forced prover, which must find no mate.
+
+```bash
+cargo run --release --bin forced_gen -- <out dir> [threads] [budget]
 ```

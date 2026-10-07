@@ -55,7 +55,7 @@ pub fn side_cannot_mate(game: &GameState, white: bool) -> bool {
         let mut army = Army::default();
         army.push_side(game, white, false)
             && army.push_side(game, !white, true)
-            && army.dead(&army.promotion_kinds(&game.game_rules))
+            && army.helpless(&army.promotion_kinds(&game.game_rules), white)
     };
     if pawns > 0 {
         return v;
@@ -181,11 +181,23 @@ impl Army {
     /// promote to among `kinds`.
     #[inline]
     fn dead(&self, kinds: &[u8]) -> bool {
+        self.for_all_promotions(kinds, &mating_sets::is_dead)
+    }
+
+    /// Whether one side's pieces facing only the enemy royals (as [`Army::alone`]
+    /// builds them) can never force mate, whatever its pawns promote to.
+    #[inline]
+    fn helpless(&self, kinds: &[u8], white: bool) -> bool {
+        self.for_all_promotions(kinds, &|syms: &[u8]| mating_sets::helpless(syms, white))
+    }
+
+    #[inline]
+    fn for_all_promotions(&self, kinds: &[u8], holds: &dyn Fn(&[u8]) -> bool) -> bool {
         if self.promotes == 0 {
-            return mating_sets::is_dead(&self.syms[..self.len]);
+            return holds(&self.syms[..self.len]);
         }
         let mut syms = self.syms;
-        dead_with_promotions(&mut syms, self.len, self.promotes, 0, kinds, None)
+        all_promotions(&mut syms, self.len, self.promotes, 0, kinds, None, holds)
     }
 
     /// The table kinds a pawn may promote to, a bishop as both square colors;
@@ -212,19 +224,21 @@ impl Army {
     }
 }
 
-/// Tries every outcome of the promotable pawns from `from` on: option 0 keeps the
-/// pawn, option `o` promotes to `kinds[o - 1]`. Like pawns after one of the same
-/// color only take options from its own on, so each multiset is tried once.
-fn dead_with_promotions(
+/// Whether `holds` is true for every outcome of the promotable pawns from `from`
+/// on: option 0 keeps the pawn, option `o` promotes to `kinds[o - 1]`. Like pawns
+/// after one of the same color only take options from its own on, so each
+/// multiset is tried once.
+fn all_promotions(
     syms: &mut [u8; CAP],
     len: usize,
     promotes: u8,
     from: usize,
     kinds: &[u8],
     prev: Option<(u8, usize)>,
+    holds: &dyn Fn(&[u8]) -> bool,
 ) -> bool {
     let Some(i) = (from..len).find(|&i| promotes & (1 << i) != 0) else {
-        return mating_sets::is_dead(&syms[..len]);
+        return holds(&syms[..len]);
     };
     let pawn = syms[i];
     let color_base = pawn - pawn % KINDS;
@@ -234,7 +248,7 @@ fn dead_with_promotions(
     };
     let dead = (start..=kinds.len()).all(|o| {
         syms[i] = if o == 0 { pawn } else { color_base + kinds[o - 1] };
-        dead_with_promotions(syms, len, promotes, i + 1, kinds, Some((pawn, o)))
+        all_promotions(syms, len, promotes, i + 1, kinds, Some((pawn, o)), holds)
     });
     syms[i] = pawn;
     dead
@@ -263,9 +277,9 @@ pub(crate) fn material_kind(
     (!mating_sets::is_royal_symbol(s)).then(|| s % KINDS - ROYAL_KINDS)
 }
 
-/// The cheapest sub-force of `white`'s army that could mate the enemy royals
-/// alone on an unbounded board, priced by `cost(kind, n)` for using `n` pieces of
-/// a [`material_kind`]. `None` when no tabled sub-force mates.
+/// The cheapest sub-force of `white`'s army that could force mate on the enemy
+/// royals alone on an unbounded board, priced by `cost(kind, n)` for using `n`
+/// pieces of a [`material_kind`]. `None` when no tabled sub-force can.
 pub(crate) fn cheapest_mating_force(
     game: &GameState,
     white: bool,
@@ -305,7 +319,8 @@ pub(crate) fn cheapest_mating_force(
             return;
         }
         if kind == MATERIAL_KINDS {
-            if used > 0 && !mating_sets::is_dead(&sub.syms[..sub.len]) {
+            // `first` is a White symbol exactly when White attacks.
+            if used > 0 && !mating_sets::helpless(&sub.syms[..sub.len], first < KINDS) {
                 *best = Some(spent);
             }
             return;
@@ -329,13 +344,14 @@ pub(crate) fn cheapest_mating_force(
 }
 
 /// Unbounded: dead when no mate is possible at all, or when neither side can
-/// mate the other's royals alone, so any mate needs the defender's own help.
+/// force mate against the other's royals alone, so any mate needs the defender's
+/// help: without its own pieces as blockers, or by walking into a net.
 fn compute_unbounded(game: &GameState) -> bool {
     let Some(all) = Army::gather(game) else {
         return false;
     };
     let kinds = all.promotion_kinds(&game.game_rules);
-    all.dead(&kinds) || (all.alone(true).dead(&kinds) && all.alone(false).dead(&kinds))
+    all.dead(&kinds) || (all.alone(true).helpless(&kinds, true) && all.alone(false).helpless(&kinds, false))
 }
 
 #[inline]
@@ -1656,16 +1672,25 @@ mod tests {
         );
     }
 
-    // Two guards cannot force mate, but a bare king can walk into one.
+    // Two guards cannot force mate, though a bare king can walk into one: the eval
+    // scores it dead, the game goes on. A defending knight changes neither.
     #[test]
-    fn test_king_2guards_vs_king_can_helpmate() {
-        let game = create_test_game_with_pieces(&[
-            (0, 0, PieceType::King, PlayerColor::White),
-            (1, 0, PieceType::Guard, PlayerColor::White),
-            (2, 0, PieceType::Guard, PlayerColor::White),
-            (5, 5, PieceType::King, PlayerColor::Black),
-        ]);
-        assert!(!evaluate_insufficient_material(&game), "K+2 Guards vs K");
+    fn test_king_2guards_vs_king_is_helpmate_only() {
+        use PieceType as P;
+        let (white, black) = (PlayerColor::White, PlayerColor::Black);
+        let mut pieces = vec![
+            (0, 0, P::King, white),
+            (1, 0, P::Guard, white),
+            (2, 0, P::Guard, white),
+            (5, 5, P::King, black),
+        ];
+        for defender in [None, Some((9, 3, P::Knight, black))] {
+            pieces.extend(defender);
+            let game = create_test_game_with_pieces(&pieces);
+            assert!(evaluate_insufficient_material(&game), "{pieces:?}");
+            assert!(!evaluate_insufficient_material_game_handler(&game), "{pieces:?}");
+            assert!(side_cannot_mate(&game, true), "{pieces:?}");
+        }
     }
 
     #[test]
