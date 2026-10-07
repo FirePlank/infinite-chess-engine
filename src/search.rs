@@ -4894,9 +4894,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     let world_size = crate::moves::get_world_size();
     let mut legal_moves = 0;
     let mut quiets_searched: MoveList = MoveList::new();
-    // Set once a quiet TT move proves singular: its siblings were only scouted, and
-    // if it fails they must hold up, so they are reduced a ply less (Stockfish Classic).
-    let mut singular_quiet_lmr = false;
     let mut best_is_quiet = false;
 
     // Singular extension conditions (checked when we reach the TT move in the loop)
@@ -5236,7 +5233,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
 
             if se_value < singular_beta {
-                singular_quiet_lmr = !tt_capture;
                 // TT move is singular - calculate extension level
                 let double_margin = (depth as i32) * 2 - (tt_capture as i32 * 5);
                 let triple_margin = (depth as i32) * 4 - (tt_capture as i32 * 10);
@@ -5406,10 +5402,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 // Lost games turn on check sequences against the king 3x as often as calm
                 // positions, so a checking move is searched a ply deeper.
                 if gives_check {
-                    reduction -= 1;
-                }
-
-                if singular_quiet_lmr {
                     reduction -= 1;
                 }
 
