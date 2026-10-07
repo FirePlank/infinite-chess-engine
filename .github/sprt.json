@@ -1,10 +1,10 @@
 {
-  "name": "459_killer_lmr_minus_one_ltc",
-  "old": "b136872",
-  "games": 3000,
+  "name": "454_tt_upper_one_ply_short",
+  "old": "8052d33",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
-  "tc": "20+0.2",
+  "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
   "adjudication": 1000

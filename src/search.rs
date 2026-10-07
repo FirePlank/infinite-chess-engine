@@ -5394,15 +5394,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
-                // A killer's history was learned in a sibling, so it often reads weak;
-                // the refutation itself is evidence it deserves depth (Ethereal).
-                if searcher.killers[ply]
-                    .iter()
-                    .any(|k| k.is_some_and(|k| k.from == m.from && k.to == m.to))
-                {
-                    reduction -= 1;
-                }
-
                 // Ensure reduction stays in valid range [0, depth-2]. The upper
                 // bound needs flooring: lmr_min_depth of 1 lets depth 1 through,
                 // and clamp panics when min > max.
