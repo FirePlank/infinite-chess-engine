@@ -2824,7 +2824,9 @@ fn ray_far_escape_steps(from: &Coordinate, dir_x: i64, dir_y: i64) -> i64 {
         } else {
             pos.saturating_sub(world_min.max(FAR_SHELL_MIN))
         };
-        room.max(0) / dir.abs()
+        // Every ray here is a unit step, so the room is already a step count.
+        debug_assert!(dir.abs() == 1);
+        room.max(0)
     }
 
     let sx = axis_steps(
@@ -2859,7 +2861,7 @@ pub fn is_far_escape_move(m: &Move) -> bool {
     } else {
         return false;
     };
-    ray_far_escape_steps(&m.from, dx / steps, dy / steps) == steps
+    ray_far_escape_steps(&m.from, dx.signum(), dy.signum()) == steps
 }
 
 /// Flag bit on a cached slider distance: a compound piece's knight-leap attack square,
