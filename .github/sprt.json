@@ -1,11 +1,11 @@
 {
-  "name": "473_tt_lower_one_ply_short_resume",
-  "old": "b136872",
+  "name": "464_exact_speed_bundle1",
+  "old": "d8cb0eb",
   "games": 2000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
+  "elo0": -10,
+  "elo1": 0,
   "adjudication": 1000
 }

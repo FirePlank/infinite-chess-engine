@@ -1868,9 +1868,14 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     // board for itself.
     let mut rider_coords: smallvec::SmallVec<[(i64, i64); MAX_BATCHED_RIDERS]> =
         smallvec::SmallVec::new();
-    for &(x, y, piece) in piece_list {
-        if piece.piece_type() == PieceType::Knightrider && rider_coords.len() < MAX_BATCHED_RIDERS {
-            rider_coords.push((x, y));
+    let riders = &game.spatial_indices.knightrider_squares;
+    if !riders[0].is_empty() || !riders[1].is_empty() {
+        for &(x, y, piece) in piece_list {
+            if piece.piece_type() == PieceType::Knightrider
+                && rider_coords.len() < MAX_BATCHED_RIDERS
+            {
+                rider_coords.push((x, y));
+            }
         }
     }
     let mut rider_rays = [[None; 8] as RiderRays; MAX_BATCHED_RIDERS];
@@ -3187,8 +3192,11 @@ fn safe_check_units(
             && !crate::moves::is_square_attacked(&game.board, &Coordinate::new(sx, sy), us, idx)
     };
 
-    let (mut knight, mut bishop, mut rook, mut queen) =
-        (Squares::new(), Squares::new(), Squares::new(), Squares::new());
+    // Slider candidates are collected unfiltered by safety: only 0/1/2+ safe squares per
+    // set matter, so the attack scans run lazily below and stop at two.
+    type Cands = smallvec::SmallVec<[(i64, i64); 32]>;
+    let mut knight = Squares::new();
+    let (mut bishop, mut rook, mut queen) = (Cands::new(), Cands::new(), Cands::new());
     let (ka, kb) = (kx - ky, kx + ky);
 
     for &(px, py, piece) in pieces {
@@ -3237,11 +3245,9 @@ fn safe_check_units(
             for &(sx, sy) in cands.iter() {
                 if (sx, sy) != (px, py)
                     && (sx, sy) != (kx, ky)
-                    && !set.is_full()
                     && king_sees(sx, sy)
                     && !set.contains(&(sx, sy))
                     && reaches(pt, px, py, sx, sy)
-                    && safe(sx, sy)
                 {
                     set.push((sx, sy));
                 }
@@ -3306,6 +3312,9 @@ fn safe_check_units(
                 continue;
             }
             for &(ox, oy) in offsets {
+                if knight.len() >= 2 {
+                    break;
+                }
                 let (sx, sy) = (kx + ox, ky + oy);
                 let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
                 let leaps_there = steps.contains(&(ddx, ddy))
@@ -3323,14 +3332,44 @@ fn safe_check_units(
 
     // A queen check is counted only where no rook check exists, and a bishop check only
     // where no queen check does: the stronger piece would make that check instead.
-    queen.retain(|s| !rook.contains(s));
-    bishop.retain(|s| !queen.contains(s));
-    let units = |set: &Squares, u: [i32; 2]| match set.len() {
+    // Safety depends on the square alone, so filtering by it after the set differences
+    // counts the same squares; each attack scan is memoised and counts stop at two.
+    let mut memo: smallvec::SmallVec<[((i64, i64), bool); 16]> = smallvec::SmallVec::new();
+    let mut is_safe = |sq: (i64, i64)| -> bool {
+        if let Some(&(_, v)) = memo.iter().find(|(q, _)| *q == sq) {
+            return v;
+        }
+        let v = safe(sq.0, sq.1);
+        memo.push((sq, v));
+        v
+    };
+    let mut count2 = |set: &Cands, keep: &dyn Fn(&(i64, i64)) -> bool| -> usize {
+        let mut n = 0;
+        for s in set.iter() {
+            if keep(s) && is_safe(*s) {
+                n += 1;
+                if n == 2 {
+                    break;
+                }
+            }
+        }
+        n
+    };
+    let n_rook = count2(&rook, &|_| true);
+    let n_queen = count2(&queen, &|s| !rook.contains(s));
+    let queen_kept = |s: &(i64, i64)| queen.contains(s) && !rook.contains(s);
+    // A bishop square is dropped only if it is a counted (safe) queen square; is_safe
+    // is then already true for it, so testing membership alone is exact.
+    let n_bishop = count2(&bishop, &|s| !queen_kept(s));
+    let units = |n: usize, u: [i32; 2]| match n {
         0 => 0,
         1 => u[0],
         _ => u[1],
     };
-    units(&knight, UNITS[0]) + units(&bishop, UNITS[1]) + units(&rook, UNITS[2]) + units(&queen, UNITS[3])
+    units(knight.len(), UNITS[0])
+        + units(n_bishop, UNITS[1])
+        + units(n_rook, UNITS[2])
+        + units(n_queen, UNITS[3])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3365,26 +3404,26 @@ pub(crate) fn evaluate_king_shelter(
     let mut has_pawn_behind = false;
     let is_white = color == PlayerColor::White;
 
-    for dx in -2..=2_i64 {
-        let x = king.x + dx;
-        // Find range of pawns on this file
-        let start = pawns.partition_point(|p| p.0 < x);
-        let mut k = start;
-        while k < pawns.len() && pawns[k].0 == x {
-            let py = pawns[k].1;
-            if is_white {
-                if py > king.y && py - king.y <= king_shield_ahead_max_dist() as i64 {
-                    has_pawn_ahead = true;
-                } else if py < king.y {
-                    has_pawn_behind = true;
-                }
-            } else if py < king.y && king.y - py <= king_shield_ahead_max_dist() as i64 {
+    // The pawns are sorted by file, so the five files are one contiguous run; a pawn
+    // ahead decides the result, so the walk stops there.
+    let mut k = pawns.partition_point(|p| p.0 < king.x - 2);
+    while k < pawns.len() && pawns[k].0 <= king.x + 2 {
+        let py = pawns[k].1;
+        if is_white {
+            if py > king.y && py - king.y <= king_shield_ahead_max_dist() as i64 {
                 has_pawn_ahead = true;
-            } else if py > king.y {
+            } else if py < king.y {
                 has_pawn_behind = true;
             }
-            k += 1;
+        } else if py < king.y && king.y - py <= king_shield_ahead_max_dist() as i64 {
+            has_pawn_ahead = true;
+        } else if py > king.y {
+            has_pawn_behind = true;
         }
+        if has_pawn_ahead {
+            break;
+        }
+        k += 1;
     }
 
     // A pawn ahead shelters the king regardless of any pawn behind it; only the
