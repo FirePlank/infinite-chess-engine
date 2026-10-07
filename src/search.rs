@@ -4565,6 +4565,18 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             }
         }
 
+        // An upper bound one ply short but far under alpha almost never re-searches
+        // above it, so it cuts too (Ethereal's TT research margin).
+        if !fails_high
+            && rule50_ok
+            && (tt_data_depth as usize) + 1 >= depth
+            && (tt_data_bound as u8 & TTFlag::UpperBound as u8) != 0
+            && !is_decisive(tt_s)
+            && tt_s + 175 <= alpha
+        {
+            return alpha;
+        }
+
         // Deep enough and on the right side of the window, but holding the opposite
         // bound, so it can never cut here. Shave a ply so a real search replaces it.
         let opposite_bound = if fails_high {
