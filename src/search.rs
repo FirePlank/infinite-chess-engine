@@ -4576,16 +4576,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         {
             return alpha;
         }
-        // The mirror case: a lower bound one ply short far above beta.
-        if fails_high
-            && rule50_ok
-            && (tt_data_depth as usize) + 1 >= depth
-            && (tt_data_bound as u8 & TTFlag::LowerBound as u8) != 0
-            && !is_decisive(tt_s)
-            && tt_s - 175 >= beta
-        {
-            return beta;
-        }
 
         // Deep enough and on the right side of the window, but holding the opposite
         // bound, so it can never cut here. Shave a ply so a real search replaces it.
