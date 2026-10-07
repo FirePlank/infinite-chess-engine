@@ -1,7 +1,8 @@
 //! Which piece sets of up to [`CAP`] pieces can be arranged into a legally reachable
 //! checkmate on an unbounded board, helpmates included, from infinitechess.org's
-//! generated tables, and which armies can only mate with the defender's help. Two
-//! bits per set, indexed by [`set_index`]; built by the `insuffmat_build` binary.
+//! generated tables, and which armies can only mate with the defender's help. A dead
+//! bit per set, indexed by [`set_index`], then the few helpmate-only sets in a small
+//! one-probe hash; built by the `insuffmat_build` binary.
 
 use crate::board::{PieceType, PlayerColor};
 
@@ -73,10 +74,15 @@ const ROYAL_BASE: [u32; CAP + 2] = {
 /// Sets with at least one royal; royal-less sets are never mates and have no index.
 pub const SET_COUNT: usize = ROYAL_BASE[CAP + 1] as usize;
 
-/// Per set, bit 0: no mate is possible. Bit 1, on a set where Black has only
-/// royals: mate is possible, but White can never force it (`forced_gen` proved it).
-static TABLE: &[u8; TABLE_BYTES] = include_bytes!("insuffmat_unbounded.bin");
-pub const TABLE_BYTES: usize = SET_COUNT.div_ceil(4);
+/// [`DEAD_BYTES`] of one bit per set, set when no mate is possible. Then a hash of
+/// the sets where Black has only royals and mate is possible, but White can never
+/// force it (`forced_gen` proved it): a `u32` multiplier, then buckets of
+/// [`HELPMATE_SLOTS`] `u32` set indices padded with `u32::MAX`, all little-endian.
+static TABLE: &[u8] = include_bytes!("insuffmat_unbounded.bin");
+pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
+pub const HELPMATE_BUCKET_BITS: u32 = 7;
+pub const HELPMATE_SLOTS: usize = 8;
+pub const TABLE_BYTES: usize = DEAD_BYTES + 4 + (HELPMATE_SLOTS << HELPMATE_BUCKET_BITS) * 4;
 
 #[inline]
 pub fn is_royal_symbol(s: u8) -> bool {
@@ -169,12 +175,22 @@ pub fn is_dead(symbols: &[u8]) -> bool {
     if !symbols.iter().any(|&s| is_royal_symbol(s)) {
         return true;
     }
-    table_bits(set_index(symbols)) & 1 == 1
+    dead_bit(set_index(symbols))
 }
 
 #[inline]
-fn table_bits(i: usize) -> u8 {
-    (TABLE[i >> 2] >> ((i & 3) * 2)) & 3
+fn dead_bit(i: usize) -> bool {
+    TABLE[i >> 3] >> (i & 7) & 1 == 1
+}
+
+#[inline]
+fn helpmate_only(i: usize) -> bool {
+    let mul = u32::from_le_bytes(TABLE[DEAD_BYTES..DEAD_BYTES + 4].try_into().unwrap());
+    let bucket = (i as u32).wrapping_mul(mul) >> (32 - HELPMATE_BUCKET_BITS);
+    let base = DEAD_BYTES + 4 + bucket as usize * HELPMATE_SLOTS * 4;
+    let slots: &[u8; HELPMATE_SLOTS * 4] = TABLE[base..base + HELPMATE_SLOTS * 4].try_into().unwrap();
+    // Every slot is compared, so the cost is the same for every set.
+    slots.chunks_exact(4).fold(false, |hit, w| hit | (u32::from_le_bytes(w.try_into().unwrap()) == i as u32))
 }
 
 /// Whether the attacking side's pieces in `symbols` (White's when `white_attacks`)
@@ -192,7 +208,8 @@ pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
     for (o, &s) in oriented.iter_mut().zip(symbols) {
         *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
     }
-    table_bits(set_index(&oriented[..symbols.len()])) != 0
+    let i = set_index(&oriented[..symbols.len()]);
+    dead_bit(i) || helpmate_only(i)
 }
 
 /// Calls `f` with every set of at least one royal, smallest sets first.

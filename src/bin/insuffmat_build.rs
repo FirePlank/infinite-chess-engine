@@ -5,7 +5,7 @@
 //! Every set is checked to be exactly one of: a listed draw, or a superset of a
 //! listed mate. Listed mates must be smallest (no listed mate inside another).
 //! The optional helpmate-only list (`forced_gen`'s `escape.txt`: White's army vs
-//! Black's royals, labels like `K,GU,GU vs k`) sets the second bit.
+//! Black's royals, labels like `K,GU,GU vs k`) is appended as a one-probe hash of set indices.
 //!
 //! Usage: cargo run --release --bin insuffmat_build -- <tables dir> [helpmate-only list] [out file]
 
@@ -70,6 +70,30 @@ fn read(dir: &str, prefix: &str, ext: &str) -> (HashSet<usize>, usize) {
     (out, lines)
 }
 
+/// A multiplier that spreads `sets` over the buckets with none overflowing, then the
+/// buckets, so every lookup reads one bucket.
+fn helpmate_hash(sets: &std::collections::BTreeSet<u32>) -> Vec<u8> {
+    use mating_sets::{HELPMATE_BUCKET_BITS, HELPMATE_SLOTS};
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    loop {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mul = (state >> 32) as u32 | 1;
+        let mut buckets = vec![Vec::new(); 1 << HELPMATE_BUCKET_BITS];
+        for &i in sets {
+            buckets[(i.wrapping_mul(mul) >> (32 - HELPMATE_BUCKET_BITS)) as usize].push(i);
+        }
+        if buckets.iter().all(|b| b.len() <= HELPMATE_SLOTS) {
+            let mut out = mul.to_le_bytes().to_vec();
+            for b in &buckets {
+                for k in 0..HELPMATE_SLOTS {
+                    out.extend(b.get(k).copied().unwrap_or(u32::MAX).to_le_bytes());
+                }
+            }
+            return out;
+        }
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = args.next().expect("usage: insuffmat_build <tables dir> [helpmate-only list] [out file]");
@@ -82,7 +106,7 @@ fn main() {
     let (draws, draw_lines) = read(&dir, "draws", "txt");
 
     let mut mate = vec![false; SET_COUNT];
-    let mut bits = vec![0u8; mating_sets::TABLE_BYTES];
+    let mut bits = vec![0u8; mating_sets::DEAD_BYTES];
     let (mut dead, mut errors) = (0usize, 0usize);
     for_each_set(|set| {
         let i = set_index(set);
@@ -110,13 +134,13 @@ fn main() {
             errors += 1;
         }
         if !mate[i] {
-            bits[i >> 2] |= 1 << ((i & 3) * 2);
+            bits[i >> 3] |= 1 << (i & 7);
             dead += 1;
         }
     });
     assert_eq!(errors, 0, "{errors} inconsistent sets");
 
-    let mut helpmate = 0;
+    let mut helpmate = std::collections::BTreeSet::new();
     if let Some(path) = &helpmate_list {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -131,15 +155,15 @@ fn main() {
                 if o.iter().zip(&set).all(|(a, b)| a / KINDS == b / KINDS) {
                     let i = set_index(o);
                     assert!(mate[i], "helpmate-only core cannot mate at all: {line}");
-                    if bits[i >> 2] >> ((i & 3) * 2 + 1) & 1 == 0 {
-                        bits[i >> 2] |= 1 << ((i & 3) * 2 + 1);
-                        helpmate += 1;
-                    }
+                    helpmate.insert(i as u32);
                 }
             }
         }
     }
 
+    let helpmate_sets = helpmate.len();
+    bits.extend(helpmate_hash(&helpmate));
+    assert_eq!(bits.len(), mating_sets::TABLE_BYTES);
     std::fs::write(&out, &bits).unwrap_or_else(|e| panic!("{out}: {e}"));
     println!(
         "{mate_lines} smallest mates ({} with mirrors), {draw_lines} draws ({} with mirrors)",
@@ -147,7 +171,7 @@ fn main() {
         draws.len()
     );
     println!(
-        "{SET_COUNT} sets: {dead} dead, {} can mate, {helpmate} helpmate-only cores; wrote {} bytes to {out}",
+        "{SET_COUNT} sets: {dead} dead, {} can mate, {helpmate_sets} helpmate-only sets; wrote {} bytes to {out}",
         SET_COUNT - dead,
         bits.len()
     );
