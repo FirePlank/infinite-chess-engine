@@ -1,11 +1,11 @@
 {
-  "name": "490_tt_fail_low_quiet_malus",
-  "old": "20923fd",
-  "games": 4000,
+  "name": "492_insuffmat_helpmate_only",
+  "old": "9ae04a1",
+  "games": 3000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
-  "adjudication": 1000
+  "elo0": -10,
+  "elo1": 0,
+  "adjudication": 0
 }

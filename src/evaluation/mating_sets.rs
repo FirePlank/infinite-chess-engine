@@ -1,7 +1,7 @@
 //! Which piece sets of up to [`CAP`] pieces can be arranged into a legally reachable
 //! checkmate on an unbounded board, helpmates included, from infinitechess.org's
-//! generated tables. One bit per set, indexed by [`set_index`]; built by the
-//! `insuffmat_build` binary.
+//! generated tables, and which armies can only mate with the defender's help. Two
+//! bits per set, indexed by [`set_index`]; built by the `insuffmat_build` binary.
 
 use crate::board::{PieceType, PlayerColor};
 
@@ -73,7 +73,10 @@ const ROYAL_BASE: [u32; CAP + 2] = {
 /// Sets with at least one royal; royal-less sets are never mates and have no index.
 pub const SET_COUNT: usize = ROYAL_BASE[CAP + 1] as usize;
 
-static TABLE: &[u8; SET_COUNT.div_ceil(8)] = include_bytes!("insuffmat_unbounded.bin");
+/// Per set, bit 0: no mate is possible. Bit 1, on a set where Black has only
+/// royals: mate is possible, but White can never force it (`forced_gen` proved it).
+static TABLE: &[u8; TABLE_BYTES] = include_bytes!("insuffmat_unbounded.bin");
+pub const TABLE_BYTES: usize = SET_COUNT.div_ceil(4);
 
 #[inline]
 pub fn is_royal_symbol(s: u8) -> bool {
@@ -166,8 +169,30 @@ pub fn is_dead(symbols: &[u8]) -> bool {
     if !symbols.iter().any(|&s| is_royal_symbol(s)) {
         return true;
     }
-    let i = set_index(symbols);
-    (TABLE[i >> 3] >> (i & 7)) & 1 == 1
+    table_bits(set_index(symbols)) & 1 == 1
+}
+
+#[inline]
+fn table_bits(i: usize) -> u8 {
+    (TABLE[i >> 2] >> ((i & 3) * 2)) & 3
+}
+
+/// Whether the attacking side's pieces in `symbols` (White's when `white_attacks`)
+/// can never force mate against the other side's royals, which are all the other
+/// side holds: no mate is possible, or only with the defender's help.
+#[inline]
+pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
+    if symbols.len() > CAP {
+        return false;
+    }
+    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
+        return true;
+    }
+    let mut oriented = [0u8; CAP];
+    for (o, &s) in oriented.iter_mut().zip(symbols) {
+        *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
+    }
+    table_bits(set_index(&oriented[..symbols.len()])) != 0
 }
 
 /// Calls `f` with every set of at least one royal, smallest sets first.
@@ -249,5 +274,14 @@ mod tests {
         // Order and mirror images do not matter.
         assert!(!is_dead(&set("K,B1,B1 vs q,k")));
         assert!(is_dead(&set("Q,N vs ")));
+    }
+
+    #[test]
+    fn helpmate_only_armies() {
+        assert!(helpless(&set("K,GU,GU vs k"), true));
+        assert!(helpless(&set("k vs K,GU,GU"), false));
+        assert!(!helpless(&set("K,R,R vs k"), true));
+        assert!(!helpless(&set("K,AM vs k"), true));
+        assert!(helpless(&set("K,Q vs k"), true));
     }
 }

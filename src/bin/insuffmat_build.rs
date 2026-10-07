@@ -4,8 +4,10 @@
 //!
 //! Every set is checked to be exactly one of: a listed draw, or a superset of a
 //! listed mate. Listed mates must be smallest (no listed mate inside another).
+//! The optional helpmate-only list (`forced_gen`'s `escape.txt`: White's army vs
+//! Black's royals, labels like `K,GU,GU vs k`) sets the second bit.
 //!
-//! Usage: cargo run --release --bin insuffmat_build -- <tables dir> [out file]
+//! Usage: cargo run --release --bin insuffmat_build -- <tables dir> [helpmate-only list] [out file]
 
 use apeiron::evaluation::mating_sets::{
     self, CAP, KIND_CODES, KINDS, SET_COUNT, SYMBOLS, for_each_set, set_index,
@@ -70,7 +72,8 @@ fn read(dir: &str, prefix: &str, ext: &str) -> (HashSet<usize>, usize) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let dir = args.next().expect("usage: insuffmat_build <tables dir> [out file]");
+    let dir = args.next().expect("usage: insuffmat_build <tables dir> [helpmate-only list] [out file]");
+    let helpmate_list = args.next();
     let out = args
         .next()
         .unwrap_or_else(|| "src/evaluation/insuffmat_unbounded.bin".to_string());
@@ -79,7 +82,7 @@ fn main() {
     let (draws, draw_lines) = read(&dir, "draws", "txt");
 
     let mut mate = vec![false; SET_COUNT];
-    let mut bits = vec![0u8; SET_COUNT.div_ceil(8)];
+    let mut bits = vec![0u8; mating_sets::TABLE_BYTES];
     let (mut dead, mut errors) = (0usize, 0usize);
     for_each_set(|set| {
         let i = set_index(set);
@@ -107,11 +110,35 @@ fn main() {
             errors += 1;
         }
         if !mate[i] {
-            bits[i >> 3] |= 1 << (i & 7);
+            bits[i >> 2] |= 1 << ((i & 3) * 2);
             dead += 1;
         }
     });
     assert_eq!(errors, 0, "{errors} inconsistent sets");
+
+    let mut helpmate = 0;
+    if let Some(path) = &helpmate_list {
+        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let set = parse(line.split('\t').next().unwrap());
+            let black_royals_only = set
+                .iter()
+                .filter(|&&s| s / KINDS == 1)
+                .all(|&s| mating_sets::is_royal_symbol(s));
+            assert!(black_royals_only && set.iter().any(|&s| s / KINDS == 0), "not a core: {line}");
+            // Both bishop-colour images; never the colour swap, which is the other side attacking.
+            for o in &orientations(&set)[..] {
+                if o.iter().zip(&set).all(|(a, b)| a / KINDS == b / KINDS) {
+                    let i = set_index(o);
+                    assert!(mate[i], "helpmate-only core cannot mate at all: {line}");
+                    if bits[i >> 2] >> ((i & 3) * 2 + 1) & 1 == 0 {
+                        bits[i >> 2] |= 1 << ((i & 3) * 2 + 1);
+                        helpmate += 1;
+                    }
+                }
+            }
+        }
+    }
 
     std::fs::write(&out, &bits).unwrap_or_else(|e| panic!("{out}: {e}"));
     println!(
@@ -120,7 +147,7 @@ fn main() {
         draws.len()
     );
     println!(
-        "{SET_COUNT} sets: {dead} dead, {} can mate; wrote {} bytes to {out}",
+        "{SET_COUNT} sets: {dead} dead, {} can mate, {helpmate} helpmate-only cores; wrote {} bytes to {out}",
         SET_COUNT - dead,
         bits.len()
     );
