@@ -5399,9 +5399,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 if ply > 0 {
                     let (cur, parent) =
                         (searcher.stat_score_stack[ply], searcher.stat_score_stack[ply - 1]);
-                    if cur >= -1000 && parent < -1120 {
+                    if cur >= -100 && parent < -112 {
                         reduction -= 1;
-                    } else if parent >= -1250 && cur < -1380 {
+                    } else if parent >= -125 && cur < -138 {
                         reduction += 1;
                     }
                 }
