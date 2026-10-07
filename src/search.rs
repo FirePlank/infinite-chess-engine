@@ -3941,7 +3941,9 @@ fn negamax_root(
                     excluded_move: None,
                 });
             }
-            if s > alpha && s < beta {
+            // A scout fail-high at or past beta is verified as PV too (Stockfish): the root
+            // plays this move if time stops before the aspiration re-search confirms it.
+            if s > alpha {
                 s = -negamax(&mut NegamaxContext {
                     searcher,
                     game,

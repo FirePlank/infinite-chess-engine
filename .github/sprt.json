@@ -1,11 +1,11 @@
 {
-  "name": "464_exact_speed_bundle1",
-  "old": "d8cb0eb",
-  "games": 2000,
+  "name": "467_root_verify_scout_fail_high",
+  "old": "439722d",
+  "games": 4000,
   "shards": 40,
   "variants": "site",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
+  "elo0": 0,
+  "elo1": 5,
   "adjudication": 1000
 }
