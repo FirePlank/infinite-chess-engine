@@ -5394,18 +5394,6 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     reduction -= 1;
                 }
 
-                // A move history favours, answering one it disfavours, is searched deeper;
-                // the reverse shallower (Stockfish Classic's statScore comparison).
-                if ply > 0 {
-                    let (cur, parent) =
-                        (searcher.stat_score_stack[ply], searcher.stat_score_stack[ply - 1]);
-                    if cur >= -100 && parent < -112 {
-                        reduction -= 1;
-                    } else if parent >= -125 && cur < -138 {
-                        reduction += 1;
-                    }
-                }
-
                 // Search the variant's defining line-opening tactic a ply deeper.
                 if is_obstocean_breakout {
                     reduction -= 1;
