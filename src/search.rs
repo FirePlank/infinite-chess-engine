@@ -4201,7 +4201,7 @@ fn tt_cut_refuted_by_child(
     let Some(m) = tt_move else {
         return false;
     };
-    if depth < 8 || is_decisive(tt_s) || !StagedMoveGen::is_pseudo_legal(game, &m) {
+    if depth < 6 || is_decisive(tt_s) || !StagedMoveGen::is_pseudo_legal(game, &m) {
         return false;
     }
     let undo = game.make_move(&m);
