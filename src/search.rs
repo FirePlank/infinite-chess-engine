@@ -5382,9 +5382,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // A cut node is expected to fail high on an early move, so the moves
                 // after it are far likelier to be refutations than real candidates.
-                // A shallow cut node's second move is the likeliest refutation after the
-                // first, so it keeps the depth (Stockfish Classic).
-                if cut_node && !(legal_moves == 2 && depth <= 10) {
+                if cut_node {
                     reduction += 1;
                 }
 
