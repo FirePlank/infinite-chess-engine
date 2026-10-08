@@ -1,4 +1,4 @@
-//! Builds `src/evaluation/insuffmat_unbounded.bin` from infinitechess.org's generated
+//! Builds `src/evaluation/insuffmat.bin` from infinitechess.org's generated
 //! `matingsets.ts` (src/shared/chess/logic/insuffmat/): every smallest piece set that
 //! can mate, per board kind, labels like `K,B0/k,n` (White's pieces, then Black's),
 //! mirror images listed once. A set can mate exactly when a listed set fits inside it.
@@ -11,9 +11,14 @@
 //!        [bounded helpmate-only list] [out file]
 
 use apeiron::evaluation::mating_sets::{
-    self, BOUNDED_CAP, BOUNDED_SET_COUNT, CAP, KIND_CODES, KINDS, SET_COUNT, SYMBOLS, bounded_set_index,
-    for_each_set, set_index,
+    self, BOUNDED_CAP, BOUNDED_SET_COUNT, CAP, KIND_CODES, KINDS, SET_COUNT, SYMBOLS, attack_key,
+    bounded_attack_key, bounded_set_index, for_each_set, set_index,
 };
+
+/// The set with colors swapped.
+fn swap_colors(set: &[u8]) -> Vec<u8> {
+    set.iter().map(|&s| (s + KINDS) % SYMBOLS).collect()
+}
 
 /// A label's symbols: `K,B0/k,n` or `K,B0 vs k,n`, uppercase White, lowercase Black.
 fn parse(label: &str) -> Vec<u8> {
@@ -143,7 +148,7 @@ fn main() {
     let bounded_helpmate_list = args.next();
     let out = args
         .next()
-        .unwrap_or_else(|| "src/evaluation/insuffmat_unbounded.bin".to_string());
+        .unwrap_or_else(|| "src/evaluation/insuffmat.bin".to_string());
     let ts = std::fs::read_to_string(&ts_path).unwrap_or_else(|e| panic!("{ts_path}: {e}"));
     assert_eq!(listed_cap(&ts, "unbounded"), CAP);
     assert_eq!(listed_cap(&ts, "bounded"), BOUNDED_CAP);
@@ -166,9 +171,10 @@ fn main() {
             // Both bishop-colour images; never the colour swap, which is the other side attacking.
             for o in &orientations(&set)[..] {
                 if o.iter().zip(&set).all(|(a, b)| a / KINDS == b / KINDS) {
-                    let i = set_index(o);
-                    assert!(mate[i], "helpmate-only core cannot mate at all: {line}");
-                    helpmate.insert(i as u32);
+                    assert!(mate[set_index(o)], "helpmate-only core cannot mate at all: {line}");
+                    // A color-symmetric set keys each attacking side apart.
+                    helpmate.insert(attack_key(o, true));
+                    helpmate.insert(attack_key(&swap_colors(o), false));
                 }
             }
         }
@@ -179,9 +185,10 @@ fn main() {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         // Each bishop-color image is solved and listed on its own.
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let i = bounded_set_index(&parse(line));
-            assert!(bounded_mate[i], "bounded helpmate-only core cannot mate at all: {line}");
-            bounded_helpmate.insert(i as u32);
+            let set = parse(line);
+            assert!(bounded_mate[bounded_set_index(&set)], "bounded helpmate-only core cannot mate at all: {line}");
+            bounded_helpmate.insert(bounded_attack_key(&set, true));
+            bounded_helpmate.insert(bounded_attack_key(&swap_colors(&set), false));
         }
     }
 

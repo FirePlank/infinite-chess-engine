@@ -31,61 +31,88 @@ const fn binom(n: u32, k: u32) -> u32 {
     r as u32
 }
 
-/// `BIN[i][c] = C(c + i, i + 1)`: slot `i` of a sorted multiset holding value `c`.
-const BIN: [[u32; 2 * OTHER_KINDS as usize]; CAP] = {
-    let mut t = [[0u32; 2 * OTHER_KINDS as usize]; CAP];
+/// `COLEX[i][v] = C(v + i, i + 1)`: slot `i` of one side's sorted values holding `v`.
+const COLEX: [[u32; KINDS as usize]; CAP] = {
+    let mut t = [[0u32; KINDS as usize]; CAP];
     let mut i = 0;
     while i < CAP {
-        let mut c = 0;
-        while c < 2 * OTHER_KINDS as usize {
-            t[i][c] = binom((c + i) as u32, (i + 1) as u32);
-            c += 1;
+        let mut v = 0;
+        while v < KINDS as usize {
+            t[i][v] = binom((v + i) as u32, (i + 1) as u32);
+            v += 1;
         }
         i += 1;
     }
     t
 };
 
-/// `CUM_OTHER[m]`: multisets of at most `m` non-royal symbols.
-const CUM_OTHER: [u32; CAP + 1] = {
-    let mut t = [0u32; CAP + 1];
-    let n = 2 * OTHER_KINDS as u32;
+/// Offsets for indexing sets of at most `cap` pieces up to a color swap. A side's
+/// pieces are ranked colex over the values `KINDS - 1 - kind`, so for `m` pieces the
+/// royal-less sides take ranks below `royal_less[m]` and the rest hold a royal.
+struct Layout {
+    royal_less: [u32; CAP + 1],
+    /// Royal-less sides of fewer than `s` pieces.
+    royal_less_before: [u32; CAP + 2],
+    /// Royal-holding sides of fewer than `s` pieces.
+    royal_before: [u32; CAP + 2],
+    /// Index of the first set whose royal side (the other has none) has `a` pieces.
+    one_royal_side: [u32; CAP + 2],
+    /// Index of the first set with royals on both sides whose larger side has `s`
+    /// pieces, for `s` past half the cap.
+    two_royal_sides: [u32; CAP + 2],
+    count: u32,
+}
+
+const fn layout(cap: usize) -> Layout {
+    let mut l = Layout {
+        royal_less: [0; CAP + 1],
+        royal_less_before: [0; CAP + 2],
+        royal_before: [0; CAP + 2],
+        one_royal_side: [0; CAP + 2],
+        two_royal_sides: [0; CAP + 2],
+        count: 0,
+    };
+    let mut royal = [0u32; CAP + 1];
     let mut m = 0;
-    let mut acc = 0;
-    while m <= CAP {
-        acc += binom(n + m as u32 - 1, m as u32);
-        t[m] = acc;
+    while m <= cap {
+        l.royal_less[m] = binom(OTHER_KINDS as u32 - 1 + m as u32, m as u32);
+        royal[m] = binom(KINDS as u32 - 1 + m as u32, m as u32) - l.royal_less[m];
+        l.royal_less_before[m + 1] = l.royal_less_before[m] + l.royal_less[m];
+        l.royal_before[m + 1] = l.royal_before[m] + royal[m];
         m += 1;
     }
-    t
-};
-
-/// `royal_base(cap)[a]`: index of the first set with `a` royals, among sets of at
-/// most `cap` pieces.
-const fn royal_base(cap: usize) -> [u32; CAP + 2] {
-    let mut t = [0u32; CAP + 2];
-    let n = 2 * ROYAL_KINDS as u32;
     let mut a = 1;
     while a <= cap {
-        t[a + 1] = t[a] + binom(n + a as u32 - 1, a as u32) * CUM_OTHER[cap - a];
+        l.one_royal_side[a + 1] = l.one_royal_side[a] + royal[a] * l.royal_less_before[cap - a + 1];
         a += 1;
     }
-    t
+    let half = cap / 2;
+    let paired = l.royal_before[half + 1];
+    l.two_royal_sides[half + 1] = l.one_royal_side[cap + 1] + paired * (paired + 1) / 2;
+    let mut s = half + 1;
+    while s <= cap {
+        l.two_royal_sides[s + 1] = l.two_royal_sides[s] + royal[s] * l.royal_before[cap - s + 1];
+        s += 1;
+    }
+    l.count = l.two_royal_sides[cap + 1];
+    l
 }
-const ROYAL_BASE: [u32; CAP + 2] = royal_base(CAP);
-const BOUNDED_ROYAL_BASE: [u32; CAP + 2] = royal_base(BOUNDED_CAP);
 
-/// Sets with at least one royal; royal-less sets are never mates and have no index.
-pub const SET_COUNT: usize = ROYAL_BASE[CAP + 1] as usize;
-pub const BOUNDED_SET_COUNT: usize = BOUNDED_ROYAL_BASE[BOUNDED_CAP + 1] as usize;
+const LAYOUT: Layout = layout(CAP);
+const BOUNDED_LAYOUT: Layout = layout(BOUNDED_CAP);
+
+/// Sets with at least one royal, up to a color swap, which never changes whether
+/// a mate is possible; royal-less sets are never mates and have no index.
+pub const SET_COUNT: usize = LAYOUT.count as usize;
+pub const BOUNDED_SET_COUNT: usize = BOUNDED_LAYOUT.count as usize;
 
 /// [`DEAD_BYTES`] of one bit per unbounded set, set when no mate is possible. Then
 /// [`HELPMATE_BYTES`] hashing the sets where Black has only royals and mate is
 /// possible, but White can never force it (`forced_gen` proved it): a `u32`
-/// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` set indices padded with
-/// `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits,
+/// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` [`attack_key`]s padded
+/// with `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits,
 /// and the same hash of the bounded helpmate-only sets (`bounded_helpmate` proved it).
-static TABLE: &[u8] = include_bytes!("insuffmat_unbounded.bin");
+static TABLE: &[u8] = include_bytes!("insuffmat.bin");
 pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
 pub const HELPMATE_BUCKET_BITS: u32 = 7;
 pub const HELPMATE_SLOTS: usize = 8;
@@ -136,46 +163,80 @@ pub fn symbol(pt: PieceType, color: PlayerColor, x: i64, y: i64) -> Option<u8> {
     }
 }
 
-/// The index of a set with 1 to [`CAP`] symbols, at least one royal, in any order.
+/// The index of a set with 1 to [`CAP`] symbols, at least one royal, in any order;
+/// a set and its color swap share it.
 #[inline]
 pub fn set_index(symbols: &[u8]) -> usize {
-    index(symbols, CAP, &ROYAL_BASE)
+    canonical(symbols, CAP, &LAYOUT).expect("a royal").0
 }
 
 /// [`set_index`] among the sets of at most [`BOUNDED_CAP`] symbols.
 #[inline]
 pub fn bounded_set_index(symbols: &[u8]) -> usize {
-    index(symbols, BOUNDED_CAP, &BOUNDED_ROYAL_BASE)
+    canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).expect("a royal").0
+}
+
+/// The hash key of `symbols` with the given side attacking: its [`set_index`] and
+/// whether the attacker is the side the index puts first.
+#[inline]
+pub fn attack_key(symbols: &[u8], white_attacks: bool) -> u32 {
+    let (i, swapped) = canonical(symbols, CAP, &LAYOUT).expect("a royal");
+    key(i, swapped, white_attacks)
+}
+
+/// [`attack_key`] among the sets of at most [`BOUNDED_CAP`] symbols.
+#[inline]
+pub fn bounded_attack_key(symbols: &[u8], white_attacks: bool) -> u32 {
+    let (i, swapped) = canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).expect("a royal");
+    key(i, swapped, white_attacks)
 }
 
 #[inline]
-fn index(symbols: &[u8], cap: usize, royal_base: &[u32; CAP + 2]) -> usize {
+fn key(i: usize, swapped: bool, white_attacks: bool) -> u32 {
+    (i as u32) << 1 | (swapped != white_attacks) as u32
+}
+
+/// The set's index, and whether Black's side comes first in it; `None` without a
+/// royal. A side holding a royal comes first; with royals on both, the lower-ranked
+/// side does.
+#[inline]
+fn canonical(symbols: &[u8], cap: usize, l: &Layout) -> Option<(usize, bool)> {
     debug_assert!(symbols.len() <= cap);
-    let mut royals = [0u8; CAP];
-    let mut others = [0u8; CAP];
-    let (mut a, mut b) = (0, 0);
+    let (mut white, mut black) = ([0u8; CAP], [0u8; CAP]);
+    let (mut w, mut b) = (0, 0);
     for &s in symbols {
-        let (color, kind) = (s / KINDS, s % KINDS);
-        if kind < ROYAL_KINDS {
-            royals[a] = color * ROYAL_KINDS + kind;
-            a += 1;
+        if s < KINDS {
+            white[w] = KINDS - 1 - s;
+            w += 1;
         } else {
-            others[b] = color * OTHER_KINDS + kind - ROYAL_KINDS;
+            black[b] = SYMBOLS - 1 - s;
             b += 1;
         }
     }
-    debug_assert!(a >= 1);
-    sort_small(&mut royals[..a]);
-    sort_small(&mut others[..b]);
-    let mut royal_rank = 0;
-    for (i, &c) in royals[..a].iter().enumerate() {
-        royal_rank += BIN[i][c as usize];
+    let rank = |v: &mut [u8]| {
+        sort_small(v);
+        v.iter().enumerate().map(|(i, &x)| COLEX[i][x as usize]).sum::<u32>()
+    };
+    let (rw, rb) = (rank(&mut white[..w]), rank(&mut black[..b]));
+    let (white_royal, black_royal) = (rw >= l.royal_less[w], rb >= l.royal_less[b]);
+    if !white_royal && !black_royal {
+        return None;
     }
-    let mut other_rank = if b == 0 { 0 } else { CUM_OTHER[b - 1] };
-    for (i, &c) in others[..b].iter().enumerate() {
-        other_rank += BIN[i][c as usize];
+    if white_royal != black_royal {
+        let ((a, ra), (n, rn)) = if white_royal { ((w, rw), (b, rb)) } else { ((b, rb), (w, rw)) };
+        let i = l.one_royal_side[a] + (ra - l.royal_less[a]) * l.royal_less_before[cap - a + 1] + l.royal_less_before[n] + rn;
+        return Some((i as usize, black_royal));
     }
-    (royal_base[a] + royal_rank * CUM_OTHER[cap - a] + other_rank) as usize
+    let gw = l.royal_before[w] + rw - l.royal_less[w];
+    let gb = l.royal_before[b] + rb - l.royal_less[b];
+    let swapped = gb < gw;
+    let (low, high, size) = if swapped { (gb, gw, w) } else { (gw, gb, b) };
+    let i = if 2 * size <= cap {
+        l.one_royal_side[cap + 1] + high * (high + 1) / 2 + low
+    } else {
+        l.two_royal_sides[size] + (high - l.royal_before[size]) * l.royal_before[cap - size + 1] + low
+    };
+    Some((i as usize, swapped))
 }
 
 #[inline]
@@ -196,10 +257,7 @@ pub fn is_dead(symbols: &[u8]) -> bool {
     if symbols.len() > CAP {
         return false;
     }
-    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
-        return true;
-    }
-    dead_bit(set_index(symbols))
+    canonical(symbols, CAP, &LAYOUT).is_none_or(|(i, _)| dead_bit(i))
 }
 
 /// Whether no checkmate of either side is possible with exactly these pieces on a
@@ -209,10 +267,7 @@ pub fn is_dead_bounded(symbols: &[u8]) -> bool {
     if symbols.len() > BOUNDED_CAP {
         return false;
     }
-    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
-        return true;
-    }
-    bounded_dead_bit(bounded_set_index(symbols))
+    canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).is_none_or(|(i, _)| bounded_dead_bit(i))
 }
 
 #[inline]
@@ -225,15 +280,15 @@ fn dead_bit(i: usize) -> bool {
     TABLE[i >> 3] >> (i & 7) & 1 == 1
 }
 
-/// Whether set `i` is in the helpmate-only hash at `start` with `bucket_bits`.
+/// Whether `key` is in the helpmate-only hash at `start` with `bucket_bits`.
 #[inline]
-fn in_hash(i: usize, start: usize, bucket_bits: u32) -> bool {
+fn in_hash(key: u32, start: usize, bucket_bits: u32) -> bool {
     let mul = u32::from_le_bytes(TABLE[start..start + 4].try_into().unwrap());
-    let bucket = (i as u32).wrapping_mul(mul) >> (32 - bucket_bits);
+    let bucket = key.wrapping_mul(mul) >> (32 - bucket_bits);
     let base = start + 4 + bucket as usize * HELPMATE_SLOTS * 4;
     let slots: &[u8; HELPMATE_SLOTS * 4] = TABLE[base..base + HELPMATE_SLOTS * 4].try_into().unwrap();
     // Every slot is compared, so the cost is the same for every set.
-    slots.chunks_exact(4).fold(false, |hit, w| hit | (u32::from_le_bytes(w.try_into().unwrap()) == i as u32))
+    slots.chunks_exact(4).fold(false, |hit, w| hit | (u32::from_le_bytes(w.try_into().unwrap()) == key))
 }
 
 /// Whether the attacking side's pieces in `symbols` (White's when `white_attacks`)
@@ -244,15 +299,9 @@ pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
     if symbols.len() > CAP {
         return false;
     }
-    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
-        return true;
-    }
-    let mut oriented = [0u8; CAP];
-    for (o, &s) in oriented.iter_mut().zip(symbols) {
-        *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
-    }
-    let i = set_index(&oriented[..symbols.len()]);
-    dead_bit(i) || in_hash(i, DEAD_BYTES, HELPMATE_BUCKET_BITS)
+    canonical(symbols, CAP, &LAYOUT).is_none_or(|(i, swapped)| {
+        dead_bit(i) || in_hash(key(i, swapped, white_attacks), DEAD_BYTES, HELPMATE_BUCKET_BITS)
+    })
 }
 
 /// [`helpless`] on a bounded board, for sets of up to [`BOUNDED_CAP`] pieces.
@@ -261,15 +310,10 @@ pub fn helpless_bounded(symbols: &[u8], white_attacks: bool) -> bool {
     if symbols.len() > BOUNDED_CAP {
         return false;
     }
-    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
-        return true;
-    }
-    let mut oriented = [0u8; CAP];
-    for (o, &s) in oriented.iter_mut().zip(symbols) {
-        *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
-    }
-    let i = bounded_set_index(&oriented[..symbols.len()]);
-    bounded_dead_bit(i) || in_hash(i, BOUNDED_HELPMATE_START, BOUNDED_HELPMATE_BUCKET_BITS)
+    canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).is_none_or(|(i, swapped)| {
+        bounded_dead_bit(i)
+            || in_hash(key(i, swapped, white_attacks), BOUNDED_HELPMATE_START, BOUNDED_HELPMATE_BUCKET_BITS)
+    })
 }
 
 /// Calls `f` with every set of at least one royal and at most `cap` pieces,
@@ -327,23 +371,28 @@ mod tests {
         v
     }
 
+    /// Every index is used, by a set and its color swap alone.
     #[test]
-    fn index_is_a_bijection() {
+    fn index_covers_each_color_pair_once() {
         for (cap, count, index) in [
             (CAP, SET_COUNT, set_index as fn(&[u8]) -> usize),
             (BOUNDED_CAP, BOUNDED_SET_COUNT, bounded_set_index),
         ] {
-            let mut seen = vec![false; count];
-            let mut n = 0;
+            let mut owner: Vec<Option<Vec<u8>>> = vec![None; count];
             for_each_set(cap, |s| {
-                let i = index(s);
-                assert!(!seen[i], "{s:?}");
-                seen[i] = true;
-                n += 1;
+                let mut swap: Vec<u8> = s.iter().map(|&x| (x + KINDS) % SYMBOLS).collect();
+                swap.sort_unstable();
+                let mut key = s.to_vec();
+                key.sort_unstable();
+                let pair = key.min(swap);
+                let slot = &mut owner[index(s)];
+                assert!(slot.as_ref().is_none_or(|o| *o == pair), "{s:?}");
+                *slot = Some(pair);
             });
-            assert_eq!(n, count);
+            assert!(owner.iter().all(Option::is_some));
         }
-        assert_eq!(SET_COUNT, 784_541);
+        assert_eq!(SET_COUNT, 392_302);
+        assert_eq!(BOUNDED_SET_COUNT, 35_929);
     }
 
     #[test]
