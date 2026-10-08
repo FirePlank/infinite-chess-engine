@@ -1304,7 +1304,7 @@ fn main() {
 
     // White attacks; Black keeps only royals. One of each bishop-color mirror pair.
     let mut cores: Vec<Vec<u8>> = Vec::new();
-    mating_sets::for_each_set(|set| {
+    mating_sets::for_each_set(mating_sets::CAP, |set| {
         let black_royals_only = set.iter().filter(|&&s| s / KINDS == 1).all(|&s| mating_sets::is_royal_symbol(s));
         let has_black = set.iter().any(|&s| s / KINDS == 1);
         let has_white = set.iter().any(|&s| s / KINDS == 0);

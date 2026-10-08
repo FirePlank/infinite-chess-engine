@@ -1,11 +1,11 @@
 {
-  "name": "492_insuffmat_helpmate_only",
-  "old": "9ae04a1",
-  "games": 3000,
+  "name": "493_insuffmat_bounded_table",
+  "old": "bed01e3",
+  "games": 2000,
   "shards": 40,
-  "variants": "site",
+  "variants": "Chess,Double_King_Chess,Obstocean",
   "tc": "10+0.1",
   "elo0": -10,
   "elo1": 0,
-  "adjudication": 0
+  "adjudication": 1000
 }
