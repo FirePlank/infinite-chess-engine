@@ -100,10 +100,10 @@ cargo run --release --bin export_eval_features --features data_gen -- --sprt-dir
 
 ### 10. Insufficient-Material Table Builder (`insuffmat_build.rs`)
 
-Builds `src/evaluation/insuffmat_unbounded.bin` from infinitechess.org's generated `matingsets.ts` (`src/shared/chess/logic/insuffmat/`): a bit per piece set of up to 5 pieces on unbounded boards and up to 4 on bounded ones, set when no mate is possible, plus the armies that can only mate with the defender's help (`src/evaluation/insuffmat_helpmate_only.txt`, and `insuffmat_bounded_helpmate_only.txt` for bounded boards). It fails if a listed mate is not a smallest one. Rerun it whenever the site regenerates its tables.
+Builds `src/evaluation/insuffmat_unbounded.bin` from infinitechess.org's generated `matingsets.ts` (`src/shared/chess/logic/insuffmat/`): a bit per piece set of up to 5 pieces on unbounded boards and up to 4 on bounded ones, set when no mate is possible, plus the armies that can only mate with the defender's help (`src/evaluation/insuffmat_helpmate_only.txt`). It fails if a listed mate is not a smallest one. Rerun it whenever the site regenerates its tables.
 
 ```bash
-cargo run --release --bin insuffmat_build -- <site repo>/src/shared/chess/logic/insuffmat/matingsets.ts src/evaluation/insuffmat_helpmate_only.txt src/evaluation/insuffmat_bounded_helpmate_only.txt
+cargo run --release --bin insuffmat_build -- <site repo>/src/shared/chess/logic/insuffmat/matingsets.ts src/evaluation/insuffmat_helpmate_only.txt
 ```
 
 ### 11. Forced-Mate Classifier (`forced_gen.rs`)
@@ -112,12 +112,4 @@ Labels every army that can mate a lone set of royals as forced, helpmate-only or
 
 ```bash
 cargo run --release --bin forced_gen -- <out dir> [threads] [budget]
-```
-
-### 12. Bounded Helpmate Classifier (`bounded_helpmate.rs`)
-
-Solves every bounded-board army of up to 4 pieces that can mate a lone set of royals exactly on 8x8, both sides to move. Helpmate-only when White forces mate from no position with all pieces 3+ apart; the report gives how many positions it does win from and the longest of those mates. Its `helpmate_only.txt` is the bounded helpmate-only list above. About 45 minutes on 13 threads.
-
-```bash
-cargo run --release --bin bounded_helpmate -- <out dir> [threads]
 ```

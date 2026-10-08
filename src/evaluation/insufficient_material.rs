@@ -86,12 +86,13 @@ impl Table {
         }
     }
 
-    /// Whether `white`'s army facing only the enemy royals can never force mate.
+    /// Whether `white`'s army facing only the enemy royals can never force mate. The
+    /// bounded table lists no helpmate-only armies, so there only a dead one counts.
     #[inline]
     fn helpless(self, syms: &[u8], white: bool) -> bool {
         match self {
             Table::Unbounded => mating_sets::helpless(syms, white),
-            Table::Bounded => mating_sets::helpless_bounded(syms, white),
+            Table::Bounded => mating_sets::is_dead_bounded(syms),
         }
     }
 }
@@ -1406,14 +1407,5 @@ mod tests {
         assert!(!draw("w K0,0|N1,0|B2,0|B5,0|B6,0|B8,0|B10,0|B12,0|k20,20"));
         assert!(!draw("w K0,0|N3,0|N6,0|N9,0|N12,0|k20,20"));
         assert!(!draw("w K0,0|K5,0|K10,0|k20,20|k25,20|k30,20"));
-        // Bounded helpmate-only: scored dead, but the game goes on.
-        let scored = |icn: &str| {
-            let mut game = GameState::new();
-            game.setup_position_from_icn(icn);
-            (evaluate_insufficient_material(&game), side_cannot_mate(&game, true))
-        };
-        assert!(!draw("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"));
-        assert_eq!(scored("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"), (true, true));
-        assert_eq!(scored("w 1,8,1,8 K1,1|B2,1|N3,1|k8,8"), (false, false));
     }
 }

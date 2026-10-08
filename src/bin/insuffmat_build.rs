@@ -4,11 +4,9 @@
 //! mirror images listed once. A set can mate exactly when a listed set fits inside it.
 //! The optional helpmate-only list (`forced_gen`'s `escape.txt`: White's army vs
 //! Black's royals, labels like `K,GU,GU vs k`) is appended as a one-probe hash of set
-//! indices, then the bounded table's dead bits and the same hash of the bounded
-//! helpmate-only list (`bounded_helpmate`'s `helpmate_only.txt`).
+//! indices, then the bounded table's dead bits.
 //!
-//! Usage: cargo run --release --bin insuffmat_build -- <matingsets.ts> [helpmate-only list]
-//!        [bounded helpmate-only list] [out file]
+//! Usage: cargo run --release --bin insuffmat_build -- <matingsets.ts> [helpmate-only list] [out file]
 
 use apeiron::evaluation::mating_sets::{
     self, BOUNDED_CAP, BOUNDED_SET_COUNT, CAP, KIND_CODES, KINDS, SET_COUNT, SYMBOLS, bounded_set_index,
@@ -112,15 +110,15 @@ fn dead_bits(mate: &[bool]) -> Vec<u8> {
 
 /// A multiplier that spreads `sets` over the buckets with none overflowing, then the
 /// buckets, so every lookup reads one bucket.
-fn helpmate_hash(sets: &std::collections::BTreeSet<u32>, bucket_bits: u32) -> Vec<u8> {
-    use mating_sets::HELPMATE_SLOTS;
+fn helpmate_hash(sets: &std::collections::BTreeSet<u32>) -> Vec<u8> {
+    use mating_sets::{HELPMATE_BUCKET_BITS, HELPMATE_SLOTS};
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     loop {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let mul = (state >> 32) as u32 | 1;
-        let mut buckets = vec![Vec::new(); 1 << bucket_bits];
+        let mut buckets = vec![Vec::new(); 1 << HELPMATE_BUCKET_BITS];
         for &i in sets {
-            buckets[(i.wrapping_mul(mul) >> (32 - bucket_bits)) as usize].push(i);
+            buckets[(i.wrapping_mul(mul) >> (32 - HELPMATE_BUCKET_BITS)) as usize].push(i);
         }
         if buckets.iter().all(|b| b.len() <= HELPMATE_SLOTS) {
             let mut out = mul.to_le_bytes().to_vec();
@@ -136,11 +134,8 @@ fn helpmate_hash(sets: &std::collections::BTreeSet<u32>, bucket_bits: u32) -> Ve
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let ts_path = args.next().expect(
-        "usage: insuffmat_build <matingsets.ts> [helpmate-only list] [bounded helpmate-only list] [out file]",
-    );
+    let ts_path = args.next().expect("usage: insuffmat_build <matingsets.ts> [helpmate-only list] [out file]");
     let helpmate_list = args.next();
-    let bounded_helpmate_list = args.next();
     let out = args
         .next()
         .unwrap_or_else(|| "src/evaluation/insuffmat_unbounded.bin".to_string());
@@ -174,21 +169,9 @@ fn main() {
         }
     }
 
-    let mut bounded_helpmate = std::collections::BTreeSet::new();
-    if let Some(path) = &bounded_helpmate_list {
-        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
-        // Each bishop-color image is solved and listed on its own.
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let i = bounded_set_index(&parse(line));
-            assert!(bounded_mate[i], "bounded helpmate-only core cannot mate at all: {line}");
-            bounded_helpmate.insert(i as u32);
-        }
-    }
-
     let helpmate_sets = helpmate.len();
-    bits.extend(helpmate_hash(&helpmate, mating_sets::HELPMATE_BUCKET_BITS));
+    bits.extend(helpmate_hash(&helpmate));
     bits.extend(dead_bits(&bounded_mate));
-    bits.extend(helpmate_hash(&bounded_helpmate, mating_sets::BOUNDED_HELPMATE_BUCKET_BITS));
     assert_eq!(bits.len(), mating_sets::TABLE_BYTES);
     std::fs::write(&out, &bits).unwrap_or_else(|e| panic!("{out}: {e}"));
     let count = |m: &[bool]| m.iter().filter(|&&m| !m).count();
@@ -198,10 +181,9 @@ fn main() {
         count(&mate)
     );
     println!(
-        "bounded: {} smallest mates, {BOUNDED_SET_COUNT} sets, {} dead, {} helpmate-only; wrote {} bytes to {out}",
+        "bounded: {} smallest mates, {BOUNDED_SET_COUNT} sets, {} dead; wrote {} bytes to {out}",
         bounded.len(),
         count(&bounded_mate),
-        bounded_helpmate.len(),
         bits.len()
     );
 }

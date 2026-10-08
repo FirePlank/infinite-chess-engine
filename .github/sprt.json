@@ -1,6 +1,6 @@
 {
-  "name": "494_insuffmat_bounded_helpmate",
-  "old": "668f4c8",
+  "name": "493_insuffmat_bounded_table",
+  "old": "bed01e3",
   "games": 2000,
   "shards": 40,
   "variants": "Chess,Double_King_Chess,Obstocean",
