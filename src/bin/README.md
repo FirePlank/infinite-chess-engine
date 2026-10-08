@@ -100,7 +100,7 @@ cargo run --release --bin export_eval_features --features data_gen -- --sprt-dir
 
 ### 10. Insufficient-Material Table Builder (`insuffmat_build.rs`)
 
-Builds `src/evaluation/insuffmat_unbounded.bin` from infinitechess.org's generated `matingsets.ts` (`src/shared/chess/logic/insuffmat/`): a bit per piece set of up to 5 pieces on unbounded boards and up to 4 on bounded ones, set when no mate is possible, plus the armies that can only mate with the defender's help (`src/evaluation/insuffmat_helpmate_only.txt`, and `insuffmat_bounded_helpmate_only.txt` for bounded boards). It fails if a listed mate is not a smallest one. Rerun it whenever the site regenerates its tables.
+Builds `src/evaluation/insuffmat.bin` from infinitechess.org's generated `matingsets.ts` (`src/shared/chess/logic/insuffmat/`): a bit per piece set of up to 5 pieces on unbounded boards and up to 4 on bounded ones, set when no mate is possible, plus the armies that can only mate with the defender's help (`src/evaluation/insuffmat_helpmate_only.txt`, and `insuffmat_bounded_helpmate_only.txt` for bounded boards). It fails if a listed mate is not a smallest one. Rerun it whenever the site regenerates its tables.
 
 ```bash
 cargo run --release --bin insuffmat_build -- <site repo>/src/shared/chess/logic/insuffmat/matingsets.ts src/evaluation/insuffmat_helpmate_only.txt src/evaluation/insuffmat_bounded_helpmate_only.txt

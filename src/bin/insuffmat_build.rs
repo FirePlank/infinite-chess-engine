@@ -1,4 +1,4 @@
-//! Builds `src/evaluation/insuffmat_unbounded.bin` from infinitechess.org's generated
+//! Builds `src/evaluation/insuffmat.bin` from infinitechess.org's generated
 //! `matingsets.ts` (src/shared/chess/logic/insuffmat/): every smallest piece set that
 //! can mate, per board kind, labels like `K,B0/k,n` (White's pieces, then Black's),
 //! mirror images listed once. A set can mate exactly when a listed set fits inside it.
@@ -143,7 +143,7 @@ fn main() {
     let bounded_helpmate_list = args.next();
     let out = args
         .next()
-        .unwrap_or_else(|| "src/evaluation/insuffmat_unbounded.bin".to_string());
+        .unwrap_or_else(|| "src/evaluation/insuffmat.bin".to_string());
     let ts = std::fs::read_to_string(&ts_path).unwrap_or_else(|e| panic!("{ts_path}: {e}"));
     assert_eq!(listed_cap(&ts, "unbounded"), CAP);
     assert_eq!(listed_cap(&ts, "bounded"), BOUNDED_CAP);

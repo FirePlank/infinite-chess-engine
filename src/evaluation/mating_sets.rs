@@ -85,7 +85,7 @@ pub const BOUNDED_SET_COUNT: usize = BOUNDED_ROYAL_BASE[BOUNDED_CAP + 1] as usiz
 /// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` set indices padded with
 /// `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits,
 /// and the same hash of the bounded helpmate-only sets (`bounded_helpmate` proved it).
-static TABLE: &[u8] = include_bytes!("insuffmat_unbounded.bin");
+static TABLE: &[u8] = include_bytes!("insuffmat.bin");
 pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
 pub const HELPMATE_BUCKET_BITS: u32 = 7;
 pub const HELPMATE_SLOTS: usize = 8;
