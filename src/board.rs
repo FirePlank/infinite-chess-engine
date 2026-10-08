@@ -284,6 +284,13 @@ impl PieceType {
         )
     }
 
+    /// Royals that castle. The royal queen is royal but never castles, so its
+    /// two-square row move is always a plain slide.
+    #[inline]
+    pub fn can_castle(&self) -> bool {
+        matches!(self, PieceType::King | PieceType::RoyalCentaur)
+    }
+
     #[inline]
     /// Check if this piece type is minor (more valuable than a pawn but less than a rook).
     pub fn is_minor(&self) -> bool {

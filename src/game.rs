@@ -356,7 +356,7 @@ impl GameState {
             let Some(royal_piece) = self.board.get_piece(royal.x, royal.y) else {
                 continue;
             };
-            if !royal_piece.piece_type().is_royal() {
+            if !royal_piece.piece_type().can_castle() {
                 continue;
             }
 
@@ -3118,7 +3118,7 @@ impl GameState {
 
         // Detect if this is a castling move to populate partner_coord
         // Castling works with any non-pawn, non-royal piece that has special rights
-        if piece.piece_type().is_royal() {
+        if piece.piece_type().can_castle() {
             let dx = to_x - from_x;
             // Same rank required: a royal that also leaps (centaur) has legal
             // (2,1) moves, and matching on dx alone treated those as castling.
@@ -3404,7 +3404,7 @@ impl GameState {
         }
 
         // Handle Castling Move (royal moves exactly 2 squares along its rank)
-        if piece.piece_type().is_royal()
+        if piece.piece_type().can_castle()
             && (m.to.x - m.from.x).abs() == 2
             && m.to.y == m.from.y
             && m.partner_x != crate::moves::NO_PARTNER
@@ -3747,7 +3747,7 @@ impl GameState {
         }
 
         // Handle Castling Revert
-        if piece.piece_type().is_royal() {
+        if piece.piece_type().can_castle() {
             let dx = m.to.x - m.from.x;
             // Must mirror make_move exactly, or undo restores a partner that
             // never moved and the board silently diverges.
@@ -4455,6 +4455,25 @@ mod tests {
             Some(before.piece_type())
         );
         assert!(game.board.get_piece(5, 1).is_some(), "royal is back home");
+    }
+
+    #[test]
+    fn royal_queen_never_castles() {
+        let mut game = create_test_game_from_icn("w RQ5,1+|R8,1+|R1,1+|k5,8");
+        assert_eq!(game.castling_partner_counts, [0; 4]);
+        assert_eq!(game.effective_castling_rights, 0);
+
+        let moves = game.get_pseudo_legal_moves();
+        assert!(moves.iter().all(|m| m.partner_x == crate::moves::NO_PARTNER));
+        let slide = *moves
+            .iter()
+            .find(|m| m.from == Coordinate::new(5, 1) && m.to == Coordinate::new(7, 1))
+            .expect("royal queen slides two squares along its row");
+
+        let undo = game.make_move(&slide);
+        assert!(game.board.get_piece(8, 1).is_some(), "the rook must not move");
+        assert!(game.board.get_piece(6, 1).is_none());
+        game.undo_move(&slide, undo);
     }
 
     /// Asserts after make AND undo: an asymmetric pair poisons every later TT key,
