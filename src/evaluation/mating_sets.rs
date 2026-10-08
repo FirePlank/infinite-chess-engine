@@ -83,15 +83,19 @@ pub const BOUNDED_SET_COUNT: usize = BOUNDED_ROYAL_BASE[BOUNDED_CAP + 1] as usiz
 /// [`HELPMATE_BYTES`] hashing the sets where Black has only royals and mate is
 /// possible, but White can never force it (`forced_gen` proved it): a `u32`
 /// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` set indices padded with
-/// `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits.
+/// `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits,
+/// and the same hash of the bounded helpmate-only sets (`bounded_helpmate` proved it).
 static TABLE: &[u8] = include_bytes!("insuffmat_unbounded.bin");
 pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
 pub const HELPMATE_BUCKET_BITS: u32 = 7;
 pub const HELPMATE_SLOTS: usize = 8;
 pub const HELPMATE_BYTES: usize = 4 + (HELPMATE_SLOTS << HELPMATE_BUCKET_BITS) * 4;
 pub const BOUNDED_DEAD_BYTES: usize = BOUNDED_SET_COUNT.div_ceil(8);
+pub const BOUNDED_HELPMATE_BUCKET_BITS: u32 = 8;
+pub const BOUNDED_HELPMATE_BYTES: usize = 4 + (HELPMATE_SLOTS << BOUNDED_HELPMATE_BUCKET_BITS) * 4;
 const BOUNDED_START: usize = DEAD_BYTES + HELPMATE_BYTES;
-pub const TABLE_BYTES: usize = BOUNDED_START + BOUNDED_DEAD_BYTES;
+const BOUNDED_HELPMATE_START: usize = BOUNDED_START + BOUNDED_DEAD_BYTES;
+pub const TABLE_BYTES: usize = BOUNDED_HELPMATE_START + BOUNDED_HELPMATE_BYTES;
 
 #[inline]
 pub fn is_royal_symbol(s: u8) -> bool {
@@ -208,7 +212,11 @@ pub fn is_dead_bounded(symbols: &[u8]) -> bool {
     if !symbols.iter().any(|&s| is_royal_symbol(s)) {
         return true;
     }
-    let i = bounded_set_index(symbols);
+    bounded_dead_bit(bounded_set_index(symbols))
+}
+
+#[inline]
+fn bounded_dead_bit(i: usize) -> bool {
     TABLE[BOUNDED_START + (i >> 3)] >> (i & 7) & 1 == 1
 }
 
@@ -217,11 +225,12 @@ fn dead_bit(i: usize) -> bool {
     TABLE[i >> 3] >> (i & 7) & 1 == 1
 }
 
+/// Whether set `i` is in the helpmate-only hash at `start` with `bucket_bits`.
 #[inline]
-fn helpmate_only(i: usize) -> bool {
-    let mul = u32::from_le_bytes(TABLE[DEAD_BYTES..DEAD_BYTES + 4].try_into().unwrap());
-    let bucket = (i as u32).wrapping_mul(mul) >> (32 - HELPMATE_BUCKET_BITS);
-    let base = DEAD_BYTES + 4 + bucket as usize * HELPMATE_SLOTS * 4;
+fn in_hash(i: usize, start: usize, bucket_bits: u32) -> bool {
+    let mul = u32::from_le_bytes(TABLE[start..start + 4].try_into().unwrap());
+    let bucket = (i as u32).wrapping_mul(mul) >> (32 - bucket_bits);
+    let base = start + 4 + bucket as usize * HELPMATE_SLOTS * 4;
     let slots: &[u8; HELPMATE_SLOTS * 4] = TABLE[base..base + HELPMATE_SLOTS * 4].try_into().unwrap();
     // Every slot is compared, so the cost is the same for every set.
     slots.chunks_exact(4).fold(false, |hit, w| hit | (u32::from_le_bytes(w.try_into().unwrap()) == i as u32))
@@ -243,7 +252,24 @@ pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
         *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
     }
     let i = set_index(&oriented[..symbols.len()]);
-    dead_bit(i) || helpmate_only(i)
+    dead_bit(i) || in_hash(i, DEAD_BYTES, HELPMATE_BUCKET_BITS)
+}
+
+/// [`helpless`] on a bounded board, for sets of up to [`BOUNDED_CAP`] pieces.
+#[inline]
+pub fn helpless_bounded(symbols: &[u8], white_attacks: bool) -> bool {
+    if symbols.len() > BOUNDED_CAP {
+        return false;
+    }
+    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
+        return true;
+    }
+    let mut oriented = [0u8; CAP];
+    for (o, &s) in oriented.iter_mut().zip(symbols) {
+        *o = if white_attacks { s } else { (s + KINDS) % SYMBOLS };
+    }
+    let i = bounded_set_index(&oriented[..symbols.len()]);
+    bounded_dead_bit(i) || in_hash(i, BOUNDED_HELPMATE_START, BOUNDED_HELPMATE_BUCKET_BITS)
 }
 
 /// Calls `f` with every set of at least one royal and at most `cap` pieces,
@@ -342,6 +368,10 @@ mod tests {
             assert!(!is_dead_bounded(&set(mate)), "{mate}");
         }
         assert!(!is_dead_bounded(&set("K,R,R,R,R vs k")), "past the bounded cap");
+        assert!(helpless_bounded(&set("K,N,N vs k"), true));
+        assert!(helpless_bounded(&set("k vs K,N,N"), false));
+        assert!(!helpless_bounded(&set("K,B0,N vs k"), true));
+        assert!(!helpless_bounded(&set("K,R vs k"), true));
     }
 
     #[test]
