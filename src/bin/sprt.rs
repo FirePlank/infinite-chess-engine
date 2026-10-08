@@ -2064,16 +2064,7 @@ fn play_game(
                 return interrupted();
             }
 
-            // TEMP (insuffmat test, never commit): an engine that stops in a live
-            // <=5-piece position wrongly claimed insufficient material, so it loses.
-            let false_insuffmat_claim =
-                (game.white_piece_count + game.black_piece_count) <= 5;
-            termination_reason = Some(if false_insuffmat_claim {
-                "false insufficient material claim"
-            } else {
-                "engine failure"
-            });
-            if !false_insuffmat_claim {
+            termination_reason = Some("engine failure");
             abort_run(AbortReason::EngineFault {
                 kind: "engine failure",
                 engine: if is_new_turn { "NEW" } else { "OLD" },
@@ -2083,7 +2074,6 @@ fn play_game(
                          (the engine exited cleanly without moving, or its output was unparseable)"
                     .to_string(),
             });
-            }
             let result = if is_new_turn {
                 GameResult::Loss
             } else {
