@@ -1,13 +1,14 @@
-//! Which piece sets of up to [`CAP`] pieces can be arranged into a legally reachable
-//! checkmate on an unbounded board, helpmates included, from infinitechess.org's
-//! generated tables, and which armies can only mate with the defender's help. A dead
-//! bit per set, indexed by [`set_index`], then the few helpmate-only sets in a small
-//! one-probe hash; built by the `insuffmat_build` binary.
+//! Which piece sets can be arranged into a legally reachable checkmate, helpmates
+//! included, from infinitechess.org's generated tables: up to [`CAP`] pieces on an
+//! unbounded board, up to [`BOUNDED_CAP`] on a bounded one. Unbounded, also which
+//! armies can only mate with the defender's help. Built by the `insuffmat_build` binary.
 
 use crate::board::{PieceType, PlayerColor};
 
 /// Most pieces in a tabled set, counting both sides and the royals.
 pub const CAP: usize = 5;
+/// The same for bounded boards, whose table was generated on 8x8.
+pub const BOUNDED_CAP: usize = 4;
 /// Piece kinds in table order: the 3 royals first, then the 18 others.
 pub const KIND_CODES: [&str; 21] = [
     "K", "RC", "RQ", "Q", "R", "B0", "B1", "N", "P", "AM", "HA", "CH", "AR", "GU", "CA", "GI",
@@ -59,30 +60,38 @@ const CUM_OTHER: [u32; CAP + 1] = {
     t
 };
 
-/// `ROYAL_BASE[a]`: index of the first set with `a` royals.
-const ROYAL_BASE: [u32; CAP + 2] = {
+/// `royal_base(cap)[a]`: index of the first set with `a` royals, among sets of at
+/// most `cap` pieces.
+const fn royal_base(cap: usize) -> [u32; CAP + 2] {
     let mut t = [0u32; CAP + 2];
     let n = 2 * ROYAL_KINDS as u32;
     let mut a = 1;
-    while a <= CAP {
-        t[a + 1] = t[a] + binom(n + a as u32 - 1, a as u32) * CUM_OTHER[CAP - a];
+    while a <= cap {
+        t[a + 1] = t[a] + binom(n + a as u32 - 1, a as u32) * CUM_OTHER[cap - a];
         a += 1;
     }
     t
-};
+}
+const ROYAL_BASE: [u32; CAP + 2] = royal_base(CAP);
+const BOUNDED_ROYAL_BASE: [u32; CAP + 2] = royal_base(BOUNDED_CAP);
 
 /// Sets with at least one royal; royal-less sets are never mates and have no index.
 pub const SET_COUNT: usize = ROYAL_BASE[CAP + 1] as usize;
+pub const BOUNDED_SET_COUNT: usize = BOUNDED_ROYAL_BASE[BOUNDED_CAP + 1] as usize;
 
-/// [`DEAD_BYTES`] of one bit per set, set when no mate is possible. Then a hash of
-/// the sets where Black has only royals and mate is possible, but White can never
-/// force it (`forced_gen` proved it): a `u32` multiplier, then buckets of
-/// [`HELPMATE_SLOTS`] `u32` set indices padded with `u32::MAX`, all little-endian.
+/// [`DEAD_BYTES`] of one bit per unbounded set, set when no mate is possible. Then
+/// [`HELPMATE_BYTES`] hashing the sets where Black has only royals and mate is
+/// possible, but White can never force it (`forced_gen` proved it): a `u32`
+/// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` set indices padded with
+/// `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits.
 static TABLE: &[u8] = include_bytes!("insuffmat_unbounded.bin");
 pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
 pub const HELPMATE_BUCKET_BITS: u32 = 7;
 pub const HELPMATE_SLOTS: usize = 8;
-pub const TABLE_BYTES: usize = DEAD_BYTES + 4 + (HELPMATE_SLOTS << HELPMATE_BUCKET_BITS) * 4;
+pub const HELPMATE_BYTES: usize = 4 + (HELPMATE_SLOTS << HELPMATE_BUCKET_BITS) * 4;
+pub const BOUNDED_DEAD_BYTES: usize = BOUNDED_SET_COUNT.div_ceil(8);
+const BOUNDED_START: usize = DEAD_BYTES + HELPMATE_BYTES;
+pub const TABLE_BYTES: usize = BOUNDED_START + BOUNDED_DEAD_BYTES;
 
 #[inline]
 pub fn is_royal_symbol(s: u8) -> bool {
@@ -126,7 +135,18 @@ pub fn symbol(pt: PieceType, color: PlayerColor, x: i64, y: i64) -> Option<u8> {
 /// The index of a set with 1 to [`CAP`] symbols, at least one royal, in any order.
 #[inline]
 pub fn set_index(symbols: &[u8]) -> usize {
-    debug_assert!(symbols.len() <= CAP);
+    index(symbols, CAP, &ROYAL_BASE)
+}
+
+/// [`set_index`] among the sets of at most [`BOUNDED_CAP`] symbols.
+#[inline]
+pub fn bounded_set_index(symbols: &[u8]) -> usize {
+    index(symbols, BOUNDED_CAP, &BOUNDED_ROYAL_BASE)
+}
+
+#[inline]
+fn index(symbols: &[u8], cap: usize, royal_base: &[u32; CAP + 2]) -> usize {
+    debug_assert!(symbols.len() <= cap);
     let mut royals = [0u8; CAP];
     let mut others = [0u8; CAP];
     let (mut a, mut b) = (0, 0);
@@ -151,7 +171,7 @@ pub fn set_index(symbols: &[u8]) -> usize {
     for (i, &c) in others[..b].iter().enumerate() {
         other_rank += BIN[i][c as usize];
     }
-    (ROYAL_BASE[a] + royal_rank * CUM_OTHER[CAP - a] + other_rank) as usize
+    (royal_base[a] + royal_rank * CUM_OTHER[cap - a] + other_rank) as usize
 }
 
 #[inline]
@@ -176,6 +196,20 @@ pub fn is_dead(symbols: &[u8]) -> bool {
         return true;
     }
     dead_bit(set_index(symbols))
+}
+
+/// Whether no checkmate of either side is possible with exactly these pieces on a
+/// bounded board, not even a helpmate. Sets above [`BOUNDED_CAP`] are never dead.
+#[inline]
+pub fn is_dead_bounded(symbols: &[u8]) -> bool {
+    if symbols.len() > BOUNDED_CAP {
+        return false;
+    }
+    if !symbols.iter().any(|&s| is_royal_symbol(s)) {
+        return true;
+    }
+    let i = bounded_set_index(symbols);
+    TABLE[BOUNDED_START + (i >> 3)] >> (i & 7) & 1 == 1
 }
 
 #[inline]
@@ -212,8 +246,9 @@ pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
     dead_bit(i) || helpmate_only(i)
 }
 
-/// Calls `f` with every set of at least one royal, smallest sets first.
-pub fn for_each_set(mut f: impl FnMut(&[u8])) {
+/// Calls `f` with every set of at least one royal and at most `cap` pieces,
+/// smallest sets first.
+pub fn for_each_set(cap: usize, mut f: impl FnMut(&[u8])) {
     fn multisets(n: u8, k: usize, start: u8, cur: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
         if cur.len() == k {
             out.push(cur.clone());
@@ -227,7 +262,7 @@ pub fn for_each_set(mut f: impl FnMut(&[u8])) {
     }
     let royal_symbols: Vec<u8> = (0..SYMBOLS).filter(|&s| is_royal_symbol(s)).collect();
     let other_symbols: Vec<u8> = (0..SYMBOLS).filter(|&s| !is_royal_symbol(s)).collect();
-    for total in 1..=CAP {
+    for total in 1..=cap {
         for a in 1..=total {
             let (mut rs, mut os) = (Vec::new(), Vec::new());
             multisets(royal_symbols.len() as u8, a, 0, &mut Vec::new(), &mut rs);
@@ -268,15 +303,20 @@ mod tests {
 
     #[test]
     fn index_is_a_bijection() {
-        let mut seen = vec![false; SET_COUNT];
-        let mut n = 0;
-        for_each_set(|s| {
-            let i = set_index(s);
-            assert!(!seen[i], "{s:?}");
-            seen[i] = true;
-            n += 1;
-        });
-        assert_eq!(n, SET_COUNT);
+        for (cap, count, index) in [
+            (CAP, SET_COUNT, set_index as fn(&[u8]) -> usize),
+            (BOUNDED_CAP, BOUNDED_SET_COUNT, bounded_set_index),
+        ] {
+            let mut seen = vec![false; count];
+            let mut n = 0;
+            for_each_set(cap, |s| {
+                let i = index(s);
+                assert!(!seen[i], "{s:?}");
+                seen[i] = true;
+                n += 1;
+            });
+            assert_eq!(n, count);
+        }
         assert_eq!(SET_COUNT, 784_541);
     }
 
@@ -291,6 +331,17 @@ mod tests {
         // Order and mirror images do not matter.
         assert!(!is_dead(&set("K,B1,B1 vs q,k")));
         assert!(is_dead(&set("Q,N vs ")));
+    }
+
+    #[test]
+    fn known_bounded_verdicts() {
+        for dead in ["K vs k", "K,N vs k", "AM,Q vs rq", "K,B0,B0 vs k"] {
+            assert!(is_dead_bounded(&set(dead)), "{dead}");
+        }
+        for mate in ["K,R vs k", "K vs k,rc", "AM,AM vs rq", "K,B0,B1 vs k", "K,N,N vs k"] {
+            assert!(!is_dead_bounded(&set(mate)), "{mate}");
+        }
+        assert!(!is_dead_bounded(&set("K,R,R,R,R vs k")), "past the bounded cap");
     }
 
     #[test]
