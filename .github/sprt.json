@@ -1,9 +1,9 @@
 {
-  "name": "533_small_board_all_slider_moves",
-  "old": "45dc0a6b",
+  "name": "534_bounded_32_all_slider_moves",
+  "old": "2f771020",
   "games": 2000,
   "shards": 40,
-  "variants": "Chess,Double_King_Chess",
+  "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,

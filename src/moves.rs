@@ -3280,9 +3280,9 @@ fn generate_sliding_moves_impl(
     let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
     let quiet_ray_cap = QUIET_RAY_CAP.with(|c| c.get());
     let (min_x, max_x, min_y, max_y) = get_coord_bounds();
-    // An 8x8-or-smaller world has at most seven squares per ray: every one is generated,
+    // A world of at most 32x32 has at most 31 squares per ray: every one is generated,
     // since the candidate selection below only exists to tame unbounded rays.
-    let small_board = (max_x as i128 - min_x as i128) < 8 && (max_y as i128 - min_y as i128) < 8;
+    let small_board = (max_x as i128 - min_x as i128) < 32 && (max_y as i128 - min_y as i128) < 32;
 
     for &(dx_raw, dy_raw) in directions {
         // One scan of the line gives the nearest piece in both of its directions.
