@@ -1,11 +1,11 @@
 {
-  "name": "532_obstocean_net_king_tactics_s6_resume",
-  "old": "4b5dc806",
+  "name": "533_small_board_all_slider_moves",
+  "old": "45dc0a6b",
   "games": 2000,
   "shards": 40,
-  "variants": "Obstocean",
+  "variants": "Chess,Double_King_Chess",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 0
+  "adjudication": 1000
 }

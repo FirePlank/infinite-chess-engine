@@ -3280,6 +3280,9 @@ fn generate_sliding_moves_impl(
     let bypass_cache = SLIDER_CACHE_BYPASS.with(|c| c.get());
     let quiet_ray_cap = QUIET_RAY_CAP.with(|c| c.get());
     let (min_x, max_x, min_y, max_y) = get_coord_bounds();
+    // An 8x8-or-smaller world has at most seven squares per ray: every one is generated,
+    // since the candidate selection below only exists to tame unbounded rays.
+    let small_board = (max_x as i128 - min_x as i128) < 8 && (max_y as i128 - min_y as i128) < 8;
 
     for &(dx_raw, dy_raw) in directions {
         // One scan of the line gives the nearest piece in both of its directions.
@@ -3348,6 +3351,22 @@ fn generate_sliding_moves_impl(
             };
 
             if max_dist <= 0 {
+                continue;
+            }
+
+            if small_board {
+                for d in 1..=max_dist {
+                    let is_capture = d == closest_dist && closest_is_enemy;
+                    if (gen_type == MoveGenType::Captures && !is_capture)
+                        || (gen_type == MoveGenType::Quiets && is_capture)
+                    {
+                        continue;
+                    }
+                    let (sq_x, sq_y) = (from.x + dir_x * d, from.y + dir_y * d);
+                    if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
+                        out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                    }
+                }
                 continue;
             }
 
@@ -5255,6 +5274,32 @@ mod tests {
             // Rook on empty board should have many moves (limited by fallback)
             assert!(!moves.is_empty(), "Rook should have some moves");
             reset_world_bounds();
+        });
+    }
+
+    #[test]
+    fn small_board_sliders_get_every_square() {
+        with_bounds_lock(|| {
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w Q4,4");
+            set_world_bounds(1, 8, 1, 8);
+            let (from, piece) = (Coordinate::new(4, 4), Piece::new(PieceType::Queen, PlayerColor::White));
+            let mut moves = MoveList::new();
+            generate_sliding_moves_into(
+                &SlidingMoveContext {
+                    board: &game.board,
+                    from: &from,
+                    piece: &piece,
+                    directions: &[(1, 0), (0, 1), (1, 1), (1, -1)],
+                    indices: &game.spatial_indices,
+                    enemy_king_pos: None,
+                    visited_targets: None,
+                    pinned: &FxHashMap::default(),
+                },
+                &mut moves,
+            );
+            reset_world_bounds();
+            assert_eq!(moves.len(), 27, "a queen on d4 of an empty 8x8 board has 27 moves");
         });
     }
 
