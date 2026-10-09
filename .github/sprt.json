@@ -1,9 +1,9 @@
 {
-  "name": "517_chess_net_seed1_base",
-  "old": "0a57d29c",
-  "games": 2000,
+  "name": "524_net_recent_refresh",
+  "old": "4b5dc806",
+  "games": 4000,
   "shards": 40,
-  "variants": "Chess",
+  "variants": "base_only",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
