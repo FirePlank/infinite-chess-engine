@@ -3354,8 +3354,8 @@ fn generate_sliding_moves_impl(
                 continue;
             }
 
-            // A ray stopped by a piece within eight squares is short on any board.
-            if small_board || closest_dist <= 8 {
+            // A ray stopped by a piece within sixteen squares is short on any board.
+            if small_board || closest_dist <= 16 {
                 for d in 1..=max_dist {
                     let is_capture = d == closest_dist && closest_is_enemy;
                     if (gen_type == MoveGenType::Captures && !is_capture)
