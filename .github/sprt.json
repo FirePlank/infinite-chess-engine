@@ -1,11 +1,11 @@
 {
-  "name": "544_obstocean_net_cap_1000",
-  "old": "d4f4cb3b",
+  "name": "547_bounded_lmp_half",
+  "old": "ce647b4e",
   "games": 2000,
   "shards": 40,
-  "variants": "Obstocean",
+  "variants": "Chess,Double_King_Chess",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 0
+  "adjudication": 1000
 }
