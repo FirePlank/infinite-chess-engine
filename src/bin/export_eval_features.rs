@@ -695,7 +695,7 @@ fn consider(
                 out.extend_from_slice(&[0u8; 2]);
                 hashes.extend_from_slice(&pos.hash.to_le_bytes());
                 if HASH_COUNTS.load(Ordering::Relaxed) {
-                    hashes.extend_from_slice(&piece_counts(&pos));
+                    hashes.extend_from_slice(&piece_counts(&pos, &fc));
                 }
                 acc.kept += 1;
                 if c.perturb == 0
@@ -839,7 +839,7 @@ fn record(stats: &Stats, game: &Game, acc: &Acc) {
 }
 
 /// Piece counts by colour (White then Black) and `PieceType as usize`, saturating at 255.
-fn piece_counts(g: &GameState) -> [u8; 64] {
+fn piece_counts(g: &GameState, fc: &FeatureCollector) -> [u8; 64] {
     let mut c = [0u8; 64];
     for (_, _, p) in g.board.iter() {
         let side = match p.color() {
@@ -882,29 +882,12 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
         c[side + 23] = queen_like(them);
         c[side + 24] = near;
     }
-    // Slots 25-27 / 57-59: the side's own non-pawn, non-royal pieces attacked and
-    // undefended (count, value / 50), and opponent checks landing on squares it does
-    // not defend (safe checks against it).
-    let idx = &g.spatial_indices;
-    for (us, side) in [(PlayerColor::White, 0usize), (PlayerColor::Black, 32usize)] {
-        let them = us.opponent();
-        let (mut loose, mut loose_val) = (0u32, 0u32);
-        for (x, y, p) in g.board.iter() {
-            let pt = p.piece_type();
-            if p.color() != us || pt == apeiron::board::PieceType::Pawn || pt.is_royal() {
-                continue;
-            }
-            let sq = apeiron::board::Coordinate::new(x, y);
-            if apeiron::moves::is_square_attacked(&g.board, &sq, them, idx)
-                && !apeiron::moves::is_square_attacked(&g.board, &sq, us, idx)
-            {
-                loose += 1;
-                loose_val += apeiron::evaluation::get_piece_value_base(pt).max(0) as u32;
-            }
+    // Slots 25-27 / 57-59: the eval's own king-line tactics for the side's first royal
+    // (own pieces pinned to it, their value / 100, enemy discovered-check setups).
+    for (s, side) in [(0usize, 0usize), (1, 32)] {
+        for (k, &v) in fc.inputs.king_tactics[s].iter().enumerate() {
+            c[side + 25 + k] = v.clamp(0, 255) as u8;
         }
-        c[side + 25] = loose.min(255) as u8;
-        c[side + 26] = (loose_val / 50).min(255) as u8;
-        c[side + 27] = safe_checks_against(g, us).min(255) as u8;
     }
     // Slots 28-30 / 60-62: the side's slider rays shut by its own piece within 2, rays
     // whose first piece is its own pawn, and rays open to infinity.
@@ -941,33 +924,6 @@ fn piece_counts(g: &GameState) -> [u8; 64] {
     c
 }
 
-/// Opponent moves that check `us` and land on a square `us` does not defend.
-fn safe_checks_against(g: &GameState, us: PlayerColor) -> u32 {
-    let kings = if us == PlayerColor::White { &g.white_royals } else { &g.black_royals };
-    let Some(&king) = kings.first() else { return 0 };
-    let them = us.opponent();
-    let mut h = g.clone();
-    if h.turn != them {
-        h.make_null_move();
-    }
-    let mut n = 0;
-    for m in h.get_pseudo_legal_moves().iter() {
-        let undo = h.make_move(m);
-        let royals = if us == PlayerColor::White { &h.white_royals } else { &h.black_royals };
-        if !h.is_move_illegal()
-            && royals.first() == Some(&king)
-            && apeiron::moves::is_square_attacked(&h.board, &king, them, &h.spatial_indices)
-            && !apeiron::moves::is_square_attacked(&h.board, &m.to, us, &h.spatial_indices)
-        {
-            n += 1;
-        }
-        h.undo_move(m, undo);
-    }
-    n
-}
-
-/// A set-up start position, parsed once per distinct ICN. Setting up also applies the
-/// ICN's world border, which every game of the bounds-homogeneous group shares.
 fn template(templates: &mut HashMap<String, GameState>, icn: &str) -> GameState {
     if let Some(g) = templates.get(icn) {
         return g.clone();

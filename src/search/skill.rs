@@ -976,11 +976,12 @@ mod tests {
             deep_ref_scores: vec![(save, 0), (ignore, -900)],
         };
 
-        // A corridor far too tight to ever sample a lost queen on purpose, so the
-        // only route to the losing move is not having looked at the reply.
+        // A corridor far too tight to ever sample a lost queen on purpose (~450 permille),
+        // so the only route to the losing move is not having looked at the reply. The
+        // static read already prices the attacked queen at ~80, so the cap sits above that.
         let base = SkillConfig {
-            mean_loss_permille: 20.0,
-            max_loss_permille: 60,
+            mean_loss_permille: 40.0,
+            max_loss_permille: 150,
             ..SKILL_CONFIGS[0]
         };
 

@@ -318,8 +318,8 @@ pub fn kernel_selftest() -> bool {
 }
 
 /// Input buffer wide enough for every layout, padded to the layer-1 stride.
-pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if super::features::TYPE_NET_INPUTS > MAX_VARIANT_FEATURES {
-    super::features::TYPE_NET_INPUTS
+pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if super::features::TAC_NET_INPUTS > MAX_VARIANT_FEATURES {
+    super::features::TAC_NET_INPUTS
 } else {
     MAX_VARIANT_FEATURES
 });
