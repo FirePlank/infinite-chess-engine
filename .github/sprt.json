@@ -1,11 +1,11 @@
 {
-  "name": "535_short_rays_all_squares",
-  "old": "2fcf9792",
-  "games": 4000,
+  "name": "539_chess_tactics_seed3_resume",
+  "old": "69acca69",
+  "games": 2000,
   "shards": 40,
-  "variants": "site",
+  "variants": "Chess",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 1000
+  "adjudication": 0
 }
