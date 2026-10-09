@@ -75,20 +75,6 @@ fn apply_cannot_mate_cap(game: &GameState, eval: i32) -> i32 {
     }
 }
 
-/// A lead resting on one or two pawns converts far less often than its size says (results
-/// of the current engine's games: x0.55 and x0.75 of the fitted scale), so its claim
-/// shrinks and a winning side keeps its pawns rather than trading into such an ending.
-fn apply_few_pawns_scale(game: &GameState, eval: i32) -> i32 {
-    // `eval` is from the side to move's view.
-    let leader_white = (eval > 0) == (game.turn == PlayerColor::White);
-    let pawns = if leader_white { game.white_pawn_count } else { game.black_pawn_count };
-    match pawns {
-        1 => eval * 11 / 16,
-        2 => eval * 27 / 32,
-        _ => eval,
-    }
-}
-
 /// Bounded-board rook/minor endings that are drawn with correct defense are
 /// scaled hard toward the draw.
 fn apply_bounded_drawish_scale(game: &GameState, eval: i32) -> i32 {
@@ -234,11 +220,6 @@ pub fn evaluate(game: &GameState) -> i32 {
         EvalKind::Generic => base::evaluate(game),
     };
     let mop_up = compute_mop_up_term(game);
-    let raw_eval = if game.eval_kind == EvalKind::Generic && mop_up == 0 {
-        apply_few_pawns_scale(game, raw_eval)
-    } else {
-        raw_eval
-    };
 
     apply_rule50_damping(
         game,
@@ -294,19 +275,6 @@ mod tests {
             unscaled.abs() > scaled.abs(),
             "capture-all must keep the full score ({unscaled}) that checkmate rules damp ({scaled})"
         );
-    }
-
-    #[test]
-    fn few_pawns_lead_is_scaled() {
-        // White leads on one pawn: its claim shrinks; with three pawns it stands.
-        let one = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|R4,4|P3,3|k7,7|r7,1");
-        assert_eq!(apply_few_pawns_scale(&one, 800), 800 * 11 / 16);
-        let two = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|R4,4|P3,3|P5,3|k7,7|r7,1");
-        assert_eq!(apply_few_pawns_scale(&two, 800), 800 * 27 / 32);
-        let three = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|R4,4|P3,3|P1,3|P5,3|k7,7|r7,1");
-        assert_eq!(apply_few_pawns_scale(&three, 800), 800);
-        // The leader is whoever the eval favours: Black ahead with no pawns is not scaled.
-        assert_eq!(apply_few_pawns_scale(&one, -800), -800);
     }
 
     #[test]
