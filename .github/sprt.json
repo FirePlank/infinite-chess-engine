@@ -1,6 +1,6 @@
 {
-  "name": "508_net_full_mix_base",
-  "old": "4b74bbbc",
+  "name": "506_net_base_without_ft",
+  "old": "246abfde",
   "games": 4000,
   "shards": 40,
   "variants": "base_only",
