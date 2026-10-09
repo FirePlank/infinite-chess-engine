@@ -4274,12 +4274,7 @@ fn passer_is_unstoppable(
     defender: PlayerColor,
     defender_has_interceptor: bool,
 ) -> bool {
-    // The path check stops short of the promotion square, and an obstacle, void or own
-    // piece standing on it has no reach below, yet a pawn can never push onto it.
-    if moves_to_promo <= 0
-        || defender_has_interceptor
-        || game.board.is_occupied(promo_sq.0, promo_sq.1)
-    {
+    if moves_to_promo <= 0 || defender_has_interceptor {
         return false;
     }
     // A defender on move gets the extra tempo.
@@ -4361,13 +4356,13 @@ fn score_passed_pawns<T: EvaluationTracer>(
             enemy_king_penalty = enemy_king_penalty.max(p);
         }
 
-        // 4. Safe Promotion Path. The line test skips both ends, so the promotion
-        // square itself must be empty too.
+        // 4. Safe Promotion Path. The line test skips both ends, so it should check
+        // between wy and w_promo + 1 to include the promotion square.
         let mut safe_path = is_clear_line_between_fast(
             &game.spatial_indices,
             &Coordinate::new(wx, wy),
-            &Coordinate::new(wx, w_promo),
-        ) && !game.board.is_occupied(wx, w_promo);
+            &Coordinate::new(wx, w_promo.saturating_add(1)),
+        );
         if safe_path {
             // Check for attacking black pawns on adjacent files in rank range [wy+2, w_promo]
             for dx in &[-1, 1] {
@@ -4441,11 +4436,13 @@ fn score_passed_pawns<T: EvaluationTracer>(
             enemy_king_penalty = enemy_king_penalty.max(p);
         }
 
+        // The line test skips both ends, so it should check between by and b_promo - 1
+        // to include the promotion square.
         let mut safe_path = is_clear_line_between_fast(
             &game.spatial_indices,
             &Coordinate::new(bx, by),
-            &Coordinate::new(bx, b_promo),
-        ) && !game.board.is_occupied(bx, b_promo);
+            &Coordinate::new(bx, b_promo - 1),
+        );
         if safe_path {
             // Check for attacking white pawns on adjacent files in rank range [b_promo-1, by-2]
             for dx in &[-1, 1] {
@@ -4933,7 +4930,13 @@ mod tests {
         let unstoppable = |icn: &str| {
             let mut game = GameState::new();
             game.setup_position_from_icn(icn);
-            passer_is_unstoppable(&game, (5, 8), 1, PlayerColor::Black, false)
+
+            let clear_line = is_clear_line_between_fast(
+                &game.spatial_indices,
+                &Coordinate::new(5, 7),
+                &Coordinate::new(5, 8 + 1),
+            );
+            clear_line && passer_is_unstoppable(&game, (5, 8), 1, PlayerColor::Black, false)
         };
         assert!(unstoppable("w (8;q|1;q) K1,1|k20,1|P5,7"));
         assert!(!unstoppable("w (8;q|1;q) K1,1|k20,1|P5,7|ob5,8"));
