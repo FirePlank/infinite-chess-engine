@@ -313,9 +313,8 @@ fn cheb(ax: i64, ay: i64, bx: i64, by: i64) -> i64 {
     (ax - bx).abs().max((ay - by).abs())
 }
 
-/// Net inputs: the phase, then each term group tapered per side, piece counts, raw
-/// king-danger units and the king-line tactics (pins, their value, discovered-check
-/// setups), all as (White, Black) pairs.
+/// Net inputs: the phase, then each term group tapered per side, piece counts and raw
+/// king-danger units, all as (White, Black) pairs.
 pub const NET_LAYOUT: VariantLayout = VariantLayout {
     names: &[
         "phase",
@@ -359,12 +358,6 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
         "queens b",
         "danger units w",
         "danger units b",
-        "pins w",
-        "pins b",
-        "pinned value w",
-        "pinned value b",
-        "discovered w",
-        "discovered b",
     ],
     fixed: 1,
     neg: 0,
@@ -851,14 +844,6 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         }
         sink.set(base + 10, ct(w_king_danger));
         sink.set(base + 11, ct(b_king_danger));
-        let tac = |k: Coordinate, own| {
-            crate::evaluation::base::king_rays_with_tactics(&game.spatial_indices, k.x, k.y, own).2
-        };
-        let (wt, bt) = (tac(white_king, PlayerColor::White), tac(black_king, PlayerColor::Black));
-        for j in 0..3 {
-            sink.set(base + 12 + 2 * j, ct(wt[j] * 16));
-            sink.set(base + 13 + 2 * j, ct(bt[j] * 16));
-        }
         sink.set_phase(mg_phase);
     }
 
