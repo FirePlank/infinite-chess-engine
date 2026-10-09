@@ -172,12 +172,14 @@ static EVAL_NET_BYTES: &[u8] = include_bytes!("eval_net.bin");
 
 pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
     use super::features::{
-        KEXP_INPUTS, NET_INPUTS, NUM_FEATURES, TYPE_NET_INPUTS, net_schema_hash, ray_net_schema_hash,
-        schema_hash, type_net_schema_hash,
+        KEXP_INPUTS, NET_INPUTS, NUM_FEATURES, TAC_NET_INPUTS, TYPE_NET_INPUTS, net_schema_hash,
+        ray_net_schema_hash, schema_hash, tac_net_schema_hash, type_net_schema_hash,
     };
     // The base vector, plus the king-exposure inputs, plus the slider-ray ones, by header width.
     let n_in = EVAL_NET_BYTES.get(12..16).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
-    if n_in == Some(TYPE_NET_INPUTS) {
+    if n_in == Some(TAC_NET_INPUTS) {
+        parse(EVAL_NET_BYTES, TAC_NET_INPUTS, tac_net_schema_hash())
+    } else if n_in == Some(TYPE_NET_INPUTS) {
         parse(EVAL_NET_BYTES, TYPE_NET_INPUTS, type_net_schema_hash())
     } else if n_in == Some(NET_INPUTS) {
         parse(EVAL_NET_BYTES, NET_INPUTS, ray_net_schema_hash())

@@ -341,6 +341,79 @@ pub(crate) fn king_rays_from_indices(
     (rays, ring)
 }
 
+/// Per-ray (distance, value, colour, type) of the first piece, in king_rays order.
+pub(crate) type KingRays = [(i32, i32, PlayerColor, PieceType); 8];
+
+/// [`king_rays_from_indices`] that also reads the piece behind each first blocker: per
+/// royal, own pieces pinned to it (count, value / 100) and enemy discovered-check setups,
+/// an enemy piece that cannot attack down the ray with a matching enemy slider behind it.
+pub(crate) fn king_rays_with_tactics(
+    indices: &crate::moves::SpatialIndices,
+    kx: i64,
+    ky: i64,
+    own: PlayerColor,
+) -> (KingRays, bool, [i32; 3]) {
+    use crate::attacks::{DIAG_MASK, ORTHO_MASK};
+    let mut rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    let mut ring = false;
+    let mut tac = [0i32; 3];
+    let mut put = |slot: usize, end: crate::moves::LineEnd, behind: crate::moves::LineEnd, base: i64| {
+        let Some((coord, packed)) = end else { return };
+        let p = Piece::from_packed(packed);
+        let pt = p.piece_type();
+        let dist = saturating_dist_i32((coord - base).abs());
+        if dist < rays[slot].0 {
+            rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
+        }
+        if dist == 1
+            && ((p.color() == own && (pt == PieceType::Pawn || pt == PieceType::Guard))
+                || pt.is_neutral_type())
+        {
+            ring = true;
+        }
+        let Some((_, sp)) = behind else { return };
+        let s = Piece::from_packed(sp);
+        let mask = if slot < 4 { DIAG_MASK } else { ORTHO_MASK };
+        if s.color() == own
+            || s.color() == PlayerColor::Neutral
+            || !crate::attacks::matches_mask(s.piece_type(), mask)
+        {
+            return;
+        }
+        if p.color() == own && !pt.is_royal() {
+            tac[0] += 1;
+            tac[1] += get_piece_value_base(pt).max(0);
+        } else if p.color() != own
+            && p.color() != PlayerColor::Neutral
+            && !crate::attacks::matches_mask(pt, mask)
+        {
+            tac[2] += 1;
+        }
+    };
+    if let Some(l) = indices.rows.get(&ky) {
+        let (f, f2, b, b2) = l.neighbors2(kx);
+        put(4, f, f2, kx);
+        put(5, b, b2, kx);
+    }
+    if let Some(l) = indices.cols.get(&kx) {
+        let (f, f2, b, b2) = l.neighbors2(ky);
+        put(6, f, f2, ky);
+        put(7, b, b2, ky);
+    }
+    if let Some(l) = indices.diag1.get(&(kx - ky)) {
+        let (f, f2, b, b2) = l.neighbors2(kx);
+        put(0, f, f2, kx);
+        put(3, b, b2, kx);
+    }
+    if let Some(l) = indices.diag2.get(&(kx + ky)) {
+        let (f, f2, b, b2) = l.neighbors2(kx);
+        put(1, f, f2, kx);
+        put(2, b, b2, kx);
+    }
+    tac[1] /= 100;
+    (rays, ring, tac)
+}
+
 pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
     match piece_type {
         // neutral/blocking pieces - no material value
@@ -1290,13 +1363,21 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // King rays come from the spatial index: one lookup per line
                         // replaces testing every piece for alignment.
-                        for &wk in white_royals {
-                            let (r, ring) = king_rays_from_indices(
-                                &game.spatial_indices,
-                                wk.x,
-                                wk.y,
-                                PlayerColor::White,
-                            );
+                        let mut king_tactics = [[0i32; 3]; 2];
+                        for (i, &wk) in white_royals.iter().enumerate() {
+                            // The first royal also reads pins and discovered-check setups.
+                            let (r, ring) = if i == 0 {
+                                let (r, ring, tac) = king_rays_with_tactics(
+                                    &game.spatial_indices,
+                                    wk.x,
+                                    wk.y,
+                                    PlayerColor::White,
+                                );
+                                king_tactics[0] = tac;
+                                (r, ring)
+                            } else {
+                                king_rays_from_indices(&game.spatial_indices, wk.x, wk.y, PlayerColor::White)
+                            };
                             for i in 0..8 {
                                 if r[i].0 < w_king_rays[i].0 {
                                     w_king_rays[i] = r[i];
@@ -1305,13 +1386,19 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             w_royal_rays.push((r, ring));
                             w_king_ring_covered |= ring;
                         }
-                        for &bk in black_royals {
-                            let (r, ring) = king_rays_from_indices(
-                                &game.spatial_indices,
-                                bk.x,
-                                bk.y,
-                                PlayerColor::Black,
-                            );
+                        for (i, &bk) in black_royals.iter().enumerate() {
+                            let (r, ring) = if i == 0 {
+                                let (r, ring, tac) = king_rays_with_tactics(
+                                    &game.spatial_indices,
+                                    bk.x,
+                                    bk.y,
+                                    PlayerColor::Black,
+                                );
+                                king_tactics[1] = tac;
+                                (r, ring)
+                            } else {
+                                king_rays_from_indices(&game.spatial_indices, bk.x, bk.y, PlayerColor::Black)
+                            };
                             for i in 0..8 {
                                 if r[i].0 < b_king_rays[i].0 {
                                     b_king_rays[i] = r[i];
@@ -1705,6 +1792,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             };
                             let pair = |c: (bool, bool)| i32::from(c.0 && c.1);
                             tracer.record_inputs(&crate::eval_net::EvalNetInputs {
+                                king_tactics,
                                 slider_rays: slider_rays.0,
                                 king_exposure: king_exposure.finish(
                                     [
@@ -4808,6 +4896,26 @@ mod tests {
     use super::*;
 
     use crate::game::GameState;
+
+    fn white_king_tactics(icn: &str) -> [i32; 3] {
+        let mut game = GameState::new();
+        game.setup_position_from_icn(icn);
+        let k = game.white_royals[0];
+        king_rays_with_tactics(&game.spatial_indices, k.x, k.y, PlayerColor::White).2
+    }
+
+    #[test]
+    fn king_tactics_count_pins_and_discovered_checks() {
+        // Knight pinned to the king by a rook on the file: one pin, worth a knight.
+        let n = get_piece_value_base(PieceType::Knight) / 100;
+        assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|N1,3|r1,8|k8,9"), [1, n, 0]);
+        // A black knight in front of a black bishop on the king's diagonal: a discovered check.
+        assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|n3,3|b5,5|k8,9"), [0, 0, 1]);
+        // A black rook in front attacks the king itself, so it is no discovery setup.
+        assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|r1,3|r1,8|k8,9"), [0, 0, 0]);
+        // A bishop behind a pinned piece on a file pins nothing.
+        assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|N1,3|b1,8|k8,9"), [0, 0, 0]);
+    }
 
     fn white_safe_check_units(icn: &str) -> i32 {
         let mut game = GameState::new();

@@ -749,6 +749,32 @@ impl SpatialLine {
         (fwd, back)
     }
 
+    /// [`Self::neighbors`] plus the piece beyond each end: (fwd, fwd2, back, back2).
+    #[inline]
+    pub fn neighbors2(&self, from: i64) -> (LineEnd, LineEnd, LineEnd, LineEnd) {
+        let (c, p) = self.slices();
+        let len = c.len();
+        if len == 0 {
+            return (None, None, None, None);
+        }
+        let lo = if len <= LINEAR_SCAN_MAX {
+            let mut i = 0;
+            while i < len && c[i] < from {
+                i += 1;
+            }
+            i
+        } else {
+            c.partition_point(|&x| x < from)
+        };
+        let at = |i: usize| Some((c[i], p[i]));
+        let back = if lo > 0 { at(lo - 1) } else { None };
+        let back2 = if lo > 1 { at(lo - 2) } else { None };
+        let hi = lo + (lo < len && c[lo] == from) as usize;
+        let fwd = if hi < len { at(hi) } else { None };
+        let fwd2 = if hi + 1 < len { at(hi + 1) } else { None };
+        (fwd, fwd2, back, back2)
+    }
+
     /// Find nearest piece in a direction.
     /// Returns (coord, packed_piece) if found.
     #[inline]

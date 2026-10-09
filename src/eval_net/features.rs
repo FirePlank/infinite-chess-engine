@@ -93,6 +93,9 @@ pub struct EvalNetInputs {
     /// Per side: slider rays whose first piece is its own within 2, its own pawn, or none,
     /// then the free squares before the first piece on its blocked rays (each at most 7).
     pub slider_rays: [[i32; 4]; 2],
+    /// Per side's first royal: own pieces pinned to it, their value / 100, and enemy
+    /// discovered-check setups against it.
+    pub king_tactics: [[i32; 3]; 2],
 }
 
 /// King-exposure inputs appended after the perspective vector: (own, opponent) x
@@ -108,6 +111,10 @@ pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS + RAY_INPUTS;
 pub const TYPE_SLOTS: [u8; 17] = [3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21];
 pub const TYPE_INPUTS: usize = TYPE_SLOTS.len();
 pub const TYPE_NET_INPUTS: usize = NET_INPUTS + TYPE_INPUTS;
+/// King-line tactics after the slider rays in each side's extras, (own, opponent) x
+/// (pinned, pinned value, discovered setups), as `--extra-pairs ...,25,26,27` trains them.
+pub const TAC_INPUTS: usize = 6;
+pub const TAC_NET_INPUTS: usize = TYPE_NET_INPUTS + TAC_INPUTS;
 
 /// White-minus-Black count of each `TYPE_SLOTS` type. Material alone decides it, so a
 /// small table keyed by the material hash serves the few compositions a search visits.
@@ -260,6 +267,11 @@ pub fn ray_net_schema_hash() -> u64 {
 /// Schema of a net that also reads the piece-type imbalances.
 pub fn type_net_schema_hash() -> u64 {
     ray_net_schema_hash() ^ 0x5459_5045_5331_3700
+}
+
+/// Schema of a type net that also reads the king-line tactics.
+pub fn tac_net_schema_hash() -> u64 {
+    type_net_schema_hash() ^ 0x5441_4354_4943_5331
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
