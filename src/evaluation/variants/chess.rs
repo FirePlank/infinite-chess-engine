@@ -368,7 +368,7 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
     ],
     fixed: 1,
     neg: 0,
-    cap: 500,
+    cap: 1000,
 };
 
 const TERMS: usize = 14;
