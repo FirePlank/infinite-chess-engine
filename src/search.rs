@@ -145,8 +145,8 @@ const FAR_SLIDER_PRUNE_MAX_DEPTH: usize = 6;
 const FAR_SLIDER_PRUNE_MAX_WORLD: i64 = 200;
 /// LMP is tuned for open-plane branching; scale the count down when bounded.
 const LMP_BOUNDED_WORLD: i64 = 200;
-const LMP_BOUNDED_NUM: usize = 1;
-const LMP_BOUNDED_DEN: usize = 2;
+const LMP_BOUNDED_NUM: usize = 2;
+const LMP_BOUNDED_DEN: usize = 3;
 pub const MATE_VALUE: i32 = 900_000;
 pub const MATE_SCORE: i32 = 800_000;
 pub const THINK_TIME_MS: u128 = 3000; // 3 seconds per move (default, may be overridden by caller)
