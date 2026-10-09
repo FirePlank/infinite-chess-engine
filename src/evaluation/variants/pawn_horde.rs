@@ -57,6 +57,7 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
     ],
     fixed: 23,
     neg: 0,
+    cap: 500,
 };
 
 pub fn evaluate(game: &GameState) -> i32 {
