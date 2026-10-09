@@ -5022,12 +5022,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
             {
                 lmp_count = (lmp_count * LMP_BOUNDED_NUM / LMP_BOUNDED_DEN).max(1);
-            } else if world_size > LMP_BOUNDED_WORLD {
-                // Short slider rays list every square, so open-plane lists hold more real moves.
-                lmp_count = lmp_count * 4 / 3;
             } else {
-                // Obstocean's breakouts are quiet moves, so it searches more still.
-                lmp_count = lmp_count * 5 / 3;
+                // Open planes: short slider rays list every square, so the lists hold more
+                // real moves; Obstocean: its breakouts are quiet moves. Both search more.
+                lmp_count = lmp_count * 4 / 3;
             }
 
             // Signal movegen to skip quiet generation entirely (truly lazy)
