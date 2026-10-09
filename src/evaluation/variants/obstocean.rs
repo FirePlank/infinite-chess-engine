@@ -651,12 +651,6 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
         "passer dist b",
         "king shelter w",
         "king shelter b",
-        "pins w",
-        "pins b",
-        "pinned value w",
-        "pinned value b",
-        "discovered w",
-        "discovered b",
     ],
     fixed: 1,
     neg: 3,
@@ -1015,14 +1009,10 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                 })
                             };
                             let mut shelter = [0i32; 2];
-                            // The same line walk also yields the king-line pins and
-                            // discovered-check setups, fed as their own pairs.
-                            let mut tac = [[0i32; 3]; 2];
                             for (side, color) in [(0, PlayerColor::White), (1, PlayerColor::Black)] {
                                 let Some(k) = royals[side].first() else { continue };
-                                let (rays, ring, t) =
-                                    base::king_rays_with_tactics(&game.spatial_indices, k.x, k.y, color);
-                                tac[side] = t;
+                                let (rays, ring) =
+                                    base::king_rays_from_indices(&game.spatial_indices, k.x, k.y, color);
                                 shelter[side] = base::evaluate_king_shelter(
                                     game,
                                     k,
@@ -1038,9 +1028,6 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                 );
                             }
                             pair(cp(shelter[0]), cp(shelter[1]));
-                            for (&w, &b) in tac[0].iter().zip(&tac[1]) {
-                                pair(ct(w * 16), ct(b * 16));
-                            }
                             sink.set_phase(phase);
                         }
                     }
