@@ -77,9 +77,6 @@ def main():
     elif extras == ([3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21], [22, 23, 24, 28, 29, 30, 31], None):
         # Piece-type imbalances (features.rs TYPE_SLOTS) ahead of those pairs.
         schema ^= 0x4B45_5850_3232_3234 ^ 0x5245_4143_4832_3833 ^ 0x5459_5045_5331_3700
-    elif extras == ([3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21], [22, 23, 24, 28, 29, 30, 31, 21], None):
-        # Those plus each side's absolute pawn count (features.rs PAWN_INPUTS).
-        schema ^= 0x4B45_5850_3232_3234 ^ 0x5245_4143_4832_3833 ^ 0x5459_5045_5331_3700 ^ 0x5041_574E_5332_3100
     elif extras != ([], [], None):
         raise SystemExit(f"engine has no input layout for extras {extras}")
 

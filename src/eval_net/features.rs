@@ -108,10 +108,6 @@ pub const NET_INPUTS: usize = NUM_FEATURES + KEXP_INPUTS + RAY_INPUTS;
 pub const TYPE_SLOTS: [u8; 17] = [3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21];
 pub const TYPE_INPUTS: usize = TYPE_SLOTS.len();
 pub const TYPE_NET_INPUTS: usize = NET_INPUTS + TYPE_INPUTS;
-/// Each side's absolute pawn count (own, opponent) after the pairs, as `--extra-pairs ...,21`
-/// trains it: the imbalances alone can't tell a last pawn from one of eight.
-pub const PAWN_INPUTS: usize = 2;
-pub const PAWN_NET_INPUTS: usize = TYPE_NET_INPUTS + PAWN_INPUTS;
 
 /// White-minus-Black count of each `TYPE_SLOTS` type. Material alone decides it, so a
 /// small table keyed by the material hash serves the few compositions a search visits.
@@ -264,10 +260,6 @@ pub fn ray_net_schema_hash() -> u64 {
 /// Schema of a net that also reads the piece-type imbalances.
 pub fn type_net_schema_hash() -> u64 {
     ray_net_schema_hash() ^ 0x5459_5045_5331_3700
-}
-
-pub fn pawn_net_schema_hash() -> u64 {
-    type_net_schema_hash() ^ 0x5041_574E_5332_3100
 }
 
 /// Pawn-structure scalars handed out of `evaluate_pawn_structure_traced`.
