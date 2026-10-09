@@ -1,6 +1,6 @@
 {
-  "name": "502_net_king_tactics_inputs",
-  "old": "3c12b953",
+  "name": "504_net_tac_recent40_mix",
+  "old": "246abfde",
   "games": 4000,
   "shards": 40,
   "variants": "base_only",
