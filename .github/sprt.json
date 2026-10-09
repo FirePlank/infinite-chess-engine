@@ -1,11 +1,11 @@
 {
-  "name": "494_insuffmat_bounded_helpmate_resume",
-  "old": "668f4c8",
-  "games": 1500,
+  "name": "501_net_pawn_count_inputs",
+  "old": "3c12b953",
+  "games": 4000,
   "shards": 40,
-  "variants": "Chess,Double_King_Chess,Obstocean",
+  "variants": "base_only",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 1000
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
 }
