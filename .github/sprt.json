@@ -1,6 +1,6 @@
 {
-  "name": "554_bounded_lmp_fifth",
-  "old": "786a0a36",
+  "name": "553_bounded_lmp_quarter",
+  "old": "7ebeb6b2",
   "games": 2000,
   "shards": 40,
   "variants": "Chess,Double_King_Chess",
