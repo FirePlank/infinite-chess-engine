@@ -660,6 +660,7 @@ pub const NET_LAYOUT: VariantLayout = VariantLayout {
     ],
     fixed: 1,
     neg: 3,
+    cap: 1000,
 };
 
 #[inline]

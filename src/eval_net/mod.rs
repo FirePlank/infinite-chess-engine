@@ -69,7 +69,7 @@ pub fn variant_residual(
     if net.perspective {
         layout.to_perspective(&mut x[..layout.len()], black_to_move);
     }
-    let r = inference::forward(net, &x[..layout.len()]).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
+    let r = inference::forward(net, &x[..layout.len()]).clamp(-layout.cap, layout.cap);
     if net.perspective && black_to_move { -r } else { r }
 }
 

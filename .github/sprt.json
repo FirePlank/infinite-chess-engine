@@ -1,9 +1,9 @@
 {
-  "name": "539_chess_tactics_seed3_resume",
-  "old": "69acca69",
+  "name": "544_obstocean_net_cap_1000",
+  "old": "d4f4cb3b",
   "games": 2000,
   "shards": 40,
-  "variants": "Chess",
+  "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,

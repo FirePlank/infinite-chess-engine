@@ -51,6 +51,8 @@ pub struct VariantLayout {
     pub names: &'static [&'static str],
     pub fixed: usize,
     pub neg: usize,
+    /// Residual clamp; must match the `--cap` this evaluator's net was trained with.
+    pub cap: i32,
 }
 
 impl VariantLayout {
