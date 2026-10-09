@@ -224,15 +224,7 @@ fn piece_attacks_geom(pt: PieceType, color: PlayerColor, dx: i64, dy: i64) -> bo
             (d == 2 || d == 3) && (dx == 0 || dy == 0 || adx == ady)
         }
         PieceType::Knightrider => {
-            // Slides along knight rays: any (k, 2k) or (2k, k).
-            if adx == 0 || ady == 0 || adx == ady {
-                false
-            } else {
-                let g = gcd_i64(adx, ady);
-                let nx = adx / g;
-                let ny = ady / g;
-                (nx == 1 && ny == 2) || (nx == 2 && ny == 1)
-            }
+            adx != 0 && (adx * 2 == ady || adx == ady * 2)
         }
         PieceType::Pawn => {
             let dir = if color == PlayerColor::White { 1 } else { -1 };
@@ -249,18 +241,6 @@ fn piece_attacks_geom(pt: PieceType, color: PlayerColor, dx: i64, dy: i64) -> bo
         }
         PieceType::Void | PieceType::Obstacle => false,
     }
-}
-
-#[inline]
-fn gcd_i64(a: i64, b: i64) -> i64 {
-    let mut a = a.abs();
-    let mut b = b.abs();
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a.max(1)
 }
 
 /// Evaluates the "wall" bit for each not-yet-evaluated `x` set in `need` on row
