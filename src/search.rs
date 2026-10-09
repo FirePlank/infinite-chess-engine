@@ -5022,6 +5022,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 && game.eval_kind != crate::evaluation::eval_kind::EvalKind::Obstocean
             {
                 lmp_count = (lmp_count * LMP_BOUNDED_NUM / LMP_BOUNDED_DEN).max(1);
+            } else if world_size > LMP_BOUNDED_WORLD {
+                // Short slider rays list every square, so open-plane lists hold more real moves.
+                lmp_count = lmp_count * 4 / 3;
             }
 
             // Signal movegen to skip quiet generation entirely (truly lazy)
