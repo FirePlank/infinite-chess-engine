@@ -5025,6 +5025,9 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             } else if world_size > LMP_BOUNDED_WORLD {
                 // Short slider rays list every square, so open-plane lists hold more real moves.
                 lmp_count = lmp_count * 4 / 3;
+            } else {
+                // Obstocean: milder than other bounded boards, its breakouts are quiet moves.
+                lmp_count = (lmp_count * 2 / 3).max(1);
             }
 
             // Signal movegen to skip quiet generation entirely (truly lazy)
