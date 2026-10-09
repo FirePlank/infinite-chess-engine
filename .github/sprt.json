@@ -1,9 +1,9 @@
 {
-  "name": "553_bounded_lmp_quarter",
-  "old": "7ebeb6b2",
+  "name": "558_obstocean_lmp_four_thirds_resume",
+  "old": "0b3e4322",
   "games": 2000,
   "shards": 40,
-  "variants": "Chess,Double_King_Chess",
+  "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
