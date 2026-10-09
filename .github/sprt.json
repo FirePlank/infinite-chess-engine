@@ -1,9 +1,9 @@
 {
-  "name": "558_obstocean_lmp_four_thirds_resume",
-  "old": "0b3e4322",
+  "name": "562_bounded_futility_tighter",
+  "old": "5a458868",
   "games": 2000,
   "shards": 40,
-  "variants": "Obstocean",
+  "variants": "Chess,Double_King_Chess",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
