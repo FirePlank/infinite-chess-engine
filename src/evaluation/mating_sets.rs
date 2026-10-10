@@ -20,6 +20,7 @@ const OTHER_KINDS: u8 = KINDS - ROYAL_KINDS;
 /// Symbols are `color * KINDS + kind`, white 0, black 1.
 pub const SYMBOLS: u8 = 2 * KINDS;
 pub const PAWN_KIND: u8 = 8;
+pub const ROYAL_QUEEN_KIND: u8 = 2;
 
 const fn binom(n: u32, k: u32) -> u32 {
     let mut r: u64 = 1;

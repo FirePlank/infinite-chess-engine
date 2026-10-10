@@ -116,8 +116,8 @@ cargo run --release --bin forced_gen -- <out dir> [threads] [budget]
 
 ### 12. Bounded Helpmate Classifier (`bounded_helpmate.rs`)
 
-Solves every bounded-board army of up to 4 pieces that can mate a lone set of royals exactly on 8x8, both sides to move. Helpmate-only when White forces mate from no position with all pieces 3+ apart; the report gives how many positions it does win from and the longest of those mates. Its `helpmate_only.txt` is the bounded helpmate-only list above. About 45 minutes on 13 threads.
+Solves every bounded-board army of up to 4 pieces that can mate a lone set of royals exactly on 8x8, both sides to move. Helpmate-only when White forces mate from no position with all pieces 3+ apart; the report gives how many positions it does win from and the longest of those mates. Its `helpmate_only.txt` is the bounded helpmate-only list above. A full run takes about 45 minutes on 13 threads; given the previous `report.tsv` it only solves the cores that are new since then (and what depends on them), about a minute after a table update.
 
 ```bash
-cargo run --release --bin bounded_helpmate -- <out dir> [threads]
+cargo run --release --bin bounded_helpmate -- <out dir> [threads] [previous report.tsv]
 ```

@@ -409,18 +409,38 @@ fn compute(game: &GameState) -> u64 {
     }
     let kinds = all.promotion_kinds(&game.game_rules);
     if all.dead(&kinds, table) {
-        return dead_bits(game);
+        let royal_queen = all.syms[..all.len]
+            .iter()
+            .any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
+        return dead_bits(game, table == Table::Unbounded && royal_queen);
     }
     let helpless = |white| all.alone(white).helpless(&kinds, white, table);
     if helpless(true) && helpless(false) { SCORED_ZERO } else { 0 }
 }
 
-/// The verdict of a position where no mate is possible. A void can wall a royal
-/// in where the tables assume open board, so the game goes on; the eval still
-/// scores it as dead.
-fn dead_bits(game: &GameState) -> u64 {
-    let void = game.board.iter_all_pieces().any(|(_, _, p)| p.piece_type() == PieceType::Void);
-    if void { SCORED_ZERO } else { SCORED_ZERO | DEAD }
+/// The verdict of a position where no mate is possible. A neutral piece can wall a
+/// royal in where the tables assume open board, and a royal queen can slide to a far
+/// border, so the game goes on; the eval still scores it as dead. Obstacles never
+/// made a mate possible with classical material and a king each.
+fn dead_bits(game: &GameState, unbounded_royal_queen: bool) -> u64 {
+    if unbounded_royal_queen {
+        return SCORED_ZERO;
+    }
+    let classical = |pt| matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn);
+    let (mut obstacles, mut other_neutral, mut all_classical) = (false, false, true);
+    let (mut white_king, mut black_king) = (false, false);
+    for (_, _, p) in game.board.iter_all_pieces() {
+        match (p.color(), p.piece_type()) {
+            (PlayerColor::Neutral, PieceType::Obstacle) => obstacles = true,
+            (PlayerColor::Neutral, _) => other_neutral = true,
+            (PlayerColor::White, PieceType::King) => white_king = true,
+            (PlayerColor::Black, PieceType::King) => black_king = true,
+            (_, pt) => all_classical &= classical(pt),
+        }
+    }
+    let promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default();
+    let harmless_walls = all_classical && white_king && black_king && promotions.iter().all(|&pt| classical(pt));
+    if other_neutral || (obstacles && !harmless_walls) { SCORED_ZERO } else { SCORED_ZERO | DEAD }
 }
 
 /// Above [`CAP`], the one proven draw: a king, a knight and any bishops of one
@@ -447,7 +467,7 @@ fn compute_above_cap(game: &GameState) -> u64 {
             _ => false,
         }
     });
-    if fits { dead_bits(game) } else { 0 }
+    if fits { dead_bits(game, false) } else { 0 }
 }
 
 /// Both insufficient-material verdicts as [`SCORED_ZERO`] and [`DEAD`] bits, cached.
@@ -1334,7 +1354,9 @@ mod tests {
             (3, 1, P::Queen, black),
             (5, 5, P::Knight, black),
         ]);
-        assert!(evaluate_insufficient_material_game_handler(&game));
+        // Off a bounded board a royal queen keeps the game going; the eval is still 0.
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        assert!(evaluate_insufficient_material(&game));
         let white = PlayerColor::White;
         let game = create_test_game_with_pieces(&[
             (0, 0, P::Queen, white),
@@ -1415,5 +1437,13 @@ mod tests {
         assert!(!draw("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"));
         assert_eq!(scored("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"), (true, true));
         assert_eq!(scored("w 1,8,1,8 K1,1|B2,1|N3,1|k8,8"), (false, false));
+        // A royal queen can slide to a far border, so off a bounded board it only zeroes the eval.
+        let eval_only = |icn: &str| scored(icn).0 && !draw(icn);
+        assert!(eval_only("w K0,0|N5,0|rq20,20"));
+        assert!(draw("w 1,8,1,8 K1,1|N3,1|rq6,8"));
+        assert!(!draw("w 1,8,1,8 K1,1|R3,1|rq6,8"));
+        // Obstacles end the game only with classical material and a king each.
+        assert!(draw("w K0,0|N5,0|k20,20|ob30,30"));
+        assert!(eval_only("w K0,0|CA5,0|k20,20|ob30,30"));
     }
 }

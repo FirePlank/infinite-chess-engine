@@ -6,11 +6,13 @@
 //! of those mates. An army holding a smaller army that is not helpmate-only counts
 //! as forced unsolved; pawns are left unknown.
 //!
-//! Usage: cargo run --release --bin bounded_helpmate -- <out dir> [threads]
-//! Writes report.tsv and helpmate_only.txt (labels like `K,N,N vs k`).
+//! Usage: cargo run --release --bin bounded_helpmate -- <out dir> [threads] [previous report.tsv]
+//! Writes report.tsv and helpmate_only.txt (labels like `K,N,N vs k`). Given a previous
+//! report, only the cores it lacks and the armies holding them are solved again, with
+//! the helpmate-only armies their captures lead into; the rest is copied.
 
 use apeiron::evaluation::mating_sets::{self, BOUNDED_CAP, KIND_CODES, KINDS};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -403,14 +405,58 @@ enum Verdict {
     /// Never mates: the bounded table calls it dead.
     Dead,
     Helpmate(Won),
+    /// Helpmate-only, copied from a previous report without its table.
+    Copied,
     Forced,
     Unknown,
+}
+
+/// White's armies one piece smaller that are cores themselves.
+fn sub_cores<'a>(set: &'a [u8], cores: &'a HashSet<&[u8]>) -> impl Iterator<Item = Vec<u8>> + 'a {
+    (0..set.len()).filter(|&j| set[j] < KINDS).filter_map(move |j| {
+        let mut sub = set.to_vec();
+        sub.remove(j);
+        cores.contains(&sub[..]).then_some(sub)
+    })
+}
+
+/// The cores to solve: all of them without a previous report; otherwise the new
+/// ones and those holding one, plus every helpmate-only army their captures reach.
+fn needed_cores(cores: &[Vec<u8>], previous: &HashMap<String, String>) -> HashSet<Vec<u8>> {
+    if previous.is_empty() {
+        return cores.iter().cloned().collect();
+    }
+    let all: HashSet<&[u8]> = cores.iter().map(|c| &c[..]).collect();
+    let mut changed: HashSet<Vec<u8>> = HashSet::new();
+    // Smallest first, so a core's smaller armies are decided before it.
+    for set in cores {
+        if !previous.contains_key(&label(set)) || sub_cores(set, &all).any(|sub| changed.contains(&sub)) {
+            changed.insert(set.clone());
+        }
+    }
+    let mut needed = changed.clone();
+    let mut todo: Vec<Vec<u8>> = changed.into_iter().collect();
+    while let Some(set) = todo.pop() {
+        for sub in sub_cores(&set, &all) {
+            let helpmate = previous.get(&label(&sub)).is_some_and(|l| l.split('\t').nth(1) == Some("helpmate-only"));
+            if helpmate && needed.insert(sub.clone()) {
+                todo.push(sub);
+            }
+        }
+    }
+    needed
 }
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let out = args.next().expect("usage: bounded_helpmate <out dir> [threads]");
     let threads: usize = args.next().map_or(12, |t| t.parse().unwrap());
+    let previous: HashMap<String, String> = args.next().map_or_else(HashMap::new, |path| {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        text.lines()
+            .filter_map(|l| l.split_once('\t').map(|(name, _)| (name.to_string(), l.to_string())))
+            .collect()
+    });
     std::fs::create_dir_all(&out).unwrap();
     let mut report = std::fs::File::create(format!("{out}/report.tsv")).unwrap();
     let mut helpmates = Vec::new();
@@ -426,9 +472,25 @@ fn main() {
             cores.push(v);
         }
     });
-    println!("{} bounded cores, {threads} threads", cores.len());
+    let needed = needed_cores(&cores, &previous);
+    println!("{} bounded cores, {} to solve, {threads} threads", cores.len(), needed.len());
     let started = std::time::Instant::now();
     for (done, set) in cores.iter().enumerate() {
+        let name = label(set);
+        if !needed.contains(set) {
+            let line = &previous[&name];
+            writeln!(report, "{line}").unwrap();
+            let verdict = match line.split('\t').nth(1) {
+                Some("helpmate-only") => {
+                    helpmates.push(name);
+                    Verdict::Copied
+                }
+                Some("unknown") => Verdict::Unknown,
+                _ => Verdict::Forced,
+            };
+            verdicts.insert(set.clone(), verdict);
+            continue;
+        }
         // Black capturing a White piece leaves the army without it.
         let mut subs = Vec::new();
         let mut inherited = None;
@@ -447,6 +509,7 @@ fn main() {
             match verdict {
                 Verdict::Dead => subs.push(None),
                 Verdict::Helpmate(won) => subs.push(Some(won)),
+                Verdict::Copied => unreachable!("a needed army's helpmate-only parts are solved"),
                 Verdict::Forced => inherited = Some(Verdict::Forced),
                 Verdict::Unknown => inherited = inherited.or(Some(Verdict::Unknown)),
             }
@@ -454,7 +517,6 @@ fn main() {
         if set.iter().any(|&s| s % KINDS == P) {
             inherited = Some(Verdict::Unknown);
         }
-        let name = label(set);
         let verdict = if let Some(v) = inherited {
             let tag = if matches!(v, Verdict::Forced) { "forced (smaller army)" } else { "unknown" };
             writeln!(report, "{name}\t{tag}").unwrap();
