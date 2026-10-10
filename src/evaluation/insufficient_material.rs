@@ -409,10 +409,12 @@ fn compute(game: &GameState) -> u64 {
     }
     let kinds = all.promotion_kinds(&game.game_rules);
     if all.dead(&kinds, table) {
-        let royal_queen = all.syms[..all.len]
-            .iter()
-            .any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
-        return dead_bits(game, table == Table::Unbounded && royal_queen);
+        let syms = &all.syms[..all.len];
+        let royal_queen = syms.iter().any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
+        // Kings, queens, rooks, bishops, knights and pawns only, with a king each.
+        let classical = syms.iter().all(|&s| s % KINDS == 0 || (3..=8).contains(&(s % KINDS)));
+        let kings = syms.contains(&0) && syms.contains(&KINDS);
+        return dead_bits(game, classical && kings, table == Table::Unbounded && royal_queen);
     }
     let helpless = |white| all.alone(white).helpless(&kinds, white, table);
     if helpless(true) && helpless(false) { SCORED_ZERO } else { 0 }
@@ -422,25 +424,20 @@ fn compute(game: &GameState) -> u64 {
 /// royal in where the tables assume open board, and a royal queen can slide to a far
 /// border, so the game goes on; the eval still scores it as dead. Obstacles never
 /// made a mate possible with classical material and a king each.
-fn dead_bits(game: &GameState, unbounded_royal_queen: bool) -> u64 {
+fn dead_bits(game: &GameState, classical_with_kings: bool, unbounded_royal_queen: bool) -> u64 {
     if unbounded_royal_queen {
         return SCORED_ZERO;
     }
-    let classical = |pt| matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn);
-    let (mut obstacles, mut other_neutral, mut all_classical) = (false, false, true);
-    let (mut white_king, mut black_king) = (false, false);
-    for (_, _, p) in game.board.iter_all_pieces() {
-        match (p.color(), p.piece_type()) {
-            (PlayerColor::Neutral, PieceType::Obstacle) => obstacles = true,
-            (PlayerColor::Neutral, _) => other_neutral = true,
-            (PlayerColor::White, PieceType::King) => white_king = true,
-            (PlayerColor::Black, PieceType::King) => black_king = true,
-            (_, pt) => all_classical &= classical(pt),
-        }
+    if game.board.len() == (game.white_piece_count + game.black_piece_count) as usize {
+        return SCORED_ZERO | DEAD;
     }
-    let promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default();
-    let harmless_walls = all_classical && white_king && black_king && promotions.iter().all(|&pt| classical(pt));
-    if other_neutral || (obstacles && !harmless_walls) { SCORED_ZERO } else { SCORED_ZERO | DEAD }
+    let classical_promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default().iter().all(|pt| {
+        matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn)
+    });
+    let harmless_walls = classical_with_kings
+        && classical_promotions
+        && game.board.iter_all_pieces().all(|(_, _, p)| p.color() != PlayerColor::Neutral || p.piece_type() == PieceType::Obstacle);
+    if harmless_walls { SCORED_ZERO | DEAD } else { SCORED_ZERO }
 }
 
 /// Above [`CAP`], the one proven draw: a king, a knight and any bishops of one
@@ -467,7 +464,9 @@ fn compute_above_cap(game: &GameState) -> u64 {
             _ => false,
         }
     });
-    if fits { dead_bits(game, false) } else { 0 }
+    // Only kings, knights and bishops fit, so it is classical when each side has a king.
+    let defender = if white_attacks { game.black_piece_count } else { game.white_piece_count };
+    if fits { dead_bits(game, kings == 1 && defender == 1, false) } else { 0 }
 }
 
 /// Both insufficient-material verdicts as [`SCORED_ZERO`] and [`DEAD`] bits, cached.
