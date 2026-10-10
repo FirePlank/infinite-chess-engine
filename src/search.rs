@@ -4722,10 +4722,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 game.make_null_move();
 
-                // Obstocean wants more of its quiet tree searched (LMP, LMR, futility).
-                let r = (nmp_reduction_base() + depth / nmp_reduction_div()).saturating_sub(
-                    usize::from(game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean),
-                );
+                let r = nmp_reduction_base() + depth / nmp_reduction_div();
                 let null_score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
