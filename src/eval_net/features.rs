@@ -188,7 +188,7 @@ pub struct KingExposure {
 }
 
 /// One royal's nearest piece per ray: (distance, value, colour, type).
-pub type KingRays = [(i32, i32, PlayerColor, PieceType); 8];
+pub type KingRays = [(i64, i32, PlayerColor, PieceType); 8];
 
 /// Bit per queen-like piece type (Queen, RoyalQueen, Amazon, Chancellor, Archbishop).
 const QUEEN_LIKE_MASK: u32 = (1 << PieceType::Queen as u32)
@@ -215,7 +215,7 @@ impl KingExposure {
             let Some(r) = rays[side] else { continue };
             let open = r
                 .iter()
-                .filter(|&&(d, _, c, _)| !(d <= KEXP_RADIUS as i32 && (c == us || c == PlayerColor::Neutral)))
+                .filter(|&&(d, _, c, _)| !(d <= KEXP_RADIUS && (c == us || c == PlayerColor::Neutral)))
                 .count() as i32;
             let enemy_ql = (self.queen_like_bits >> us.opponent() as u32) & 1;
             out[side] = [open, enemy_ql as i32, near[side]];
@@ -288,7 +288,7 @@ pub struct PawnNetInputs {
 /// Summarize one ray class (4 rays) into (open rays, nearest enemy distance,
 /// clamped enemy value sum on rays, rays covered by a friendly at dist <= 2).
 pub fn summarize_rays(
-    rays: &[(i32, i32, PlayerColor, PieceType)],
+    rays: &[(i64, i32, PlayerColor, PieceType)],
     own: PlayerColor,
 ) -> (i32, i32, i32, i32) {
     let mut open = 0;
@@ -296,7 +296,7 @@ pub fn summarize_rays(
     let mut enemy_val = 0i32;
     let mut cover = 0;
     for &(dist, value, color, _pt) in rays {
-        if dist == i32::MAX {
+        if dist == i64::MAX {
             open += 1;
             continue;
         }
@@ -305,7 +305,7 @@ pub fn summarize_rays(
                 cover += 1;
             }
         } else if color != PlayerColor::Neutral {
-            enemy_min = enemy_min.min(dist.min(64));
+            enemy_min = enemy_min.min(dist.min(64) as i32);
             enemy_val += value;
         }
     }
