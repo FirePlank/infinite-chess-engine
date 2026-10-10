@@ -14,8 +14,8 @@ pub enum MoveGenType {
 
 thread_local! {
     /// Depth-staged tight generation: when >0, quiet slider generation keeps
-    /// only this many nearest candidates per ray (short-range and enemy-king-
-    /// aligned destinations always survive). 0 = full width.
+    /// only this many nearest candidates per ray within [`QUIET_RAY_CAP_RADIUS`]
+    /// (short-range and enemy-king-aligned destinations always survive). 0 = full width.
     static QUIET_RAY_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 
     /// The slider candidate cache is keyed only by (square, direction) and is
@@ -52,6 +52,10 @@ pub fn set_slider_cache_bypass(bypass: bool) {
 pub fn set_quiet_ray_cap(cap: usize) {
     QUIET_RAY_CAP.with(|c| c.set(cap));
 }
+
+/// How far a capped ray's quiet candidates may lie. Farther ones are dropped rather than
+/// ranked, so the cap never weighs one far piece's distance against another's.
+const QUIET_RAY_CAP_RADIUS: i64 = 1024;
 
 pub type MoveList = smallvec::SmallVec<[Move; 128]>;
 
@@ -3798,7 +3802,7 @@ fn generate_sliding_moves_impl(
                 let sq_y = from.y + dir_y * d;
 
                 // Tight generation: past short range, non-king-aligned quiet
-                // destinations count against the per-ray cap.
+                // destinations count against the per-ray cap, and none past its radius.
                 if ray_cap > 0 && d > ENEMY_WIGGLE && raw & CAP_EXEMPT == 0 {
                     let king_aligned = ek_ref.is_some_and(|ek| {
                         let ax = ek.x - sq_x;
@@ -3806,7 +3810,7 @@ fn generate_sliding_moves_impl(
                         ax == 0 || ay == 0 || ax.abs() == ay.abs()
                     });
                     if !king_aligned {
-                        if capped_emitted >= ray_cap {
+                        if capped_emitted >= ray_cap || d > QUIET_RAY_CAP_RADIUS {
                             continue;
                         }
                         capped_emitted += 1;
