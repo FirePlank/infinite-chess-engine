@@ -5392,7 +5392,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 
                 // Obstocean's breakouts are quiet moves (it also gets a larger LMP count).
                 if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean {
-                    reduction -= 1;
+                    reduction -= 2;
                 }
 
                 // History-adjusted LMR
