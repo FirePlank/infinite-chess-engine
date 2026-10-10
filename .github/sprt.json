@@ -1,11 +1,11 @@
 {
-  "name": "558_obstocean_lmp_four_thirds_resume",
-  "old": "0b3e4322",
+  "name": "567_obstocean_net_fresh_s21",
+  "old": "5a458868",
   "games": 2000,
   "shards": 40,
   "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 1000
+  "adjudication": 0
 }
