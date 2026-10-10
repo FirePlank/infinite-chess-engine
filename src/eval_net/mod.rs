@@ -106,6 +106,7 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
         x[off + j] = (side(own) * 16) as i16;
         x[off + per + j] = (side(opp) * 16) as i16;
     }
-    let r = inference::forward(net, &x[..net.n_in]).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
+    // Squared-error training shrinks the residual toward zero; scale it back up.
+    let r = (inference::forward(net, &x[..net.n_in]) * 5 / 4).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }
 }
