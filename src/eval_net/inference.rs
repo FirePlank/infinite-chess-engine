@@ -9,7 +9,7 @@ use super::weights::EvalNetWeights;
 
 /// Hard cap on the residual so a bad net can misjudge, never dominate. Must
 /// match the `--cap` the net was trained with.
-pub const RESIDUAL_CAP: i32 = 500;
+pub const RESIDUAL_CAP: i32 = 1000;
 
 /// Widest hidden layer the stack buffers below allow.
 pub const MAX_H: usize = 256;
