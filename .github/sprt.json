@@ -1,11 +1,11 @@
 {
-  "name": "564_chess_net_fresh_s3",
-  "old": "5a458868",
+  "name": "558_obstocean_lmp_four_thirds_resume",
+  "old": "0b3e4322",
   "games": 2000,
   "shards": 40,
-  "variants": "Chess",
+  "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 0
+  "adjudication": 1000
 }
