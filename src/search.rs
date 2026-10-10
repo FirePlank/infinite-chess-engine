@@ -5108,7 +5108,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                     let no_best = if best_move.is_none() { 161 } else { 0 };
                     // Obstocean wants more quiets searched (its LMP count is larger too).
                     let per_depth =
-                        if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean { 160 } else { 127 };
+                        if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean { 200 } else { 127 };
                     let futility_value = static_eval + 42 + no_best + per_depth * adj_lmr_depth;
                     // Hopeless even with two plies of history credit: the later quiets
                     // are ordered worse and searched shallower, so stop generating them.
