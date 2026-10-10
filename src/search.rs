@@ -4694,7 +4694,11 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
                 bonus += rfp_worsening_mult() * futility_mult / 1024;
             }
 
-            let futility_margin = futility_mult * depth as i32 - bonus;
+            let mut futility_margin = futility_mult * depth as i32 - bonus;
+            // Obstocean wants less pruning everywhere (LMP, LMR, quiet futility).
+            if game.eval_kind == crate::evaluation::eval_kind::EvalKind::Obstocean {
+                futility_margin = futility_margin * 5 / 4;
+            }
 
             // Use refined eval for margin check and return value
             if eval - futility_margin >= beta && eval >= beta {
