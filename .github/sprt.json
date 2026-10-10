@@ -1,11 +1,11 @@
 {
-  "name": "581_obstocean_selfplay_gen4",
-  "old": "a1a90dcd",
-  "games": 4000,
+  "name": "574_obstocean_lmr_minus_two_resume",
+  "old": "b5253a41",
+  "games": 2000,
   "shards": 40,
   "variants": "Obstocean",
   "tc": "10+0.1",
   "elo0": 0,
   "elo1": 5,
-  "adjudication": 0
+  "adjudication": 1000
 }
