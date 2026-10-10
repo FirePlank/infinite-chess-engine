@@ -1,0 +1,11 @@
+{
+  "name": "618_net_perturbed_s24",
+  "old": "6365f8e55f6bec4f0c4ae285f227bb23e4c5cf52",
+  "games": 4000,
+  "shards": 20,
+  "variants": "base_only",
+  "tc": "10+0.1",
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
+}
