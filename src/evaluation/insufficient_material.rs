@@ -434,9 +434,7 @@ fn dead_bits(game: &GameState, classical_with_kings: bool, unbounded_royal_queen
     let classical_promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default().iter().all(|pt| {
         matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn)
     });
-    let harmless_walls = classical_with_kings
-        && classical_promotions
-        && game.board.iter_all_pieces().all(|(_, _, p)| p.color() != PlayerColor::Neutral || p.piece_type() == PieceType::Obstacle);
+    let harmless_walls = classical_with_kings && classical_promotions && game.non_obstacle_neutrals == 0;
     if harmless_walls { SCORED_ZERO | DEAD } else { SCORED_ZERO }
 }
 

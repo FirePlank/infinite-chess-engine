@@ -202,6 +202,9 @@ pub struct GameState {
     pub white_piece_count: u16,
     #[serde(skip)]
     pub black_piece_count: u16,
+    /// Neutral pieces other than obstacles: voids, which never move or leave.
+    #[serde(skip)]
+    pub non_obstacle_neutrals: u16,
     #[serde(skip)]
     pub white_royal_bonus: i32,
     #[serde(skip)]
@@ -486,6 +489,7 @@ impl GameState {
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
+            non_obstacle_neutrals: 0,
             white_pawn_count: 0,
             black_pawn_count: 0,
             starting_white_pieces: 0,
@@ -540,6 +544,7 @@ impl GameState {
             null_moves: 0,
             white_piece_count: 0,
             black_piece_count: 0,
+            non_obstacle_neutrals: 0,
             white_pawn_count: 0,
             black_pawn_count: 0,
             starting_white_pieces: 0,
@@ -596,6 +601,7 @@ impl GameState {
         let mut black: u16 = 0;
         let mut white_pawns: u16 = 0;
         let mut black_pawns: u16 = 0;
+        let mut non_obstacle_neutrals: u16 = 0;
         self.total_phase = 0;
         self.white_pieces.clear();
         self.black_pieces.clear();
@@ -604,6 +610,15 @@ impl GameState {
 
         // BITBOARD: Use tile-based CTZ iteration for O(popcount) piece enumeration
         for (cx, cy, tile) in self.board.tiles.iter() {
+            // A void packs to 0, so it is counted from the neutral plane, not below.
+            let mut neutral = tile.occ_void;
+            while neutral != 0 {
+                let idx = neutral.trailing_zeros() as usize;
+                neutral &= neutral - 1;
+                let packed = tile.piece[idx];
+                non_obstacle_neutrals +=
+                    (packed == 0 || crate::board::Piece::from_packed(packed).piece_type() != PieceType::Obstacle) as u16;
+            }
             let mut bits = tile.occ_all;
             while bits != 0 {
                 let idx = bits.trailing_zeros() as usize;
@@ -652,6 +667,7 @@ impl GameState {
                 }
             }
         }
+        self.non_obstacle_neutrals = non_obstacle_neutrals;
         self.white_piece_count = white;
         self.black_piece_count = black;
         self.white_pawn_count = white_pawns;
