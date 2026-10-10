@@ -1,3 +1,4 @@
+// Self-play data run: identical engine on both sides, games kept as training data.
 //! Stage-A hybrid evaluation net: a small quantized MLP over scalars the HCE
 //! already computes, adding a capped residual to the generic eval.
 
