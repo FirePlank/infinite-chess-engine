@@ -106,8 +106,8 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
         x[off + j] = (side(own) * 16) as i16;
         x[off + per + j] = (side(opp) * 16) as i16;
     }
-    // Squared-error training shrinks the residual toward zero; scale it back up.
-    // Pawn-heavy (blocked, drawish) positions cash a residual edge less often: soften it there.
+    // Search plays better on a sharper residual (a cross-entropy-trained net wants it too),
+    // but pawn-heavy, blocked positions cash a residual edge less often: soften it there.
     let pawns = (game.white_pawn_count + game.black_pawn_count) as i32;
     let num = 20 - ((pawns - 16) / 8).clamp(0, 4);
     let r = (inference::forward(net, &x[..net.n_in]) * num / 16).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
