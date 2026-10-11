@@ -109,7 +109,7 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
     // Search plays better on a sharper residual (a cross-entropy-trained net wants it too),
     // but pawn-heavy, blocked positions cash a residual edge less often: soften it there.
     let pawns = (game.white_pawn_count + game.black_pawn_count) as i32;
-    let num = if features::has_short_leapers(game) { 16 } else { 20 - ((pawns - 16) / 8).clamp(0, 4) };
+    let num = if features::has_low_trust_pieces(game) { 16 } else { 20 - ((pawns - 16) / 8).clamp(0, 4) };
     let r = (inference::forward(net, &x[..net.n_in]) * num / 16).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }
 }

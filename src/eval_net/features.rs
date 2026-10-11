@@ -144,9 +144,9 @@ pub fn type_count_diffs(game: &GameState) -> [i16; TYPE_INPUTS] {
     v
 }
 
-/// Whether a giraffe, camel or zebra is on the board, cached by material like
-/// `type_count_diffs`: the net saw few of them, so its residual is trusted less there.
-pub fn has_short_leapers(game: &GameState) -> bool {
+/// Whether a giraffe, camel, zebra or guard is on the board, cached by material like
+/// `type_count_diffs`: the scaled residual lost in every variant holding them.
+pub fn has_low_trust_pieces(game: &GameState) -> bool {
     const SLOTS: usize = 64;
     thread_local! {
         static SEEN: std::cell::RefCell<[(u64, bool); SLOTS]> =
@@ -159,7 +159,7 @@ pub fn has_short_leapers(game: &GameState) -> bool {
         return v;
     }
     let v = game.board.iter_all_pieces().any(|(_, _, p)| {
-        matches!(p.piece_type(), PieceType::Giraffe | PieceType::Camel | PieceType::Zebra)
+        matches!(p.piece_type(), PieceType::Giraffe | PieceType::Camel | PieceType::Zebra | PieceType::Guard)
     });
     SEEN.with(|c| c.borrow_mut()[slot] = (key, v));
     v
