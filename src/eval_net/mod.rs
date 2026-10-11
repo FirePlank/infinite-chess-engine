@@ -107,6 +107,9 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
         x[off + per + j] = (side(opp) * 16) as i16;
     }
     // Squared-error training shrinks the residual toward zero; scale it back up.
-    let r = (inference::forward(net, &x[..net.n_in]) * 9 / 8).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
+    // Pawn-heavy (blocked, drawish) positions cash a residual edge less often: soften it there.
+    let pawns = (game.white_pawn_count + game.black_pawn_count) as i32;
+    let num = 20 - ((pawns - 16) / 8).clamp(0, 4);
+    let r = (inference::forward(net, &x[..net.n_in]) * num / 16).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }
 }
