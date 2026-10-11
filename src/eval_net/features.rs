@@ -144,27 +144,6 @@ pub fn type_count_diffs(game: &GameState) -> [i16; TYPE_INPUTS] {
     v
 }
 
-/// Whether a giraffe, camel, zebra or guard is on the board, cached by material like
-/// `type_count_diffs`: the scaled residual lost in every variant holding them.
-pub fn has_low_trust_pieces(game: &GameState) -> bool {
-    const SLOTS: usize = 64;
-    thread_local! {
-        static SEEN: std::cell::RefCell<[(u64, bool); SLOTS]> =
-            const { std::cell::RefCell::new([(0, false); SLOTS]) };
-    }
-    let key = game.material_hash;
-    let slot = (key ^ (key >> 32)) as usize % SLOTS;
-    let (k, v) = SEEN.with(|c| c.borrow()[slot]);
-    if k == key && key != 0 {
-        return v;
-    }
-    let v = game.board.iter_all_pieces().any(|(_, _, p)| {
-        matches!(p.piece_type(), PieceType::Giraffe | PieceType::Camel | PieceType::Zebra | PieceType::Guard)
-    });
-    SEEN.with(|c| c.borrow_mut()[slot] = (key, v));
-    v
-}
-
 const KEXP_RADIUS: i64 = 3;
 const KEXP_NEAR: i64 = 2;
 

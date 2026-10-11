@@ -106,10 +106,11 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
         x[off + j] = (side(own) * 16) as i16;
         x[off + per + j] = (side(opp) * 16) as i16;
     }
-    // Search plays better on a sharper residual (a cross-entropy-trained net wants it too),
-    // but pawn-heavy, blocked positions cash a residual edge less often: soften it there.
+    // With many pieces on, the residual mostly cancels the HCE's over-reacting positional
+    // swings and amplifying it overshoots; with few, it is independent signal worth sharpening.
     let pawns = (game.white_pawn_count + game.black_pawn_count) as i32;
-    let num = if features::has_low_trust_pieces(game) { 16 } else { 20 - ((pawns - 16) / 8).clamp(0, 4) };
+    let nonpawn = (game.white_piece_count + game.black_piece_count) as i32 - pawns;
+    let num = 20 - ((nonpawn - 12) / 3).clamp(0, 4);
     let r = (inference::forward(net, &x[..net.n_in]) * num / 16).clamp(-RESIDUAL_CAP, RESIDUAL_CAP);
     if net.perspective && black { -r } else { r }
 }
