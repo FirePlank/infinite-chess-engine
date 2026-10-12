@@ -2299,6 +2299,58 @@ impl Searcher {
     }
 }
 
+/// TT depth an exact entry needs before a forced move skips its capped search.
+const FORCED_MOVE_TT_DEPTH: u8 = 5;
+
+/// Score for a root with one legal move, from the TT (the previous search usually stored
+/// this position or its only child). `exact_only` demands a deep exact entry; otherwise
+/// any bound is taken, and a miss falls back to static eval.
+fn forced_move_score(
+    searcher: &mut Searcher,
+    game: &mut GameState,
+    m: &Move,
+    exact_only: bool,
+) -> Option<i32> {
+    let probe = |searcher: &Searcher, game: &GameState, ply: usize| {
+        probe_tt_with_shared(
+            searcher,
+            &ProbeContext {
+                hash: game.hash,
+                alpha: -INFINITY,
+                beta: INFINITY,
+                depth: 0,
+                ply,
+                rule50_count: game.halfmove_clock,
+                rule_limit: searcher.move_rule_limit,
+            },
+        )
+        .filter(|r| r.tt_score != INFINITY + 1 && r.flag != TTFlag::None)
+        .filter(|r| {
+            !exact_only || (r.flag == TTFlag::Exact && r.depth >= FORCED_MOVE_TT_DEPTH)
+        })
+        .map(|r| (r.depth, r.tt_score))
+    };
+    let root = probe(searcher, game, 0);
+    let undo = game.make_move(m);
+    let child = probe(searcher, game, 1).map(|(d, s)| (d, -s));
+    game.undo_move(m, undo);
+    match (root, child) {
+        (Some(r), Some(c)) => Some(if c.0 >= r.0 { c.1 } else { r.1 }),
+        (Some((_, s)), None) | (None, Some((_, s))) => Some(s),
+        (None, None) if exact_only => None,
+        (None, None) => Some(searcher.adjusted_eval(game, evaluate(game), 0)),
+    }
+}
+
+/// A forced move still searches for an honest score, but on a fraction of the budget.
+fn cap_forced_move_time(searcher: &mut Searcher) {
+    let hot = &mut searcher.hot;
+    let max = (hot.optimum_time_ms / 4).min(hot.maximum_time_ms);
+    hot.optimum_time_ms = (hot.optimum_time_ms / 8).min(max);
+    hot.maximum_time_ms = max;
+    hot.time_limit_ms = max;
+}
+
 /// Core timed search implementation using a provided searcher.
 fn search_with_searcher(
     searcher: &mut Searcher,
@@ -2342,11 +2394,14 @@ fn search_with_searcher(
         return None;
     }
 
-    // If only one move, return immediately with a simple static eval as score.
     if legal_moves.len() == 1 {
         let single = legal_moves[0];
-        let score = searcher.adjusted_eval(game, evaluate(game), 0);
-        return Some((single, score));
+        let timed = searcher.hot.time_limit_ms != u128::MAX;
+        if let Some(score) = forced_move_score(searcher, game, &single, timed) {
+            searcher.hot.last_root_score = if is_decisive(score) { 0 } else { score };
+            return Some((single, score));
+        }
+        cap_forced_move_time(searcher);
     }
 
     let mut best_move: Option<Move> = fallback_move; // Already cloned above
@@ -3247,30 +3302,34 @@ pub(crate) fn get_best_moves_multipv_impl(
         };
     }
 
+    // Analysis mode (the streaming `on_depth` callback) searches a forced move to full
+    // depth; gameplay takes a deep exact TT score, else searches on a capped budget.
+    if legal_root_moves.len() == 1 && on_depth.is_none() {
+        let single = legal_root_moves[0];
+        let timed = searcher.hot.time_limit_ms != u128::MAX;
+        if let Some(score) = forced_move_score(searcher, game, &single, timed) {
+            searcher.hot.last_root_score = if is_decisive(score) { 0 } else { score };
+            let stats = build_search_stats(searcher);
+            return MultiPVResult {
+                lines: vec![PVLine {
+                    mv: single,
+                    score,
+                    depth: 0,
+                    pv: vec![single],
+                }],
+                stats,
+                shallow_best_changed: false,
+                shallow_order: vec![single],
+                deep_ref_scores: Vec::new(),
+            };
+        }
+        cap_forced_move_time(searcher);
+    }
+
     // The mid-iteration stop and the no-new-depth rule read total_time_ms, which only
     // the single-PV loop set, so timed multi-PV ran to its hard maximum.
     if searcher.hot.total_time_ms == 0.0 && searcher.hot.optimum_time_ms < u128::MAX {
         searcher.hot.total_time_ms = searcher.hot.optimum_time_ms as f64;
-    }
-
-    // A forced move makes a gameplay search pointless, so return a static eval.
-    // Analysis mode (the streaming `on_depth` callback) still searches it to depth, so
-    // the reported eval reflects look-ahead past the forced move.
-    if legal_root_moves.len() == 1 && on_depth.is_none() {
-        let single = legal_root_moves[0];
-        let stats = build_search_stats(searcher);
-        return MultiPVResult {
-            lines: vec![PVLine {
-                mv: single,
-                score: searcher.adjusted_eval(game, evaluate(game), 0),
-                depth: 0,
-                pv: vec![single],
-            }],
-            stats,
-            shallow_best_changed: false,
-            shallow_order: vec![single],
-            deep_ref_scores: Vec::new(),
-        };
     }
 
     let multi_pv = multi_pv.min(legal_root_moves.len());
