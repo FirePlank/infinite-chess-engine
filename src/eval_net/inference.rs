@@ -456,7 +456,7 @@ mod timing {
             net.n_in,
             net.h1,
             net.h2,
-            is_x86_feature_detected!("avx2")
+            has_avx2()
         );
     }
 }

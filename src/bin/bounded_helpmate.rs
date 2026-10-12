@@ -59,7 +59,7 @@ impl Geometry {
         let knight = leapers(1, 2);
         let (mut leaps, mut slides) = (Vec::new(), Vec::new());
         for kind in 0..KINDS {
-            let (l, s): (Vec<(i32, i32)>, Vec<(i32, i32)>) = match kind {
+            let (l, s): (Vec<Dir>, Vec<Dir>) = match kind {
                 0 | 13 => (KING.to_vec(), vec![]),
                 1 | 18 => ([&KING[..], &knight[..]].concat(), vec![]),
                 2 | 3 => (vec![], [&ORTHO[..], &DIAG[..]].concat()),
@@ -172,6 +172,7 @@ fn set(v: &[AtomicU64], i: usize) {
 }
 
 /// White-to-move positions White forces mate from, indexed like [`Army`].
+type Dir = (i32, i32);
 type Won = Arc<Vec<AtomicU64>>;
 
 /// One army's placements: piece `i` (symbols sorted, White's first) stands on
@@ -210,7 +211,7 @@ impl Army<'_> {
     fn placeable(&self, sq: &[usize]) -> bool {
         (0..sq.len()).all(|i| {
             let bishop_ok = match self.kind(i) {
-                5 | 14 => (sq[i] % 8 + sq[i] / 8) % 2 == 0,
+                5 | 14 => (sq[i] % 8 + sq[i] / 8).is_multiple_of(2),
                 6 | 15 => (sq[i] % 8 + sq[i] / 8) % 2 == 1,
                 _ => true,
             };
