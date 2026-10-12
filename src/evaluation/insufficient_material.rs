@@ -246,7 +246,7 @@ impl Army {
         all_promotions(&mut syms, self.len, self.promotes, 0, kinds, None, holds)
     }
 
-    /// The table kinds a pawn may promote to, a bishop as both square colors;
+    /// The table kinds a pawn may promote to, a colorbound piece as both square colors;
     /// empty when no pawn here can promote.
     fn promotion_kinds(&self, rules: &GameRules) -> smallvec::SmallVec<[u8; 8]> {
         const DEFAULT: [PieceType; 4] = [
@@ -260,10 +260,13 @@ impl Army {
             return kinds;
         }
         for &pt in rules.promotion_types.as_deref().unwrap_or(&DEFAULT) {
-            if pt == PieceType::Bishop {
-                kinds.extend([5, 6]);
-            } else if let Some(s) = mating_sets::symbol(pt, PlayerColor::White, 0, 0) {
-                kinds.push(s);
+            // A promoted colorbound piece may land on either square color.
+            for (x, y) in [(0, 0), (0, 1)] {
+                if let Some(s) = mating_sets::symbol(pt, PlayerColor::White, x, y)
+                    && !kinds.contains(&s)
+                {
+                    kinds.push(s);
+                }
             }
         }
         kinds
@@ -409,18 +412,33 @@ fn compute(game: &GameState) -> u64 {
     }
     let kinds = all.promotion_kinds(&game.game_rules);
     if all.dead(&kinds, table) {
-        return dead_bits(game);
+        let syms = &all.syms[..all.len];
+        let royal_queen = syms.iter().any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
+        // Kings, queens, rooks, bishops, knights and pawns only, with a king each.
+        let classical = syms.iter().all(|&s| s % KINDS == 0 || (3..=8).contains(&(s % KINDS)));
+        let kings = syms.contains(&0) && syms.contains(&KINDS);
+        return dead_bits(game, classical && kings, table == Table::Unbounded && royal_queen);
     }
     let helpless = |white| all.alone(white).helpless(&kinds, white, table);
     if helpless(true) && helpless(false) { SCORED_ZERO } else { 0 }
 }
 
-/// The verdict of a position where no mate is possible. A void can wall a royal
-/// in where the tables assume open board, so the game goes on; the eval still
-/// scores it as dead.
-fn dead_bits(game: &GameState) -> u64 {
-    let void = game.board.iter_all_pieces().any(|(_, _, p)| p.piece_type() == PieceType::Void);
-    if void { SCORED_ZERO } else { SCORED_ZERO | DEAD }
+/// The verdict of a position where no mate is possible. A neutral piece can wall a
+/// royal in where the tables assume open board, and a royal queen can slide to a far
+/// border, so the game goes on; the eval still scores it as dead. Obstacles never
+/// made a mate possible with classical material and a king each.
+fn dead_bits(game: &GameState, classical_with_kings: bool, unbounded_royal_queen: bool) -> u64 {
+    if unbounded_royal_queen {
+        return SCORED_ZERO;
+    }
+    if game.board.len() == (game.white_piece_count + game.black_piece_count) as usize {
+        return SCORED_ZERO | DEAD;
+    }
+    let classical_promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default().iter().all(|pt| {
+        matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn)
+    });
+    let harmless_walls = classical_with_kings && classical_promotions && game.non_obstacle_neutrals == 0;
+    if harmless_walls { SCORED_ZERO | DEAD } else { SCORED_ZERO }
 }
 
 /// Above [`CAP`], the one proven draw: a king, a knight and any bishops of one
@@ -447,7 +465,9 @@ fn compute_above_cap(game: &GameState) -> u64 {
             _ => false,
         }
     });
-    if fits { dead_bits(game) } else { 0 }
+    // Only kings, knights and bishops fit, so it is classical when each side has a king.
+    let defender = if white_attacks { game.black_piece_count } else { game.white_piece_count };
+    if fits { dead_bits(game, kings == 1 && defender == 1, false) } else { 0 }
 }
 
 /// Both insufficient-material verdicts as [`SCORED_ZERO`] and [`DEAD`] bits, cached.
@@ -1334,7 +1354,9 @@ mod tests {
             (3, 1, P::Queen, black),
             (5, 5, P::Knight, black),
         ]);
-        assert!(evaluate_insufficient_material_game_handler(&game));
+        // Off a bounded board a royal queen keeps the game going; the eval is still 0.
+        assert!(!evaluate_insufficient_material_game_handler(&game));
+        assert!(evaluate_insufficient_material(&game));
         let white = PlayerColor::White;
         let game = create_test_game_with_pieces(&[
             (0, 0, P::Queen, white),
@@ -1415,5 +1437,13 @@ mod tests {
         assert!(!draw("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"));
         assert_eq!(scored("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"), (true, true));
         assert_eq!(scored("w 1,8,1,8 K1,1|B2,1|N3,1|k8,8"), (false, false));
+        // A royal queen can slide to a far border, so off a bounded board it only zeroes the eval.
+        let eval_only = |icn: &str| scored(icn).0 && !draw(icn);
+        assert!(eval_only("w K0,0|N5,0|rq20,20"));
+        assert!(draw("w 1,8,1,8 K1,1|N3,1|rq6,8"));
+        assert!(!draw("w 1,8,1,8 K1,1|R3,1|rq6,8"));
+        // Obstacles end the game only with classical material and a king each.
+        assert!(draw("w K0,0|N5,0|k20,20|ob30,30"));
+        assert!(eval_only("w K0,0|CA5,0|k20,20|ob30,30"));
     }
 }

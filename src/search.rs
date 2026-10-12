@@ -2805,11 +2805,11 @@ pub fn get_best_move_parallel(
 
 /// Each search thread takes ~18 MiB (its tables and 2 MiB stack) of the 512 MiB wasm heap
 /// (`--max-memory`); with a 64 MiB TT, 20 threads leave about a tenth of it spare.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
 const MAX_WASM_SEARCH_THREADS: usize = 20;
 
 /// Search threads to use from the page's pool, kept within the wasm memory budget.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "multithreading"))]
 pub(crate) fn wasm_search_threads() -> usize {
     rayon::current_num_threads().clamp(1, MAX_WASM_SEARCH_THREADS)
 }
@@ -2915,6 +2915,7 @@ pub(crate) fn helper_run(
 
 /// The main thread's eval-kind adoption, run before helpers start so that a kind change
 /// clears the shared tables while nothing is searching them.
+#[cfg(feature = "multithreading")]
 pub(crate) fn adopt_main_eval_kind(game: &GameState, time_limit_ms: u128) {
     GLOBAL_SEARCHER.with(|cell| {
         let mut opt = cell.borrow_mut();

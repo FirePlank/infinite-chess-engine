@@ -298,14 +298,14 @@ pub(crate) fn king_rays_from_indices(
     kx: i64,
     ky: i64,
     own: PlayerColor,
-) -> ([(i32, i32, PlayerColor, PieceType); 8], bool) {
-    let mut rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+) -> (KingRays, bool) {
+    let mut rays = [EMPTY_RAY; 8];
     let mut ring = false;
     let mut put = |slot: usize, along: i64, end: crate::moves::LineEnd, base: i64| {
         if let Some((coord, packed)) = end {
             let p = Piece::from_packed(packed);
             let pt = p.piece_type();
-            let dist = saturating_dist_i32((coord - base).abs());
+            let dist = ray_dist(coord, base);
             if dist < rays[slot].0 {
                 rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
             }
@@ -341,8 +341,21 @@ pub(crate) fn king_rays_from_indices(
     (rays, ring)
 }
 
-/// Per-ray (distance, value, colour, type) of the first piece, in king_rays order.
-pub(crate) type KingRays = [(i32, i32, PlayerColor, PieceType); 8];
+/// One king ray's first piece: (distance, value, colour, type), or [`EMPTY_RAY`].
+pub(crate) type KingRay = (i64, i32, PlayerColor, PieceType);
+
+/// Per-ray first piece, in king_rays order.
+pub(crate) type KingRays = [KingRay; 8];
+
+/// A ray with no piece on it. No real distance reaches its `i64::MAX` (see [`ray_dist`]).
+const EMPTY_RAY: KingRay = (i64::MAX, 0, PlayerColor::Neutral, PieceType::Void);
+
+/// Distance along a king ray, however far: one too large for an i64 stops just short of
+/// [`EMPTY_RAY`]'s, so the piece still counts as on the ray.
+#[inline(always)]
+fn ray_dist(coord: i64, base: i64) -> i64 {
+    coord.abs_diff(base).min(i64::MAX as u64 - 1) as i64
+}
 
 /// [`king_rays_from_indices`] that also reads the piece behind each first blocker: per
 /// royal, own pieces pinned to it (count, value / 100) and enemy discovered-check setups,
@@ -354,14 +367,14 @@ pub(crate) fn king_rays_with_tactics(
     own: PlayerColor,
 ) -> (KingRays, bool, [i32; 3]) {
     use crate::attacks::{DIAG_MASK, ORTHO_MASK};
-    let mut rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    let mut rays = [EMPTY_RAY; 8];
     let mut ring = false;
     let mut tac = [0i32; 3];
     let mut put = |slot: usize, end: crate::moves::LineEnd, behind: crate::moves::LineEnd, base: i64| {
         let Some((coord, packed)) = end else { return };
         let p = Piece::from_packed(packed);
         let pt = p.piece_type();
-        let dist = saturating_dist_i32((coord - base).abs());
+        let dist = ray_dist(coord, base);
         if dist < rays[slot].0 {
             rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
         }
@@ -494,7 +507,7 @@ pub fn get_centrality_weight(piece_type: PieceType) -> i64 {
 
 // Shared constants for ray detection
 /// Nearest occupant per direction around one royal, plus its ring-cover flag.
-type RoyalRayEntry = ([(i32, i32, PlayerColor, PieceType); 8], bool);
+type RoyalRayEntry = (KingRays, bool);
 
 const DIAG_DIRS: [(i64, i64); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 const ORTHO_DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -756,8 +769,8 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     // King Safety Arrays
     // [0..4] = Diag, [4..8] = Ortho
     // Stores: (distance, piece_value, piece_color, piece_type)
-    let mut w_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
-    let mut b_king_rays = [(i32::MAX, 0, PlayerColor::Neutral, PieceType::Void); 8];
+    let mut w_king_rays = [EMPTY_RAY; 8];
+    let mut b_king_rays = [EMPTY_RAY; 8];
     // Shelter is per-royal: the merged arrays below answer "is any royal exposed
     // along this line", which is a different question.
     let mut w_royal_rays: SmallVec<[RoyalRayEntry; 1]> = SmallVec::new();
@@ -2443,16 +2456,16 @@ fn tropism_contribution(numerator: i32, d: i64, addend: i32) -> i32 {
 /// its nearest piece is already an attacker slider that moves along it.
 #[inline]
 fn ray_pressured(
-    ray: &(i32, i32, PlayerColor, PieceType),
+    ray: &KingRay,
     attacker: PlayerColor,
     slider_mask: u32,
-    open_dist: i32,
+    open_dist: i64,
 ) -> bool {
     ray.0 > open_dist || (ray.2 == attacker && (1u32 << (ray.3 as u8)) & slider_mask != 0)
 }
 
 fn compute_attack_readiness_optimized(
-    enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    enemy_king_rays: &KingRays,
     has_enemy_king: bool,
     sliders_in_zone: i32,
     attacker: PlayerColor,
@@ -2510,8 +2523,8 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     metrics: &KingSafetyMetrics,
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
-    w_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
-    b_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    w_king_rays: &KingRays,
+    b_king_rays: &KingRays,
     w_royal_rays: &[RoyalRayEntry],
     b_royal_rays: &[RoyalRayEntry],
     w_ring_covered: bool,
@@ -2621,7 +2634,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
 
 /// Ray-based attack bonus: open rays toward enemy king with slider presence.
 fn compute_attack_bonus_optimized(
-    enemy_king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    enemy_king_rays: &KingRays,
     slider_counts: (i32, i32), // (diag, ortho)
     attacker: PlayerColor,
 ) -> i32 {
@@ -3174,7 +3187,7 @@ fn safe_check_units(
     game: &GameState,
     king: &Coordinate,
     us: PlayerColor,
-    king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    king_rays: &KingRays,
     pieces: &[(i64, i64, Piece)],
 ) -> i32 {
     use crate::attacks::{
@@ -3232,7 +3245,7 @@ fn safe_check_units(
             (0, -1) => 7,
             _ => return false,
         };
-        let t = (sx - kx).abs().max((sy - ky).abs()).min(i32::MAX as i64 - 1) as i32;
+        let t = ray_dist(sx, kx).max(ray_dist(sy, ky));
         let (bd, _, bc, _) = king_rays[slot];
         t < bd || (t == bd && bc == us)
     };
@@ -3469,7 +3482,7 @@ pub(crate) fn evaluate_king_shelter(
     defense_urgency: i32,
     has_enemy_queen_possible: bool,
     pawns: &[(i64, i64)], // Pre-sorted by (x, y)
-    king_rays: &[(i32, i32, PlayerColor, PieceType); 8],
+    king_rays: &KingRays,
     has_ring_cover: bool,
     multi_royal: bool,
     pieces: &[(i64, i64, Piece)],
@@ -3602,8 +3615,8 @@ pub(crate) fn evaluate_king_shelter(
 
         let (dx, dy) = DIAG_DIRS[i];
         let border_dist = get_border_dist(dx, dy);
-        let is_border_closest = border_dist < dist;
-        let actual_dist = if is_border_closest { border_dist } else { dist };
+        let is_border_closest = i64::from(border_dist) < dist;
+        let actual_dist = if is_border_closest { i64::from(border_dist) } else { dist };
         let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
@@ -3611,11 +3624,11 @@ pub(crate) fn evaluate_king_shelter(
                 // Border acts as a low-value friendly piece at distance 1 (perfect blocker)
                 blocker = Some((0, 1));
             } else if c == color {
-                blocker = Some((val, dist));
+                blocker = Some((val, dist as i32));
                 tied_defender_penalty += 10 * val / tied_defender_ref_value();
                 pin_penalty += pinned_cost(
-                    king.x + dx * dist as i64,
-                    king.y + dy * dist as i64,
+                    king.x + dx * dist,
+                    king.y + dy * dist,
                     dx, dy, val, pt,
                 );
             } else if c == PlayerColor::Neutral {
@@ -3624,7 +3637,7 @@ pub(crate) fn evaluate_king_shelter(
                 if pt == PieceType::Void {
                     blocker = Some((0, 1));
                 } else {
-                    blocker = Some((0, dist));
+                    blocker = Some((0, dist as i32));
                 }
             } else {
                 enemy_blocked = true;
@@ -3650,26 +3663,26 @@ pub(crate) fn evaluate_king_shelter(
 
         let (dx, dy) = ORTHO_DIRS[i];
         let border_dist = get_border_dist(dx, dy);
-        let is_border_closest = border_dist < dist;
-        let actual_dist = if is_border_closest { border_dist } else { dist };
+        let is_border_closest = i64::from(border_dist) < dist;
+        let actual_dist = if is_border_closest { i64::from(border_dist) } else { dist };
         let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
             if is_border_closest {
                 blocker = Some((0, 1));
             } else if c == color {
-                blocker = Some((val, dist));
+                blocker = Some((val, dist as i32));
                 tied_defender_penalty += 12 * val / tied_defender_ref_value();
                 pin_penalty += pinned_cost(
-                    king.x + dx * dist as i64,
-                    king.y + dy * dist as i64,
+                    king.x + dx * dist,
+                    king.y + dy * dist,
                     dx, dy, val, pt,
                 );
             } else if c == PlayerColor::Neutral {
                 if pt == PieceType::Void {
                     blocker = Some((0, 1));
                 } else {
-                    blocker = Some((0, dist));
+                    blocker = Some((0, dist as i32));
                 }
             } else {
                 enemy_blocked = true;
@@ -4915,6 +4928,18 @@ mod tests {
         assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|r1,3|r1,8|k8,9"), [0, 0, 0]);
         // A bishop behind a pinned piece on a file pins nothing.
         assert_eq!(white_king_tactics("w (8;q|1;q) K1,1|N1,3|b1,8|k8,9"), [0, 0, 0]);
+    }
+
+    /// A piece on a king ray counts however far away it is, and the ray beyond it stays empty.
+    #[test]
+    fn far_piece_stays_on_the_king_ray() {
+        let mut game = GameState::new();
+        game.setup_position_from_icn("w (8;q|1;q) K1,1|r1,5000000001|q-9223372036854774000,1|k8,9");
+        let k = game.white_royals[0];
+        let rays = king_rays_from_indices(&game.spatial_indices, k.x, k.y, PlayerColor::White).0;
+        assert_eq!(rays[6].0, 5_000_000_000);
+        assert_eq!(rays[5].0, 9_223_372_036_854_774_001);
+        assert_eq!(rays[7], EMPTY_RAY);
     }
 
     fn white_safe_check_units(icn: &str) -> i32 {
