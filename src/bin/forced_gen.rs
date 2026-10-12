@@ -26,8 +26,8 @@ const RC: u8 = 1;
 const RQ: u8 = 2;
 const P: u8 = 8;
 const GU: u8 = 13;
-const HU: u8 = 19;
-const RO: u8 = 20;
+const HU: u8 = 20;
+const RO: u8 = 21;
 
 /// Half-width of the proof box: the defender escapes by leaving it.
 const BOX: i32 = 10;
@@ -72,7 +72,7 @@ fn defs() -> Vec<Def> {
     for kind in 0..KINDS {
         let (leaps, slides): (Offsets, Offsets) = match kind {
             K | GU => (KING.to_vec(), vec![]),
-            RC | 17 => ([&KING[..], &knight[..]].concat(), vec![]),
+            RC | 18 => ([&KING[..], &knight[..]].concat(), vec![]),
             RQ | 3 => (vec![], [&ORTHO[..], &DIAG[..]].concat()),
             4 => (vec![], ORTHO.to_vec()),
             5 | 6 => (vec![], DIAG.to_vec()),
@@ -87,10 +87,10 @@ fn defs() -> Vec<Def> {
             }
             11 => (knight.clone(), ORTHO.to_vec()),
             12 => (knight.clone(), DIAG.to_vec()),
-            14 => (leapers(1, 3), vec![]),
-            15 => (leapers(1, 4), vec![]),
-            16 => (leapers(2, 3), vec![]),
-            18 => (vec![], knight.clone()),
+            14 | 15 => (leapers(1, 3), vec![]),
+            16 => (leapers(1, 4), vec![]),
+            17 => (leapers(2, 3), vec![]),
+            19 => (vec![], knight.clone()),
             _ => (vec![], vec![]), // P, HU, RO have their own rules
         };
         v.push(Def {
@@ -845,8 +845,8 @@ impl<'a> Frame<'a> {
                         for x in -FR..=FR {
                             for y in -FR..=FR {
                                 let parity_ok = match p.kind {
-                                    5 => (x + y).rem_euclid(2) == 0,
-                                    6 => (x + y).rem_euclid(2) == 1,
+                                    5 | 14 => (x + y).rem_euclid(2) == 0,
+                                    6 | 15 => (x + y).rem_euclid(2) == 1,
                                     _ => true,
                                 };
                                 if parity_ok && empty(x, y) && !p.leap_entry.contains(&(x, y)) {
@@ -1019,8 +1019,8 @@ fn every_spread_start_escapes(frame: &Frame, win_d: &[u64]) -> bool {
             })
         });
         let parity_ok = (0..n).all(|i| match frame.pieces[i].kind {
-            5 => (sq[i + 1].0 + sq[i + 1].1).rem_euclid(2) == 0,
-            6 => (sq[i + 1].0 + sq[i + 1].1).rem_euclid(2) == 1,
+            5 | 14 => (sq[i + 1].0 + sq[i + 1].1).rem_euclid(2) == 0,
+            6 | 15 => (sq[i + 1].0 + sq[i + 1].1).rem_euclid(2) == 1,
             _ => true,
         });
         if !apart || !parity_ok {
@@ -1125,8 +1125,8 @@ fn spread_start(world: &World, set: &[u8], seed: u64) -> Option<Pos> {
             let (kind, side) = (s % KINDS, s / KINDS);
             let (x, y) = if i == 0 { (0, 0) } else { (next(START_RADIUS), next(START_RADIUS)) };
             let parity_ok = match kind {
-                5 => (x + y).rem_euclid(2) == 0,
-                6 => (x + y).rem_euclid(2) == 1,
+                5 | 14 => (x + y).rem_euclid(2) == 0,
+                6 | 15 => (x + y).rem_euclid(2) == 1,
                 _ => true,
             };
             let apart = pos.pcs[..pos.n].iter().all(|q| {
@@ -1161,8 +1161,8 @@ fn canonical(set: &[u8]) -> Vec<u8> {
     let mut b: Vec<u8> = set
         .iter()
         .map(|&s| match s % KINDS {
-            5 => s + 1,
-            6 => s - 1,
+            5 | 14 => s + 1,
+            6 | 15 => s - 1,
             _ => s,
         })
         .collect();
@@ -1314,8 +1314,8 @@ fn main() {
         let swapped: Vec<u8> = set
             .iter()
             .map(|&s| match s % KINDS {
-                5 => s + 1,
-                6 => s - 1,
+                5 | 14 => s + 1,
+                6 | 15 => s - 1,
                 _ => s,
             })
             .collect();

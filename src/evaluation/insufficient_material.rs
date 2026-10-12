@@ -246,7 +246,7 @@ impl Army {
         all_promotions(&mut syms, self.len, self.promotes, 0, kinds, None, holds)
     }
 
-    /// The table kinds a pawn may promote to, a bishop as both square colors;
+    /// The table kinds a pawn may promote to, a colorbound piece as both square colors;
     /// empty when no pawn here can promote.
     fn promotion_kinds(&self, rules: &GameRules) -> smallvec::SmallVec<[u8; 8]> {
         const DEFAULT: [PieceType; 4] = [
@@ -260,10 +260,13 @@ impl Army {
             return kinds;
         }
         for &pt in rules.promotion_types.as_deref().unwrap_or(&DEFAULT) {
-            if pt == PieceType::Bishop {
-                kinds.extend([5, 6]);
-            } else if let Some(s) = mating_sets::symbol(pt, PlayerColor::White, 0, 0) {
-                kinds.push(s);
+            // A promoted colorbound piece may land on either square color.
+            for (x, y) in [(0, 0), (0, 1)] {
+                if let Some(s) = mating_sets::symbol(pt, PlayerColor::White, x, y)
+                    && !kinds.contains(&s)
+                {
+                    kinds.push(s);
+                }
             }
         }
         kinds

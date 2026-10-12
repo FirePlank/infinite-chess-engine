@@ -9,12 +9,13 @@ use crate::board::{PieceType, PlayerColor};
 pub const CAP: usize = 5;
 /// The same for bounded boards, whose table was generated on 8x8.
 pub const BOUNDED_CAP: usize = 4;
-/// Piece kinds in table order: the 3 royals first, then the 18 others.
-pub const KIND_CODES: [&str; 21] = [
-    "K", "RC", "RQ", "Q", "R", "B0", "B1", "N", "P", "AM", "HA", "CH", "AR", "GU", "CA", "GI",
-    "ZE", "CE", "NR", "HU", "RO",
+/// Piece kinds in table order: the 3 royals first, then the 19 others. Colorbound
+/// kinds are split by square color, 0 when `x + y` is even.
+pub const KIND_CODES: [&str; KINDS as usize] = [
+    "K", "RC", "RQ", "Q", "R", "B0", "B1", "N", "P", "AM", "HA", "CH", "AR", "GU", "CA0", "CA1",
+    "GI", "ZE", "CE", "NR", "HU", "RO",
 ];
-pub const KINDS: u8 = 21;
+pub const KINDS: u8 = 22;
 pub const ROYAL_KINDS: u8 = 3;
 const OTHER_KINDS: u8 = KINDS - ROYAL_KINDS;
 /// Symbols are `color * KINDS + kind`, white 0, black 1.
@@ -107,31 +108,80 @@ const BOUNDED_LAYOUT: Layout = layout(BOUNDED_CAP);
 pub const SET_COUNT: usize = LAYOUT.count as usize;
 pub const BOUNDED_SET_COUNT: usize = BOUNDED_LAYOUT.count as usize;
 
-/// [`DEAD_BYTES`] of one bit per unbounded set, set when no mate is possible. Then
-/// [`HELPMATE_BYTES`] hashing the sets where Black has only royals and mate is
-/// possible, but White can never force it (`forced_gen` proved it): a `u32`
-/// multiplier, then buckets of [`HELPMATE_SLOTS`] `u32` [`attack_key`]s padded
-/// with `u32::MAX`, all little-endian. Then [`BOUNDED_DEAD_BYTES`] of bounded dead bits,
-/// and the same hash of the bounded helpmate-only sets (`bounded_helpmate` proved it).
+/// [`DEAD_BYTES`] of one bit per unbounded set, set when no mate is possible, then
+/// [`BOUNDED_DEAD_BYTES`] for bounded sets. Then per table, the [`attack_key`]s of the
+/// sets where Black has only royals and mate is possible but White can never force
+/// it (`forced_gen` and `bounded_helpmate` proved it): a hash multiplier and a count
+/// as little-endian `u32`s, then the sorted keys' gaps as LEB128 varints.
 static TABLE: &[u8] = include_bytes!("insuffmat.bin");
 pub const DEAD_BYTES: usize = SET_COUNT.div_ceil(8);
-pub const HELPMATE_BUCKET_BITS: u32 = 7;
-pub const HELPMATE_SLOTS: usize = 8;
-pub const HELPMATE_BYTES: usize = 4 + (HELPMATE_SLOTS << HELPMATE_BUCKET_BITS) * 4;
 pub const BOUNDED_DEAD_BYTES: usize = BOUNDED_SET_COUNT.div_ceil(8);
+pub const HELPMATES_START: usize = DEAD_BYTES + BOUNDED_DEAD_BYTES;
+pub const HELPMATE_BUCKET_BITS: u32 = 7;
 pub const BOUNDED_HELPMATE_BUCKET_BITS: u32 = 8;
-pub const BOUNDED_HELPMATE_BYTES: usize = 4 + (HELPMATE_SLOTS << BOUNDED_HELPMATE_BUCKET_BITS) * 4;
-const BOUNDED_START: usize = DEAD_BYTES + HELPMATE_BYTES;
-const BOUNDED_HELPMATE_START: usize = BOUNDED_START + BOUNDED_DEAD_BYTES;
-pub const TABLE_BYTES: usize = BOUNDED_HELPMATE_START + BOUNDED_HELPMATE_BYTES;
+pub const HELPMATE_SLOTS: usize = 8;
+
+/// One table's helpmate-only keys, hashed so a lookup reads one bucket of
+/// [`HELPMATE_SLOTS`] keys, padded with `u32::MAX`.
+struct Helpmates<const BITS: u32> {
+    mul: u32,
+    buckets: Box<[[u32; HELPMATE_SLOTS]]>,
+}
+
+impl<const BITS: u32> Helpmates<BITS> {
+    /// Reads one table's keys from `bytes`, returning it and the bytes it took.
+    fn decode(bytes: &[u8]) -> (Self, usize) {
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (mul, count) = (word(0), word(4));
+        let mut buckets = vec![[u32::MAX; HELPMATE_SLOTS]; 1 << BITS].into_boxed_slice();
+        let (mut at, mut key) = (8, 0u32);
+        for _ in 0..count {
+            let (mut gap, mut shift) = (0u32, 0);
+            loop {
+                let b = bytes[at];
+                at += 1;
+                gap |= ((b & 127) as u32) << shift;
+                shift += 7;
+                if b < 128 {
+                    break;
+                }
+            }
+            key += gap;
+            let bucket = &mut buckets[(key.wrapping_mul(mul) >> (32 - BITS)) as usize];
+            let free = bucket.iter().position(|&k| k == u32::MAX);
+            bucket[free.expect("the builder's multiplier fits every bucket")] = key;
+        }
+        (Helpmates { mul, buckets }, at)
+    }
+
+    #[inline]
+    fn contains(&self, key: u32) -> bool {
+        let bucket = &self.buckets[(key.wrapping_mul(self.mul) >> (32 - BITS)) as usize];
+        // Every slot is compared, so the cost is the same for every set.
+        bucket.iter().fold(false, |hit, &k| hit | (k == key))
+    }
+}
+
+type UnboundedHelpmates = Helpmates<HELPMATE_BUCKET_BITS>;
+type BoundedHelpmates = Helpmates<BOUNDED_HELPMATE_BUCKET_BITS>;
+
+/// The unbounded and bounded helpmate-only keys, hashed on first use.
+fn helpmates() -> &'static (UnboundedHelpmates, BoundedHelpmates) {
+    static HELPMATES: std::sync::OnceLock<(UnboundedHelpmates, BoundedHelpmates)> = std::sync::OnceLock::new();
+    HELPMATES.get_or_init(|| {
+        let (unbounded, used) = UnboundedHelpmates::decode(&TABLE[HELPMATES_START..]);
+        let (bounded, _) = BoundedHelpmates::decode(&TABLE[HELPMATES_START + used..]);
+        (unbounded, bounded)
+    })
+}
 
 #[inline]
 pub fn is_royal_symbol(s: u8) -> bool {
     s % KINDS < ROYAL_KINDS
 }
 
-/// The symbol of a colored piece, `None` for neutral pieces. `x + y` picks the
-/// bishop's square color.
+/// The symbol of a colored piece, `None` for neutral pieces. `x + y` picks a
+/// bishop's or camel's square color.
 #[inline]
 pub fn symbol(pt: PieceType, color: PlayerColor, x: i64, y: i64) -> Option<u8> {
     let kind = match pt {
@@ -148,13 +198,13 @@ pub fn symbol(pt: PieceType, color: PlayerColor, x: i64, y: i64) -> Option<u8> {
         PieceType::Chancellor => 11,
         PieceType::Archbishop => 12,
         PieceType::Guard => 13,
-        PieceType::Camel => 14,
-        PieceType::Giraffe => 15,
-        PieceType::Zebra => 16,
-        PieceType::Centaur => 17,
-        PieceType::Knightrider => 18,
-        PieceType::Huygen => 19,
-        PieceType::Rose => 20,
+        PieceType::Camel => 14 + ((x ^ y) & 1) as u8,
+        PieceType::Giraffe => 16,
+        PieceType::Zebra => 17,
+        PieceType::Centaur => 18,
+        PieceType::Knightrider => 19,
+        PieceType::Huygen => 20,
+        PieceType::Rose => 21,
         PieceType::Void | PieceType::Obstacle => return None,
     };
     match color {
@@ -273,7 +323,7 @@ pub fn is_dead_bounded(symbols: &[u8]) -> bool {
 
 #[inline]
 fn bounded_dead_bit(i: usize) -> bool {
-    TABLE[BOUNDED_START + (i >> 3)] >> (i & 7) & 1 == 1
+    TABLE[DEAD_BYTES + (i >> 3)] >> (i & 7) & 1 == 1
 }
 
 #[inline]
@@ -281,16 +331,6 @@ fn dead_bit(i: usize) -> bool {
     TABLE[i >> 3] >> (i & 7) & 1 == 1
 }
 
-/// Whether `key` is in the helpmate-only hash at `start` with `bucket_bits`.
-#[inline]
-fn in_hash(key: u32, start: usize, bucket_bits: u32) -> bool {
-    let mul = u32::from_le_bytes(TABLE[start..start + 4].try_into().unwrap());
-    let bucket = key.wrapping_mul(mul) >> (32 - bucket_bits);
-    let base = start + 4 + bucket as usize * HELPMATE_SLOTS * 4;
-    let slots: &[u8; HELPMATE_SLOTS * 4] = TABLE[base..base + HELPMATE_SLOTS * 4].try_into().unwrap();
-    // Every slot is compared, so the cost is the same for every set.
-    slots.chunks_exact(4).fold(false, |hit, w| hit | (u32::from_le_bytes(w.try_into().unwrap()) == key))
-}
 
 /// Whether the attacking side's pieces in `symbols` (White's when `white_attacks`)
 /// can never force mate against the other side's royals, which are all the other
@@ -301,7 +341,7 @@ pub fn helpless(symbols: &[u8], white_attacks: bool) -> bool {
         return false;
     }
     canonical(symbols, CAP, &LAYOUT).is_none_or(|(i, swapped)| {
-        dead_bit(i) || in_hash(key(i, swapped, white_attacks), DEAD_BYTES, HELPMATE_BUCKET_BITS)
+        dead_bit(i) || helpmates().0.contains(key(i, swapped, white_attacks))
     })
 }
 
@@ -313,7 +353,7 @@ pub fn helpless_bounded(symbols: &[u8], white_attacks: bool) -> bool {
     }
     canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).is_none_or(|(i, swapped)| {
         bounded_dead_bit(i)
-            || in_hash(key(i, swapped, white_attacks), BOUNDED_HELPMATE_START, BOUNDED_HELPMATE_BUCKET_BITS)
+            || helpmates().1.contains(key(i, swapped, white_attacks))
     })
 }
 
@@ -392,8 +432,8 @@ mod tests {
             });
             assert!(owner.iter().all(Option::is_some));
         }
-        assert_eq!(SET_COUNT, 392_302);
-        assert_eq!(BOUNDED_SET_COUNT, 35_929);
+        assert_eq!(SET_COUNT, 472_176);
+        assert_eq!(BOUNDED_SET_COUNT, 41_358);
     }
 
     #[test]
@@ -418,6 +458,9 @@ mod tests {
             assert!(!is_dead_bounded(&set(mate)), "{mate}");
         }
         assert!(!is_dead_bounded(&set("K,R,R,R,R vs k")), "past the bounded cap");
+        // Camels are colorbound: on one square color with a bishop they never mate.
+        assert!(is_dead_bounded(&set("K,B0,CA0 vs k")) && is_dead_bounded(&set("K,CA1,CA1 vs k")));
+        assert!(!is_dead_bounded(&set("K,B0,CA1 vs k")) && !is_dead_bounded(&set("K,CA0,CA1 vs k")));
         assert!(helpless_bounded(&set("K,N,N vs k"), true));
         assert!(helpless_bounded(&set("k vs K,N,N"), false));
         assert!(!helpless_bounded(&set("K,B0,N vs k"), true));

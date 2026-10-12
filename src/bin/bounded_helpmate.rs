@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 const P: u8 = 8;
-const HU: u8 = 19;
-const RO: u8 = 20;
+const HU: u8 = 20;
+const RO: u8 = 21;
 const SPREAD: i32 = 3;
 
 fn leapers(a: i32, b: i32) -> Vec<(i32, i32)> {
@@ -61,7 +61,7 @@ impl Geometry {
         for kind in 0..KINDS {
             let (l, s): (Vec<(i32, i32)>, Vec<(i32, i32)>) = match kind {
                 0 | 13 => (KING.to_vec(), vec![]),
-                1 | 17 => ([&KING[..], &knight[..]].concat(), vec![]),
+                1 | 18 => ([&KING[..], &knight[..]].concat(), vec![]),
                 2 | 3 => (vec![], [&ORTHO[..], &DIAG[..]].concat()),
                 4 => (vec![], ORTHO.to_vec()),
                 5 | 6 => (vec![], DIAG.to_vec()),
@@ -70,10 +70,10 @@ impl Geometry {
                 10 => ([leapers(2, 0), leapers(2, 2), leapers(3, 0), leapers(3, 3)].concat(), vec![]),
                 11 => (knight.clone(), ORTHO.to_vec()),
                 12 => (knight.clone(), DIAG.to_vec()),
-                14 => (leapers(1, 3), vec![]),
-                15 => (leapers(1, 4), vec![]),
-                16 => (leapers(2, 3), vec![]),
-                18 => (vec![], knight.clone()),
+                14 | 15 => (leapers(1, 3), vec![]),
+                16 => (leapers(1, 4), vec![]),
+                17 => (leapers(2, 3), vec![]),
+                19 => (vec![], knight.clone()),
                 _ => (vec![], vec![]),
             };
             let mut table = [0u64; 64];
@@ -210,8 +210,8 @@ impl Army<'_> {
     fn placeable(&self, sq: &[usize]) -> bool {
         (0..sq.len()).all(|i| {
             let bishop_ok = match self.kind(i) {
-                5 => (sq[i] % 8 + sq[i] / 8) % 2 == 0,
-                6 => (sq[i] % 8 + sq[i] / 8) % 2 == 1,
+                5 | 14 => (sq[i] % 8 + sq[i] / 8) % 2 == 0,
+                6 | 15 => (sq[i] % 8 + sq[i] / 8) % 2 == 1,
                 _ => true,
             };
             bishop_ok && (0..i).all(|j| sq[j] != sq[i])
