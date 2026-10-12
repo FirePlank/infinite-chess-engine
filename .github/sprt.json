@@ -1,11 +1,11 @@
 {
-  "name": "651_forced_move_hybrid",
-  "old": "629676125156295f331a2a8dddd8c0cdd90cfc47",
+  "name": "574_obstocean_lmr_minus_two_resume",
+  "old": "b5253a41",
   "games": 2000,
   "shards": 40,
-  "variants": "site",
+  "variants": "Obstocean",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
+  "elo0": 0,
+  "elo1": 5,
   "adjudication": 1000
 }
