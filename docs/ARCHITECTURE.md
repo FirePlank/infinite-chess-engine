@@ -27,6 +27,7 @@ The design is shaped by the unique challenge of the infinite plane. We avoid the
 Everything else hangs off that:
 
 - `src/lib.rs` is the boundary to the outside world;
+- `src/compression/` brings positions beyond `i64` within reach at that boundary;
 - `src/game.rs` owns state, rules, and make/undo;
 - `src/board.rs` and `src/tiles/` store pieces;
 - `src/moves.rs` and `src/attacks.rs` handle movement geometry and attack queries;
@@ -42,9 +43,17 @@ If you are trying to understand the project quickly, start with `src/lib.rs`, th
 
 This is the engine boundary.
 
-It exposes the engine to the outside world, especially the WASM/JS side, and is the place where external position/config input turns into a `GameState` plus a search request.
+It exposes the engine to the outside world, especially the WASM/JS side, and is the place where external position/config input turns into a `GameState` plus a search request, and where the moves the engine reports are mapped back to the input's coordinates.
 
 Keep API glue here. Do not let search or evaluation take on UI-facing concerns.
+
+### `src/compression/`
+
+This is how positions beyond the engine's coordinates get in.
+
+Inside the engine every coordinate is an `i64`. An ICN past that is compressed on the way in: under every line family the engine reads, relations within a fixed span stay exact and farther ones keep only their order, so the engine perceives exactly what it would on the original. A position that can't be compressed faithfully is refused, and the moves the engine reports are mapped back onto the original board.
+
+Nothing past `src/lib.rs` knows about it: search and evaluation always see an ordinary `i64` position. The exact span is checked at compile time against the farthest distances search reads (the TT move box, the quiet ray cap); a change that lets search read farther must widen it.
 
 ### `src/game.rs`
 
@@ -193,7 +202,7 @@ The HCE and the eval net are one evaluator. The net's inputs are the HCE's terms
 
 ### Infinite-board assumptions
 
-The engine is not "normal chess with bigger coordinates". Sparse storage, world bounds, and line-indexed blocker queries are foundational design choices.
+The engine is not "normal chess with bigger coordinates". Sparse storage, world bounds, and line-indexed blocker queries are foundational design choices. Coordinates beyond `i64` are handled once, at the boundary, so no other layer needs wider integers.
 
 ### Correctness vs. strength
 

@@ -2,7 +2,9 @@
 
 A chess engine for infinite/unbounded-board chess variants (fairy pieces,
 custom win conditions), not standard 8x8. Coordinates are `i64` and can be
-huge — don't assume a bounded board or a fixed edge to scan to.
+huge — don't assume a bounded board or a fixed edge to scan to. Positions
+beyond `i64` are compressed at the API boundary (`src/compression/`); its
+exact span must cover every distance search reads, so widen it if that grows.
 
 ## Commands
 
