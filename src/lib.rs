@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 pub mod attacks;
 pub mod board;
+pub mod compression;
 pub mod eval_net;
 pub mod evaluation;
 pub mod game;
@@ -386,18 +387,33 @@ fn split_score(score: i32) -> (Option<i32>, Option<i32>) {
     }
 }
 
+/// A line as site tokens on the original board: through `lifter` when the position was
+/// compressed, which cuts it at its first move that can't be mapped back faithfully.
+fn line_tokens(lifter: Option<&compression::Lifter>, line: &[moves::Move]) -> Vec<String> {
+    match lifter {
+        Some(lifter) => lifter.lift_line(line),
+        None => line.iter().map(move_to_site_token).collect(),
+    }
+}
+
+/// A token's squares, `"x,y"` each.
+fn token_squares(token: &str) -> (String, String) {
+    let (from, to) = token.split_once('>').unwrap();
+    (from.to_string(), to.split('=').next().unwrap().to_string())
+}
+
 /// Converts an engine PV line into the JS-facing struct.
-fn pv_line_to_js(line: &search::PVLine) -> JsAnalysisLine {
+fn pv_line_to_js(lifter: Option<&compression::Lifter>, line: &search::PVLine) -> JsAnalysisLine {
     let (cp, mate) = split_score(line.score);
     JsAnalysisLine {
-        moves: line.pv.iter().map(move_to_site_token).collect(),
+        moves: line_tokens(lifter, &line.pv),
         cp,
         mate,
     }
 }
 
 /// Converts a [`search::DepthInfo`] into the JS-facing struct.
-fn build_js_info(info: &search::DepthInfo) -> JsAnalysisInfo {
+fn build_js_info(lifter: Option<&compression::Lifter>, info: &search::DepthInfo) -> JsAnalysisInfo {
     JsAnalysisInfo {
         depth: info.depth as u32,
         seldepth: info.seldepth as u32,
@@ -405,7 +421,7 @@ fn build_js_info(info: &search::DepthInfo) -> JsAnalysisInfo {
         nps: info.nps as f64,
         time_ms: info.time_ms as f64,
         hashfull: info.hashfull,
-        lines: info.lines.iter().map(pv_line_to_js).collect(),
+        lines: info.lines.iter().map(|l| pv_line_to_js(lifter, l)).collect(),
     }
 }
 
@@ -435,8 +451,41 @@ fn get_random_seed() -> u64 {
 #[wasm_bindgen]
 pub struct Engine {
     game: GameState,
+    /// Maps moves back to the original board when the position had to be compressed.
+    lifter: Option<compression::Lifter>,
     clock: Option<JsClock>,
     strength_level: Option<u32>,
+}
+
+/// The game an ICN describes, brought within the engine's coordinates, and how to map its moves
+/// back when that took compression.
+fn load_icn(icn: &str) -> Result<(GameState, Option<compression::Lifter>), compression::Refusal> {
+    let mut game = GameState::new();
+    let limit = compression::Big::from(1i64 << 14);
+    let lifter = match compression::prepare(icn, &limit).unwrap_or(None) {
+        Some(compressed) => {
+            game.setup_position_from_icn(&compressed.icn);
+            Some(compressed.lifter)
+        }
+        None => {
+            game.setup_position_from_icn(icn);
+            None
+        }
+    };
+    Ok((game, lifter))
+}
+
+impl Engine {
+    /// A move of the engine's position as a site token on the original board, or `None` when it
+    /// can't be mapped back faithfully.
+    pub fn move_token(&self, m: &moves::Move) -> Option<String> {
+        line_tokens(self.lifter.as_ref(), std::slice::from_ref(m)).pop()
+    }
+
+    fn js_move(&self, m: &moves::Move) -> Option<JsMove> {
+        let (from, to) = token_squares(&self.move_token(m)?);
+        Some(JsMove { from, to, promotion: m.promotion.map(|p| p.to_str().to_string()) })
+    }
 }
 
 #[wasm_bindgen]
@@ -444,9 +493,7 @@ impl Engine {
     #[wasm_bindgen]
     pub fn from_icn(icn_string: &str, config: JsValue) -> Result<Engine, JsValue> {
         let options: JsEngineConfig = serde_wasm_bindgen::from_value(config)?;
-
-        let mut game = GameState::new();
-        game.setup_position_from_icn(icn_string);
+        let (game, lifter) = load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
 
         let strength_level = options.strength_level;
 
@@ -463,6 +510,7 @@ impl Engine {
 
         Ok(Engine {
             game,
+            lifter,
             clock,
             strength_level,
         })
@@ -472,23 +520,22 @@ impl Engine {
 #[cfg(not(target_arch = "wasm32"))]
 impl Engine {
     pub fn new_native(icn_string: &str) -> Engine {
-        let mut game = GameState::new();
-        game.setup_position_from_icn(icn_string);
-        Engine {
-            game,
-            clock: None,
-            strength_level: None,
-        }
+        Engine::from_icn_native(icn_string, None)
     }
 
+    /// Panics on a position no compression brings within reach; see [`Engine::try_from_icn_native`].
     pub fn from_icn_native(icn_string: &str, strength_level: Option<u32>) -> Engine {
-        let mut game = GameState::new();
-        game.setup_position_from_icn(icn_string);
-        Engine {
+        Engine::try_from_icn_native(icn_string, strength_level).expect("position beyond the engine's reach")
+    }
+
+    pub fn try_from_icn_native(icn_string: &str, strength_level: Option<u32>) -> Result<Engine, compression::Refusal> {
+        let (game, lifter) = load_icn(icn_string)?;
+        Ok(Engine {
             game,
+            lifter,
             clock: None,
             strength_level,
-        }
+        })
     }
 
     pub fn set_clock(&mut self, wtime: u64, btime: u64, winc: u64, binc: u64) {
@@ -564,12 +611,10 @@ impl Engine {
         if let Some((best_move, _eval, _stats)) =
             search::get_best_move(&mut self.game, 50, u128::MAX, false, true)
         {
-            let js_move = JsMove {
-                from: format!("{},{}", best_move.from.x, best_move.from.y),
-                to: format!("{},{}", best_move.to.x, best_move.to.y),
-                promotion: best_move.promotion.map(|p| p.to_str().to_string()),
-            };
-            serde_wasm_bindgen::to_value(&js_move).unwrap()
+            match self.js_move(&best_move) {
+                Some(js_move) => serde_wasm_bindgen::to_value(&js_move).unwrap(),
+                None => JsValue::NULL,
+            }
         } else {
             JsValue::NULL
         }
@@ -861,9 +906,12 @@ impl Engine {
             }
         };
 
+        let Some(JsMove { from, to, .. }) = self.js_move(&best_move) else {
+            return JsValue::NULL;
+        };
         let js_move = JsMoveWithEval {
-            from: format!("{},{}", best_move.from.x, best_move.from.y),
-            to: format!("{},{}", best_move.to.x, best_move.to.y),
+            from,
+            to,
             promotion: best_move.promotion.map(|p| p.to_str().to_string()),
             eval,
             depth,
@@ -899,31 +947,21 @@ impl Engine {
         let js_lines: Vec<JsPVLine> = result
             .lines
             .iter()
-            .map(|line| {
-                // Format PV as array of "x,y->x,y" strings
-                let pv_strings: Vec<String> = line
-                    .pv
+            .filter_map(|line| {
+                // Format PV as array of "x,y->x,y" strings, each promotion's code appended.
+                let pv_strings: Vec<String> = line_tokens(self.lifter.as_ref(), &line.pv)
                     .iter()
-                    .map(|m| {
-                        format!(
-                            "{},{}->{},{}{}",
-                            m.from.x,
-                            m.from.y,
-                            m.to.x,
-                            m.to.y,
-                            m.promotion.map_or("", |p| p.to_site_code())
-                        )
-                    })
+                    .map(|token| token.replacen('>', "->", 1).replacen('=', "", 1).to_uppercase())
                     .collect();
-
-                JsPVLine {
-                    from: format!("{},{}", line.mv.from.x, line.mv.from.y),
-                    to: format!("{},{}", line.mv.to.x, line.mv.to.y),
+                let JsMove { from, to, .. } = self.js_move(&line.mv)?;
+                Some(JsPVLine {
+                    from,
+                    to,
                     promotion: line.mv.promotion.map(|p| p.to_str().to_string()),
                     eval: line.score,
                     depth: line.depth,
                     pv: pv_strings,
-                }
+                })
             })
             .collect();
 
@@ -932,10 +970,10 @@ impl Engine {
 
     /// Replaces the engine's position from an ICN string, keeping the persistent
     /// searcher (and its transposition table) warm.
-    pub fn set_position(&mut self, icn_string: &str) {
-        let mut game = GameState::new();
-        game.setup_position_from_icn(icn_string);
-        self.game = game;
+    pub fn set_position(&mut self, icn_string: &str) -> Result<(), JsValue> {
+        let (game, lifter) = load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
+        (self.game, self.lifter) = (game, lifter);
+        Ok(())
     }
 
     /// Runs one time-sliced MultiPV analysis, invoking `on_info` after every completed
@@ -962,9 +1000,10 @@ impl Engine {
             ms => (ms as u128).clamp(50, 600_000),
         };
 
+        let lifter = self.lifter.clone();
         let mut callback = |info: &search::DepthInfo| {
-            let js_info =
-                serde_wasm_bindgen::to_value(&build_js_info(info)).unwrap_or(JsValue::NULL); // prettier-ignore
+            let js_info = serde_wasm_bindgen::to_value(&build_js_info(lifter.as_ref(), info))
+                .unwrap_or(JsValue::NULL);
             let _ = on_info.call1(&JsValue::NULL, &js_info);
         };
 
@@ -1055,12 +1094,8 @@ impl Engine {
             let illegal = self.game.is_move_illegal();
             self.game.undo_move(&m, undo);
 
-            if !illegal {
-                legal_moves.push(JsMove {
-                    from: format!("{},{}", m.from.x, m.from.y),
-                    to: format!("{},{}", m.to.x, m.to.y),
-                    promotion: m.promotion.map(|p| p.to_str().to_string()),
-                });
+            if !illegal && let Some(js_move) = self.js_move(&m) {
+                legal_moves.push(js_move);
             }
         }
 
@@ -1089,7 +1124,7 @@ impl Engine {
             nps: 0.0,
             time_ms: 0.0,
             hashfull: result.stats.tt_fill_permille,
-            lines: result.lines.iter().map(pv_line_to_js).collect(),
+            lines: result.lines.iter().map(|l| pv_line_to_js(self.lifter.as_ref(), l)).collect(),
         };
         serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL)
     }
