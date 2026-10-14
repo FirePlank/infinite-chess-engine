@@ -124,8 +124,7 @@ evalnet/*.hash
 evalnet/*.hashes
 evalnet/var/
 
-# Scratch output: root binaries, side build dirs, offline analysis dirs, local probes.
-/*.exe
+# Scratch output: side build dirs, offline analysis dirs, local probes.
 /target-*/
 evalnet/resid/
 evalnet/forensics/
