@@ -127,11 +127,9 @@ fn random_rules(r: &mut Rng, border: bool) -> String {
     let left = if border && r.next() < 0.4 {
         format!("-{}", 9 + r.int(0, 3))
     } else {
-        format!("-{PLAY_BORDER_CAP}")
+        "_".to_string()
     };
-    format!(
-        "{turn} 0/100 1{promotion} {left},{PLAY_BORDER_CAP},-{PLAY_BORDER_CAP},{PLAY_BORDER_CAP}"
-    )
+    format!("{turn} 0/100 1{promotion} {left},_,_,_")
 }
 
 fn position_text(pieces: &[Piece]) -> String {
@@ -228,15 +226,8 @@ fn expect_same_legal_moves(icn: &str) {
 
 #[test]
 fn passes_a_position_within_the_limit_through() {
-    let icn = format!(
-        "w -{c},{c},-{c},{c} K0,0|k5,5|Q900000000000000000,3",
-        c = PLAY_BORDER_CAP
-    );
-    assert!(
-        prepare(&icn, &Big::from(PLAY_BORDER_CAP))
-            .unwrap()
-            .is_none()
-    );
+    let icn = "w _,_,_,_ K0,0|k5,5|Q900000000000000000,3";
+    assert!(prepare(icn, &Big::from(PLAY_BORDER_CAP)).unwrap().is_none());
 }
 
 #[test]
@@ -246,7 +237,7 @@ fn refuses_a_huygen_position_that_has_to_be_compressed() {
         format!("K0,0|k5,5|HU3,0|q{far},7"),
         format!("K{far},{far}|k{far}5,{far}5|HU{far}3,{far}"),
     ] {
-        let icn = format!("w -{c},{c},-{c},{c} {pieces}", c = PLAY_BORDER_CAP);
+        let icn = format!("w _,_,_,_ {pieces}");
         assert_eq!(
             prepare(&icn, &Big::from(PLAY_BORDER_CAP)).err(),
             Some(Refusal::ReadsExactDistances),
@@ -303,24 +294,30 @@ fn keeps_legal_moves_with_the_army_far_from_the_origin() {
 }
 
 #[test]
+fn keeps_a_border_edge_beyond_the_limit_beside_far_pieces() {
+    expect_same_legal_moves(
+        "w 0/100 1 -10,300000000000000,-10,10 K0,0|k5,5|R299999999999995,3|n299999999999999,9",
+    );
+    expect_same_legal_moves(
+        "w 0/100 1 -10,300000000000000,-10,10 K0,0|k5,5|Q299999999999995,3|r299999999999990,-8",
+    );
+}
+
+#[test]
 fn maps_a_long_diagonal_slide_to_a_crossing_set_by_a_compressed_gap() {
     // The black bishop sits 20008 ranks above the army, so its diagonals cross the
     // archbishop's 10009 squares out: a short-looking move whose crossing is compressed.
-    let c = PLAY_BORDER_CAP;
-    expect_same_legal_moves(&format!(
-        "b 0/100 1 (9|-10) -10,{c},-{c},{c} K60000000000000,40000000000000|k59999999999994,40000000000003|B59999999999998,40000000000008|B59999999999994,40000000000004|R60000000000004,39999999999996|R60000000000001,39999999999993|P59999999999993,40000000000000|am60000000000000,39999999999997|ar59999999999997,39999999999993|P59999999999994,39999999999998|r60000000000001,40000000000000|r59999999999999,40000000000002|b59999999999994,40000000020008|Q59999999999997,5039999999999986"
-    ));
+    expect_same_legal_moves(
+        "b 0/100 1 (9|-10) -10,_,_,_ K60000000000000,40000000000000|k59999999999994,40000000000003|B59999999999998,40000000000008|B59999999999994,40000000000004|R60000000000004,39999999999996|R60000000000001,39999999999993|P59999999999993,40000000000000|am60000000000000,39999999999997|ar59999999999997,39999999999993|P59999999999994,39999999999998|r60000000000001,40000000000000|r59999999999999,40000000000002|b59999999999994,40000000020008|Q59999999999997,5039999999999986",
+    );
 }
 
 #[test]
 fn cuts_a_line_at_a_slide_that_would_pass_a_piece_it_blocks() {
     // Black's queen checks along the king's diagonal, then white's far rook slides onto it: beyond
     // the queen on the original, so no block, but between her and the king compressed.
-    let c = PLAY_BORDER_CAP;
-    let icn = format!(
-        "b 0/100 1 (8|1) -{c},{c},-{c},{c} K0,0|k-2,4|r-8,1|Q6,6|R7,-3|N-3,-3|R90000000000000000000000000000000000000000000000000000015,-999999999999999999999999999999999999999999999999981|q600000000000000000000000000000000007,-899999999999999999999999999999987"
-    );
-    let compressed = prepare(&icn, &Big::from(c)).unwrap().unwrap();
+    let icn = "b 0/100 1 (8|1) _,_,_,_ K0,0|k-2,4|r-8,1|Q6,6|R7,-3|N-3,-3|R90000000000000000000000000000000000000000000000000000015,-999999999999999999999999999999999999999999999999981|q600000000000000000000000000000000007,-899999999999999999999999999999987";
+    let compressed = prepare(icn, &Big::from(PLAY_BORDER_CAP)).unwrap().unwrap();
     let mut game = load(&compressed.icn);
     let squares: Vec<(i64, i64)> = compressed
         .icn
@@ -355,12 +352,10 @@ fn cuts_a_line_at_a_slide_that_would_pass_a_piece_it_blocks() {
 
 #[test]
 fn reads_a_never_promoting_side_as_no_rank() {
-    let c = PLAY_BORDER_CAP;
     let ranks = format!("({};q|{};q)", i64::MIN, i64::MAX);
-    let near = format!("w 0/100 1 {ranks} -{c},{c},-{c},{c} K0,0|k5,5|P3,3|p4,6");
+    let near = format!("w 0/100 1 {ranks} _,_,_,_ K0,0|k5,5|P3,3|p4,6");
     assert!(prepare(&near, &Big::from(1i64 << 14)).unwrap().is_none());
-    let far =
-        format!("w 0/100 1 {ranks} -{c},{c},-{c},{c} K0,0|k5,5|P3,3|q90000000000000000000000000,7");
-    let compressed = prepare(&far, &Big::from(c)).unwrap().unwrap();
+    let far = format!("w 0/100 1 {ranks} _,_,_,_ K0,0|k5,5|P3,3|q90000000000000000000000000,7");
+    let compressed = prepare(&far, &Big::from(PLAY_BORDER_CAP)).unwrap().unwrap();
     assert!(compressed.icn.contains(&ranks), "{}", compressed.icn);
 }
