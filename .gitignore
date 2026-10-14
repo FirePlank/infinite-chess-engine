@@ -117,8 +117,12 @@ evalnet/*.log
 evalnet/*.jsonl
 evalnet/lr/
 evalnet/screen/
-# Scratch benchmark binaries built for old/new comparisons.
+# Scratch benchmark binaries built for old/new comparisons (extensionless off Windows).
 /*.exe
+/sprt_old
+/nps_old
+/nps_new
+/base_new
 evalnet/*.progress
 evalnet/*.hash
 evalnet/*.hashes
