@@ -970,12 +970,16 @@ fn format_clock(ms: u64) -> String {
     format!("{}:{:02}:{:02}.{}", h, m, s, dec)
 }
 
-fn move_to_string(m: &apeiron::moves::Move) -> String {
-    let mut s = format!("{},{} {},{}", m.from.x, m.from.y, m.to.x, m.to.y);
-    if let Some(p) = m.promotion {
-        s.push_str(&format!(" {}", p.to_site_code().to_lowercase()));
+/// The engine's move on the board it was given, as `x,y x,y [promotion]`; `None` when a
+/// compressed position's move can't be mapped back.
+fn move_to_string(engine: &Engine, m: &apeiron::moves::Move) -> Option<String> {
+    let token = engine.move_token(m)?;
+    let (squares, promotion) = token.split_once('=').map_or((token.as_str(), None), |(s, p)| (s, Some(p)));
+    let mut s = squares.replacen('>', " ", 1);
+    if let Some(p) = promotion {
+        s.push_str(&format!(" {}", p.to_lowercase()));
     }
-    s
+    Some(s)
 }
 
 fn parse_icn_tag(icn: &str, tag: &str) -> Option<String> {
@@ -4055,7 +4059,7 @@ fn main() {
                     );
                     match search_res {
                         Some((m, score, _stats)) => ServeResponse {
-                            bestmove: Some(move_to_string(&m)),
+                            bestmove: move_to_string(&engine, &m),
                             score: Some(score as f64),
                             elapsed_ms: 0, // filled in below, after the closure returns
                             panic: None,
@@ -4147,7 +4151,7 @@ fn main() {
                     engine.search_native(0, max_depth, true, noise_amp, seed)
                 };
                 if let Some((m, score, stats)) = search_res {
-                    println!("bestmove {}", move_to_string(&m));
+                    println!("bestmove {}", move_to_string(&engine, &m).unwrap_or_else(|| "none".into()));
                     let pv = engine.current_pv_native(max_depth.unwrap_or(50));
                     if pv.is_empty() {
                         eprintln!("info score {} nodes {}", score, stats.nodes);
