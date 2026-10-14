@@ -68,7 +68,7 @@ const engine = Engine.from_icn(icnString, engineConfig);
 
 // Get best move
 const result = engine.get_best_move();
-// Example result: { from: "1,2", to: "1,4", promotion: null, eval: 34, depth: 12 }
+// Example result: { from: "1,2", to: "1,4", promotion: null }, or null with no legal move
 
 // Get legal moves
 const moves = engine.get_legal_moves_js();
