@@ -55,7 +55,7 @@ pub fn set_quiet_ray_cap(cap: usize) {
 
 /// How far a capped ray's quiet candidates may lie. Farther ones are dropped rather than
 /// ranked, so the cap never weighs one far piece's distance against another's.
-pub(crate) const QUIET_RAY_CAP_RADIUS: i64 = 1024;
+const QUIET_RAY_CAP_RADIUS: i64 = 1024;
 
 pub type MoveList = smallvec::SmallVec<[Move; 128]>;
 
@@ -2784,8 +2784,8 @@ const FAR_ESCAPE_MIN_ROOM: i64 = 50;
 /// edge: the wiggle candidates other pieces generate around the landed piece are
 /// `dist +- 2`, and those must still encode.
 const FAR_SHELL_INSET: i64 = 32;
-pub(crate) const FAR_SHELL_MAX: i64 = crate::search::tt_defs::MAX_TT_COORD - FAR_SHELL_INSET;
-pub(crate) const FAR_SHELL_MIN: i64 = crate::search::tt_defs::MIN_TT_COORD + FAR_SHELL_INSET;
+const FAR_SHELL_MAX: i64 = crate::search::tt_defs::MAX_TT_COORD - FAR_SHELL_INSET;
+const FAR_SHELL_MIN: i64 = crate::search::tt_defs::MIN_TT_COORD + FAR_SHELL_INSET;
 
 /// Steps along a ray to the far-escape shell, 0 once the mover is on or past it.
 /// The shell is an absolute anchor, which is what bounds the branching: after the
@@ -6150,7 +6150,5 @@ mod snipe_coverage_probe {
         {
             let _ = m;
         }
-        // The ICN's border is process-global; leave the default one for the tests after this.
-        set_world_bounds(-PLAY_BORDER_CAP, PLAY_BORDER_CAP, -PLAY_BORDER_CAP, PLAY_BORDER_CAP);
     }
 }

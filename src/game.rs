@@ -4027,27 +4027,15 @@ impl GameState {
             } else if token.split(',').count() == 4
                 && token
                     .chars()
-                    .all(|c| c.is_ascii_digit() || c == ',' || c == '-' || c == '_')
+                    .all(|c| c.is_ascii_digit() || c == ',' || c == '-')
             {
-                // World Border: left,right,bottom,top. An unbounded (`_`) or out-of-reach edge
-                // is the engine's own cap.
+                // World Border: left,right,bottom,top
                 let bounds: Vec<&str> = token.split(',').collect();
-                let cap = crate::moves::PLAY_BORDER_CAP;
-                let edge = |s: &str, low: bool| -> Option<i64> {
-                    if s == "_" {
-                        return Some(if low { -cap } else { cap });
-                    }
-                    s.parse::<i64>().map(|v| v.clamp(-cap, cap)).ok().or_else(|| {
-                        let digits = s.strip_prefix('-').unwrap_or(s);
-                        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-                            .then(|| if s.starts_with('-') { -cap } else { cap })
-                    })
-                };
-                if let (Some(l), Some(r), Some(b), Some(t)) = (
-                    edge(bounds[0], true),
-                    edge(bounds[1], false),
-                    edge(bounds[2], true),
-                    edge(bounds[3], false),
+                if let (Ok(l), Ok(r), Ok(b), Ok(t)) = (
+                    bounds[0].parse::<i64>(),
+                    bounds[1].parse::<i64>(),
+                    bounds[2].parse::<i64>(),
+                    bounds[3].parse::<i64>(),
                 ) {
                     crate::moves::set_world_bounds(l, r, b, t);
                 }
