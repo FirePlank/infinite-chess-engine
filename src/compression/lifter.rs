@@ -6,7 +6,7 @@
 
 use super::bigint::Big;
 use super::lineforms::{LineForm, ORIGIN_GRID};
-use super::primedistances::PrimeDistances;
+use super::primedistances::{self, PrimeDistances};
 use super::{EXACT_SPAN, NEAR_LINE_SPAN, OrderedMap, Square};
 use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::moves::Move;
@@ -258,7 +258,7 @@ impl Lifter {
         } else {
             &b_original.y - &a_original.y
         };
-        read == self.prime_distances.is_prime(&difference)
+        read == primedistances::is_prime(&difference)
     }
 
     /// Whether the original landing sits on the same residue, as near every other piece's line as

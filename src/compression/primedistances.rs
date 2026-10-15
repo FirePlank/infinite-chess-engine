@@ -8,12 +8,23 @@ use super::lineforms::LineForm;
 use super::{EXACT_SPAN, NEAR_LINE_SPAN};
 use crate::board::Coordinate;
 use rustc_hash::FxHashMap;
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::thread::LocalKey;
 
 /// How far past a class's extent its shift still holds, and below which a distance is read as
 /// compressed: classes lie more than [`EXACT_SPAN`] apart, so two reaches stay further apart than this.
-const REACH: i64 = NEAR_LINE_SPAN;
+pub(crate) const REACH: i64 = NEAR_LINE_SPAN;
 const _: () = assert!(EXACT_SPAN > 3 * REACH);
+
+/// Most distances a thread remembers before starting over.
+const CACHE_CAP: usize = 1 << 14;
+
+thread_local! {
+    /// Each far distance's primality and gap down to the prime below it, per thread so no search
+    /// thread waits on another. Both depend on the distance alone, so every position shares them.
+    static PRIMES: RefCell<FxHashMap<Big, bool>> = RefCell::default();
+    static GAPS: RefCell<FxHashMap<Big, i64>> = RefCell::default();
+}
 
 /// One class's compressed extent under a form, and what turns its values back into originals.
 #[derive(Debug)]
@@ -29,8 +40,6 @@ pub struct PrimeDistances {
     forms: Vec<LineForm>,
     /// Per form, its classes in ascending order.
     spans: Vec<Vec<Span>>,
-    primes: Mutex<FxHashMap<Big, bool>>,
-    gaps: Mutex<FxHashMap<Big, i64>>,
 }
 
 impl PrimeDistances {
@@ -39,8 +48,6 @@ impl PrimeDistances {
         PrimeDistances {
             forms,
             spans: values.into_iter().map(spans).collect(),
-            primes: Mutex::default(),
-            gaps: Mutex::default(),
         }
     }
 
@@ -50,20 +57,7 @@ impl PrimeDistances {
         if d <= REACH as u64 {
             return crate::utils::is_prime_u64(d);
         }
-        self.original_distance(a, b)
-            .is_some_and(|d| self.is_prime(&d))
-    }
-
-    /// Whether `|d|` is prime, remembered: a search and its lifted lines ask of the same few
-    /// distances again and again. The test runs unlocked, so search threads never wait on it.
-    pub(super) fn is_prime(&self, d: &Big) -> bool {
-        let d = d.abs();
-        if let Some(&known) = self.primes.lock().unwrap().get(&d) {
-            return known;
-        }
-        let prime = d.is_prime();
-        self.primes.lock().unwrap().insert(d, prime);
-        prime
+        self.original_distance(a, b).is_some_and(|d| is_prime(&d))
     }
 
     /// How far below the original distance between two far squares on one rank or file, which
@@ -73,21 +67,14 @@ impl PrimeDistances {
             return None;
         }
         let d = self.original_distance(a, b)?;
-        Some(
-            *self
-                .gaps
-                .lock()
-                .unwrap()
-                .entry(d.clone())
-                .or_insert_with(|| {
-                    let one = Big::from(1);
-                    let mut below = &d - &one;
-                    while !below.is_prime() {
-                        below = &below - &one;
-                    }
-                    (&d - &below).to_i64().unwrap()
-                }),
-        )
+        Some(remembered(&GAPS, &d, || {
+            let one = Big::from(1);
+            let mut below = &d - &one;
+            while !below.is_prime() {
+                below = &below - &one;
+            }
+            (&d - &below).to_i64().unwrap()
+        }))
     }
 
     /// The original distance between two squares on one rank or file, through the first form that
@@ -110,6 +97,31 @@ impl PrimeDistances {
                 (remainder == 0).then(|| difference.abs())
             })
     }
+}
+
+/// Whether `|d|` is prime: a search and its lifted lines ask of the same few distances again and again.
+pub(super) fn is_prime(d: &Big) -> bool {
+    let d = d.abs();
+    remembered(&PRIMES, &d, || d.is_prime())
+}
+
+/// `d`'s entry in `cache`, computed on a miss.
+fn remembered<V: Copy>(
+    cache: &'static LocalKey<RefCell<FxHashMap<Big, V>>>,
+    d: &Big,
+    compute: impl FnOnce() -> V,
+) -> V {
+    if let Some(known) = cache.with_borrow(|c| c.get(d).copied()) {
+        return known;
+    }
+    let value = compute();
+    cache.with_borrow_mut(|c| {
+        if c.len() >= CACHE_CAP {
+            c.clear();
+        }
+        c.insert(d.clone(), value);
+    });
+    value
 }
 
 /// How far apart two squares on one rank or file are.

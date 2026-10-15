@@ -22,7 +22,7 @@ mod tests;
 pub use bigint::Big;
 pub use lifter::Lifter;
 pub use primedistances::PrimeDistances;
-pub(crate) use primedistances::distance_along;
+pub(crate) use primedistances::{REACH, distance_along};
 
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;

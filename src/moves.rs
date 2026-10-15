@@ -4242,13 +4242,12 @@ fn generate_huygen_snipes(
         // landing per target: that gap is the only stretch a piece could interpose in.
         let mut best: smallvec::SmallVec<[(i64, i64, i64); 16]> = smallvec::SmallVec::new();
 
+        // Far candidates sit on open sides at primes every position reads as they are.
         let far = pos_cands
             .iter().copied()
             .chain(neg_cands.iter().map(|&p| -p));
-        for s_off in close.iter().copied().chain(far) {
-            if !reachable_open(s_off) {
-                continue;
-            }
+        let open_close = close.iter().copied().filter(|&s_off| reachable_open(s_off));
+        for s_off in open_close.chain(far) {
             // Nearest prime-distance piece below/above the landing (a huygen there
             // attacks only those two). Coords are sorted, so walking outward and
             // stopping at the first hit avoids scanning the whole line.
@@ -4311,11 +4310,16 @@ fn generate_huygen_snipes(
     }
 }
 
+/// Where [`SNIPE_PRIMES`] stops: within the distance a compressed position reads as is, so its
+/// primes need no test there either.
+const SNIPE_SIEVE: usize = 4096;
+const _: () = assert!(SNIPE_SIEVE as i64 <= crate::compression::REACH);
+
 /// Primes available to sniper landings, sieved once. Must reach well past
 /// SNIPE_TRIES primes: the candidates start beyond the line's outermost piece,
 /// so the usable window slides upward as pieces spread out.
 static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| {
-    let n = 4096usize;
+    let n = SNIPE_SIEVE;
     let mut sieve = vec![true; n];
     let mut out = Vec::with_capacity(600);
     for i in 2..n {
