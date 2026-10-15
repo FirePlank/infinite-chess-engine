@@ -43,7 +43,9 @@ pub fn residual_white(game: &crate::game::GameState, fc: &FeatureCollector) -> i
 }
 
 /// The net for a specialized evaluator, if one is embedded.
-pub fn variant_net(kind: crate::evaluation::eval_kind::EvalKind) -> Option<&'static weights::EvalNetWeights> {
+pub fn variant_net(
+    kind: crate::evaluation::eval_kind::EvalKind,
+) -> Option<&'static weights::EvalNetWeights> {
     use crate::evaluation::eval_kind::EvalKind;
     if killed() {
         return None;
@@ -70,12 +72,20 @@ pub fn variant_residual(
         layout.to_perspective(&mut x[..layout.len()], black_to_move);
     }
     let r = inference::forward(net, &x[..layout.len()]).clamp(-layout.cap, layout.cap);
-    if net.perspective && black_to_move { -r } else { r }
+    if net.perspective && black_to_move {
+        -r
+    } else {
+        r
+    }
 }
 
 /// Capped residual of `net` for a position whose base-HCE features are in `fc`, White-ahead.
 #[inline]
-pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState, fc: &FeatureCollector) -> i32 {
+pub fn residual_of(
+    net: &weights::EvalNetWeights,
+    game: &crate::game::GameState,
+    fc: &FeatureCollector,
+) -> i32 {
     let base = feature_vector(game, fc);
     let black = game.turn == crate::board::PlayerColor::Black;
     let mut x = [0i16; features::TAC_NET_INPUTS];
@@ -94,8 +104,16 @@ pub fn residual_of(net: &weights::EvalNetWeights, game: &crate::game::GameState,
     }
     // Extras run own side then opponent, each king exposure then slider rays, as far as
     // the net's width reaches (none for a 121-input net).
-    let (ke, rays, tac) = (&fc.inputs.king_exposure, &fc.inputs.slider_rays, &fc.inputs.king_tactics);
-    let (own, opp) = if net.perspective && black { (1, 0) } else { (0, 1) };
+    let (ke, rays, tac) = (
+        &fc.inputs.king_exposure,
+        &fc.inputs.slider_rays,
+        &fc.inputs.king_tactics,
+    );
+    let (own, opp) = if net.perspective && black {
+        (1, 0)
+    } else {
+        (0, 1)
+    };
     let per = net.n_in.saturating_sub(off) / 2;
     for j in 0..per {
         let side = |s: usize| match j {

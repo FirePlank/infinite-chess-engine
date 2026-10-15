@@ -421,7 +421,11 @@ fn build_js_info(lifter: Option<&compression::Lifter>, info: &search::DepthInfo)
         nps: info.nps as f64,
         time_ms: info.time_ms as f64,
         hashfull: info.hashfull,
-        lines: info.lines.iter().map(|l| pv_line_to_js(lifter, l)).collect(),
+        lines: info
+            .lines
+            .iter()
+            .map(|l| pv_line_to_js(lifter, l))
+            .collect(),
     }
 }
 
@@ -480,7 +484,11 @@ impl Engine {
 
     fn js_move(&self, m: &moves::Move) -> Option<JsMove> {
         let (from, to) = token_squares(&self.move_token(m)?);
-        Some(JsMove { from, to, promotion: m.promotion.map(|p| p.to_str().to_string()) })
+        Some(JsMove {
+            from,
+            to,
+            promotion: m.promotion.map(|p| p.to_str().to_string()),
+        })
     }
 }
 
@@ -489,7 +497,8 @@ impl Engine {
     #[wasm_bindgen]
     pub fn from_icn(icn_string: &str, config: JsValue) -> Result<Engine, JsValue> {
         let options: JsEngineConfig = serde_wasm_bindgen::from_value(config)?;
-        let (game, lifter) = load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
+        let (game, lifter) =
+            load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
 
         let strength_level = options.strength_level;
 
@@ -521,10 +530,14 @@ impl Engine {
 
     /// Panics on a position no compression brings within reach; see [`Engine::try_from_icn_native`].
     pub fn from_icn_native(icn_string: &str, strength_level: Option<u32>) -> Engine {
-        Engine::try_from_icn_native(icn_string, strength_level).expect("position beyond the engine's reach")
+        Engine::try_from_icn_native(icn_string, strength_level)
+            .expect("position beyond the engine's reach")
     }
 
-    pub fn try_from_icn_native(icn_string: &str, strength_level: Option<u32>) -> Result<Engine, compression::Refusal> {
+    pub fn try_from_icn_native(
+        icn_string: &str,
+        strength_level: Option<u32>,
+    ) -> Result<Engine, compression::Refusal> {
         let (game, lifter) = load_icn(icn_string)?;
         Ok(Engine {
             game,
@@ -871,36 +884,37 @@ impl Engine {
         search::set_global_params(effective_seed, noise_amp);
 
         // Choose search path based on strength level.
-        let (best_move, eval, nodes) = if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
-            // Use strength limited search (uses global seed we just set)
-            if let Some((bm, ev, stats)) = search::get_best_move_limited(
-                &mut self.game,
-                depth,
-                opt_time,
-                max_time,
-                strength,
-                silent,
-                is_soft_limit,
-            ) {
-                (bm, ev, stats.nodes)
+        let (best_move, eval, nodes) =
+            if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
+                // Use strength limited search (uses global seed we just set)
+                if let Some((bm, ev, stats)) = search::get_best_move_limited(
+                    &mut self.game,
+                    depth,
+                    opt_time,
+                    max_time,
+                    strength,
+                    silent,
+                    is_soft_limit,
+                ) {
+                    (bm, ev, stats.nodes)
+                } else {
+                    return JsValue::NULL;
+                }
             } else {
-                return JsValue::NULL;
-            }
-        } else {
-            // Normal search: use parallel version (handles both single and multi-threaded)
-            if let Some((bm, ev, stats)) = search::get_best_move_parallel(
-                &mut self.game,
-                depth,
-                opt_time,
-                max_time,
-                silent,
-                is_soft_limit,
-            ) {
-                (bm, ev, stats.nodes)
-            } else {
-                return JsValue::NULL;
-            }
-        };
+                // Normal search: use parallel version (handles both single and multi-threaded)
+                if let Some((bm, ev, stats)) = search::get_best_move_parallel(
+                    &mut self.game,
+                    depth,
+                    opt_time,
+                    max_time,
+                    silent,
+                    is_soft_limit,
+                ) {
+                    (bm, ev, stats.nodes)
+                } else {
+                    return JsValue::NULL;
+                }
+            };
 
         let Some(JsMove { from, to, .. }) = self.js_move(&best_move) else {
             return JsValue::NULL;
@@ -947,7 +961,12 @@ impl Engine {
                 // Format PV as array of "x,y->x,y" strings, each promotion's code appended.
                 let pv_strings: Vec<String> = line_tokens(self.lifter.as_ref(), &line.pv)
                     .iter()
-                    .map(|token| token.replacen('>', "->", 1).replacen('=', "", 1).to_uppercase())
+                    .map(|token| {
+                        token
+                            .replacen('>', "->", 1)
+                            .replacen('=', "", 1)
+                            .to_uppercase()
+                    })
                     .collect();
                 let JsMove { from, to, .. } = self.js_move(&line.mv)?;
                 Some(JsPVLine {
@@ -967,7 +986,8 @@ impl Engine {
     /// Replaces the engine's position from an ICN string, keeping the persistent
     /// searcher (and its transposition table) warm.
     pub fn set_position(&mut self, icn_string: &str) -> Result<(), JsValue> {
-        let (game, lifter) = load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
+        let (game, lifter) =
+            load_icn(icn_string).map_err(|r| JsValue::from_str(&format!("{r:?}")))?;
         (self.game, self.lifter) = (game, lifter);
         Ok(())
     }
@@ -1020,8 +1040,9 @@ impl Engine {
                 // the target would idle through the main thread's last and longest depth.
                 let settings = (search::MAX_PLY, multi_pv);
                 let respawn = {
-                    let mut live =
-                        search::HELPER_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut live = search::HELPER_SETTINGS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     let changed = *live != settings;
                     *live = settings;
                     changed
@@ -1044,12 +1065,14 @@ impl Engine {
 
                 // Each streamed depth shows the thread vote's winner, as the slice summary
                 // does, so the two never alternate between different threads' lines.
-                let mut voted_callback = |info: &search::DepthInfo| {
-                    match search::voted_analysis_lines(info.lines) {
-                        Some(lines) => callback(&search::DepthInfo { lines: &lines, ..*info }),
+                let mut voted_callback =
+                    |info: &search::DepthInfo| match search::voted_analysis_lines(info.lines) {
+                        Some(lines) => callback(&search::DepthInfo {
+                            lines: &lines,
+                            ..*info
+                        }),
                         None => callback(info),
-                    }
-                };
+                    };
                 let mut result = search::analyse_position(
                     &mut self.game,
                     max_depth,
@@ -1120,7 +1143,11 @@ impl Engine {
             nps: 0.0,
             time_ms: 0.0,
             hashfull: result.stats.tt_fill_permille,
-            lines: result.lines.iter().map(|l| pv_line_to_js(self.lifter.as_ref(), l)).collect(),
+            lines: result
+                .lines
+                .iter()
+                .map(|l| pv_line_to_js(self.lifter.as_ref(), l))
+                .collect(),
         };
         serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL)
     }

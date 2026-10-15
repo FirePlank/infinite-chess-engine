@@ -294,32 +294,38 @@ eval_params! {
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn candidate_passer_bonus() -> [i32; 6] {
     [candidate_passer_bonus_0(), candidate_passer_bonus_1(), candidate_passer_bonus_2(), candidate_passer_bonus_3(), candidate_passer_bonus_4(), candidate_passer_bonus_5()]
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn pawn_friendly_king_dist() -> [i32; 6] {
     [pawn_friendly_king_dist_0(), pawn_friendly_king_dist_1(), pawn_friendly_king_dist_2(), pawn_friendly_king_dist_3(), pawn_friendly_king_dist_4(), pawn_friendly_king_dist_5()]
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn pawn_enemy_king_dist() -> [i32; 6] {
     [pawn_enemy_king_dist_0(), pawn_enemy_king_dist_1(), pawn_enemy_king_dist_2(), pawn_enemy_king_dist_3(), pawn_enemy_king_dist_4(), pawn_enemy_king_dist_5()]
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn passed_friendly_king_dist() -> [i32; 6] {
     [passed_friendly_king_dist_0(), passed_friendly_king_dist_1(), passed_friendly_king_dist_2(), passed_friendly_king_dist_3(), passed_friendly_king_dist_4(), passed_friendly_king_dist_5()]
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn passed_enemy_king_dist() -> [i32; 6] {
     [passed_enemy_king_dist_0(), passed_enemy_king_dist_1(), passed_enemy_king_dist_2(), passed_enemy_king_dist_3(), passed_enemy_king_dist_4(), passed_enemy_king_dist_5()]
 }
 
 /// Indexed `[can_advance][safe_advance][relative_rank]`; rank 5 is next to promotion.
 #[inline]
+#[rustfmt::skip]
 pub fn passed_pawn_adv_bonus() -> [[[i32; 6]; 2]; 2] {
     [
     [
@@ -345,7 +351,10 @@ mod tests {
             assert!(
                 spec.min <= spec.default && spec.default <= spec.max,
                 "{}: default {} outside [{}, {}]",
-                spec.name, spec.default, spec.min, spec.max
+                spec.name,
+                spec.default,
+                spec.min,
+                spec.max
             );
             assert_eq!(spec.clamp_value(spec.min - 1000), spec.min);
             assert_eq!(spec.clamp_value(spec.max + 1000), spec.max);

@@ -658,7 +658,8 @@ impl TileTable {
         // index: one bounds check instead of nine lookups.
         let dx = cx.wrapping_add(DENSE_TILES / 2) as u64;
         let dy = cy.wrapping_add(DENSE_TILES / 2) as u64;
-        if dx.wrapping_sub(1) < (DENSE_TILES - 2) as u64 && dy.wrapping_sub(1) < (DENSE_TILES - 2) as u64
+        if dx.wrapping_sub(1) < (DENSE_TILES - 2) as u64
+            && dy.wrapping_sub(1) < (DENSE_TILES - 2) as u64
         {
             let c = (dy * DENSE_TILES as u64 + dx) as usize;
             let w = DENSE_TILES as usize;
@@ -758,7 +759,6 @@ impl TileTable {
         self.iter().filter(move |(cx, _, _)| *cx == target_cx)
     }
 }
-
 
 /// CTZ-based iterator over occupied slots in the TileTable
 struct TileTableIter<'a> {

@@ -198,11 +198,18 @@ fn variant_eval(game: &GameState) -> i32 {
     }
     let mut f = VariantFeatures::default();
     let (score, layout): (i32, &VariantLayout) = match game.eval_kind {
-        EvalKind::Chess => (variants::chess::evaluate_traced(game, &mut f), &variants::chess::NET_LAYOUT),
-        EvalKind::Obstocean => {
-            (variants::obstocean::evaluate_traced(game, &mut f), &variants::obstocean::NET_LAYOUT)
-        }
-        _ => (variants::pawn_horde::evaluate_traced(game, &mut f), &variants::pawn_horde::NET_LAYOUT),
+        EvalKind::Chess => (
+            variants::chess::evaluate_traced(game, &mut f),
+            &variants::chess::NET_LAYOUT,
+        ),
+        EvalKind::Obstocean => (
+            variants::obstocean::evaluate_traced(game, &mut f),
+            &variants::obstocean::NET_LAYOUT,
+        ),
+        _ => (
+            variants::pawn_horde::evaluate_traced(game, &mut f),
+            &variants::pawn_horde::NET_LAYOUT,
+        ),
     };
     let black = game.turn == PlayerColor::Black;
     let r = crate::eval_net::variant_residual(net, layout, &f, black);
@@ -300,13 +307,17 @@ mod tests {
         // K+Q vs K+N+N+N: six pieces, so the insufficient rule stays silent, but a
         // lone queen can never mate on an unbounded board. The queen side's claim
         // must shrink toward the draw; give it a pawn and the claim is back.
-        let pawnless = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|Q4,4|k7,7|n6,1|n5,1|n8,3");
+        let pawnless =
+            create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|Q4,4|k7,7|n6,1|n5,1|n8,3");
         let with_pawn =
             create_test_game_from_icn("w 0/100 1 (8;q|1;q) K2,2|Q4,4|P3,3|k7,7|n6,1|n5,1|n8,3");
         let raw = base::evaluate(&pawnless);
         assert!(raw > 100, "queen side should be ahead on raw eval: {raw}");
         let scaled = evaluate_wrapper(&pawnless);
-        assert!(scaled.abs() <= raw.abs() / 4, "pawnless K+Q claim not scaled: raw {raw} -> {scaled}");
+        assert!(
+            scaled.abs() <= raw.abs() / 4,
+            "pawnless K+Q claim not scaled: raw {raw} -> {scaled}"
+        );
         let full = evaluate_wrapper(&with_pawn);
         assert!(full > raw / 2, "a pawn restores the full claim: {full}");
     }

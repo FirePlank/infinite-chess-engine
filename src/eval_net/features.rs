@@ -206,17 +206,15 @@ impl KingExposure {
 
     /// `rays[side]` is that side's first royal's nearest piece per ray (distance,
     /// value, colour, type), `near[side]` its own and neutral pieces within 2 squares.
-    pub fn finish(
-        &self,
-        rays: [Option<&KingRays>; 2],
-        near: [i32; 2],
-    ) -> [[i32; 3]; 2] {
+    pub fn finish(&self, rays: [Option<&KingRays>; 2], near: [i32; 2]) -> [[i32; 3]; 2] {
         let mut out = [[0; 3]; 2];
         for (side, us) in [(0usize, PlayerColor::White), (1, PlayerColor::Black)] {
             let Some(r) = rays[side] else { continue };
             let open = r
                 .iter()
-                .filter(|&&(d, _, c, _)| !(d <= KEXP_RADIUS && (c == us || c == PlayerColor::Neutral)))
+                .filter(|&&(d, _, c, _)| {
+                    !(d <= KEXP_RADIUS && (c == us || c == PlayerColor::Neutral))
+                })
                 .count() as i32;
             let enemy_ql = (self.queen_like_bits >> us.opponent() as u32) & 1;
             out[side] = [open, enemy_ql as i32, near[side]];
@@ -228,16 +226,36 @@ impl KingExposure {
 /// Reference definition the training sidecar was built from (slow: board walks).
 pub fn king_exposure_reference(g: &GameState) -> [[i32; 3]; 2] {
     let mut out = [[0; 3]; 2];
-    let ql = |side: PlayerColor| g.board.iter().any(|(_, _, p)| p.color() == side && queen_like(p.piece_type()));
+    let ql = |side: PlayerColor| {
+        g.board
+            .iter()
+            .any(|(_, _, p)| p.color() == side && queen_like(p.piece_type()))
+    };
     for (side, us) in [(0usize, PlayerColor::White), (1, PlayerColor::Black)] {
-        let kings = if side == 0 { &g.white_royals } else { &g.black_royals };
+        let kings = if side == 0 {
+            &g.white_royals
+        } else {
+            &g.black_royals
+        };
         let Some(k) = kings.first() else { continue };
         let mut open = 0;
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
-            let shut = g.spatial_indices.find_first_blocker(k.x, k.y, dx, dy).is_some_and(|(x, y, p)| {
-                (x - k.x).abs().max((y - k.y).abs()) <= KEXP_RADIUS
-                    && (p.color() == us || p.color() == PlayerColor::Neutral)
-            });
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let shut = g
+                .spatial_indices
+                .find_first_blocker(k.x, k.y, dx, dy)
+                .is_some_and(|(x, y, p)| {
+                    (x - k.x).abs().max((y - k.y).abs()) <= KEXP_RADIUS
+                        && (p.color() == us || p.color() == PlayerColor::Neutral)
+                });
             open += i32::from(!shut);
         }
         let near = g
@@ -393,6 +411,7 @@ fn win_condition_code(wc: crate::game::WinCondition) -> i16 {
 
 /// The full Stage-A feature vector. Order and scaling are part of the schema:
 /// any change here must bump `SCHEMA_VERSION`.
+#[rustfmt::skip::macros(push)]
 pub fn feature_vector(game: &GameState, fc: &FeatureCollector) -> [i16; NUM_FEATURES] {
     let mut v = [0i16; NUM_FEATURES];
     let mut i = 0usize;
@@ -552,8 +571,16 @@ mod tests {
     /// walk from every slider, or the net would read other numbers than it trained on.
     #[test]
     fn slider_ray_inputs_match_first_blocker_walk() {
-        for v in [crate::Variant::Classical, crate::Variant::CoaIP, crate::Variant::Space, crate::Variant::Palace] {
-            for icn in [v.starting_icn(), "w (8;q|1;q) K0,0|k9,9|Q3,0|R0,5|P1,1|B4,4|b5,6|r0,9|q-3,-3|p-2,-2"] {
+        for v in [
+            crate::Variant::Classical,
+            crate::Variant::CoaIP,
+            crate::Variant::Space,
+            crate::Variant::Palace,
+        ] {
+            for icn in [
+                v.starting_icn(),
+                "w (8;q|1;q) K0,0|k9,9|Q3,0|R0,5|P1,1|B4,4|b5,6|r0,9|q-3,-3|p-2,-2",
+            ] {
                 let mut g = crate::game::GameState::new();
                 g.setup_position_from_icn(icn);
                 let mut fc = crate::eval_net::FeatureCollector::default();
@@ -565,8 +592,20 @@ mod tests {
                         PlayerColor::Black => 1,
                         _ => continue,
                     };
-                    let (ortho, diag) = (crate::attacks::is_ortho_slider(p.piece_type()), crate::attacks::is_diag_slider(p.piece_type()));
-                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                    let (ortho, diag) = (
+                        crate::attacks::is_ortho_slider(p.piece_type()),
+                        crate::attacks::is_diag_slider(p.piece_type()),
+                    );
+                    for (dx, dy) in [
+                        (1, 0),
+                        (-1, 0),
+                        (0, 1),
+                        (0, -1),
+                        (1, 1),
+                        (1, -1),
+                        (-1, 1),
+                        (-1, -1),
+                    ] {
                         if !(if dx == 0 || dy == 0 { ortho } else { diag }) {
                             continue;
                         }
@@ -594,10 +633,21 @@ mod tests {
         use crate::Variant;
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut checked = 0;
-        for v in [Variant::Classical, Variant::CoaIP, Variant::Palace, Variant::Space, Variant::Core, Variant::Obstocean] {
+        for v in [
+            Variant::Classical,
+            Variant::CoaIP,
+            Variant::Palace,
+            Variant::Space,
+            Variant::Core,
+            Variant::Obstocean,
+        ] {
             for game_no in 0..6 {
                 let mut g = GameState::new();
-                g.setup_position_from_icn(&format!("[Variant \"{}\"] {}", v.to_str(), v.starting_icn()));
+                g.setup_position_from_icn(&format!(
+                    "[Variant \"{}\"] {}",
+                    v.to_str(),
+                    v.starting_icn()
+                ));
                 for _ in 0..(20 + 15 * game_no) {
                     let moves = g.get_pseudo_legal_moves();
                     let legal: Vec<_> = moves
@@ -613,12 +663,20 @@ mod tests {
                     if legal.is_empty() {
                         break;
                     }
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     let m = legal[(seed >> 33) as usize % legal.len()];
                     g.make_move(&m);
                     let mut fc = FeatureCollector::default();
                     base::evaluate_inner_traced(&g, &mut fc);
-                    assert_eq!(fc.inputs.king_exposure, king_exposure_reference(&g), "{} after {:?}", v.to_str(), m);
+                    assert_eq!(
+                        fc.inputs.king_exposure,
+                        king_exposure_reference(&g),
+                        "{} after {:?}",
+                        v.to_str(),
+                        m
+                    );
                     checked += 1;
                 }
             }
@@ -629,9 +687,7 @@ mod tests {
     #[test]
     fn feature_vector_is_full_and_deterministic() {
         let mut game = GameState::new();
-        game.setup_position_from_icn(
-            "w (8;q|1;q) K5,1|k5,8|Q4,4|r1,8|P2,2|P3,2|p2,7|N7,7|b6,6",
-        );
+        game.setup_position_from_icn("w (8;q|1;q) K5,1|k5,8|Q4,4|r1,8|P2,2|P3,2|p2,7|N7,7|b6,6");
         let mut fc1 = FeatureCollector::default();
         let s1 = base::evaluate_inner_traced(&game, &mut fc1);
         let mut fc2 = FeatureCollector::default();
