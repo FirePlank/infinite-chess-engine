@@ -2000,12 +2000,25 @@ impl GameState {
         };
         get_pseudo_legal_moves_for_piece_into(&self.board, &king_piece, &king_sq, &ctx, out);
 
-        if checker_count >= 2 {
-            return; // Double check - only king moves can escape
-        }
-
-        // 2. Capture checker or block attack (Only in single check)
-        let checker_sq = checkers[0];
+        // 2. Capture a checker or block it. Two checks share an answer only through a Huygen
+        // (composite squares don't block it) or a Rose (it curves off any ray); then the answers
+        // to a ray checker suffice, as legality keeps only those that answer every check.
+        let checkers = &checkers[..checker_count];
+        let crosses_rays = |sq: &Coordinate| {
+            self.board
+                .get_piece(sq.x, sq.y)
+                .is_some_and(|p| matches!(p.piece_type(), PieceType::Huygen | PieceType::Rose))
+        };
+        let checker_sq = if let [only] = checkers {
+            *only
+        } else if checkers.iter().any(crosses_rays) {
+            *checkers
+                .iter()
+                .find(|sq| !crosses_rays(sq))
+                .unwrap_or(&checkers[0])
+        } else {
+            return;
+        };
         // A checker past any i64 distance takes the exact move list instead: rare, and
         // every evasion is verified after make anyway.
         let far_check = checker_sq.x.checked_sub(king_sq.x).is_none()
@@ -4820,6 +4833,37 @@ mod tests {
         }
         let to_checker = out.iter().filter(|m| m.to == Coordinate::new(0, 5)).count();
         assert!(to_checker >= 5, "expected several checker captures, got {to_checker}");
+    }
+
+    /// In double check one block answers both when a checker is a Huygen or a Rose.
+    #[test]
+    fn blocks_a_double_check_through_a_huygen_or_rose() {
+        for (icn, from, to) in [
+            (
+                "w 0/100 1 _,_,_,_ K0,0|hu0,1000000000001063|r0,500000000000531|k1,27|B-7000000000000000,-6999999999998428",
+                Coordinate::new(-7_000_000_000_000_000, -6_999_999_999_998_428),
+                Coordinate::new(0, 1572),
+            ),
+            (
+                "w 0/100 1 _,_,_,_ K0,0|k40,40|b9,9|ro0,6|N-2,1|R3,1",
+                Coordinate::new(3, 1),
+                Coordinate::new(3, 3),
+            ),
+            (
+                "w 0/100 1 _,_,_,_ K0,0|k40,40|r11,0|ro4,4|RO0,4|R4,2",
+                Coordinate::new(4, 2),
+                Coordinate::new(4, 0),
+            ),
+        ] {
+            let mut g = create_test_game_from_icn(icn);
+            let mut out = MoveList::new();
+            g.get_evasion_moves_into(&mut out);
+            let block = out.iter().find(|m| m.from == from && m.to == to);
+            let block = *block.unwrap_or_else(|| panic!("no block in {icn}"));
+            let undo = g.make_move(&block);
+            assert!(!g.is_move_illegal(), "block left in check: {icn}");
+            g.undo_move(&block, undo);
+        }
     }
 
     /// Rights far outside the bitboard window: castling, the partner counts, the
