@@ -243,18 +243,8 @@ eval_params! {
     candidate_passer_bonus_3 = 25 => (0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [3]");
     candidate_passer_bonus_4 = 42 => (0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [4]");
     candidate_passer_bonus_5 = 74 => (0, 200, 2.0, 0.002, "Candidate passer bonus by relative rank [5]");
-    pawn_friendly_king_dist_0 = 7 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [0]");
-    pawn_friendly_king_dist_1 = 3 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [1]");
-    pawn_friendly_king_dist_2 = 6 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [2]");
-    pawn_friendly_king_dist_3 = 0 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [3]");
-    pawn_friendly_king_dist_4 = 3 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [4]");
-    pawn_friendly_king_dist_5 = 14 => (0, 40, 2.0, 0.002, "Friendly-king-distance weight by relative rank [5]");
-    pawn_enemy_king_dist_0 = 4 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [0]");
-    pawn_enemy_king_dist_1 = 4 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [1]");
-    pawn_enemy_king_dist_2 = 0 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [2]");
-    pawn_enemy_king_dist_3 = 8 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [3]");
-    pawn_enemy_king_dist_4 = 9 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [4]");
-    pawn_enemy_king_dist_5 = 19 => (0, 40, 2.0, 0.002, "Enemy-king-distance weight by relative rank [5]");
+    max_far_piece_pawn_penalty = 20 => (0, 100, 4.0, 0.002, "Maximum far piece-pawn tropism penalty per pawn");
+    max_piece_pawn_tropism = 200 => (0, 500, 4.0, 0.002, "Maximum piece-pawn tropism");
     passed_friendly_king_dist_0 = 0 => (0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [0]");
     passed_friendly_king_dist_1 = 0 => (0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [1]");
     passed_friendly_king_dist_2 = 0 => (0, 40, 2.0, 0.002, "Passed-pawn friendly-king-distance weight by relative rank [2]");
@@ -296,16 +286,6 @@ eval_params! {
 #[inline]
 pub fn candidate_passer_bonus() -> [i32; 6] {
     [candidate_passer_bonus_0(), candidate_passer_bonus_1(), candidate_passer_bonus_2(), candidate_passer_bonus_3(), candidate_passer_bonus_4(), candidate_passer_bonus_5()]
-}
-
-#[inline]
-pub fn pawn_friendly_king_dist() -> [i32; 6] {
-    [pawn_friendly_king_dist_0(), pawn_friendly_king_dist_1(), pawn_friendly_king_dist_2(), pawn_friendly_king_dist_3(), pawn_friendly_king_dist_4(), pawn_friendly_king_dist_5()]
-}
-
-#[inline]
-pub fn pawn_enemy_king_dist() -> [i32; 6] {
-    [pawn_enemy_king_dist_0(), pawn_enemy_king_dist_1(), pawn_enemy_king_dist_2(), pawn_enemy_king_dist_3(), pawn_enemy_king_dist_4(), pawn_enemy_king_dist_5()]
 }
 
 #[inline]
