@@ -20,7 +20,7 @@ A Rust chess engine compiled to WebAssembly, designed for [Infinite Chess](https
 
 ## Features
 
-- **Infinite Board**: Coordinate-based system supporting arbitrary board sizes.
+- **Infinite Board**: Coordinates of any size. The engine works in `i64`; a position beyond that is compressed on load so the engine sees exactly what it would on the original, and its moves are mapped back.
 - **Search**: Iterative deepening PVS with aspiration windows, null move pruning, LMR, history-based move ordering, and more.
 - **Evaluation**: Modular HCE (Material, Cloud Centrality, Pawn Advancement, King Safety, etc.) plus a small quantized net that corrects it from the HCE's own terms.
 - **Performance**: Written in Rust with support for Lazy SMP multithreading.
@@ -68,7 +68,7 @@ const engine = Engine.from_icn(icnString, engineConfig);
 
 // Get best move
 const result = engine.get_best_move();
-// Example result: { from: "1,2", to: "1,4", promotion: null, eval: 34, depth: 12 }
+// Example result: { from: "1,2", to: "1,4", promotion: null }, or null with no legal move
 
 // Get legal moves
 const moves = engine.get_legal_moves_js();

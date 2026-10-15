@@ -162,6 +162,7 @@ Understanding the codebase:
 | Module | Purpose |
 |--------|---------|
 | `lib.rs` | WASM bindings, Engine struct |
+| `compression/` | Positions beyond `i64` compressed on load, moves mapped back |
 | `board.rs` | Piece types, coordinates, board representation |
 | `game.rs` | GameState, make/undo moves, repetition detection |
 | `moves.rs` | Legal move generation for all pieces |

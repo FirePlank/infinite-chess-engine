@@ -1,10 +1,12 @@
 //! Compression keeps the engine's legal moves: on random positions with far pieces, compressed as
 //! if the engine's coordinates ended at 2^40, every legal move maps back onto the original's.
 
-use super::{Big, Refusal, prepare};
+use super::{Big, EXACT_SPAN, prepare};
+use crate::board::{Coordinate, PieceType};
 use crate::game::GameState;
-use crate::moves::{Move, MoveList, PLAY_BORDER_CAP};
+use crate::moves::{Move, MoveList, PLAY_BORDER_CAP, is_piece_attacking_square};
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const FORCED_LIMIT: i64 = 1 << 40;
 const HOME_TYPES: &[&str] = &[
@@ -127,11 +129,9 @@ fn random_rules(r: &mut Rng, border: bool) -> String {
     let left = if border && r.next() < 0.4 {
         format!("-{}", 9 + r.int(0, 3))
     } else {
-        format!("-{PLAY_BORDER_CAP}")
+        "_".to_string()
     };
-    format!(
-        "{turn} 0/100 1{promotion} {left},{PLAY_BORDER_CAP},-{PLAY_BORDER_CAP},{PLAY_BORDER_CAP}"
-    )
+    format!("{turn} 0/100 1{promotion} {left},_,_,_")
 }
 
 fn position_text(pieces: &[Piece]) -> String {
@@ -210,7 +210,7 @@ fn expect_same_legal_moves(icn: &str) {
     let Some(compressed) = prepare(icn, &Big::from(FORCED_LIMIT)).unwrap() else {
         return; // Nothing beyond the limit, or nothing far: the engine reads it as it is.
     };
-    let mut game = load(&compressed.icn);
+    let mut game = compressed.game();
     let lifted: BTreeSet<String> = legal_moves(&mut game)
         .iter()
         .map(|m| {
@@ -228,31 +228,8 @@ fn expect_same_legal_moves(icn: &str) {
 
 #[test]
 fn passes_a_position_within_the_limit_through() {
-    let icn = format!(
-        "w -{c},{c},-{c},{c} K0,0|k5,5|Q900000000000000000,3",
-        c = PLAY_BORDER_CAP
-    );
-    assert!(
-        prepare(&icn, &Big::from(PLAY_BORDER_CAP))
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn refuses_a_huygen_position_that_has_to_be_compressed() {
-    let far = "1".to_string() + &"0".repeat(30);
-    for pieces in [
-        format!("K0,0|k5,5|HU3,0|q{far},7"),
-        format!("K{far},{far}|k{far}5,{far}5|HU{far}3,{far}"),
-    ] {
-        let icn = format!("w -{c},{c},-{c},{c} {pieces}", c = PLAY_BORDER_CAP);
-        assert_eq!(
-            prepare(&icn, &Big::from(PLAY_BORDER_CAP)).err(),
-            Some(Refusal::ReadsExactDistances),
-            "{pieces}"
-        );
-    }
+    let icn = "w _,_,_,_ K0,0|k5,5|Q900000000000000000,3";
+    assert!(prepare(icn, &Big::from(PLAY_BORDER_CAP)).unwrap().is_none());
 }
 
 #[test]
@@ -272,6 +249,237 @@ fn keeps_legal_moves_with_far_pieces() {
         };
         expect_same_legal_moves(&icn);
     }
+}
+
+/// A random position with Huygens at home and far out, and far pieces on Huygens' ranks and files,
+/// half a prime distance away, so far Huygens attack, check and are blocked.
+fn huygen_position(r: &mut Rng) -> Vec<Piece> {
+    let mut pieces = random_position(r, &["HU", "hu"], false);
+    let on_line_of = |r: &mut Rng, anchor: &Piece, abbr: &str| {
+        let mut distance = r.far(15);
+        if r.next() < 0.5 {
+            while !crate::utils::is_prime_u64(distance as u64) {
+                distance += 1;
+            }
+        }
+        let distance = distance * r.sign();
+        let (x, y) = if r.next() < 0.5 {
+            (anchor.x + distance, anchor.y)
+        } else {
+            (anchor.x, anchor.y + distance)
+        };
+        Piece {
+            abbr: abbr.to_string(),
+            x,
+            y,
+            rights: false,
+        }
+    };
+    for _ in 0..r.int(1, 3) {
+        let anchor = r.int(0, pieces.len() as i64 - 1) as usize;
+        let abbr = *r.pick(&["HU", "hu"]);
+        let far = on_line_of(r, &pieces[anchor], abbr);
+        pieces.push(far);
+    }
+    let huygens: Vec<usize> = (0..pieces.len())
+        .filter(|&i| pieces[i].abbr.eq_ignore_ascii_case("hu"))
+        .collect();
+    for _ in 0..r.int(0, 4) {
+        let huygen = *r.pick(&huygens);
+        let abbr = *r.pick(FAR_TYPES);
+        let far = on_line_of(r, &pieces[huygen], abbr);
+        pieces.push(far);
+    }
+    let mut seen = BTreeSet::new();
+    pieces.retain(|p| seen.insert((p.x, p.y)));
+    pieces
+}
+
+/// Runs `check` on every case number below `count`, spread over every core.
+fn on_every_core(count: u32, check: impl Fn(u32) + Sync) {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as u32;
+    std::thread::scope(|s| {
+        for core in 0..cores {
+            let check = &check;
+            s.spawn(move || (core..count).step_by(cores as usize).for_each(check));
+        }
+    });
+}
+
+/// How often the original positions held each Huygen interaction beyond the exact span, so a
+/// generator that stops producing them fails its test instead of passing it vacuously.
+#[derive(Default, Debug)]
+struct HuygenCoverage {
+    captures: AtomicU32,
+    checks: AtomicU32,
+    blocks: AtomicU32,
+}
+
+impl HuygenCoverage {
+    fn count(&self, icn: &str) {
+        let mut game = load(icn);
+        let moves = legal_moves(&mut game);
+        let far = |a: Coordinate, b: Coordinate| {
+            a.x.abs_diff(b.x).max(a.y.abs_diff(b.y)) > EXACT_SPAN as u64
+        };
+        let captures = moves.iter().filter(|m| {
+            m.piece.piece_type() == PieceType::Huygen
+                && far(m.from, m.to)
+                && game.board.get_piece(m.to.x, m.to.y).is_some()
+        });
+        self.captures
+            .fetch_add(captures.count() as u32, Ordering::Relaxed);
+        let Some(king) = game
+            .board
+            .iter()
+            .find(|(_, _, p)| p.color() == game.turn && p.piece_type() == PieceType::King)
+            .map(|(x, y, _)| Coordinate::new(x, y))
+        else {
+            return;
+        };
+        for (x, y, huygen) in game.board.iter() {
+            let at = Coordinate::new(x, y);
+            if huygen.piece_type() != PieceType::Huygen
+                || huygen.color() == game.turn
+                || (x != king.x && y != king.y)
+                || !far(at, king)
+                || !is_piece_attacking_square(
+                    &game.board,
+                    &huygen,
+                    &at,
+                    &king,
+                    &game.spatial_indices,
+                    &game.game_rules,
+                )
+            {
+                continue;
+            }
+            self.checks.fetch_add(1, Ordering::Relaxed);
+            let between = |c: Coordinate| {
+                let on_line = if x == king.x { c.x == x } else { c.y == y };
+                let (low, high) = if x == king.x {
+                    (y.min(king.y), y.max(king.y))
+                } else {
+                    (x.min(king.x), x.max(king.x))
+                };
+                let along = if x == king.x { c.y } else { c.x };
+                on_line && low < along && along < high
+            };
+            let blocks = moves
+                .iter()
+                .filter(|m| m.from != king && between(m.to))
+                .count();
+            self.blocks.fetch_add(blocks as u32, Ordering::Relaxed);
+        }
+    }
+}
+
+#[test]
+fn keeps_legal_moves_with_far_huygens() {
+    let coverage = HuygenCoverage::default();
+    // No border, which is process-global: every case sets the same unbounded one.
+    on_every_core(1200, |run| {
+        let mut r = Rng(1000 + run);
+        let icn = format!(
+            "{} {}",
+            random_rules(&mut r, false),
+            position_text(&huygen_position(&mut r))
+        );
+        let icn = if r.next() < 0.5 {
+            let plies = 1 + r.int(0, 19);
+            with_history(&icn, &mut r, plies)
+        } else {
+            icn
+        };
+        expect_same_legal_moves(&icn);
+        coverage.count(&icn);
+    });
+    assert!(
+        coverage.captures.load(Ordering::Relaxed) > 200,
+        "{coverage:?}"
+    );
+}
+
+/// White to move in check from a far black Huygen, with white pieces able to reach the check line
+/// between them: half at a prime distance from the Huygen, where a block holds, half not.
+fn huygen_check_position(r: &mut Rng) -> String {
+    let piece = |abbr: &str, x, y| Piece {
+        abbr: abbr.to_string(),
+        x,
+        y,
+        rights: false,
+    };
+    let prime_from = |mut d: i64| {
+        while !crate::utils::is_prime_u64(d as u64) {
+            d += 1;
+        }
+        d
+    };
+    let distance = prime_from(r.far(15));
+    let (sign, vertical) = (r.sign(), r.next() < 0.5);
+    // A square on the check line, `along` from the king, and `across` beside it.
+    let at = |along: i64, across: i64| {
+        if vertical {
+            (across, along * sign)
+        } else {
+            (along * sign, across)
+        }
+    };
+    let (hx, hy) = at(distance, 0);
+    let mut pieces = vec![
+        piece("K", 0, 0),
+        piece("hu", hx, hy),
+        piece("k", r.int(-8, 8), r.int(20, 30)),
+    ];
+    for _ in 0..r.int(2, 7) {
+        // Near the king, near the Huygen, or far from both.
+        let along = match r.int(0, 2) {
+            0 => r.int(2, 2000),
+            1 => distance - r.int(2, 2000),
+            _ => r.int(EXACT_SPAN, distance - EXACT_SPAN),
+        };
+        let along = if r.next() < 0.5 {
+            distance - prime_from(distance - along)
+        } else {
+            along
+        };
+        if along <= 0 || along >= distance {
+            continue;
+        }
+        let reach = r.far(15) * r.sign();
+        let near = *r.pick(&[2, 3, 5, 7]) * r.sign();
+        let ((x, y), abbr) = match r.int(0, 4) {
+            0 => (at(along, reach), *r.pick(&["R", "Q", "CH", "AM"])),
+            1 => (at(along + reach, reach), *r.pick(&["B", "Q", "AR", "AM"])),
+            2 => (
+                at(along + 1, 2 * r.sign()),
+                *r.pick(&["N", "CH", "AR", "AM"]),
+            ),
+            3 => (at(along, near), "HU"),
+            _ => (
+                at(along, r.int(-3, 3)),
+                *r.pick(&["r", "q", "n", "b", "P", "GU"]),
+            ),
+        };
+        pieces.push(piece(abbr, x, y));
+    }
+    let mut seen = BTreeSet::new();
+    pieces.retain(|p| seen.insert((p.x, p.y)));
+    format!("w 0/100 1 _,_,_,_ {}", position_text(&pieces))
+}
+
+#[test]
+fn keeps_every_block_of_a_far_huygen_check() {
+    let coverage = HuygenCoverage::default();
+    on_every_core(1500, |run| {
+        let icn = huygen_check_position(&mut Rng(5000 + run));
+        expect_same_legal_moves(&icn);
+        coverage.count(&icn);
+    });
+    assert!(
+        coverage.blocks.load(Ordering::Relaxed) > 1000,
+        "{coverage:?}"
+    );
 }
 
 #[test]
@@ -303,25 +511,31 @@ fn keeps_legal_moves_with_the_army_far_from_the_origin() {
 }
 
 #[test]
+fn keeps_a_border_edge_beyond_the_limit_beside_far_pieces() {
+    expect_same_legal_moves(
+        "w 0/100 1 -10,300000000000000,-10,10 K0,0|k5,5|R299999999999995,3|n299999999999999,9",
+    );
+    expect_same_legal_moves(
+        "w 0/100 1 -10,300000000000000,-10,10 K0,0|k5,5|Q299999999999995,3|r299999999999990,-8",
+    );
+}
+
+#[test]
 fn maps_a_long_diagonal_slide_to_a_crossing_set_by_a_compressed_gap() {
     // The black bishop sits 20008 ranks above the army, so its diagonals cross the
     // archbishop's 10009 squares out: a short-looking move whose crossing is compressed.
-    let c = PLAY_BORDER_CAP;
-    expect_same_legal_moves(&format!(
-        "b 0/100 1 (9|-10) -10,{c},-{c},{c} K60000000000000,40000000000000|k59999999999994,40000000000003|B59999999999998,40000000000008|B59999999999994,40000000000004|R60000000000004,39999999999996|R60000000000001,39999999999993|P59999999999993,40000000000000|am60000000000000,39999999999997|ar59999999999997,39999999999993|P59999999999994,39999999999998|r60000000000001,40000000000000|r59999999999999,40000000000002|b59999999999994,40000000020008|Q59999999999997,5039999999999986"
-    ));
+    expect_same_legal_moves(
+        "b 0/100 1 (9|-10) -10,_,_,_ K60000000000000,40000000000000|k59999999999994,40000000000003|B59999999999998,40000000000008|B59999999999994,40000000000004|R60000000000004,39999999999996|R60000000000001,39999999999993|P59999999999993,40000000000000|am60000000000000,39999999999997|ar59999999999997,39999999999993|P59999999999994,39999999999998|r60000000000001,40000000000000|r59999999999999,40000000000002|b59999999999994,40000000020008|Q59999999999997,5039999999999986",
+    );
 }
 
 #[test]
 fn cuts_a_line_at_a_slide_that_would_pass_a_piece_it_blocks() {
     // Black's queen checks along the king's diagonal, then white's far rook slides onto it: beyond
     // the queen on the original, so no block, but between her and the king compressed.
-    let c = PLAY_BORDER_CAP;
-    let icn = format!(
-        "b 0/100 1 (8|1) -{c},{c},-{c},{c} K0,0|k-2,4|r-8,1|Q6,6|R7,-3|N-3,-3|R90000000000000000000000000000000000000000000000000000015,-999999999999999999999999999999999999999999999999981|q600000000000000000000000000000000007,-899999999999999999999999999999987"
-    );
-    let compressed = prepare(&icn, &Big::from(c)).unwrap().unwrap();
-    let mut game = load(&compressed.icn);
+    let icn = "b 0/100 1 (8|1) _,_,_,_ K0,0|k-2,4|r-8,1|Q6,6|R7,-3|N-3,-3|R90000000000000000000000000000000000000000000000000000015,-999999999999999999999999999999999999999999999999981|q600000000000000000000000000000000007,-899999999999999999999999999999987";
+    let compressed = prepare(icn, &Big::from(PLAY_BORDER_CAP)).unwrap().unwrap();
+    let mut game = compressed.game();
     let squares: Vec<(i64, i64)> = compressed
         .icn
         .split_whitespace()
@@ -355,12 +569,93 @@ fn cuts_a_line_at_a_slide_that_would_pass_a_piece_it_blocks() {
 
 #[test]
 fn reads_a_never_promoting_side_as_no_rank() {
-    let c = PLAY_BORDER_CAP;
     let ranks = format!("({};q|{};q)", i64::MIN, i64::MAX);
-    let near = format!("w 0/100 1 {ranks} -{c},{c},-{c},{c} K0,0|k5,5|P3,3|p4,6");
+    let near = format!("w 0/100 1 {ranks} _,_,_,_ K0,0|k5,5|P3,3|p4,6");
     assert!(prepare(&near, &Big::from(1i64 << 14)).unwrap().is_none());
-    let far =
-        format!("w 0/100 1 {ranks} -{c},{c},-{c},{c} K0,0|k5,5|P3,3|q90000000000000000000000000,7");
-    let compressed = prepare(&far, &Big::from(c)).unwrap().unwrap();
+    let far = format!("w 0/100 1 {ranks} _,_,_,_ K0,0|k5,5|P3,3|q90000000000000000000000000,7");
+    let compressed = prepare(&far, &Big::from(PLAY_BORDER_CAP)).unwrap().unwrap();
     assert!(compressed.icn.contains(&ranks), "{}", compressed.icn);
+}
+
+/// The first prime at or past `from`.
+fn prime_from(from: &Big) -> Big {
+    let mut p = from.clone();
+    while !p.is_prime() {
+        p = &p + &Big::from(1);
+    }
+    p
+}
+
+fn ten_to(exponent: usize) -> Big {
+    Big::parse(&format!("1{}", "0".repeat(exponent))).unwrap()
+}
+
+/// The engine's best move at `depth`, as a site token on the original board.
+fn best_move(icn: &str, depth: usize) -> String {
+    let mut engine = crate::Engine::try_from_icn_native(icn, None).unwrap();
+    let (m, _, _) = engine
+        .search_native(0, Some(depth), true, None, Some(1))
+        .unwrap();
+    engine
+        .move_token(&m)
+        .unwrap_or_else(|| panic!("unliftable best move in {icn}"))
+}
+
+#[test]
+fn takes_a_queen_a_far_prime_distance_away_past_a_pawn_at_a_composite_one() {
+    let queen = prime_from(&ten_to(40));
+    let pawn = &queen - &Big::from(1);
+    let icn = format!("w 0/100 1 _,_,_,_ K-50,-50|k-50,50|HU0,0|p{pawn},0|q{queen},0");
+    assert_eq!(best_move(&icn, 3), format!("0,0>{queen},0"));
+}
+
+#[test]
+fn mates_from_a_far_prime_distance_and_not_a_composite_one() {
+    // The black king is walled in by its own pawns; the one between is a composite distance away.
+    let mate = prime_from(&ten_to(40));
+    let decoy = &mate + &Big::from(1);
+    let walls = "p-1,1|p0,1|p1,1|p-1,0|p1,0|p-1,-1|p0,-1|p1,-1";
+    let icn = format!("w 0/100 1 _,_,_,_ K-100,-100|k0,0|{walls}|HU{mate},3|HU{decoy},2");
+    assert_eq!(best_move(&icn, 2), format!("{mate},3>{mate},0"));
+}
+
+#[test]
+fn blocks_a_far_check_only_a_prime_distance_from_the_huygen() {
+    // The white king is walled in; of two rooks that can drop onto the check line, only one lands
+    // a prime distance from the Huygen, which is the only legal move.
+    let huygen = prime_from(&ten_to(40));
+    let block = &huygen - &prime_from(&ten_to(39));
+    let miss = &block - &Big::from(1);
+    let walls = "P-1,1|P0,1|P1,1|P-1,0|P1,0|P-1,-1|P0,-1|P1,-1";
+    let icn = format!("w 0/100 1 _,_,_,_ K0,0|{walls}|R{miss},50|R{block},-70|k5,100|hu{huygen},0");
+    assert_eq!(best_move(&icn, 2), format!("{block},-70>{block},0"));
+}
+
+#[test]
+fn skewers_a_king_to_a_queen_behind_it_from_far() {
+    let king = prime_from(&ten_to(40));
+    let queen = prime_from(&(&king + &ten_to(20)));
+    // Knights for both sides, so that winning the queen wins the game rather than drawing it.
+    let knights = "N-60,30|N-62,33|n-30,60|n-33,62";
+    let icn = format!("w 0/100 1 _,_,_,_ K-50,-50|{knights}|HU0,5|k{king},0|q{queen},0");
+    assert_eq!(best_move(&icn, 4), "0,5>0,0");
+    let after = format!("{icn} 0,5>0,0|{king},0>{king},1");
+    assert_eq!(best_move(&after, 2), format!("0,0>{queen},0"));
+}
+
+#[test]
+fn reads_a_check_from_a_huygen_promoted_far_from_the_king() {
+    // The knight beside the king blocks a promoted queen's rank, but is an even distance from the
+    // new piece, so a Huygen checks past it.
+    let king = prime_from(&ten_to(40));
+    let knight = &king - &Big::from(1);
+    let rules = "w 0/100 1 (8;q,hu|1;q,hu) _,_,_,_";
+    let icn = format!("{rules} K-50,-50|P0,7|n{knight},8|k{king},8");
+    for (promotion, check) in [("HU", true), ("Q", false)] {
+        let promoted = format!("{icn} 0,7>0,8={promotion}");
+        let compressed = prepare(&promoted, &Big::from(PLAY_BORDER_CAP))
+            .unwrap()
+            .unwrap();
+        assert_eq!(compressed.game().is_in_check(), check, "{promotion}");
+    }
 }

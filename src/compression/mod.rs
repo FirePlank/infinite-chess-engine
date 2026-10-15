@@ -13,6 +13,7 @@ mod icn;
 mod lifter;
 mod lineforms;
 mod placement;
+mod primedistances;
 mod simplex;
 mod skeleton;
 #[cfg(test)]
@@ -20,8 +21,11 @@ mod tests;
 
 pub use bigint::Big;
 pub use lifter::Lifter;
+pub use primedistances::PrimeDistances;
+pub(crate) use primedistances::{REACH, distance_along};
 
 use crate::board::{PieceType, PlayerColor};
+use crate::game::GameState;
 use crate::moves::{FAR_SHELL_MAX, FAR_SHELL_MIN, PLAY_BORDER_CAP, QUIET_RAY_CAP_RADIUS};
 use crate::search::tt_defs::MAX_TT_COORD;
 use clustering::{CompressionPoint, LoneLine};
@@ -32,6 +36,7 @@ use lifter::{LiftBoard, LiftLine, LiftPiece};
 use lineforms::LineForm;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 
 /// Past the furthest the engine reads a distance between two squares: its TT's move box around
 /// the origin, a capped ray's quiet candidates (at most 5 radii under any form), and every eval
@@ -63,13 +68,23 @@ impl Square {
 pub struct Compressed {
     pub icn: String,
     pub lifter: Lifter,
+    prime_distances: Arc<PrimeDistances>,
+}
+
+impl Compressed {
+    /// The engine's game on the compressed position, its Huygens reading the original's distances
+    /// from the start, as setup already derives checks and pins.
+    pub fn game(&self) -> GameState {
+        let mut game = GameState::new();
+        game.spatial_indices.prime_distances = Some(self.prime_distances.clone());
+        game.setup_position_from_icn(&self.icn);
+        game
+    }
 }
 
 /// Why a position can't be handed to the engine.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// A Huygen reads exact distances at any range, which no compression keeps.
-    ReadsExactDistances,
     /// Its orders can't all be kept within the engine's coordinates.
     Uncompressible,
 }
@@ -98,17 +113,14 @@ pub fn prepare(icn_text: &str, limit: &Big) -> Result<Option<Compressed>, Refusa
             types.push(t);
         }
     }
-    if types.contains(&PieceType::Huygen) {
-        return Err(Refusal::ReadsExactDistances);
-    }
     let forms = forms_for(&types);
-    if is_inert(&icn, &current, &forms, limit) {
+    if is_inert(&icn, &current, &forms) {
         return Ok(None);
     }
     let split = history::split(&icn, &current);
-    let attempt = match compress_with(&icn, &current, &forms, limit, Some(&split)) {
+    let attempt = match compress_with(&icn, &current, &forms, Some(&split)) {
         Some(a) if a.placeholders.is_some() => Some(a),
-        Some(_) => compress_with(&icn, &current, &forms, limit, None),
+        Some(_) => compress_with(&icn, &current, &forms, None),
         None => None,
     };
     let attempt = attempt.ok_or(Refusal::Uncompressible)?;
@@ -117,8 +129,8 @@ pub fn prepare(icn_text: &str, limit: &Big) -> Result<Option<Compressed>, Refusa
 
 /// Whether every point chains to the origin within the exact span under every form. Then every
 /// point welds into the origin's cluster, which keeps its coordinates, so compression is the identity.
-fn is_inert(icn: &Icn, current: &LiftBoard, forms: &[LineForm], limit: &Big) -> bool {
-    let set = collect_points(icn, current, forms, limit, None);
+fn is_inert(icn: &Icn, current: &LiftBoard, forms: &[LineForm]) -> bool {
+    let set = collect_points(icn, current, forms, None);
     let span = Big::from(EXACT_SPAN);
     let origin = Square {
         x: Big::zero(),
@@ -142,7 +154,6 @@ struct Attempt {
     point_set: PointSet,
     compressed: Vec<Square>,
     placeholders: Option<FxHashMap<Square, Square>>,
-    limit: Big,
 }
 
 /// The points a compression keeps, and where each square and lone line sits among them.
@@ -157,10 +168,9 @@ fn compress_with(
     icn: &Icn,
     current: &LiftBoard,
     forms: &[LineForm],
-    limit: &Big,
     split: Option<&history::HistorySplit>,
 ) -> Option<Attempt> {
-    let point_set = collect_points(icn, current, forms, limit, split.map(|s| &s.keep));
+    let point_set = collect_points(icn, current, forms, split.map(|s| &s.keep));
     let input = CompressionInput {
         points: point_set.points.clone(),
         perceived: point_set.perceived,
@@ -172,7 +182,6 @@ fn compress_with(
         point_set,
         compressed,
         placeholders: Some(FxHashMap::default()),
-        limit: limit.clone(),
     };
     if let Some(split) = split {
         let kept: Vec<Square> = attempt
@@ -188,9 +197,7 @@ fn compress_with(
             icn.border
                 .as_ref()
                 .and_then(|b| b[i].as_ref())
-                .map_or(range.clone(), |v| {
-                    attempt.edge(forms, i, Some(v)).min(range.clone())
-                })
+                .map_or(range.clone(), |v| attempt.edge(forms, i, Some(v)))
         };
         attempt.placeholders = history::place(&split.groups, &kept, &edge(1), &edge(3))
             .map(|p| p.into_iter().collect());
@@ -212,28 +219,19 @@ impl Attempt {
         Some(forms[form].value(&self.compressed[p]))
     }
 
-    /// A border edge (left, right, bottom, top): compressed when collected, else clamped to the
-    /// engine's own bound, which an edge beyond the limit is no nearer than.
+    /// A border edge (left, right, bottom, top): compressed, or the engine's own bound when open.
     fn edge(&self, forms: &[LineForm], i: usize, value: Option<&Big>) -> Big {
-        let cap = Big::from(PLAY_BORDER_CAP);
-        let low_side = i.is_multiple_of(2);
+        let Some(v) = value else {
+            let cap = Big::from(PLAY_BORDER_CAP);
+            return if i.is_multiple_of(2) { -&cap } else { cap };
+        };
         let form = if i < 2 {
             file_form(forms)
         } else {
             rank_form(forms)
         };
-        match value {
-            None => {
-                if low_side {
-                    -&cap
-                } else {
-                    cap
-                }
-            }
-            Some(v) => self
-                .line(forms, form, v)
-                .unwrap_or_else(|| v.clone().min(cap.clone()).max(-&cap)),
-        }
+        self.line(forms, form, v)
+            .expect("every finite edge is collected")
     }
 
     fn finish(self, icn: &Icn, current: &LiftBoard, forms: &[LineForm]) -> Compressed {
@@ -267,11 +265,34 @@ impl Attempt {
                 ),
             );
         }
-        let _ = &self.limit;
+        let prime_distances = Arc::new(self.prime_distances(forms));
         Compressed {
             icn: text,
-            lifter: Lifter::new(forms.to_vec(), lines, board),
+            lifter: Lifter::new(forms.to_vec(), lines, board, prime_distances.clone()),
+            prime_distances,
         }
+    }
+
+    /// Each perceived point's original minus compressed value, under every form it takes part in.
+    fn prime_distances(&self, forms: &[LineForm]) -> PrimeDistances {
+        let points = &self.point_set.points[..self.point_set.perceived];
+        let values = (0..forms.len())
+            .map(|f| {
+                points
+                    .iter()
+                    .zip(&self.compressed)
+                    .filter(|(p, _)| p.line.is_none_or(|l| l.form == f))
+                    .map(|(p, c)| {
+                        let compressed = forms[f].value(c);
+                        (
+                            compressed.to_i64().unwrap(),
+                            &forms[f].value(&p.coords) - &compressed,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        PrimeDistances::new(forms.to_vec(), values)
     }
 }
 
@@ -352,7 +373,6 @@ fn collect_points(
     icn: &Icn,
     current: &LiftBoard,
     forms: &[LineForm],
-    limit: &Big,
     keep: Option<&FxHashSet<Square>>,
 ) -> PointSet {
     let mut set = PointSet {
@@ -413,7 +433,7 @@ fn collect_points(
     let (file, rank) = (file_form(forms), rank_form(forms));
     if let Some(border) = &icn.border {
         for (i, edge) in border.iter().enumerate() {
-            if let Some(e) = edge.as_ref().filter(|e| e.abs() < *limit) {
+            if let Some(e) = edge {
                 add_line(&mut set, if i < 2 { file } else { rank }, e, true);
             }
         }

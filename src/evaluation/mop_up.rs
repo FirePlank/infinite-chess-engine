@@ -5,7 +5,6 @@
 use crate::board::{Board, Coordinate, PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::moves::{SpatialIndices, is_square_attacked};
-use crate::utils::is_prime_fast;
 
 /// A defender pawn's weight in the net-leakiness term: pawns barely obstruct
 /// a mating net and their moves reset the 50-move clock in the attacker's
@@ -190,10 +189,17 @@ const RING_DIRS: [(i64, i64); 8] = [
 ];
 
 /// Geometric attack pattern check (ignores blockers).
-/// Returns true if a piece of type `pt` and color `color` at offset (dx, dy)=0 could
-/// in principle attack a square at offset (dx, dy). Used for fast ring-coverage scoring.
+/// Returns true if a piece of type `pt` and color `color` on `from` could in principle
+/// attack `to`. Used for fast ring-coverage scoring.
 #[inline]
-fn piece_attacks_geom(pt: PieceType, color: PlayerColor, dx: i64, dy: i64) -> bool {
+fn piece_attacks_geom(
+    indices: &SpatialIndices,
+    pt: PieceType,
+    color: PlayerColor,
+    from: Coordinate,
+    to: Coordinate,
+) -> bool {
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
     let adx = dx.abs();
     let ady = dy.abs();
     if adx == 0 && ady == 0 {
@@ -240,7 +246,7 @@ fn piece_attacks_geom(pt: PieceType, color: PlayerColor, dx: i64, dy: i64) -> bo
         }
         PieceType::Huygen => {
             // Orthogonal slider, only at prime distances.
-            (dx == 0 || dy == 0) && is_prime_fast(adx.max(ady))
+            (dx == 0 || dy == 0) && indices.is_prime_apart(from, to)
         }
         PieceType::Rose => {
             // Approximate Rose coverage via knight-leaper pattern; the full curving
@@ -1635,9 +1641,15 @@ fn evaluate_mating_net(
     for &(rdx, rdy) in ring {
         let rx = ex + rdx;
         let ry = ey + rdy;
-        let mut covered = pieces
-            .iter()
-            .any(|s| piece_attacks_geom(s.pt, winning_color, rx - s.x, ry - s.y));
+        let mut covered = pieces.iter().any(|s| {
+            piece_attacks_geom(
+                &game.spatial_indices,
+                s.pt,
+                winning_color,
+                Coordinate::new(s.x, s.y),
+                Coordinate::new(rx, ry),
+            )
+        });
         if !covered {
             covered = our_royals
                 .iter()
@@ -1675,9 +1687,15 @@ fn evaluate_mating_net(
             };
             let rx = ex + rdx;
             let ry = ey + rdy;
-            let mut covered = pieces
-                .iter()
-                .any(|s| piece_attacks_geom(s.pt, winning_color, rx - s.x, ry - s.y));
+            let mut covered = pieces.iter().any(|s| {
+                piece_attacks_geom(
+                    &game.spatial_indices,
+                    s.pt,
+                    winning_color,
+                    Coordinate::new(s.x, s.y),
+                    Coordinate::new(rx, ry),
+                )
+            });
             if !covered {
                 covered = our_royals
                     .iter()
@@ -2604,20 +2622,25 @@ mod tests {
     #[rustfmt::skip]
     fn test_piece_attacks_geom_basic_pieces() {
         // Sanity-check the geometric attack table for representative pieces.
-        assert!(piece_attacks_geom(PieceType::Rook, PlayerColor::White, 7, 0));
-        assert!(!piece_attacks_geom(PieceType::Rook, PlayerColor::White, 3, 4));
-        assert!(piece_attacks_geom(PieceType::Bishop, PlayerColor::White, 4, 4));
-        assert!(piece_attacks_geom(PieceType::Knight, PlayerColor::White, 1, 2));
-        assert!(piece_attacks_geom(PieceType::Camel, PlayerColor::White, 1, 3));
-        assert!(piece_attacks_geom(PieceType::Giraffe, PlayerColor::White, 4, 1));
-        assert!(piece_attacks_geom(PieceType::Zebra, PlayerColor::White, 3, 2));
-        assert!(piece_attacks_geom(PieceType::Hawk, PlayerColor::White, 3, 3));
-        assert!(!piece_attacks_geom(PieceType::Hawk, PlayerColor::White, 1, 1));
-        assert!(piece_attacks_geom(PieceType::Knightrider, PlayerColor::White, 2, 4));
-        assert!(piece_attacks_geom(PieceType::Knightrider, PlayerColor::White, 6, 3));
-        assert!(!piece_attacks_geom(PieceType::Knightrider, PlayerColor::White, 5, 5));
-        assert!(piece_attacks_geom(PieceType::Huygen, PlayerColor::White, 7, 0));
-        assert!(!piece_attacks_geom(PieceType::Huygen, PlayerColor::White, 4, 0));
+        let indices = SpatialIndices::new(&Board::new());
+        let geom = |pt, dx, dy| {
+            let (from, to) = (Coordinate::new(0, 0), Coordinate::new(dx, dy));
+            piece_attacks_geom(&indices, pt, PlayerColor::White, from, to)
+        };
+        assert!(geom(PieceType::Rook, 7, 0));
+        assert!(!geom(PieceType::Rook, 3, 4));
+        assert!(geom(PieceType::Bishop, 4, 4));
+        assert!(geom(PieceType::Knight, 1, 2));
+        assert!(geom(PieceType::Camel, 1, 3));
+        assert!(geom(PieceType::Giraffe, 4, 1));
+        assert!(geom(PieceType::Zebra, 3, 2));
+        assert!(geom(PieceType::Hawk, 3, 3));
+        assert!(!geom(PieceType::Hawk, 1, 1));
+        assert!(geom(PieceType::Knightrider, 2, 4));
+        assert!(geom(PieceType::Knightrider, 6, 3));
+        assert!(!geom(PieceType::Knightrider, 5, 5));
+        assert!(geom(PieceType::Huygen, 7, 0));
+        assert!(!geom(PieceType::Huygen, 4, 0));
     }
 
     #[test]

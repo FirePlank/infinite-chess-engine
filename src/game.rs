@@ -6,7 +6,7 @@ use crate::moves::{
     Move, MoveList, SpatialIndices, get_pseudo_legal_moves, get_pseudo_legal_moves_into,
     get_pseudo_legal_moves_for_piece_into, is_square_attacked,
 };
-use crate::utils::{is_prime_fast, is_prime_i64};
+use crate::utils::is_prime_i64;
 use arrayvec::ArrayVec;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -673,7 +673,7 @@ impl GameState {
         self.white_pawn_count = white_pawns;
         self.black_pawn_count = black_pawns;
 
-        self.spatial_indices = SpatialIndices::new(&self.board);
+        self.spatial_indices.rebuild(&self.board);
         self.recenter_windows();
         self.recompute_castling_state();
         // Recompute check squares for O(1) check detection
@@ -913,8 +913,11 @@ impl GameState {
 
         if checker_type == PieceType::Huygen {
             // A piece blocks a Huygen only if it lands on a prime distance from it
-            let dist_from_checker = check_dist - k;
-            crate::utils::is_prime_fast(dist_from_checker)
+            let checker = Coordinate::new(
+                king_sq.x + check_dist * step_x,
+                king_sq.y + check_dist * step_y,
+            );
+            self.spatial_indices.is_prime_apart(*target, checker)
         } else {
             true
         }
@@ -1012,7 +1015,11 @@ impl GameState {
             for t in 1..=reach.min(MAX_WALK) {
                 let sq = Coordinate::new(from.x + dir.0 * t, from.y + dir.1 * t);
                 let (dk, dc) = (cheb(sq, king), cheb(sq, checker));
-                if dk > 0 && dc > 0 && dk + dc == check_dist && is_prime_fast(dc) {
+                if dk > 0
+                    && dc > 0
+                    && dk + dc == check_dist
+                    && self.spatial_indices.is_prime_apart(sq, checker)
+                {
                     out.push(Move::new(from, sq, piece));
                 }
             }
@@ -1993,12 +2000,25 @@ impl GameState {
         };
         get_pseudo_legal_moves_for_piece_into(&self.board, &king_piece, &king_sq, &ctx, out);
 
-        if checker_count >= 2 {
-            return; // Double check - only king moves can escape
-        }
-
-        // 2. Capture checker or block attack (Only in single check)
-        let checker_sq = checkers[0];
+        // 2. Capture a checker or block it. Two checks share an answer only through a Huygen
+        // (composite squares don't block it) or a Rose (it curves off any ray); then the answers
+        // to a ray checker suffice, as legality keeps only those that answer every check.
+        let checkers = &checkers[..checker_count];
+        let crosses_rays = |sq: &Coordinate| {
+            self.board
+                .get_piece(sq.x, sq.y)
+                .is_some_and(|p| matches!(p.piece_type(), PieceType::Huygen | PieceType::Rose))
+        };
+        let checker_sq = if let [only] = checkers {
+            *only
+        } else if checkers.iter().any(crosses_rays) {
+            *checkers
+                .iter()
+                .find(|sq| !crosses_rays(sq))
+                .unwrap_or(&checkers[0])
+        } else {
+            return;
+        };
         // A checker past any i64 distance takes the exact move list instead: rare, and
         // every evasion is verified after make anyway.
         let far_check = checker_sq.x.checked_sub(king_sq.x).is_none()
@@ -2078,9 +2098,9 @@ impl GameState {
         let step_x = dx_check.signum();
         let step_y = dy_check.signum();
 
-        // SPECIAL CASE: Huygen checker - Fast Path
-        // Always active. Checks all squares between king and checker for valid blocking.
-        // A square blocks if it's at a prime distance from the Huygen AND no closer prime-distance piece blocks it.
+        // SPECIAL CASE: Huygen checker. A square blocks at a prime distance from it with no nearer
+        // prime-distance piece. Only bounded stretches are searched: a block arbitrarily far out,
+        // where several primes align, needs unbounded compute, so missing it is accepted.
         if is_huygen_checker {
             use crate::utils::PRIMES_UNDER_128;
 
@@ -2238,14 +2258,13 @@ impl GameState {
                             tx < king_sq.x && tx > checker_sq.x
                         };
 
-                        if between {
-                            // Must be at a prime distance from the checker (Huygen)
-                            let dist_from_checker = (checker_sq.x - tx).abs();
-                            if is_prime_fast(dist_from_checker)
-                                && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
-                            {
-                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
-                            }
+                        // Must be at a prime distance from the checker (Huygen)
+                        if between
+                            && s.spatial_indices
+                                .is_prime_apart(checker_sq, Coordinate::new(tx, ty))
+                            && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
+                        {
+                            out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     } else {
                         s.huygen_line_blocks(from, *piece, king_sq, checker_sq, (step_x, 0), out);
@@ -2263,13 +2282,12 @@ impl GameState {
                             ty < king_sq.y && ty > checker_sq.y
                         };
 
-                        if between {
-                            let dist_from_checker = (checker_sq.y - ty).abs();
-                            if is_prime_fast(dist_from_checker)
-                                && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
-                            {
-                                out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
-                            }
+                        if between
+                            && s.spatial_indices
+                                .is_prime_apart(checker_sq, Coordinate::new(tx, ty))
+                            && s.is_path_clear_for_rook(&from, &Coordinate::new(tx, ty))
+                        {
+                            out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
                     } else {
                         s.huygen_line_blocks(from, *piece, king_sq, checker_sq, (0, step_y), out);
@@ -2349,7 +2367,6 @@ impl GameState {
             // Cross-rays intersect in one square, so blocking is O(1) there; only
             // parallel rays need the O(N) walk.
             if pt == PieceType::Huygen && is_slider {
-                use crate::utils::is_prime_fast;
                 // Pre-fetch spatial indices
                 let row_pieces = s.spatial_indices.rows.get(&from.y);
                 let col_pieces = s.spatial_indices.cols.get(&from.x);
@@ -2362,18 +2379,14 @@ impl GameState {
                     let dist = d_x.abs().max(d_y.abs());
 
                     // Prime distance check (Huygen constraint)
-                    if dist == 0 || !is_prime_fast(dist) {
+                    let to = Coordinate::new(tx, ty);
+                    if dist == 0 || !s.spatial_indices.is_prime_apart(from, to) {
                         return false;
                     }
 
                     // For Huygen checker: blocking sq must be prime dist from checker
-                    if verify_checker_dist {
-                        let d_cx = tx - checker_sq.x;
-                        let d_cy = ty - checker_sq.y;
-                        let dist_c = d_cx.abs().max(d_cy.abs());
-                        if !is_prime_fast(dist_c) {
-                            return false;
-                        }
+                    if verify_checker_dist && !s.spatial_indices.is_prime_apart(to, checker_sq) {
+                        return false;
                     }
 
                     // Check blockers
@@ -2385,7 +2398,11 @@ impl GameState {
                             for k in 0..vec.len() {
                                 let coord = vec.coords[k];
                                 let dp = (coord - from.x) * dir;
-                                if dp > 0 && dp < dist && is_prime_fast(dp) {
+                                if dp > 0
+                                    && dp < dist
+                                    && s.spatial_indices
+                                        .is_prime_apart(from, Coordinate::new(coord, from.y))
+                                {
                                     blocked = true;
                                     break;
                                 }
@@ -2398,7 +2415,11 @@ impl GameState {
                             for k in 0..vec.len() {
                                 let coord = vec.coords[k];
                                 let dp = (coord - from.y) * dir;
-                                if dp > 0 && dp < dist && is_prime_fast(dp) {
+                                if dp > 0
+                                    && dp < dist
+                                    && s.spatial_indices
+                                        .is_prime_apart(from, Coordinate::new(from.x, coord))
+                                {
                                     blocked = true;
                                     break;
                                 }
@@ -2487,7 +2508,10 @@ impl GameState {
                         let ty = king_sq.y + k * step_y;
                         if !(tx == from.x && ty == from.y)
                             && s.is_path_clear_for_bishop(&from, &Coordinate::new(tx, ty))
-                            && (!is_huygen_checker || is_prime_fast(check_dist - k))
+                            && (!is_huygen_checker
+                                || s
+                                    .spatial_indices
+                                    .is_prime_apart(Coordinate::new(tx, ty), checker_sq))
                         {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
@@ -2504,7 +2528,9 @@ impl GameState {
                         let ty = king_sq.y + k * step_y;
                         if !(tx == from.x && ty == from.y)
                             && s.is_path_clear_for_bishop(&from, &Coordinate::new(tx, ty))
-                            && (!is_huygen_checker || is_prime_fast(check_dist - k))
+                            && (!is_huygen_checker
+                                || s.spatial_indices
+                                    .is_prime_apart(Coordinate::new(tx, ty), checker_sq))
                         {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                         }
@@ -2650,7 +2676,11 @@ impl GameState {
                                     );
                                     if path_clear
                                         && can_block_at(tx, ty)
-                                        && (!is_huygen_checker || is_prime_fast(check_dist - k))
+                                        && (!is_huygen_checker
+                                            || s.spatial_indices.is_prime_apart(
+                                                Coordinate::new(tx, ty),
+                                                checker_sq,
+                                            ))
                                     {
                                         out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
                                     }
@@ -2771,7 +2801,7 @@ impl GameState {
                     let dist = dx.abs().max(dy.abs());
 
                     // Must be at prime distance
-                    if is_prime_fast(dist) {
+                    if s.spatial_indices.is_prime_apart(from, checker_sq) {
                         // Check for blockers at closer prime distances
                         let is_horizontal = dy == 0;
                         let line_vec = if is_horizontal {
@@ -2793,7 +2823,15 @@ impl GameState {
                             for k in 0..vec.len() {
                                 let coord = vec.coords[k];
                                 let d = (coord - our_coord) * dir;
-                                if d > 0 && d < dist && is_prime_fast(d) {
+                                let square = if is_horizontal {
+                                    Coordinate::new(coord, from.y)
+                                } else {
+                                    Coordinate::new(from.x, coord)
+                                };
+                                if d > 0
+                                    && d < dist
+                                    && s.spatial_indices.is_prime_apart(from, square)
+                                {
                                     blocked = true;
                                     break;
                                 }
@@ -4329,7 +4367,7 @@ impl GameState {
 
         self.recompute_hash();
 
-        self.spatial_indices = SpatialIndices::new(&self.board);
+        self.spatial_indices.rebuild(&self.board);
         self.recenter_windows();
     }
 
@@ -4795,6 +4833,37 @@ mod tests {
         }
         let to_checker = out.iter().filter(|m| m.to == Coordinate::new(0, 5)).count();
         assert!(to_checker >= 5, "expected several checker captures, got {to_checker}");
+    }
+
+    /// In double check one block answers both when a checker is a Huygen or a Rose.
+    #[test]
+    fn blocks_a_double_check_through_a_huygen_or_rose() {
+        for (icn, from, to) in [
+            (
+                "w 0/100 1 _,_,_,_ K0,0|hu0,1000000000001063|r0,500000000000531|k1,27|B-7000000000000000,-6999999999998428",
+                Coordinate::new(-7_000_000_000_000_000, -6_999_999_999_998_428),
+                Coordinate::new(0, 1572),
+            ),
+            (
+                "w 0/100 1 _,_,_,_ K0,0|k40,40|b9,9|ro0,6|N-2,1|R3,1",
+                Coordinate::new(3, 1),
+                Coordinate::new(3, 3),
+            ),
+            (
+                "w 0/100 1 _,_,_,_ K0,0|k40,40|r11,0|ro4,4|RO0,4|R4,2",
+                Coordinate::new(4, 2),
+                Coordinate::new(4, 0),
+            ),
+        ] {
+            let mut g = create_test_game_from_icn(icn);
+            let mut out = MoveList::new();
+            g.get_evasion_moves_into(&mut out);
+            let block = out.iter().find(|m| m.from == from && m.to == to);
+            let block = *block.unwrap_or_else(|| panic!("no block in {icn}"));
+            let undo = g.make_move(&block);
+            assert!(!g.is_move_illegal(), "block left in check: {icn}");
+            g.undo_move(&block, undo);
+        }
     }
 
     /// Rights far outside the bitboard window: castling, the partner counts, the

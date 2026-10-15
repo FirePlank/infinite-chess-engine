@@ -1,5 +1,6 @@
 //! A signed big integer with exactly the operations compression needs. Every multiplier and
-//! divisor it meets is a small form coefficient, determinant or modulus, so those take an `i64`.
+//! divisor it meets is a small form coefficient, determinant or modulus, so those take an `i64`;
+//! only primality, which a Huygen reads of original distances, multiplies two big numbers.
 
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -182,6 +183,49 @@ impl Big {
             }
         };
         if self.neg { -v } else { v }
+    }
+
+    /// Whether `|self|` is prime: exactly below 2^64 and, by Miller-Rabin to the first twelve prime
+    /// bases, below 3.18·10^23. Larger numbers take fewer bases, as the site's isprime.ts does.
+    #[inline(never)]
+    pub fn is_prime(&self) -> bool {
+        if self.mag.len() <= 1 {
+            return crate::utils::is_prime_u64(self.mag.first().map_or(0, |&l| l));
+        }
+        const BASES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+        // Trial division turns most composites away before a single modular power.
+        if crate::utils::PRIMES_UNDER_128
+            .iter()
+            .any(|&p| self.rem_euclid(p) == 0)
+        {
+            return false;
+        }
+        let bases = match self.bit_length() {
+            0..=78 => 12,
+            79..=150 => 6,
+            151..=250 => 5,
+            251..=500 => 4,
+            501..=1000 => 3,
+            _ => 2,
+        };
+        let n = &self.mag[..];
+        let mut n_minus_1 = Big {
+            neg: false,
+            mag: sub_mag(n, &[1]),
+        };
+        n_minus_1.normalize();
+        let twos = n_minus_1
+            .mag
+            .iter()
+            .enumerate()
+            .find(|&(_, &l)| l != 0)
+            .map(|(i, l)| i as u32 * 64 + l.trailing_zeros())
+            .unwrap();
+        let odd = n_minus_1.shr(twos);
+        let monty = Montgomery::new(n);
+        BASES[..bases]
+            .iter()
+            .all(|&a| monty.is_strong_probable_prime(a, &odd.mag, twos))
     }
 
     fn mag_low_bits_nonzero(&self, bits: u32) -> bool {
@@ -377,6 +421,114 @@ fn divrem_small_mag(mag: &mut Limbs, k: u64) -> u64 {
     rem as u64
 }
 
+/// Multiplication modulo an odd `n` of `k` limbs, on numbers held times `R = 2^(64k)`, which
+/// trades every division for shifts.
+struct Montgomery<'a> {
+    n: &'a [u64],
+    /// `-n⁻¹ mod 2^64`.
+    neg_inverse: u64,
+    r_squared: Vec<u64>,
+}
+
+impl<'a> Montgomery<'a> {
+    fn new(n: &'a [u64]) -> Montgomery<'a> {
+        // Newton's iteration doubles the correct low bits each step: 1 → 64 in six.
+        let mut inverse = 1u64;
+        for _ in 0..6 {
+            inverse = inverse.wrapping_mul(2u64.wrapping_sub(n[0].wrapping_mul(inverse)));
+        }
+        let mut r_squared = vec![0; n.len()];
+        r_squared[0] = 1;
+        for _ in 0..128 * n.len() {
+            double_mod(&mut r_squared, n);
+        }
+        Montgomery {
+            n,
+            neg_inverse: inverse.wrapping_neg(),
+            r_squared,
+        }
+    }
+
+    /// `a·b/R mod n`, by coarsely integrated operand scanning.
+    fn mul(&self, a: &[u64], b: &[u64]) -> Vec<u64> {
+        let (n, k) = (self.n, self.n.len());
+        let mut t = vec![0u64; k + 2];
+        for &bi in b {
+            let mut carry = 0u128;
+            for j in 0..k {
+                let s = t[j] as u128 + a[j] as u128 * bi as u128 + carry;
+                t[j] = s as u64;
+                carry = s >> 64;
+            }
+            let s = t[k] as u128 + carry;
+            (t[k], t[k + 1]) = (s as u64, (s >> 64) as u64);
+            let m = t[0].wrapping_mul(self.neg_inverse);
+            let mut carry = (t[0] as u128 + m as u128 * n[0] as u128) >> 64;
+            for j in 1..k {
+                let s = t[j] as u128 + m as u128 * n[j] as u128 + carry;
+                t[j - 1] = s as u64;
+                carry = s >> 64;
+            }
+            let s = t[k] as u128 + carry;
+            t[k - 1] = s as u64;
+            (t[k], t[k + 1]) = (t[k + 1] + (s >> 64) as u64, 0);
+        }
+        if t[k] != 0 || cmp_mag(&t[..k], n) != Ordering::Less {
+            let reduced = sub_mag(&t[..k], n);
+            t[..k].copy_from_slice(&reduced);
+        }
+        t.truncate(k);
+        t
+    }
+
+    fn of(&self, v: u64) -> Vec<u64> {
+        let mut plain = vec![0; self.n.len()];
+        plain[0] = v;
+        self.mul(&plain, &self.r_squared)
+    }
+
+    /// Whether `n` passes base `a`, with `n - 1 = odd·2^twos`.
+    fn is_strong_probable_prime(&self, a: u64, odd: &[u64], twos: u32) -> bool {
+        let one = self.of(1);
+        let minus_one = sub_mag(self.n, &one).to_vec();
+        let base = self.of(a);
+        let mut x = one.clone();
+        for bit in (0..odd.len() * 64).rev() {
+            x = self.mul(&x, &x);
+            if odd[bit / 64] >> (bit % 64) & 1 == 1 {
+                x = self.mul(&x, &base);
+            }
+        }
+        if x == one || x == minus_one {
+            return true;
+        }
+        for _ in 1..twos {
+            x = self.mul(&x, &x);
+            if x == minus_one {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// `x = 2x mod n`, for `x < n`.
+fn double_mod(x: &mut [u64], n: &[u64]) {
+    let mut carry = 0;
+    for limb in x.iter_mut() {
+        (*limb, carry) = ((*limb << 1) | carry, *limb >> 63);
+    }
+    if carry == 1 || cmp_mag(x, n) != Ordering::Less {
+        // A carried-out bit is 2^(64k) the wrapping subtraction's borrow cancels.
+        let mut borrow = false;
+        for (limb, &m) in x.iter_mut().zip(n) {
+            let (d1, b1) = limb.overflowing_sub(m);
+            let (d2, b2) = d1.overflowing_sub(borrow as u64);
+            (*limb, borrow) = (d2, b1 | b2);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Big;
@@ -418,5 +570,70 @@ mod tests {
         assert_eq!(b("36893488147419103233").to_f64(), 36893488147419103232.0);
         assert_eq!(b("36893488147419107328").to_f64(), 36893488147419103232.0); // A tie rounds to even.
         assert_eq!(b("36893488147419107329").to_f64(), 36893488147419111424.0);
+    }
+
+    #[test]
+    fn tells_primes_beyond_64_bits() {
+        let p = 4294967311u128; // The first prime past 2^32.
+        for prime in [
+            "18446744073709551629", // The first prime past 2^64.
+            "618970019642690137449562111",
+            "170141183460469231731687303715884105727",
+            "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000267",
+        ] {
+            assert!(b(prime).is_prime(), "{prime}");
+            assert!(b(&format!("-{prime}")).is_prime(), "-{prime}");
+        }
+        for composite in [
+            "18446744073709551617".to_string(), // 2^64 + 1 = 274177 · 67280421310721
+            "340282366920938463463374607431768211457".to_string(), // 2^128 + 1
+            (p * p).to_string(),
+            (p * p * p).to_string(),
+            "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000269".to_string(),
+        ] {
+            assert!(!b(&composite).is_prime(), "{composite}");
+        }
+        // Those twelve bases are proven exact below 3.18·10^23, so a plain u128 Miller-Rabin
+        // settles every number just past 2^64.
+        let mul_mod = |mut a: u128, mut b: u128, m: u128| {
+            let mut r = 0;
+            while b > 0 {
+                if b & 1 == 1 {
+                    r = (r + a) % m;
+                }
+                (a, b) = ((a << 1) % m, b >> 1);
+            }
+            r
+        };
+        let exact = |n: u128| {
+            let (mut d, mut s) = (n - 1, 0);
+            while d.is_multiple_of(2) {
+                (d, s) = (d / 2, s + 1);
+            }
+            [2u128, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+                .iter()
+                .all(|&a| {
+                    let (mut x, mut base, mut e) = (1, a, d);
+                    while e > 0 {
+                        if e & 1 == 1 {
+                            x = mul_mod(x, base, n);
+                        }
+                        (base, e) = (mul_mod(base, base, n), e >> 1);
+                    }
+                    x == 1
+                        || (0..s).any(|_| {
+                            let hit = x == n - 1;
+                            x = mul_mod(x, x, n);
+                            hit
+                        })
+                })
+        };
+        let mut primes = 0;
+        for offset in (1..6000u128).step_by(2) {
+            let n = (1u128 << 64) + offset;
+            assert_eq!(b(&n.to_string()).is_prime(), exact(n), "{n}");
+            primes += exact(n) as u32;
+        }
+        assert!(primes > 50);
     }
 }

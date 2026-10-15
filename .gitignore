@@ -117,15 +117,18 @@ evalnet/*.log
 evalnet/*.jsonl
 evalnet/lr/
 evalnet/screen/
-# Scratch benchmark binaries built for old/new comparisons.
+# Scratch benchmark binaries built for old/new comparisons (extensionless off Windows).
 /*.exe
+/sprt_old
+/nps_old
+/nps_new
+/base_new
 evalnet/*.progress
 evalnet/*.hash
 evalnet/*.hashes
 evalnet/var/
 
-# Scratch output: root binaries, side build dirs, offline analysis dirs, local probes.
-/*.exe
+# Scratch output: side build dirs, offline analysis dirs, local probes.
 /target-*/
 evalnet/resid/
 evalnet/forensics/

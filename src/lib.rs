@@ -460,19 +460,15 @@ pub struct Engine {
 /// The game an ICN describes, brought within the engine's coordinates, and how to map its moves
 /// back when that took compression.
 fn load_icn(icn: &str) -> Result<(GameState, Option<compression::Lifter>), compression::Refusal> {
-    let mut game = GameState::new();
-    let limit = compression::Big::from(1i64 << 14);
-    let lifter = match compression::prepare(icn, &limit).unwrap_or(None) {
-        Some(compressed) => {
-            game.setup_position_from_icn(&compressed.icn);
-            Some(compressed.lifter)
-        }
+    let limit = compression::Big::from(moves::PLAY_BORDER_CAP);
+    Ok(match compression::prepare(icn, &limit)? {
+        Some(compressed) => (compressed.game(), Some(compressed.lifter)),
         None => {
+            let mut game = GameState::new();
             game.setup_position_from_icn(icn);
-            None
+            (game, None)
         }
-    };
-    Ok((game, lifter))
+    })
 }
 
 impl Engine {
