@@ -13,6 +13,7 @@ mod icn;
 mod lifter;
 mod lineforms;
 mod placement;
+mod primedistances;
 mod simplex;
 mod skeleton;
 #[cfg(test)]
@@ -20,8 +21,11 @@ mod tests;
 
 pub use bigint::Big;
 pub use lifter::Lifter;
+pub use primedistances::PrimeDistances;
+pub(crate) use primedistances::{REACH, distance_along};
 
 use crate::board::{PieceType, PlayerColor};
+use crate::game::GameState;
 use crate::moves::{FAR_SHELL_MAX, FAR_SHELL_MIN, PLAY_BORDER_CAP, QUIET_RAY_CAP_RADIUS};
 use crate::search::tt_defs::MAX_TT_COORD;
 use clustering::{CompressionPoint, LoneLine};
@@ -32,6 +36,7 @@ use lifter::{LiftBoard, LiftLine, LiftPiece};
 use lineforms::LineForm;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 
 /// Past the furthest the engine reads a distance between two squares: its TT's move box around
 /// the origin, a capped ray's quiet candidates (at most 5 radii under any form), and every eval
@@ -63,13 +68,23 @@ impl Square {
 pub struct Compressed {
     pub icn: String,
     pub lifter: Lifter,
+    prime_distances: Arc<PrimeDistances>,
+}
+
+impl Compressed {
+    /// The engine's game on the compressed position, its Huygens reading the original's distances
+    /// from the start, as setup already derives checks and pins.
+    pub fn game(&self) -> GameState {
+        let mut game = GameState::new();
+        game.spatial_indices.prime_distances = Some(self.prime_distances.clone());
+        game.setup_position_from_icn(&self.icn);
+        game
+    }
 }
 
 /// Why a position can't be handed to the engine.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// A Huygen reads exact distances at any range, which no compression keeps.
-    ReadsExactDistances,
     /// Its orders can't all be kept within the engine's coordinates.
     Uncompressible,
 }
@@ -97,9 +112,6 @@ pub fn prepare(icn_text: &str, limit: &Big) -> Result<Option<Compressed>, Refusa
         if !types.contains(&t) {
             types.push(t);
         }
-    }
-    if types.contains(&PieceType::Huygen) {
-        return Err(Refusal::ReadsExactDistances);
     }
     let forms = forms_for(&types);
     if is_inert(&icn, &current, &forms) {
@@ -253,10 +265,34 @@ impl Attempt {
                 ),
             );
         }
+        let prime_distances = Arc::new(self.prime_distances(forms));
         Compressed {
             icn: text,
-            lifter: Lifter::new(forms.to_vec(), lines, board),
+            lifter: Lifter::new(forms.to_vec(), lines, board, prime_distances.clone()),
+            prime_distances,
         }
+    }
+
+    /// Each perceived point's original minus compressed value, under every form it takes part in.
+    fn prime_distances(&self, forms: &[LineForm]) -> PrimeDistances {
+        let points = &self.point_set.points[..self.point_set.perceived];
+        let values = (0..forms.len())
+            .map(|f| {
+                points
+                    .iter()
+                    .zip(&self.compressed)
+                    .filter(|(p, _)| p.line.is_none_or(|l| l.form == f))
+                    .map(|(p, c)| {
+                        let compressed = forms[f].value(c);
+                        (
+                            compressed.to_i64().unwrap(),
+                            &forms[f].value(&p.coords) - &compressed,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        PrimeDistances::new(forms.to_vec(), values)
     }
 }
 

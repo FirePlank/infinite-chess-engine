@@ -1,7 +1,7 @@
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::game::{EnPassantState, GameRules};
 use crate::rights::SpecialRights;
-use crate::utils::{PRIMES_UNDER_128, is_prime_fast};
+use crate::utils::PRIMES_UNDER_128;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -546,7 +546,7 @@ pub fn is_piece_attacking_square(
             let dist = dx.abs().max(dy.abs());
 
             // Must be at prime distance
-            if !is_prime_fast(dist) {
+            if !indices.is_prime_apart(*from, *to) {
                 return false;
             }
 
@@ -571,7 +571,12 @@ pub fn is_piece_attacking_square(
                     }
 
                     // If this piece is at a prime distance from the Huygen, it blocks
-                    if is_prime_fast(d) {
+                    let square = if is_horizontal {
+                        Coordinate::new(coord, from.y)
+                    } else {
+                        Coordinate::new(from.x, coord)
+                    };
+                    if indices.is_prime_apart(*from, square) {
                         return false;
                     }
                 }
@@ -998,6 +1003,9 @@ pub struct SpatialIndices {
     pub knightrider_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2],
     #[serde(skip)]
     pub rose_squares: [smallvec::SmallVec<[(i64, i64); 4]>; 2],
+    /// Set when the position was compressed: a Huygen then reads its distances on the original.
+    #[serde(skip)]
+    pub prime_distances: Option<Arc<crate::compression::PrimeDistances>>,
 }
 
 impl SpatialIndices {
@@ -1069,7 +1077,42 @@ impl SpatialIndices {
             has_obstacle,
             knightrider_squares,
             rose_squares,
+            prime_distances: None,
         }
+    }
+
+    /// Re-indexes `board`, keeping the compressed position's distances, which no board holds.
+    pub fn rebuild(&mut self, board: &Board) {
+        *self = SpatialIndices {
+            prime_distances: self.prime_distances.take(),
+            ..SpatialIndices::new(board)
+        };
+    }
+
+    /// Whether two squares on one rank or file lie a prime distance apart, as a Huygen reads it.
+    #[inline]
+    pub fn is_prime_apart(&self, a: Coordinate, b: Coordinate) -> bool {
+        match &self.prime_distances {
+            None => crate::utils::is_prime_u64(crate::compression::distance_along(a, b)),
+            Some(distances) => distances.is_prime_apart(a, b),
+        }
+    }
+
+    /// The gap from the prime distance between two squares on one rank or file down to the prime
+    /// below it, the only stretch a piece could interpose in; `i64::MAX` when there is none.
+    pub fn prime_gap_below(&self, a: Coordinate, b: Coordinate) -> i64 {
+        if let Some(gap) = self
+            .prime_distances
+            .as_ref()
+            .and_then(|distances| distances.prime_gap_below(a, b))
+        {
+            return gap;
+        }
+        let d = crate::compression::distance_along(a, b);
+        (2..d)
+            .rev()
+            .find(|&below| crate::utils::is_prime_u64(below))
+            .map_or(i64::MAX, |below| (d - below) as i64)
     }
 
     /// Centres each line window on the given key; see `LineMap::recenter`.
@@ -1206,6 +1249,7 @@ impl Default for SpatialIndices {
             has_obstacle: false,
             knightrider_squares: Default::default(),
             rose_squares: Default::default(),
+            prime_distances: None,
         }
     }
 }
@@ -1973,9 +2017,16 @@ pub fn is_square_attacked(
                     }
 
                     let abs_dist_to_target = dist_to_target.abs();
+                    let on_line = |c: i64| {
+                        if dx == 0 {
+                            Coordinate::new(target.x, c)
+                        } else {
+                            Coordinate::new(c, target.y)
+                        }
+                    };
 
                     // Target must be at a prime distance from the Huygens
-                    if !crate::utils::is_prime_u64(abs_dist_to_target as u64) {
+                    if !indices.is_prime_apart(on_line(coord), *target) {
                         continue;
                     }
 
@@ -2005,9 +2056,8 @@ pub fn is_square_attacked(
                             continue;
                         }
 
-                        let abs_dist_from_huygen = dist_from_huygen.abs();
                         // If this piece is at a prime distance from the Huygens, it blocks!
-                        if crate::utils::is_prime_u64(abs_dist_from_huygen as u64) {
+                        if indices.is_prime_apart(on_line(huygen_coord), on_line(other_coord)) {
                             blocked = true;
                             break;
                         }
@@ -4117,14 +4167,20 @@ fn generate_huygen_snipes(
             out.push(Move::new(*from, Coordinate::new(tx, ty), *piece));
         };
 
+        let on_line = |c: i64| {
+            if horizontal {
+                Coordinate::new(c, from.y)
+            } else {
+                Coordinate::new(from.x, c)
+            }
+        };
         // A landing offset is reachable exactly when its side is open and the
         // distance is prime; every such square is provably empty.
         let reachable_open = |s_off: i64| -> bool {
-            if s_off > 0 {
-                open_pos && is_prime_fast(s_off)
-            } else {
-                open_neg && is_prime_fast(-s_off)
-            }
+            (if s_off > 0 { open_pos } else { open_neg })
+                && our
+                    .checked_add(s_off)
+                    .is_some_and(|c| indices.is_prime_apart(*from, on_line(c)))
         };
 
         let mut max_off = 0i64;
@@ -4186,13 +4242,12 @@ fn generate_huygen_snipes(
         // landing per target: that gap is the only stretch a piece could interpose in.
         let mut best: smallvec::SmallVec<[(i64, i64, i64); 16]> = smallvec::SmallVec::new();
 
+        // Far candidates sit on open sides at primes every position reads as they are.
         let far = pos_cands
             .iter().copied()
             .chain(neg_cands.iter().map(|&p| -p));
-        for s_off in close.iter().copied().chain(far) {
-            if !reachable_open(s_off) {
-                continue;
-            }
+        let open_close = close.iter().copied().filter(|&s_off| reachable_open(s_off));
+        for s_off in open_close.chain(far) {
             // Nearest prime-distance piece below/above the landing (a huygen there
             // attacks only those two). Coords are sorted, so walking outward and
             // stopping at the first hit avoids scanning the whole line.
@@ -4200,21 +4255,22 @@ fn generate_huygen_snipes(
                 continue;
             };
             let split = vec.coords.partition_point(|&c| c < landing);
-            let probe = |o2: i64, packed2: u8| -> Option<(i64, i64, u8)> {
+            let probe = |o2: i64, packed2: u8| -> Option<(i64, u8)> {
                 if o2 == s_off || o2 == 0 {
                     return None;
                 }
-                let d = (s_off - o2).abs();
-                is_prime_fast(d).then_some((d, o2, packed2))
+                indices
+                    .is_prime_apart(on_line(landing), on_line(our + o2))
+                    .then_some((o2, packed2))
             };
-            let mut lo_hit: Option<(i64, i64, u8)> = None;
+            let mut lo_hit: Option<(i64, u8)> = None;
             for i in (0..split).rev() {
                 if let Some(h) = probe(vec.coords[i] - our, vec.pieces[i]) {
                     lo_hit = Some(h);
                     break;
                 }
             }
-            let mut hi_hit: Option<(i64, i64, u8)> = None;
+            let mut hi_hit: Option<(i64, u8)> = None;
             for i in split..vec.coords.len() {
                 if let Some(h) = probe(vec.coords[i] - our, vec.pieces[i]) {
                     hi_hit = Some(h);
@@ -4222,7 +4278,7 @@ fn generate_huygen_snipes(
                 }
             }
 
-            for (d, o2, packed2) in [lo_hit, hi_hit].into_iter().flatten() {
+            for (o2, packed2) in [lo_hit, hi_hit].into_iter().flatten() {
                 let t = Piece::from_packed(packed2);
                 if t.color() == my_color
                     || t.color() == PlayerColor::Neutral
@@ -4230,7 +4286,7 @@ fn generate_huygen_snipes(
                 {
                     continue;
                 }
-                let reach = block_free_span(d);
+                let reach = indices.prime_gap_below(on_line(landing), on_line(our + o2));
                 match best.iter_mut().find(|(target, _, _)| *target == o2) {
                     Some(entry) => {
                         if reach > entry.1 {
@@ -4254,26 +4310,16 @@ fn generate_huygen_snipes(
     }
 }
 
-/// Gap from the attacking prime down to the one before it, the only stretch a
-/// piece could interpose in. Distance 2 is handled separately and never reaches
-/// here, since nothing can block it at all.
-#[inline]
-fn block_free_span(d: i64) -> i64 {
-    let mut p = d - 1;
-    while p > 1 {
-        if is_prime_fast(p) {
-            return d - p;
-        }
-        p -= 1;
-    }
-    i64::MAX
-}
+/// Where [`SNIPE_PRIMES`] stops: within the distance a compressed position reads as is, so its
+/// primes need no test there either.
+const SNIPE_SIEVE: usize = 4096;
+const _: () = assert!(SNIPE_SIEVE as i64 <= crate::compression::REACH);
 
 /// Primes available to sniper landings, sieved once. Must reach well past
 /// SNIPE_TRIES primes: the candidates start beyond the line's outermost piece,
 /// so the usable window slides upward as pieces spread out.
 static SNIPE_PRIMES: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| {
-    let n = 4096usize;
+    let n = SNIPE_SIEVE;
     let mut sieve = vec![true; n];
     let mut out = Vec::with_capacity(600);
     for i in 2..n {
@@ -4321,7 +4367,12 @@ fn find_huygen_blocker(
             let coord = vec.coords[i];
             // Exact u64: the far end of the board can be past any i64 distance.
             let dist = coord.abs_diff(our_coord);
-            crate::utils::is_prime_u64(dist).then(|| {
+            let square = if is_horizontal {
+                Coordinate::new(coord, from.y)
+            } else {
+                Coordinate::new(from.x, coord)
+            };
+            indices.is_prime_apart(*from, square).then(|| {
                 let p = Piece::from_packed(vec.pieces[i]);
                 // Void blocks like friendly
                 let effective_color = if p.piece_type() == PieceType::Void {
