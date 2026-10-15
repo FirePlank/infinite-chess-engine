@@ -51,7 +51,7 @@ Keep API glue here. Do not let search or evaluation take on UI-facing concerns.
 
 This is how positions beyond the engine's coordinates get in.
 
-Inside the engine every coordinate is an `i64`. An ICN past that is compressed on the way in: under every line family the engine reads, relations within a fixed span stay exact and farther ones keep only their order, so the engine perceives exactly what it would on the original. A position that can't be compressed faithfully is refused, and the moves the engine reports are mapped back onto the original board.
+Inside the engine every coordinate is an `i64`. An ICN past that is compressed on the way in: under every line family the engine reads, relations within a fixed span stay exact and farther ones keep only their order, while a Huygen reads whether a distance is prime on the original's coordinates, so the engine perceives exactly what it would on the original. A position that can't be compressed faithfully is refused, and the moves the engine reports are mapped back onto the original board.
 
 Nothing past `src/lib.rs` knows about it: search and evaluation always see an ordinary `i64` position. The exact span is checked at compile time against the farthest distances search reads (the TT move box, the quiet ray cap); a change that lets search read farther must widen it.
 

@@ -1,12 +1,14 @@
 //! Maps the engine's moves on a compressed position back onto the original board. A capture lands
 //! on its victim and a move short under every form keeps its offset; a long slide lands as near
 //! every piece's line as the compressed landing does. Each landing is then checked against every
-//! piece, so a line is only ever reported up to its last faithfully mapped move.
+//! piece, and every Huygen's reach against the original board, so a line is only ever reported up
+//! to its last faithfully mapped move.
 
 use super::bigint::Big;
 use super::lineforms::{LineForm, ORIGIN_GRID};
+use super::primedistances::PrimeDistances;
 use super::{EXACT_SPAN, NEAR_LINE_SPAN, OrderedMap, Square};
-use crate::board::{PieceType, PlayerColor};
+use crate::board::{Coordinate, PieceType, PlayerColor};
 use crate::moves::Move;
 use std::cell::OnceCell;
 use std::sync::Arc;
@@ -80,17 +82,24 @@ pub struct Lifter {
     forms: Vec<LineForm>,
     lines: Vec<LiftLine>,
     board: LiftBoard,
+    prime_distances: Arc<PrimeDistances>,
 }
 
 /// Bounds a double's rounding error relative to the values compared, with ample margin.
 const APPROX_ERROR: f64 = 1.0 / (1u64 << 50) as f64;
 
 impl Lifter {
-    pub fn new(forms: Vec<LineForm>, lines: Vec<LiftLine>, board: LiftBoard) -> Lifter {
+    pub fn new(
+        forms: Vec<LineForm>,
+        lines: Vec<LiftLine>,
+        board: LiftBoard,
+        prime_distances: Arc<PrimeDistances>,
+    ) -> Lifter {
         Lifter {
             forms,
             lines,
             board,
+            prime_distances,
         }
     }
 
@@ -130,11 +139,17 @@ impl Lifter {
             },
             None => self.slide_landing(board, &piece, dx, dy)?,
         };
-        if !self.keeps_relations(board, &piece, victim.as_ref(), &end_original, &end) {
+        if !self.keeps_relations(board, &piece, victim.as_ref(), &end_original, &end)
+            || (piece.piece_type == PieceType::Huygen
+                && !self.is_reach_kept(&piece.compressed, &end, &piece.original, &end_original))
+        {
             return None;
         }
         let promotion = m.promotion;
         play(board, &start, &end, &end_original, promotion);
+        if !self.keeps_huygen_reaches(board) {
+            return None;
+        }
         let mut token = format!(
             "{},{}>{},{}",
             piece.original.x, piece.original.y, end_original.x, end_original.y
@@ -200,6 +215,50 @@ impl Lifter {
             x: &piece.original.x + &(&distance * ux),
             y: &piece.original.y + &(&distance * uy),
         })
+    }
+
+    /// Whether every Huygen and each piece on its rank or file share that line on both boards, and
+    /// lie a prime distance apart on the original exactly when the engine reads them so.
+    fn keeps_huygen_reaches(&self, board: &LiftBoard) -> bool {
+        let shared = |a: &Square, b: &Square| (a.x == b.x, a.y == b.y);
+        board
+            .values()
+            .filter(|h| h.piece_type == PieceType::Huygen)
+            .all(|h| {
+                board
+                    .values()
+                    .filter(|p| p.compressed != h.compressed)
+                    .all(|p| {
+                        let lines = shared(&h.compressed, &p.compressed);
+                        lines == shared(&h.original, &p.original)
+                            && (lines == (false, false)
+                                || self.is_reach_kept(
+                                    &h.compressed,
+                                    &p.compressed,
+                                    &h.original,
+                                    &p.original,
+                                ))
+                    })
+            })
+    }
+
+    /// Whether two squares on one rank or file lie a prime distance apart on the original board
+    /// exactly when the engine reads their compressed squares so.
+    fn is_reach_kept(
+        &self,
+        a: &Square,
+        b: &Square,
+        a_original: &Square,
+        b_original: &Square,
+    ) -> bool {
+        let engine = |s: &Square| Coordinate::new(s.x.to_i64().unwrap(), s.y.to_i64().unwrap());
+        let read = self.prime_distances.is_prime_apart(engine(a), engine(b));
+        let difference = if a.y == b.y {
+            &b_original.x - &a_original.x
+        } else {
+            &b_original.y - &a_original.y
+        };
+        read == self.prime_distances.is_prime(&difference)
     }
 
     /// Whether the original landing sits on the same residue, as near every other piece's line as
