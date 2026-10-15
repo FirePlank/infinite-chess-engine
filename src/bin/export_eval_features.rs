@@ -365,7 +365,11 @@ fn human_to_game(h: HumanGame) -> Option<Game> {
     Some(Game {
         variant: variant.to_str().to_string(),
         wdl,
-        start_icn: format!("[Variant \"{}\"] {}", variant.to_str(), variant.starting_icn()),
+        start_icn: format!(
+            "[Variant \"{}\"] {}",
+            variant.to_str(),
+            variant.starting_icn()
+        ),
         moves,
         // Placeholder teacher: only --relabel-depth gives these positions a label.
         teacher: vec![Some(0); n],
@@ -539,15 +543,23 @@ fn apply_param_overrides(overrides: &[String]) {
     for kv in overrides {
         let (k, val) = kv.split_once('=').expect("--param takes name=value");
         assert!(v.get(k).is_some(), "unknown eval parameter {k}");
-        v[k] = serde_json::json!(val.parse::<i64>().expect("--param value must be an integer"));
+        v[k] = serde_json::json!(
+            val.parse::<i64>()
+                .expect("--param value must be an integer")
+        );
         eprintln!("param {k} = {val}");
     }
-    assert!(apeiron::evaluation::params::set_eval_params_from_json(&v.to_string()));
+    assert!(apeiron::evaluation::params::set_eval_params_from_json(
+        &v.to_string()
+    ));
 }
 
 #[cfg(not(feature = "eval_tuning"))]
 fn apply_param_overrides(overrides: &[String]) {
-    assert!(overrides.is_empty(), "--param needs a build with --features eval_tuning");
+    assert!(
+        overrides.is_empty(),
+        "--param needs a build with --features eval_tuning"
+    );
 }
 
 fn target_kind(name: &str) -> EvalKind {
@@ -586,8 +598,7 @@ fn consider(
         && promo.is_none()
         && g.board.get_piece(tx, ty).is_none()
         && (c.sample >= 1.0 || unit_interval(((game_id as u64) << 20) | ply as u64) < c.sample);
-    if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(g)
-    {
+    if eligible && !g.is_in_check() && !insufficient_material::evaluate_insufficient_material(g) {
         // A position --keep-hashes would drop later costs only its replay here, not a
         // clone and an eval.
         if c.perturb == 0 && c.keep_hashes.is_some_and(|k| !k.contains(&g.hash)) {
@@ -597,7 +608,9 @@ fn consider(
         // With --perturb, step off the game line by a few random legal moves, so the
         // net also trains on the unbalanced positions the search evaluates.
         let pos = if c.perturb > 0 {
-            let steps = 1 + (splitmix(((game_id as u64) << 24) ^ ply as u64 ^ 0xA5A5) % c.perturb as u64) as usize;
+            let steps = 1
+                + (splitmix(((game_id as u64) << 24) ^ ply as u64 ^ 0xA5A5) % c.perturb as u64)
+                    as usize;
             match perturb(g, steps, ((game_id as u64) << 20) | ply as u64) {
                 Some(p) => p,
                 None => {
@@ -607,7 +620,9 @@ fn consider(
         } else {
             g.clone()
         };
-        if c.perturb > 0 && (pos.is_in_check() || insufficient_material::evaluate_insufficient_material(&pos)) {
+        if c.perturb > 0
+            && (pos.is_in_check() || insufficient_material::evaluate_insufficient_material(&pos))
+        {
             return;
         }
         // Positions where the engine skips the net are never trained on.
@@ -635,7 +650,11 @@ fn consider(
             {
                 return;
             }
-            teacher = if pos.turn == PlayerColor::Black { -score } else { score };
+            teacher = if pos.turn == PlayerColor::Black {
+                -score
+            } else {
+                score
+            };
             source = SOURCE_TEXEL;
         }
         let mut fc = FeatureCollector::default();
@@ -650,7 +669,8 @@ fn consider(
             }
             EvalKind::Generic => base::evaluate_inner_traced(&pos, &mut fc),
         };
-        let own = variant_layout(pos.eval_kind).filter(|_| !GENERIC.get().copied().unwrap_or(false));
+        let own =
+            variant_layout(pos.eval_kind).filter(|_| !GENERIC.get().copied().unwrap_or(false));
         let (x, phase): (Vec<i16>, i32) = match own {
             Some(l) => (vf.x[..l.len()].to_vec(), vf.phase),
             None => {
@@ -703,15 +723,29 @@ fn consider(
                 {
                     let mut mfc = FeatureCollector::default();
                     let m_stm = base::evaluate_inner_traced(m, &mut mfc);
-                    let m_static = if m.turn == PlayerColor::Black { -m_stm } else { m_stm };
+                    let m_static = if m.turn == PlayerColor::Black {
+                        -m_stm
+                    } else {
+                        m_stm
+                    };
                     // A sound mirror scores exactly the negated static eval.
                     if m.eval_kind == EvalKind::Generic && m_static == -static_white {
                         for f in feature_vector(m, &mfc) {
                             out.extend_from_slice(&f.to_le_bytes());
                         }
-                        out.extend_from_slice(&(m_static.clamp(-20000, 20000) as i16).to_le_bytes());
-                        out.extend_from_slice(&((-teacher).clamp(-20000, 20000) as i16).to_le_bytes());
-                        out.push(if game.wdl > 0.75 { 0 } else if game.wdl > 0.25 { 1 } else { 2 });
+                        out.extend_from_slice(
+                            &(m_static.clamp(-20000, 20000) as i16).to_le_bytes(),
+                        );
+                        out.extend_from_slice(
+                            &((-teacher).clamp(-20000, 20000) as i16).to_le_bytes(),
+                        );
+                        out.push(if game.wdl > 0.75 {
+                            0
+                        } else if game.wdl > 0.25 {
+                            1
+                        } else {
+                            2
+                        });
                         out.push(m.turn as u8);
                         out.push(vid);
                         out.push(source);
@@ -808,9 +842,37 @@ fn replay(
             break;
         };
         let m = mirror.as_ref().filter(|_| cli.mirror);
-        consider(&main, seen, main_out, main_hashes, &mut acc, game, &g, m, ply, (tx, ty), &promo, game_id, vid);
+        consider(
+            &main,
+            seen,
+            main_out,
+            main_hashes,
+            &mut acc,
+            game,
+            &g,
+            m,
+            ply,
+            (tx, ty),
+            &promo,
+            game_id,
+            vid,
+        );
         if let Some((r, rel_id)) = &rel {
-            consider(r, rel_seen, rel_out, rel_hashes, &mut rel_acc, game, &g, None, ply, (tx, ty), &promo, *rel_id, vid);
+            consider(
+                r,
+                rel_seen,
+                rel_out,
+                rel_hashes,
+                &mut rel_acc,
+                game,
+                &g,
+                None,
+                ply,
+                (tx, ty),
+                &promo,
+                *rel_id,
+                vid,
+            );
         }
         advance(&mut g, &mut mirror, (fx, fy, tx, ty), promo.as_deref());
     }
@@ -838,6 +900,9 @@ fn record(stats: &Stats, game: &Game, acc: &Acc) {
     }
 }
 
+#[rustfmt::skip]
+const KING_DIRS: [(i64, i64); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
+
 /// Piece counts by colour (White then Black) and `PieceType as usize`, saturating at 255.
 fn piece_counts(g: &GameState, fc: &FeatureCollector) -> [u8; 64] {
     let mut c = [0u8; 64];
@@ -854,18 +919,27 @@ fn piece_counts(g: &GameState, fc: &FeatureCollector) -> [u8; 64] {
     // rays with no own or neutral piece within 3, enemy queen-like present, own and neutral
     // pieces within 2 squares of the king).
     let counts = c;
-    let queen_like = |side: usize| -> u8 {
-        [8usize, 7, 11, 12, 9].iter().any(|&t| counts[side + t] > 0) as u8
-    };
-    for (us, side, them) in [(PlayerColor::White, 0usize, 32usize), (PlayerColor::Black, 32, 0)] {
-        let kings = if us == PlayerColor::White { &g.white_royals } else { &g.black_royals };
+    let queen_like =
+        |side: usize| -> u8 { [8usize, 7, 11, 12, 9].iter().any(|&t| counts[side + t] > 0) as u8 };
+    for (us, side, them) in [
+        (PlayerColor::White, 0usize, 32usize),
+        (PlayerColor::Black, 32, 0),
+    ] {
+        let kings = if us == PlayerColor::White {
+            &g.white_royals
+        } else {
+            &g.black_royals
+        };
         let Some(k) = kings.first() else { continue };
         let mut open = 0u8;
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
-            let shut = g.spatial_indices.find_first_blocker(k.x, k.y, dx, dy).is_some_and(|(x, y, p)| {
-                (x - k.x).abs().max((y - k.y).abs()) <= 3
-                    && (p.color() == us || p.color() == PlayerColor::Neutral)
-            });
+        for (dx, dy) in KING_DIRS {
+            let shut = g
+                .spatial_indices
+                .find_first_blocker(k.x, k.y, dx, dy)
+                .is_some_and(|(x, y, p)| {
+                    (x - k.x).abs().max((y - k.y).abs()) <= 3
+                        && (p.color() == us || p.color() == PlayerColor::Neutral)
+                });
             open += !shut as u8;
         }
         let near = g
@@ -900,7 +974,7 @@ fn piece_counts(g: &GameState, fc: &FeatureCollector) -> [u8; 64] {
             }
             let ortho = apeiron::attacks::is_ortho_slider(pt);
             let diag = apeiron::attacks::is_diag_slider(pt);
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            for (dx, dy) in KING_DIRS {
                 if !(if dx == 0 || dy == 0 { ortho } else { diag }) {
                     continue;
                 }
@@ -910,7 +984,8 @@ fn piece_counts(g: &GameState, fc: &FeatureCollector) -> [u8; 64] {
                         reach += ((bx - x).abs().max((by - y).abs()) - 1).min(7) as u32;
                         let own = b.color() == us;
                         shut += (own && (bx - x).abs().max((by - y).abs()) <= 2) as u32;
-                        own_pawn += (own && b.piece_type() == apeiron::board::PieceType::Pawn) as u32;
+                        own_pawn +=
+                            (own && b.piece_type() == apeiron::board::PieceType::Pawn) as u32;
                     }
                 }
             }
@@ -976,35 +1051,38 @@ fn run_group(
                 .par_chunks(per_job)
                 .zip(copies.into_par_iter())
                 .flat_map_iter(|(games, tpl)| {
-                    games.iter().map(move |g| (tpl[&g.start_icn].clone(), None)).collect::<Vec<_>>()
+                    games
+                        .iter()
+                        .map(move |g| (tpl[&g.start_icn].clone(), None))
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         } else {
             chunk
-            .iter()
-            .map(|game| {
-                let g = template(&mut templates, &game.start_icn);
-                // The mirror replays the whole game reflected, so starting squares and
-                // special rights match; setup stays sequential for the global bounds.
-                let m = if cli.mirror {
-                    mirror_icn(&g, &game.start_icn).map(|icn| {
-                        let mut m = GameState::new();
-                        m.setup_position_from_icn(&icn);
-                        m.recompute_piece_counts();
-                        m.recompute_hash();
-                        (m, g.white_promo_rank + g.black_promo_rank)
-                    })
-                } else {
-                    None
-                };
-                // Setting up the mirror may leave its own bounds; restore the original's.
-                if m.is_some() {
-                    let mut again = GameState::new();
-                    again.setup_position_from_icn(&game.start_icn);
-                }
-                (g, m)
-            })
-            .collect()
+                .iter()
+                .map(|game| {
+                    let g = template(&mut templates, &game.start_icn);
+                    // The mirror replays the whole game reflected, so starting squares and
+                    // special rights match; setup stays sequential for the global bounds.
+                    let m = if cli.mirror {
+                        mirror_icn(&g, &game.start_icn).map(|icn| {
+                            let mut m = GameState::new();
+                            m.setup_position_from_icn(&icn);
+                            m.recompute_piece_counts();
+                            m.recompute_hash();
+                            (m, g.white_promo_rank + g.black_promo_rank)
+                        })
+                    } else {
+                        None
+                    };
+                    // Setting up the mirror may leave its own bounds; restore the original's.
+                    if m.is_some() {
+                        let mut again = GameState::new();
+                        again.setup_position_from_icn(&game.start_icn);
+                    }
+                    (g, m)
+                })
+                .collect()
         };
         let base_id = first_id + (ci * SETUP_CHUNK) as u32;
         let outputs: Vec<[Vec<u8>; 4]> = chunk
@@ -1013,7 +1091,17 @@ fn run_group(
             .enumerate()
             .map(|(i, (game, (g, m)))| {
                 let mut out: [Vec<u8>; 4] = Default::default();
-                replay(game, g, m, base_id + i as u32, cli, &seen, &rel_seen, stats, &mut out);
+                replay(
+                    game,
+                    g,
+                    m,
+                    base_id + i as u32,
+                    cli,
+                    &seen,
+                    &rel_seen,
+                    stats,
+                    &mut out,
+                );
                 out
             })
             .collect();
@@ -1021,7 +1109,9 @@ fn run_group(
         let mut hw = HASH_OUT.get().map(|h| h.lock().unwrap());
         let rel = REL.get();
         let mut rw = rel.map(|r| r.writer.lock().unwrap());
-        let mut rhw = rel.and_then(|r| r.hash_out.as_ref()).map(|h| h.lock().unwrap());
+        let mut rhw = rel
+            .and_then(|r| r.hash_out.as_ref())
+            .map(|h| h.lock().unwrap());
         for [c, h, rc, rh] in outputs {
             w.write_all(&c).unwrap();
             if let Some(hw) = hw.as_mut() {
@@ -1050,7 +1140,11 @@ fn mirror_icn(g: &GameState, start_icn: &str) -> Option<String> {
     let mut middle = Vec::new();
     // Skip turn, clock and fullmove; stop at the piece list.
     for t in toks.iter().skip(3) {
-        if t.contains('>') || (t.contains(',') && t.chars().any(|c| c.is_ascii_alphabetic()) && !t.starts_with('(')) {
+        if t.contains('>')
+            || (t.contains(',')
+                && t.chars().any(|c| c.is_ascii_alphabetic())
+                && !t.starts_with('('))
+        {
             break;
         }
         if let Some(inner) = t.strip_prefix('(').and_then(|x| x.strip_suffix(')')) {
@@ -1072,8 +1166,14 @@ fn mirror_icn(g: &GameState, start_icn: &str) -> Option<String> {
                 })
             };
             middle.push(format!("({}|{})", flip(b)?, flip(w)?));
-        } else if t.split(',').count() == 4 && t.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '-') {
-            let v: Vec<i64> = t.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        } else if t.split(',').count() == 4
+            && t.chars()
+                .all(|c| c.is_ascii_digit() || c == ',' || c == '-')
+        {
+            let v: Vec<i64> = t
+                .split(',')
+                .map(|x| x.parse().ok())
+                .collect::<Option<_>>()?;
             // Only a vertically symmetric border keeps the process-global bounds identical.
             if v[2] + v[3] != s && !(v[2] == -v[3] && v[3] >= 1_000_000) {
                 return None;
@@ -1091,10 +1191,18 @@ fn mirror_icn(g: &GameState, start_icn: &str) -> Option<String> {
             PlayerColor::Black => code.to_uppercase(),
             PlayerColor::Neutral => code.to_string(),
         };
-        let plus = if g.has_special_right(&apeiron::board::Coordinate::new(x, y)) { "+" } else { "" };
+        let plus = if g.has_special_right(&apeiron::board::Coordinate::new(x, y)) {
+            "+"
+        } else {
+            ""
+        };
         pieces.push(format!("{code}{x},{}{plus}", s - y));
     }
-    let turn = if g.turn == PlayerColor::White { "b" } else { "w" };
+    let turn = if g.turn == PlayerColor::White {
+        "b"
+    } else {
+        "w"
+    };
     let limit = g.game_rules.move_rule_limit.unwrap_or(100);
     Some(format!(
         "{turn} {}/{limit} {} {} {}",
@@ -1129,7 +1237,12 @@ struct Progress {
 impl Progress {
     fn load(path: &PathBuf) -> Option<Progress> {
         let text = std::fs::read_to_string(path).ok()?;
-        let mut p = Progress { kept: 0, next_id: 1, sources_done: false, done: HashSet::new() };
+        let mut p = Progress {
+            kept: 0,
+            next_id: 1,
+            sources_done: false,
+            done: HashSet::new(),
+        };
         for line in text.lines() {
             let (k, v) = line.split_once(' ').unwrap_or((line, ""));
             match k {
@@ -1166,10 +1279,18 @@ fn checkpoint(
     f.write_all(&kept.to_le_bytes()).unwrap();
     f.seek(SeekFrom::End(0)).unwrap();
     f.sync_data().unwrap();
-    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(progress).unwrap();
-    writeln!(log, "{event}
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(progress)
+        .unwrap();
+    writeln!(
+        log,
+        "{event}
 kept {kept}
-next_id {next_id}").unwrap();
+next_id {next_id}"
+    )
+    .unwrap();
 }
 
 /// A fresh record file with its header; the count is patched in when the run ends.
@@ -1207,7 +1328,9 @@ fn main() {
     HASH_COUNTS.store(cli.hash_counts, Ordering::Relaxed);
     let layout = variant_layout(target_kind(&cli.eval_kind))
         .filter(|_| !cli.generic_features)
-        .map_or((NUM_FEATURES, schema_hash()), |l| (l.len(), l.schema_hash()));
+        .map_or((NUM_FEATURES, schema_hash()), |l| {
+            (l.len(), l.schema_hash())
+        });
     LAYOUT.set(layout).unwrap();
     GENERIC.set(cli.generic_features).unwrap();
     if cli.threads > 0 {
@@ -1223,8 +1346,10 @@ fn main() {
     apply_param_overrides(&cli.params);
     if let Some(path) = &cli.keep_hashes {
         let bytes = std::fs::read(path).unwrap();
-        let set: HashSet<u64> =
-            bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        let set: HashSet<u64> = bytes
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         eprintln!("keep-hashes: {} hashes", set.len());
         let _ = KEEP_HASHES.set(set);
     }
@@ -1248,7 +1373,10 @@ fn main() {
         assert!(!cli.resume, "--rel-out cannot resume");
         let read_set = |p: &PathBuf| -> HashSet<u64> {
             let bytes = std::fs::read(p).unwrap();
-            bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
+            bytes
+                .chunks_exact(8)
+                .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                .collect()
         };
         let _ = REL.set(RelSink {
             writer: Mutex::new(BufWriter::with_capacity(1 << 24, new_output(path))),
@@ -1260,17 +1388,28 @@ fn main() {
                 per_variant: Mutex::new(HashMap::new()),
             },
             keep_hashes: cli.rel_keep_hashes.as_ref().map(read_set),
-            hash_out: cli.rel_hash_out.as_ref().map(|p| Mutex::new(BufWriter::new(File::create(p).unwrap()))),
+            hash_out: cli
+                .rel_hash_out
+                .as_ref()
+                .map(|p| Mutex::new(BufWriter::new(File::create(p).unwrap()))),
             id_shift: std::sync::atomic::AtomicU32::new(0),
         });
     }
     let progress_path = PathBuf::from(format!("{}.progress", cli.out.display()));
-    let prior = if cli.resume { Progress::load(&progress_path) } else { None };
+    let prior = if cli.resume {
+        Progress::load(&progress_path)
+    } else {
+        None
+    };
     if let Some(path) = &cli.hash_out {
         // On resume the sidecar is cut back to the records kept, one hash each.
         let f = match &prior {
             Some(p) => {
-                let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+                let mut f = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                    .unwrap();
                 f.set_len(p.kept * 8).unwrap();
                 f.seek(SeekFrom::End(0)).unwrap();
                 f
@@ -1281,11 +1420,19 @@ fn main() {
     }
     let rec = record_size();
     let file = if let Some(p) = &prior {
-        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&cli.out).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&cli.out)
+            .unwrap();
         // Drop any partial record written after the last completed file.
         f.set_len(HEADER_SIZE + p.kept * rec as u64).unwrap();
         f.seek(SeekFrom::End(0)).unwrap();
-        eprintln!("resume: {} records, {} archive files already done", p.kept, p.done.len());
+        eprintln!(
+            "resume: {} records, {} archive files already done",
+            p.kept,
+            p.done.len()
+        );
         f
     } else {
         let _ = std::fs::remove_file(&progress_path);
@@ -1307,7 +1454,11 @@ fn main() {
     }
     // Texel and human sources are fast and run first; a resume past them skips both.
     let resumed_past_sources = prior.as_ref().is_some_and(|p| p.sources_done);
-    let texel_sources: &[PathBuf] = if resumed_past_sources { &[] } else { &cli.texel };
+    let texel_sources: &[PathBuf] = if resumed_past_sources {
+        &[]
+    } else {
+        &cli.texel
+    };
 
     for path in texel_sources {
         let t0 = Instant::now();
@@ -1346,7 +1497,12 @@ fn main() {
             run_group(&group, next_id, &cli, &stats, &writer);
             next_id += group.len() as u32;
         }
-        eprintln!("[human] {} games, {} records total ({:.1}s)", n, stats.kept.load(Ordering::Relaxed), t0.elapsed().as_secs_f64());
+        eprintln!(
+            "[human] {} games, {} records total ({:.1}s)",
+            n,
+            stats.kept.load(Ordering::Relaxed),
+            t0.elapsed().as_secs_f64()
+        );
     }
 
     if let Some(dir) = &cli.sprt_dir {
@@ -1391,12 +1547,18 @@ fn main() {
                     let games = std::fs::read_to_string(path).ok().and_then(|text| {
                         let entries = serde_json::from_str::<Vec<String>>(&text).ok();
                         if entries.is_none() {
-                            eprintln!("[sprt] {} : not a JSON string array, skipped", path.display());
+                            eprintln!(
+                                "[sprt] {} : not a JSON string array, skipped",
+                                path.display()
+                            );
                         }
                         entries
                     });
                     let games = games.map(|entries| {
-                        entries.par_iter().filter_map(|s| parse_sprt_game(s, eval_sign)).collect::<Vec<Game>>()
+                        entries
+                            .par_iter()
+                            .filter_map(|s| parse_sprt_game(s, eval_sign))
+                            .collect::<Vec<Game>>()
                     });
                     if tx.send((fi, fname, games)).is_err() {
                         break;
@@ -1422,7 +1584,13 @@ fn main() {
                     stats.kept.load(Ordering::Relaxed),
                     t0.elapsed().as_secs_f64()
                 );
-                checkpoint(&writer, &stats, next_id, &progress_path, &format!("done {fname}"));
+                checkpoint(
+                    &writer,
+                    &stats,
+                    next_id,
+                    &progress_path,
+                    &format!("done {fname}"),
+                );
             }
         });
     }
@@ -1464,7 +1632,10 @@ fn main() {
         stats.dup.load(Ordering::Relaxed),
         start.elapsed().as_secs_f64()
     );
-    eprintln!("replays cut short by an unparseable move: {}", UNPARSED_MOVES.load(Ordering::Relaxed));
+    eprintln!(
+        "replays cut short by an unparseable move: {}",
+        UNPARSED_MOVES.load(Ordering::Relaxed)
+    );
     if cli.mirror {
         eprintln!(
             "mirror: {} twins written, {} rejected (static eval not exactly negated)",
@@ -1489,7 +1660,13 @@ fn main() {
             if vt > 0.0 { cov / vt } else { 0.0 }
         );
     }
-    let mut pv: Vec<(String, u64)> = stats.per_variant.lock().unwrap().clone().into_iter().collect();
+    let mut pv: Vec<(String, u64)> = stats
+        .per_variant
+        .lock()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect();
     pv.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     for (v, n) in pv {
         eprintln!("  {v:<24} {n:>10}");

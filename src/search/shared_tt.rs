@@ -305,8 +305,7 @@ impl SharedTranspositionTable {
         for i in 0..sample {
             for e in &self.buckets[i].entries {
                 let gb = e.gen_bound8.get();
-                let occupied =
-                    e.key16.get() != 0 || gb != 0 || e.depth8.get() != 0;
+                let occupied = e.key16.get() != 0 || gb != 0 || e.depth8.get() != 0;
                 if occupied && TTEntry::generation(gb) == r#gen & GENERATION_MASK {
                     occ += 1;
                 }
@@ -530,8 +529,10 @@ impl SharedTranspositionTable {
     }
 
     pub fn increment_age(&self) {
-        self.generation
-            .store(self.generation.load(REL).wrapping_add(GENERATION_DELTA), REL);
+        self.generation.store(
+            self.generation.load(REL).wrapping_add(GENERATION_DELTA),
+            REL,
+        );
     }
     pub fn clear(&self) {
         for b in &self.buckets {

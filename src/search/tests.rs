@@ -259,7 +259,6 @@ fn test_mate_score_detection() {
     assert!(!is_normal_mate, "Normal score should not be mate");
 }
 
-
 #[test]
 fn test_node_type_enum() {
     assert!(NodeType::PV != NodeType::Cut);
@@ -589,8 +588,6 @@ fn test_format_pv_empty() {
     assert!(pv.is_empty() || !pv.is_empty());
 }
 
-
-
 #[test]
 fn test_variant_tag_cannot_change_search_behaviour() {
     // A bogus tag still parses to Classical and an unknown one to None, but the
@@ -899,6 +896,13 @@ fn depth_one_blowup_still_respects_the_hard_limit() {
     crate::search::reset_search_state();
     let start = std::time::Instant::now();
     let result = crate::search::get_best_move_parallel(&mut game, 64, 300, 300, true, false);
-    assert!(result.is_some(), "a stopped depth-1 search must still return a move");
-    assert!(start.elapsed().as_millis() < 2500, "took {} ms", start.elapsed().as_millis());
+    assert!(
+        result.is_some(),
+        "a stopped depth-1 search must still return a move"
+    );
+    assert!(
+        start.elapsed().as_millis() < 2500,
+        "took {} ms",
+        start.elapsed().as_millis()
+    );
 }

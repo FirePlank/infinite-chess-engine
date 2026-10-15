@@ -167,7 +167,8 @@ type BoundedHelpmates = Helpmates<BOUNDED_HELPMATE_BUCKET_BITS>;
 
 /// The unbounded and bounded helpmate-only keys, hashed on first use.
 fn helpmates() -> &'static (UnboundedHelpmates, BoundedHelpmates) {
-    static HELPMATES: std::sync::OnceLock<(UnboundedHelpmates, BoundedHelpmates)> = std::sync::OnceLock::new();
+    static HELPMATES: std::sync::OnceLock<(UnboundedHelpmates, BoundedHelpmates)> =
+        std::sync::OnceLock::new();
     HELPMATES.get_or_init(|| {
         let (unbounded, used) = UnboundedHelpmates::decode(&TABLE[HELPMATES_START..]);
         let (bounded, _) = BoundedHelpmates::decode(&TABLE[HELPMATES_START + used..]);
@@ -224,7 +225,9 @@ pub fn set_index(symbols: &[u8]) -> usize {
 /// [`set_index`] among the sets of at most [`BOUNDED_CAP`] symbols.
 #[inline]
 pub fn bounded_set_index(symbols: &[u8]) -> usize {
-    canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).expect("a royal").0
+    canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT)
+        .expect("a royal")
+        .0
 }
 
 /// The hash key of `symbols` with the given side attacking: its [`set_index`] and
@@ -266,7 +269,10 @@ fn canonical(symbols: &[u8], cap: usize, l: &Layout) -> Option<(usize, bool)> {
     }
     let rank = |v: &mut [u8]| {
         sort_small(v);
-        v.iter().enumerate().map(|(i, &x)| COLEX[i][x as usize]).sum::<u32>()
+        v.iter()
+            .enumerate()
+            .map(|(i, &x)| COLEX[i][x as usize])
+            .sum::<u32>()
     };
     let (rw, rb) = (rank(&mut white[..w]), rank(&mut black[..b]));
     let (white_royal, black_royal) = (rw >= l.royal_less[w], rb >= l.royal_less[b]);
@@ -274,8 +280,15 @@ fn canonical(symbols: &[u8], cap: usize, l: &Layout) -> Option<(usize, bool)> {
         return None;
     }
     if white_royal != black_royal {
-        let ((a, ra), (n, rn)) = if white_royal { ((w, rw), (b, rb)) } else { ((b, rb), (w, rw)) };
-        let i = l.one_royal_side[a] + (ra - l.royal_less[a]) * l.royal_less_before[cap - a + 1] + l.royal_less_before[n] + rn;
+        let ((a, ra), (n, rn)) = if white_royal {
+            ((w, rw), (b, rb))
+        } else {
+            ((b, rb), (w, rw))
+        };
+        let i = l.one_royal_side[a]
+            + (ra - l.royal_less[a]) * l.royal_less_before[cap - a + 1]
+            + l.royal_less_before[n]
+            + rn;
         return Some((i as usize, black_royal));
     }
     let gw = l.royal_before[w] + rw - l.royal_less[w];
@@ -285,7 +298,9 @@ fn canonical(symbols: &[u8], cap: usize, l: &Layout) -> Option<(usize, bool)> {
     let i = if 2 * size <= cap {
         l.one_royal_side[cap + 1] + high * (high + 1) / 2 + low
     } else {
-        l.two_royal_sides[size] + (high - l.royal_before[size]) * l.royal_before[cap - size + 1] + low
+        l.two_royal_sides[size]
+            + (high - l.royal_before[size]) * l.royal_before[cap - size + 1]
+            + low
     };
     Some((i as usize, swapped))
 }
@@ -331,7 +346,6 @@ fn dead_bit(i: usize) -> bool {
     TABLE[i >> 3] >> (i & 7) & 1 == 1
 }
 
-
 /// Whether the attacking side's pieces in `symbols` (White's when `white_attacks`)
 /// can never force mate against the other side's royals, which are all the other
 /// side holds: no mate is possible, or only with the defender's help.
@@ -352,8 +366,7 @@ pub fn helpless_bounded(symbols: &[u8], white_attacks: bool) -> bool {
         return false;
     }
     canonical(symbols, BOUNDED_CAP, &BOUNDED_LAYOUT).is_none_or(|(i, swapped)| {
-        bounded_dead_bit(i)
-            || helpmates().1.contains(key(i, swapped, white_attacks))
+        bounded_dead_bit(i) || helpmates().1.contains(key(i, swapped, white_attacks))
     })
 }
 
@@ -377,7 +390,13 @@ pub fn for_each_set(cap: usize, mut f: impl FnMut(&[u8])) {
         for a in 1..=total {
             let (mut rs, mut os) = (Vec::new(), Vec::new());
             multisets(royal_symbols.len() as u8, a, 0, &mut Vec::new(), &mut rs);
-            multisets(other_symbols.len() as u8, total - a, 0, &mut Vec::new(), &mut os);
+            multisets(
+                other_symbols.len() as u8,
+                total - a,
+                0,
+                &mut Vec::new(),
+                &mut os,
+            );
             for r in &rs {
                 for o in &os {
                     let set: Vec<u8> = r
@@ -437,6 +456,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn known_verdicts() {
         for dead in ["K vs k", "K,Q vs k", "K,R vs k,r", "Q,R vs k", " vs RQ,Q,N", "K,N,N vs k"] {
             assert!(is_dead(&set(dead)), "{dead}");
@@ -450,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn known_bounded_verdicts() {
         for dead in ["K vs k", "K,N vs k", "AM,Q vs rq", "K,B0,B0 vs k"] {
             assert!(is_dead_bounded(&set(dead)), "{dead}");

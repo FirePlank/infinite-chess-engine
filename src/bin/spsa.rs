@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use apeiron::board::PlayerColor;
+use apeiron::evaluation::params::{EvalParams, TUNABLE_EVAL_PARAM_SPECS};
 use apeiron::evaluation::{self};
 use apeiron::game::{GameState, WinCondition};
-use apeiron::evaluation::params::{EvalParams, TUNABLE_EVAL_PARAM_SPECS};
 use apeiron::search::params::{self, SearchParams, TUNABLE_PARAM_SPECS};
 use apeiron::{Engine, Variant};
 use clap::{Parser, Subcommand};
@@ -477,11 +477,7 @@ fn play_game(
     let mut black_clock = config.tc_base_ms;
     let mut moves = Vec::new();
 
-    let eval_fn = |g: &GameState| {
-        {
-            apeiron::evaluation::evaluate(g)
-        }
-    };
+    let eval_fn = apeiron::evaluation::evaluate;
 
     for (ply, &seed_val) in seeds.iter().enumerate().take(config.max_moves) {
         if STOP.load(Ordering::SeqCst) {

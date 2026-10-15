@@ -9,22 +9,22 @@ use super::piece_reach::{
     evaluate_rose_reach, fill_knightrider_rays, knightrider_rays, score_knightrider_rays,
 };
 use crate::evaluation::params::{
-    amazon, amazon_queen_scale, amazon_rook_scale, archbishop,
-    archbishop_bishop_scale, bishop, camel, candidate_passer_bonus, centaur, centaur_guard_scale,
-    chancellor, chancellor_rook_scale, cloud_center_max_skew_dist,
-    centrality_value_scale, cloud_penalty_max_pct, cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
-    eg_doubled_pawn_penalty, eg_far_slider_penalty_mult,
-    eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
-    far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
-    king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
-    mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
-    mg_outpost_bonus, passed_enemy_king_dist, passed_friendly_king_dist,
-    passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
-    pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
-    piece_cloud_cheb_max_excess, piece_cloud_cheb_radius, leaper_cloud_radius, rider_cloud_radius,
-    queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
-    rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
-    pin_opportunity_cap, pin_opportunity_cost, slider_threat_div, zebra,
+    amazon, amazon_queen_scale, amazon_rook_scale, archbishop, archbishop_bishop_scale, bishop,
+    camel, candidate_passer_bonus, centaur, centaur_guard_scale, centrality_value_scale,
+    chancellor, chancellor_rook_scale, cloud_center_max_skew_dist, cloud_penalty_max_pct,
+    cloud_penalty_per_100_value, complexity_damp, complexity_excess_max, eg_bishop_pair_bonus,
+    eg_doubled_pawn_penalty, eg_far_slider_penalty_mult, eg_outpost_bonus, far_queen_penalty,
+    far_rook_penalty, far_slider_cheb_max_excess, far_slider_cheb_radius, giraffe, guard, hawk,
+    huygen, king_defender_ref_value, king_shield_ahead_max_dist, knight, knightrider,
+    leaper_cloud_radius, leaper_tropism_divisor, mg_bishop_pair_bonus, mg_doubled_pawn_penalty,
+    mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty, mg_outpost_bonus,
+    passed_enemy_king_dist, passed_friendly_king_dist, passed_pawn_adv_bonus, pawn,
+    pawn_enemy_king_dist, pawn_far_from_promo_max_penalty, pawn_friendly_king_dist,
+    pawn_full_value_threshold, pawn_past_promo_penalty, piece_cloud_cheb_max_excess,
+    piece_cloud_cheb_radius, pin_opportunity_cap, pin_opportunity_cost, queen,
+    queen_open_file_bonus, queen_semi_open_file_bonus, rider_cloud_radius, rook,
+    rook_open_file_bonus, rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus,
+    slider_threat_cap, slider_threat_div, tied_defender_ref_value, zebra,
 };
 
 // 2-Bucket LRU pawn structure cache
@@ -280,9 +280,13 @@ pub const UNSTOPPABLE_MAX_DIST: i64 = 5;
 pub const DEFAULT_UNSTOPPABLE_PASSER_BONUS: i32 = 400;
 pub const DEFAULT_UNSTOPPABLE_PASSER_DECAY: i32 = 60;
 #[inline]
-fn unstoppable_passer_bonus() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_BONUS }
+fn unstoppable_passer_bonus() -> i32 {
+    DEFAULT_UNSTOPPABLE_PASSER_BONUS
+}
 #[inline]
-fn unstoppable_passer_decay() -> i32 { DEFAULT_UNSTOPPABLE_PASSER_DECAY }
+fn unstoppable_passer_decay() -> i32 {
+    DEFAULT_UNSTOPPABLE_PASSER_DECAY
+}
 
 // Piece Values
 
@@ -370,39 +374,40 @@ pub(crate) fn king_rays_with_tactics(
     let mut rays = [EMPTY_RAY; 8];
     let mut ring = false;
     let mut tac = [0i32; 3];
-    let mut put = |slot: usize, end: crate::moves::LineEnd, behind: crate::moves::LineEnd, base: i64| {
-        let Some((coord, packed)) = end else { return };
-        let p = Piece::from_packed(packed);
-        let pt = p.piece_type();
-        let dist = ray_dist(coord, base);
-        if dist < rays[slot].0 {
-            rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
-        }
-        if dist == 1
-            && ((p.color() == own && (pt == PieceType::Pawn || pt == PieceType::Guard))
-                || pt.is_neutral_type())
-        {
-            ring = true;
-        }
-        let Some((_, sp)) = behind else { return };
-        let s = Piece::from_packed(sp);
-        let mask = if slot < 4 { DIAG_MASK } else { ORTHO_MASK };
-        if s.color() == own
-            || s.color() == PlayerColor::Neutral
-            || !crate::attacks::matches_mask(s.piece_type(), mask)
-        {
-            return;
-        }
-        if p.color() == own && !pt.is_royal() {
-            tac[0] += 1;
-            tac[1] += get_piece_value_base(pt).max(0);
-        } else if p.color() != own
-            && p.color() != PlayerColor::Neutral
-            && !crate::attacks::matches_mask(pt, mask)
-        {
-            tac[2] += 1;
-        }
-    };
+    let mut put =
+        |slot: usize, end: crate::moves::LineEnd, behind: crate::moves::LineEnd, base: i64| {
+            let Some((coord, packed)) = end else { return };
+            let p = Piece::from_packed(packed);
+            let pt = p.piece_type();
+            let dist = ray_dist(coord, base);
+            if dist < rays[slot].0 {
+                rays[slot] = (dist, get_piece_value_base(pt), p.color(), pt);
+            }
+            if dist == 1
+                && ((p.color() == own && (pt == PieceType::Pawn || pt == PieceType::Guard))
+                    || pt.is_neutral_type())
+            {
+                ring = true;
+            }
+            let Some((_, sp)) = behind else { return };
+            let s = Piece::from_packed(sp);
+            let mask = if slot < 4 { DIAG_MASK } else { ORTHO_MASK };
+            if s.color() == own
+                || s.color() == PlayerColor::Neutral
+                || !crate::attacks::matches_mask(s.piece_type(), mask)
+            {
+                return;
+            }
+            if p.color() == own && !pt.is_royal() {
+                tac[0] += 1;
+                tac[1] += get_piece_value_base(pt).max(0);
+            } else if p.color() != own
+                && p.color() != PlayerColor::Neutral
+                && !crate::attacks::matches_mask(pt, mask)
+            {
+                tac[2] += 1;
+            }
+        };
     if let Some(l) = indices.rows.get(&ky) {
         let (f, f2, b, b2) = l.neighbors2(kx);
         put(4, f, f2, kx);
@@ -435,9 +440,9 @@ pub fn get_piece_value_base(piece_type: PieceType) -> i32 {
 
         // orthodox - adjusted for infinite chess where sliders dominate
         PieceType::Pawn => pawn(),
-        PieceType::Knight => knight(),     // Weak in infinite chess
-        PieceType::Bishop => bishop(),     // Strong slider
-        PieceType::Rook => rook(),         // Very strong in infinite chess
+        PieceType::Knight => knight(), // Weak in infinite chess
+        PieceType::Bishop => bishop(), // Strong slider
+        PieceType::Rook => rook(),     // Very strong in infinite chess
         PieceType::Queen => queen(),
         PieceType::Guard => guard(),
 
@@ -655,7 +660,10 @@ pub fn evaluate(game: &GameState) -> i32 {
 /// only noise on the few-cp approach gradient the mop-up term steers by.
 #[inline]
 pub fn net_off(game: &GameState) -> bool {
-    matches!(crate::evaluation::mop_up::active_mop_up(game), Some((_, 100)))
+    matches!(
+        crate::evaluation::mop_up::active_mop_up(game),
+        Some((_, 100))
+    )
 }
 
 /// Perform a full evaluation with detailed tracing.
@@ -1294,10 +1302,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         } else {
                                             let dist = w_promo - y;
                                             w_promo_dist = w_promo_dist.min(dist);
-                                            let bonus =
-                                                (pawn_full_value_threshold() - dist.min(255) as i32) * 6;
+                                            let bonus = (pawn_full_value_threshold()
+                                                - dist.min(255) as i32)
+                                                * 6;
 
-                                            w_pawn_bonus += bonus.max(-pawn_far_from_promo_max_penalty());
+                                            w_pawn_bonus +=
+                                                bonus.max(-pawn_far_from_promo_max_penalty());
                                             if y > white_max_y {
                                                 white_max_y = y;
                                             }
@@ -1335,10 +1345,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                         } else {
                                             let dist = y - b_promo;
                                             b_promo_dist = b_promo_dist.min(dist);
-                                            let bonus =
-                                                (pawn_full_value_threshold() - dist.min(255) as i32) * 6;
+                                            let bonus = (pawn_full_value_threshold()
+                                                - dist.min(255) as i32)
+                                                * 6;
 
-                                            b_pawn_bonus += bonus.max(-pawn_far_from_promo_max_penalty());
+                                            b_pawn_bonus +=
+                                                bonus.max(-pawn_far_from_promo_max_penalty());
                                             if y < black_min_y {
                                                 black_min_y = y;
                                             }
@@ -1389,7 +1401,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 king_tactics[0] = tac;
                                 (r, ring)
                             } else {
-                                king_rays_from_indices(&game.spatial_indices, wk.x, wk.y, PlayerColor::White)
+                                king_rays_from_indices(
+                                    &game.spatial_indices,
+                                    wk.x,
+                                    wk.y,
+                                    PlayerColor::White,
+                                )
                             };
                             for i in 0..8 {
                                 if r[i].0 < w_king_rays[i].0 {
@@ -1410,7 +1427,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 king_tactics[1] = tac;
                                 (r, ring)
                             } else {
-                                king_rays_from_indices(&game.spatial_indices, bk.x, bk.y, PlayerColor::Black)
+                                king_rays_from_indices(
+                                    &game.spatial_indices,
+                                    bk.x,
+                                    bk.y,
+                                    PlayerColor::Black,
+                                )
                             };
                             for i in 0..8 {
                                 if r[i].0 < b_king_rays[i].0 {
@@ -1578,6 +1600,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         // Sliders lose value only where rays are genuinely open;
                         // leapers lose their jump immunity only to a permanent Void.
+                        #[rustfmt::skip]
                         let (slider_geometry_ctx, leaper_geometry_ctx) = (|| {
                             let (bmin_x, bmax_x, bmin_y, bmax_y) =
                                 crate::moves::get_coord_bounds();
@@ -1781,11 +1804,10 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             // The cloud centre is kept in doubled units, so the king is doubled
                             // too and the distance halved back: translation-invariant.
                             let cloud_dist = |k: Option<Coordinate>| match (k, cloud_center) {
-                                (Some(k), Some(c)) => ((2 * k.x - c.x)
-                                    .abs()
-                                    .max((2 * k.y - c.y).abs())
-                                    / 2)
-                                    .min(255) as i32,
+                                (Some(k), Some(c)) => {
+                                    ((2 * k.x - c.x).abs().max((2 * k.y - c.y).abs()) / 2).min(255)
+                                        as i32
+                                }
                                 _ => 255,
                             };
                             let w_pd = if white_max_y != i64::MIN {
@@ -1981,7 +2003,11 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     }
     let mut rider_rays = [[None; 8] as RiderRays; MAX_BATCHED_RIDERS];
     if !rider_coords.is_empty() {
-        fill_knightrider_rays(&rider_coords, &game.board, &mut rider_rays[..rider_coords.len()]);
+        fill_knightrider_rays(
+            &rider_coords,
+            &game.board,
+            &mut rider_rays[..rider_coords.len()],
+        );
     }
 
     for (i, &(x, y, piece)) in piece_list.iter().enumerate() {
@@ -2214,16 +2240,15 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                     &crate::attacks::KING_OFFSETS,
                     4 * r / v.max(r),
+                ) + evaluate_leaper_positioning(
+                    x,
+                    y,
+                    piece.color(),
+                    cloud_center.as_ref(),
+                    PieceType::Guard,
+                    cloud_avg_spread,
+                    phase,
                 )
-                    + evaluate_leaper_positioning(
-                        x,
-                        y,
-                        piece.color(),
-                        cloud_center.as_ref(),
-                        PieceType::Guard,
-                        cloud_avg_spread,
-                        phase,
-                    )
             }
             // A knightrider rides along knight rays; on an unbounded board its
             // reach is unbounded so mobility-counting is meaningless. Use the
@@ -2239,9 +2264,11 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
                     phase,
                 ) + match rider_coords.iter().position(|&c| c == (x, y)) {
                     Some(i) => score_knightrider_rays(&rider_rays[i], piece.color(), phase),
-                    None => {
-                        score_knightrider_rays(&knightrider_rays(x, y, &game.board), piece.color(), phase)
-                    }
+                    None => score_knightrider_rays(
+                        &knightrider_rays(x, y, &game.board),
+                        piece.color(),
+                        phase,
+                    ),
                 }
             }
             _ => 0,
@@ -2260,7 +2287,10 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
             // rider to take part.
             let radius = if is_ortho || is_diag || is_queen {
                 piece_cloud_cheb_radius() as i64
-            } else if matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen) {
+            } else if matches!(
+                pt,
+                PieceType::Knightrider | PieceType::Rose | PieceType::Huygen
+            ) {
                 rider_cloud_radius() as i64
             } else {
                 leaper_cloud_radius() as i64
@@ -2455,12 +2485,7 @@ fn tropism_contribution(numerator: i32, d: i64, addend: i32) -> i32 {
 /// A ray toward a king is attack-relevant when it's open past `open_dist`, or
 /// its nearest piece is already an attacker slider that moves along it.
 #[inline]
-fn ray_pressured(
-    ray: &KingRay,
-    attacker: PlayerColor,
-    slider_mask: u32,
-    open_dist: i64,
-) -> bool {
+fn ray_pressured(ray: &KingRay, attacker: PlayerColor, slider_mask: u32, open_dist: i64) -> bool {
     ray.0 > open_dist || (ray.2 == attacker && (1u32 << (ray.3 as u8)) & slider_mask != 0)
 }
 
@@ -2682,11 +2707,7 @@ fn compute_attack_bonus_optimized(
 /// Congestion units for the two opposite rays sharing one spatial line: an own
 /// blocker one step out counts double what one two steps out does.
 #[inline]
-fn line_congestion(
-    line: Option<&crate::moves::SpatialLine>,
-    key: i64,
-    own: PlayerColor,
-) -> i32 {
+fn line_congestion(line: Option<&crate::moves::SpatialLine>, key: i64, own: PlayerColor) -> i32 {
     let Some(l) = line else { return 0 };
     let (coords, pieces) = l.slices();
     // Lines hold a handful of pieces, where a scan beats the branchy binary search.
@@ -2701,7 +2722,8 @@ fn line_congestion(
     // wall at a discount; neutral/enemy pawns are fixtures and wall in full.
     let wall_units = |p: Piece, d: i64| -> i32 {
         let base = 3 - d as i32;
-        if p.piece_type().is_neutral_type() || (p.color() != own && p.piece_type() == PieceType::Pawn)
+        if p.piece_type().is_neutral_type()
+            || (p.color() != own && p.piece_type() == PieceType::Pawn)
         {
             base
         } else if p.color() == own {
@@ -2736,7 +2758,8 @@ fn ends_congestion(
 ) -> i32 {
     let wall_units = |p: Piece, d: i64| -> i32 {
         let base = 3 - d as i32;
-        if p.piece_type().is_neutral_type() || (p.color() != own && p.piece_type() == PieceType::Pawn)
+        if p.piece_type().is_neutral_type()
+            || (p.color() != own && p.piece_type() == PieceType::Pawn)
         {
             base
         } else if p.color() == own {
@@ -2874,9 +2897,13 @@ pub fn evaluate_rook(
     {
         let idx = &game.spatial_indices;
         let units = congestion.unwrap_or_else(|| {
-            line_congestion(idx.rows.get(&y), x, color) + line_congestion(idx.cols.get(&x), y, color)
+            line_congestion(idx.rows.get(&y), x, color)
+                + line_congestion(idx.cols.get(&x), y, color)
         });
-        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
+        bonus -= taper(
+            units * SLIDER_CONGESTION_UNIT,
+            units * SLIDER_CONGESTION_UNIT / 2,
+        );
     }
 
     // Open / Semi-Open File Bonus
@@ -2957,7 +2984,10 @@ pub fn evaluate_queen(
                 + line_congestion(idx.diag1.get(&(x - y)), x, color)
                 + line_congestion(idx.diag2.get(&(x + y)), x, color)
         });
-        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
+        bonus -= taper(
+            units * SLIDER_CONGESTION_UNIT,
+            units * SLIDER_CONGESTION_UNIT / 2,
+        );
     }
 
     // Open / Semi-Open File Bonus
@@ -3010,7 +3040,10 @@ pub fn evaluate_bishop(
             line_congestion(idx.diag1.get(&(x - y)), x, color)
                 + line_congestion(idx.diag2.get(&(x + y)), x, color)
         });
-        bonus -= taper(units * SLIDER_CONGESTION_UNIT, units * SLIDER_CONGESTION_UNIT / 2);
+        bonus -= taper(
+            units * SLIDER_CONGESTION_UNIT,
+            units * SLIDER_CONGESTION_UNIT / 2,
+        );
     }
 
     // Scale king-targeting bonuses based on own win condition.
@@ -3193,8 +3226,7 @@ fn safe_check_units(
     use crate::attacks::{
         CAMEL_MASK, CAMEL_OFFSETS, DIAG_MASK, GIRAFFE_MASK, GIRAFFE_OFFSETS, HAWK_MASK,
         HAWK_OFFSETS, KNIGHT_MASK, KNIGHT_OFFSETS, KNIGHTRIDER_MASK, ORTHO_MASK, ZEBRA_MASK,
-        ZEBRA_OFFSETS,
-        matches_mask,
+        ZEBRA_OFFSETS, matches_mask,
     };
     // [knight, bishop, rook, queen] x [one square, several].
     const UNITS: [[i32; 2]; 4] = [[50, 80], [40, 60], [68, 119], [48, 70]];
@@ -3279,7 +3311,10 @@ fn safe_check_units(
         let (dx, dy) = (sx - px, sy - py);
         if matches_mask(pt, KNIGHT_MASK)
             && knight_step(dx, dy)
-            && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+            && game
+                .board
+                .get_piece(sx, sy)
+                .is_none_or(|p| p.color() != them)
         {
             return true;
         }
@@ -3388,7 +3423,10 @@ fn safe_check_units(
                         continue;
                     }
                     if !knight.contains(&(sx, sy))
-                        && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them)
+                        && game
+                            .board
+                            .get_piece(sx, sy)
+                            .is_none_or(|p| p.color() != them)
                         && clear(kx, ky, v, t)
                         && clear(px, py, w, u)
                         && safe(sx, sy)
@@ -3419,7 +3457,10 @@ fn safe_check_units(
                 let (sx, sy) = (kx + ox, ky + oy);
                 let (ddx, ddy) = ((sx - px).abs(), (sy - py).abs());
                 let leaps_there = steps.contains(&(ddx, ddy))
-                    && game.board.get_piece(sx, sy).is_none_or(|p| p.color() != them);
+                    && game
+                        .board
+                        .get_piece(sx, sy)
+                        .is_none_or(|p| p.color() != them);
                 if !knight.is_full()
                     && !knight.contains(&(sx, sy))
                     && (leaps_there || reaches(pt, px, py, sx, sy))
@@ -3551,6 +3592,7 @@ pub(crate) fn evaluate_king_shelter(
     // kind stands behind it; the tied-defender term never checks that.
     let idx = &game.spatial_indices;
     let pinned_cost = |bx: i64, by: i64, dx: i64, dy: i64, val: i32, bpt: PieceType| -> i32 {
+        #[rustfmt::skip]
         let behind = if dx == 0 {
             idx.cols.get(&bx).and_then(|l| l.find_nearest(by, dy)).map(|(_, pk)| pk)
         } else if dy == 0 {
@@ -3576,7 +3618,11 @@ pub(crate) fn evaluate_king_shelter(
         // A piece that slides along the pin line keeps most of its job; anything
         // else is frozen, so the cost scales with what it can no longer do.
         let cost = pin_opportunity_cost() * val / tied_defender_ref_value();
-        if crate::attacks::matches_mask(bpt, mask) { cost / 3 } else { cost }
+        if crate::attacks::matches_mask(bpt, mask) {
+            cost / 3
+        } else {
+            cost
+        }
     };
 
     let blocker_reduction_pct = |v: i32, d: i32| {
@@ -3616,7 +3662,11 @@ pub(crate) fn evaluate_king_shelter(
         let (dx, dy) = DIAG_DIRS[i];
         let border_dist = get_border_dist(dx, dy);
         let is_border_closest = i64::from(border_dist) < dist;
-        let actual_dist = if is_border_closest { i64::from(border_dist) } else { dist };
+        let actual_dist = if is_border_closest {
+            i64::from(border_dist)
+        } else {
+            dist
+        };
         let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
@@ -3626,11 +3676,7 @@ pub(crate) fn evaluate_king_shelter(
             } else if c == color {
                 blocker = Some((val, dist as i32));
                 tied_defender_penalty += 10 * val / tied_defender_ref_value();
-                pin_penalty += pinned_cost(
-                    king.x + dx * dist,
-                    king.y + dy * dist,
-                    dx, dy, val, pt,
-                );
+                pin_penalty += pinned_cost(king.x + dx * dist, king.y + dy * dist, dx, dy, val, pt);
             } else if c == PlayerColor::Neutral {
                 // Neutral pieces (Void/Obstacle)
                 // Void -> Perfect blocker (dist 1) like world border
@@ -3664,7 +3710,11 @@ pub(crate) fn evaluate_king_shelter(
         let (dx, dy) = ORTHO_DIRS[i];
         let border_dist = get_border_dist(dx, dy);
         let is_border_closest = i64::from(border_dist) < dist;
-        let actual_dist = if is_border_closest { i64::from(border_dist) } else { dist };
+        let actual_dist = if is_border_closest {
+            i64::from(border_dist)
+        } else {
+            dist
+        };
         let mut enemy_slider_aligned = false;
 
         if actual_dist <= 8 {
@@ -3673,11 +3723,7 @@ pub(crate) fn evaluate_king_shelter(
             } else if c == color {
                 blocker = Some((val, dist as i32));
                 tied_defender_penalty += 12 * val / tied_defender_ref_value();
-                pin_penalty += pinned_cost(
-                    king.x + dx * dist,
-                    king.y + dy * dist,
-                    dx, dy, val, pt,
-                );
+                pin_penalty += pinned_cost(king.x + dx * dist, king.y + dy * dist, dx, dy, val, pt);
             } else if c == PlayerColor::Neutral {
                 if pt == PieceType::Void {
                     blocker = Some((0, 1));
@@ -3737,48 +3783,44 @@ pub fn evaluate_pawn_structure(game: &GameState) -> i32 {
     // For standalone call, we must fill the vectors
     EVAL_WHITE_PAWNS.with(|wp_cell| {
         EVAL_BLACK_PAWNS.with(|bp_cell| {
-            {
-                {
-                    let wp = unsafe { &mut *wp_cell.get() };
-                    let bp = unsafe { &mut *bp_cell.get() };
-                    wp.clear();
-                    bp.clear();
+            let wp = unsafe { &mut *wp_cell.get() };
+            let bp = unsafe { &mut *bp_cell.get() };
+            wp.clear();
+            bp.clear();
 
-                    for (cx, cy, tile) in game.board.tiles.iter() {
-                        let mut bits = tile.occ_all;
-                        while bits != 0 {
-                            let idx = bits.trailing_zeros() as usize;
-                            bits &= bits - 1;
-                            let packed = tile.piece[idx];
-                            if packed == 0 {
-                                continue;
-                            }
-                            let piece = crate::board::Piece::from_packed(packed);
-                            let x = cx * 8 + (idx % 8) as i64;
-                            let y = cy * 8 + (idx / 8) as i64;
-                            if piece.piece_type() == PieceType::Pawn {
-                                if piece.color() == PlayerColor::White {
-                                    wp.push((x, y));
-                                } else {
-                                    bp.push((x, y));
-                                }
-                            }
+            for (cx, cy, tile) in game.board.tiles.iter() {
+                let mut bits = tile.occ_all;
+                while bits != 0 {
+                    let idx = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let packed = tile.piece[idx];
+                    if packed == 0 {
+                        continue;
+                    }
+                    let piece = crate::board::Piece::from_packed(packed);
+                    let x = cx * 8 + (idx % 8) as i64;
+                    let y = cy * 8 + (idx / 8) as i64;
+                    if piece.piece_type() == PieceType::Pawn {
+                        if piece.color() == PlayerColor::White {
+                            wp.push((x, y));
+                        } else {
+                            bp.push((x, y));
                         }
                     }
-                    sort_squares(wp);
-                    sort_squares(bp);
-
-                    evaluate_pawn_structure_traced(
-                        game,
-                        phase,
-                        game.white_royals.as_slice(),
-                        game.black_royals.as_slice(),
-                        &mut NoTrace,
-                        wp,
-                        bp,
-                    )
                 }
             }
+            sort_squares(wp);
+            sort_squares(bp);
+
+            evaluate_pawn_structure_traced(
+                game,
+                phase,
+                game.white_royals.as_slice(),
+                game.black_royals.as_slice(),
+                &mut NoTrace,
+                wp,
+                bp,
+            )
         })
     })
 }
@@ -3800,7 +3842,14 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
     // Bypassing cache if tracer is active to ensure we get a full breakdown.
     if tracer.is_active() {
         let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
-        hand_pawn_inputs(tracer, game, phase, &core.terms, &core.w_passed, &core.b_passed);
+        hand_pawn_inputs(
+            tracer,
+            game,
+            phase,
+            &core.terms,
+            &core.w_passed,
+            &core.b_passed,
+        );
         return taper(core.mg, core.eg)
             + score_passed_pawns(
                 game,
@@ -3840,7 +3889,14 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
         } else {
             return None;
         };
-        hand_pawn_inputs(tracer, game, phase, &entry.terms, &entry.w_passed, &entry.b_passed);
+        hand_pawn_inputs(
+            tracer,
+            game,
+            phase,
+            &entry.terms,
+            &entry.w_passed,
+            &entry.b_passed,
+        );
         Some(
             taper(entry.mg, entry.eg)
                 + score_passed_pawns(
@@ -3863,7 +3919,14 @@ pub fn evaluate_pawn_structure_traced<T: EvaluationTracer>(
 
     // Cache miss - compute pawn structure
     let core = compute_pawn_core(game, phase, tracer, white_pawns, black_pawns);
-    hand_pawn_inputs(tracer, game, phase, &core.terms, &core.w_passed, &core.b_passed);
+    hand_pawn_inputs(
+        tracer,
+        game,
+        phase,
+        &core.terms,
+        &core.w_passed,
+        &core.b_passed,
+    );
     let score = taper(core.mg, core.eg)
         + score_passed_pawns(
             game,
@@ -4231,7 +4294,13 @@ fn compute_pawn_core<T: EvaluationTracer>(
         );
     }
 
-    let t = |v: (i32, i32)| (v.0.clamp(-32000, 32000) as i16, v.1.clamp(-32000, 32000) as i16);
+    let t = |v: (i32, i32)| {
+        (
+            v.0.clamp(-32000, 32000) as i16,
+            v.1.clamp(-32000, 32000) as i16,
+        )
+    };
+    #[rustfmt::skip]
     let terms = [
         [t(w_doubled), t(w_candidate), t(w_connected), t(w_isolated), t(w_backward)],
         [t(b_doubled), t(b_candidate), t(b_connected), t(b_isolated), t(b_backward)],
@@ -4257,10 +4326,10 @@ fn chase_reach(pt: PieceType) -> Option<(i64, i64)> {
     match pt {
         PieceType::King | PieceType::Guard => Some((1, 2)),
         PieceType::Knight | PieceType::Centaur | PieceType::RoyalCentaur => Some((2, 3)),
-        PieceType::Camel => Some((3, 4)), // (3, 1) leaper
-        PieceType::Zebra => Some((3, 5)), // (3, 2) leaper
+        PieceType::Camel => Some((3, 4)),   // (3, 1) leaper
+        PieceType::Zebra => Some((3, 5)),   // (3, 2) leaper
         PieceType::Giraffe => Some((4, 5)), // (4, 1) leaper
-        PieceType::Hawk => Some((3, 6)), // leaps 2 or 3 spaces in any direction
+        PieceType::Hawk => Some((3, 6)),    // leaps 2 or 3 spaces in any direction
         PieceType::Rose => Some((6, 8)),
         // Pawns cannot leave their file to catch a passer on another one.
         PieceType::Pawn | PieceType::Obstacle | PieceType::Void => Some((0, 0)),
@@ -4423,12 +4492,14 @@ fn score_passed_pawns<T: EvaluationTracer>(
                     .get_or_insert_with(|| side_has_interceptor(game, PlayerColor::Black)),
             );
         let unstoppable_bonus = if unstoppable {
-            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
+            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32)
+                .max(0)
         } else {
             0
         };
-        w_passed_score +=
-            base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus + unstoppable_bonus;
+        w_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty
+            + safe_path_bonus
+            + unstoppable_bonus;
     }
 
     for &(bx, by) in b_passed {
@@ -4497,12 +4568,14 @@ fn score_passed_pawns<T: EvaluationTracer>(
                     .get_or_insert_with(|| side_has_interceptor(game, PlayerColor::White)),
             );
         let unstoppable_bonus = if unstoppable {
-            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32).max(0)
+            (unstoppable_passer_bonus() - unstoppable_passer_decay() * (dist_to_promo - 1) as i32)
+                .max(0)
         } else {
             0
         };
-        b_passed_score +=
-            base_bonus + friendly_king_bonus - enemy_king_penalty + safe_path_bonus + unstoppable_bonus;
+        b_passed_score += base_bonus + friendly_king_bonus - enemy_king_penalty
+            + safe_path_bonus
+            + unstoppable_bonus;
     }
 
     if tracer.is_active() {
@@ -4918,6 +4991,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn king_tactics_count_pins_and_discovered_checks() {
         // Knight pinned to the king by a rook on the file: one pin, worth a knight.
         let n = get_piece_value_base(PieceType::Knight) / 100;
@@ -4946,7 +5020,8 @@ mod tests {
         let mut game = GameState::new();
         game.setup_position_from_icn(icn);
         let king = game.white_royals[0];
-        let rays = king_rays_from_indices(&game.spatial_indices, king.x, king.y, PlayerColor::White).0;
+        let rays =
+            king_rays_from_indices(&game.spatial_indices, king.x, king.y, PlayerColor::White).0;
         let pieces: Vec<_> = game.board.iter().collect();
         safe_check_units(&game, &king, PlayerColor::White, &rays, &pieces)
     }
@@ -4965,6 +5040,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn safe_check_units_count_only_undefended_check_squares() {
         // The rook drops to (1,1) and checks down the open first rank; the file is shut.
         assert_eq!(white_safe_check_units("w (8;q|1;q) K5,1|k5,20|r1,10|P4,2|P5,2|P6,2"), 68);
@@ -5004,6 +5080,7 @@ mod tests {
     /// Their checking squares are found by reversing their own offsets from the
     /// royal, which stays finite however far from the origin the position sits.
     #[test]
+    #[rustfmt::skip]
     fn finite_leapers_deliver_safe_checks() {
         // Camel (1,3): from (2,6) it leaps to (3,3)... reversing from the king at
         // (0,0) the checking squares are the camel offsets themselves.
@@ -5026,7 +5103,12 @@ mod tests {
         let icn = "w (8;q|1;q) K5,1|R1,1|N2,1|B3,1|k5,8|r1,8|n2,8|b3,8|q4,8";
         let mut a = GameState::new();
         a.setup_position_from_icn(icn);
-        crate::moves::set_world_bounds(-1_000_000_000_000_000, 1_000_000_000_000_000, -1_000_000_000_000_000, 1_000_000_000_000_000);
+        crate::moves::set_world_bounds(
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        );
         let near = evaluate(&a);
 
         let mut b = GameState::new();
@@ -5035,8 +5117,16 @@ mod tests {
         crate::moves::set_world_bounds(-huge, huge, -huge, huge);
         let far = evaluate(&b);
 
-        crate::moves::set_world_bounds(-1_000_000_000_000_000, 1_000_000_000_000_000, -1_000_000_000_000_000, 1_000_000_000_000_000);
-        assert_eq!(near, far, "remote bounds must not change the geometry context");
+        crate::moves::set_world_bounds(
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        );
+        assert_eq!(
+            near, far,
+            "remote bounds must not change the geometry context"
+        );
     }
 
     /// Two encodings of "effectively unbounded" must generate the same moves. At
@@ -5132,7 +5222,10 @@ mod tests {
             }
         }
 
-        assert!(checked >= 10, "expected several mirror variants, saw {checked}");
+        assert!(
+            checked >= 10,
+            "expected several mirror variants, saw {checked}"
+        );
         assert!(offenders.is_empty(), "{}", offenders.join("; "));
     }
 
@@ -5580,13 +5673,7 @@ mod tests {
         let icn_1 = "w (8;q|1;q) K0,0|P4,6|k2,5";
         game.setup_position_from_icn(icn_1);
 
-        let is_unstoppable = passer_is_unstoppable(
-            &game,
-            (4, 8),
-            2,
-            PlayerColor::Black,
-            false,
-        );
+        let is_unstoppable = passer_is_unstoppable(&game, (4, 8), 2, PlayerColor::Black, false);
         assert!(
             is_unstoppable,
             "The black king at (2, 5) cannot stop the white pawn at (4, 6) from promoting."
@@ -5596,13 +5683,7 @@ mod tests {
         let icn_2 = "w (8;q|1;q) K0,0|k0,8|P4,6|n7,5";
         game.setup_position_from_icn(icn_2);
 
-        let is_unstoppable = passer_is_unstoppable(
-            &game,
-            (4, 8),
-            2,
-            PlayerColor::Black,
-            false,
-        );
+        let is_unstoppable = passer_is_unstoppable(&game, (4, 8), 2, PlayerColor::Black, false);
         assert!(
             !is_unstoppable,
             "The black knight at (7, 5) can stop the white pawn at (4, 6) from promoting."
@@ -5613,13 +5694,7 @@ mod tests {
         let icn_3 = "b (8;q|1;q) K0,0|P4,6|k1,5";
         game.setup_position_from_icn(icn_3);
 
-        let is_unstoppable = passer_is_unstoppable(
-            &game,
-            (4, 8),
-            2,
-            PlayerColor::Black,
-            false,
-        );
+        let is_unstoppable = passer_is_unstoppable(&game, (4, 8), 2, PlayerColor::Black, false);
         assert!(
             !is_unstoppable,
             "The black king at (1, 5) can stop the white pawn at (4, 6) from promoting; black has an \
@@ -5697,4 +5772,3 @@ mod tests {
         );
     }
 }
-

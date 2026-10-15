@@ -53,12 +53,14 @@ struct Geometry {
 
 impl Geometry {
     fn new() -> Self {
+        #[rustfmt::skip]
         const KING: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
         const ORTHO: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
         const DIAG: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
         let knight = leapers(1, 2);
         let (mut leaps, mut slides) = (Vec::new(), Vec::new());
         for kind in 0..KINDS {
+            #[rustfmt::skip]
             let (l, s): (Vec<Dir>, Vec<Dir>) = match kind {
                 0 | 13 => (KING.to_vec(), vec![]),
                 1 | 18 => ([&KING[..], &knight[..]].concat(), vec![]),
@@ -88,6 +90,7 @@ impl Geometry {
             leaps.push(table);
             slides.push(s);
         }
+        #[rustfmt::skip]
         let hops = [(-2, -1), (-1, -2), (1, -2), (2, -1), (2, 1), (1, 2), (-1, 2), (-2, 1)];
         let mut spirals = Vec::new();
         for i in 0..8i32 {
@@ -103,7 +106,11 @@ impl Geometry {
                 spirals.push(spiral);
             }
         }
-        Geometry { leaps, slides, spirals }
+        Geometry {
+            leaps,
+            slides,
+            spirals,
+        }
     }
 
     /// Squares a piece of `kind` on `sq` attacks given occupancy `occ`.
@@ -223,18 +230,24 @@ impl Army<'_> {
     fn royal_attacked(&self, sq: &[usize], alive: u32, white: bool, occ: u64) -> bool {
         let n = sq.len();
         let mut targets = 0u64;
-        for i in (0..n).filter(|&i| alive >> i & 1 == 1 && self.white(i) == white && self.royal(i)) {
+        for i in (0..n).filter(|&i| alive >> i & 1 == 1 && self.white(i) == white && self.royal(i))
+        {
             targets |= 1 << sq[i];
         }
         (0..n).any(|i| {
-            alive >> i & 1 == 1 && self.white(i) != white && self.geo.attacks(self.kind(i), sq[i], occ) & targets != 0
+            alive >> i & 1 == 1
+                && self.white(i) != white
+                && self.geo.attacks(self.kind(i), sq[i], occ) & targets != 0
         })
     }
 
     fn spread(sq: &[usize]) -> bool {
         (0..sq.len()).all(|i| {
             (0..i).all(|j| {
-                let (dx, dy) = ((sq[i] % 8) as i32 - (sq[j] % 8) as i32, (sq[i] / 8) as i32 - (sq[j] / 8) as i32);
+                let (dx, dy) = (
+                    (sq[i] % 8) as i32 - (sq[j] % 8) as i32,
+                    (sq[i] / 8) as i32 - (sq[j] / 8) as i32,
+                );
                 dx.abs().max(dy.abs()) >= SPREAD
             })
         })
@@ -250,7 +263,11 @@ impl Army<'_> {
         loop {
             // Children are read as the last round left them, so round r finds the mates
             // in r - 1 plies and the round count gives the longest mate.
-            let snapshot = |v: &[AtomicU64]| v.iter().map(|w| AtomicU64::new(w.load(Ordering::Relaxed))).collect::<Vec<_>>();
+            let snapshot = |v: &[AtomicU64]| {
+                v.iter()
+                    .map(|w| AtomicU64::new(w.load(Ordering::Relaxed)))
+                    .collect::<Vec<_>>()
+            };
             let (won_before, lost_before) = (snapshot(&won), snapshot(&lost));
             let changed = AtomicUsize::new(0);
             let chunk = size.div_ceil(threads);
@@ -270,7 +287,9 @@ impl Army<'_> {
                             }
                             let occ = sq.iter().fold(0u64, |o, &s| o | 1 << s);
                             let all = (1u32 << n) - 1;
-                            if !get(lost, idx) && !self.royal_attacked(sq, all, true, occ) && self.black_lost(sq, idx, occ, won_before)
+                            if !get(lost, idx)
+                                && !self.royal_attacked(sq, all, true, occ)
+                                && self.black_lost(sq, idx, occ, won_before)
                             {
                                 set(lost, idx);
                                 changed.fetch_add(1, Ordering::Relaxed);
@@ -278,7 +297,9 @@ impl Army<'_> {
                                     spread_won.store(true, Ordering::Relaxed);
                                 }
                             }
-                            if !get(won, idx) && !self.royal_attacked(sq, all, false, occ) && self.white_wins(sq, idx, occ, lost_before)
+                            if !get(won, idx)
+                                && !self.royal_attacked(sq, all, false, occ)
+                                && self.white_wins(sq, idx, occ, lost_before)
                             {
                                 set(won, idx);
                                 changed.fetch_add(1, Ordering::Relaxed);
@@ -316,14 +337,22 @@ impl Army<'_> {
             }
         }
         // The last round found nothing new, and mate itself is found in round 1.
-        Outcome { forced: forced_early, won, won_count, legal_count, longest: rounds.saturating_sub(2) }
+        Outcome {
+            forced: forced_early,
+            won,
+            won_count,
+            legal_count,
+            longest: rounds.saturating_sub(2),
+        }
     }
 
     /// Black to move is mated, or every legal move reaches a White win.
     fn black_lost(&self, sq: &[usize], idx: usize, occ: u64, won: &[AtomicU64]) -> bool {
         let n = sq.len();
         let all = (1u32 << n) - 1;
-        let black_occ = (0..n).filter(|&i| !self.white(i)).fold(0u64, |o, i| o | 1 << sq[i]);
+        let black_occ = (0..n)
+            .filter(|&i| !self.white(i))
+            .fold(0u64, |o, i| o | 1 << sq[i]);
         let mut any_move = false;
         let mut next = [0usize; BOUNDED_CAP];
         for i in (0..n).filter(|&i| !self.white(i)) {
@@ -393,7 +422,11 @@ fn label(set: &[u8]) -> String {
             .filter(|&&s| (s < KINDS) == white)
             .map(|&s| {
                 let code = KIND_CODES[(s % KINDS) as usize];
-                if white { code.to_string() } else { code.to_lowercase() }
+                if white {
+                    code.to_string()
+                } else {
+                    code.to_lowercase()
+                }
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -414,11 +447,13 @@ enum Verdict {
 
 /// White's armies one piece smaller that are cores themselves.
 fn sub_cores<'a>(set: &'a [u8], cores: &'a HashSet<&[u8]>) -> impl Iterator<Item = Vec<u8>> + 'a {
-    (0..set.len()).filter(|&j| set[j] < KINDS).filter_map(move |j| {
-        let mut sub = set.to_vec();
-        sub.remove(j);
-        cores.contains(&sub[..]).then_some(sub)
-    })
+    (0..set.len())
+        .filter(|&j| set[j] < KINDS)
+        .filter_map(move |j| {
+            let mut sub = set.to_vec();
+            sub.remove(j);
+            cores.contains(&sub[..]).then_some(sub)
+        })
 }
 
 /// The cores to solve: all of them without a previous report; otherwise the new
@@ -431,7 +466,9 @@ fn needed_cores(cores: &[Vec<u8>], previous: &HashMap<String, String>) -> HashSe
     let mut changed: HashSet<Vec<u8>> = HashSet::new();
     // Smallest first, so a core's smaller armies are decided before it.
     for set in cores {
-        if !previous.contains_key(&label(set)) || sub_cores(set, &all).any(|sub| changed.contains(&sub)) {
+        if !previous.contains_key(&label(set))
+            || sub_cores(set, &all).any(|sub| changed.contains(&sub))
+        {
             changed.insert(set.clone());
         }
     }
@@ -439,7 +476,9 @@ fn needed_cores(cores: &[Vec<u8>], previous: &HashMap<String, String>) -> HashSe
     let mut todo: Vec<Vec<u8>> = changed.into_iter().collect();
     while let Some(set) = todo.pop() {
         for sub in sub_cores(&set, &all) {
-            let helpmate = previous.get(&label(&sub)).is_some_and(|l| l.split('\t').nth(1) == Some("helpmate-only"));
+            let helpmate = previous
+                .get(&label(&sub))
+                .is_some_and(|l| l.split('\t').nth(1) == Some("helpmate-only"));
             if helpmate && needed.insert(sub.clone()) {
                 todo.push(sub);
             }
@@ -450,12 +489,17 @@ fn needed_cores(cores: &[Vec<u8>], previous: &HashMap<String, String>) -> HashSe
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let out = args.next().expect("usage: bounded_helpmate <out dir> [threads]");
+    let out = args
+        .next()
+        .expect("usage: bounded_helpmate <out dir> [threads]");
     let threads: usize = args.next().map_or(12, |t| t.parse().unwrap());
     let previous: HashMap<String, String> = args.next().map_or_else(HashMap::new, |path| {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         text.lines()
-            .filter_map(|l| l.split_once('\t').map(|(name, _)| (name.to_string(), l.to_string())))
+            .filter_map(|l| {
+                l.split_once('\t')
+                    .map(|(name, _)| (name.to_string(), l.to_string()))
+            })
             .collect()
     });
     std::fs::create_dir_all(&out).unwrap();
@@ -465,7 +509,10 @@ fn main() {
     let mut verdicts: HashMap<Vec<u8>, Verdict> = HashMap::new();
     let mut cores = Vec::new();
     mating_sets::for_each_set(BOUNDED_CAP, |set| {
-        let black_royals_only = set.iter().filter(|&&s| s >= KINDS).all(|&s| mating_sets::is_royal_symbol(s));
+        let black_royals_only = set
+            .iter()
+            .filter(|&&s| s >= KINDS)
+            .all(|&s| mating_sets::is_royal_symbol(s));
         let has = |white: bool| set.iter().any(|&s| (s < KINDS) == white);
         if black_royals_only && has(true) && has(false) && !mating_sets::is_dead_bounded(set) {
             let mut v = set.to_vec();
@@ -474,7 +521,11 @@ fn main() {
         }
     });
     let needed = needed_cores(&cores, &previous);
-    println!("{} bounded cores, {} to solve, {threads} threads", cores.len(), needed.len());
+    println!(
+        "{} bounded cores, {} to solve, {threads} threads",
+        cores.len(),
+        needed.len()
+    );
     let started = std::time::Instant::now();
     for (done, set) in cores.iter().enumerate() {
         let name = label(set);
@@ -519,11 +570,19 @@ fn main() {
             inherited = Some(Verdict::Unknown);
         }
         let verdict = if let Some(v) = inherited {
-            let tag = if matches!(v, Verdict::Forced) { "forced (smaller army)" } else { "unknown" };
+            let tag = if matches!(v, Verdict::Forced) {
+                "forced (smaller army)"
+            } else {
+                "unknown"
+            };
             writeln!(report, "{name}\t{tag}").unwrap();
             v
         } else {
-            let army = Army { geo: &geo, syms: set.clone(), subs };
+            let army = Army {
+                geo: &geo,
+                syms: set.clone(),
+                subs,
+            };
             let o = army.solve(threads);
             let tag = if o.forced { "forced" } else { "helpmate-only" };
             writeln!(
@@ -532,7 +591,13 @@ fn main() {
                 o.won_count, o.legal_count, o.longest
             )
             .unwrap();
-            println!("{name}: {tag} ({} of {} won, longest mate {} plies, {:.0}s)", o.won_count, o.legal_count, o.longest, started.elapsed().as_secs_f64());
+            println!(
+                "{name}: {tag} ({} of {} won, longest mate {} plies, {:.0}s)",
+                o.won_count,
+                o.legal_count,
+                o.longest,
+                started.elapsed().as_secs_f64()
+            );
             if o.forced {
                 Verdict::Forced
             } else {
@@ -543,9 +608,22 @@ fn main() {
         report.flush().unwrap();
         verdicts.insert(set.clone(), verdict);
         if done % 100 == 99 {
-            println!("{}/{} cores, {:.0}s", done + 1, cores.len(), started.elapsed().as_secs_f64());
+            println!(
+                "{}/{} cores, {:.0}s",
+                done + 1,
+                cores.len(),
+                started.elapsed().as_secs_f64()
+            );
         }
     }
-    std::fs::write(format!("{out}/helpmate_only.txt"), helpmates.join("\n") + "\n").unwrap();
-    println!("done in {:.0}s: {} helpmate-only", started.elapsed().as_secs_f64(), helpmates.len());
+    std::fs::write(
+        format!("{out}/helpmate_only.txt"),
+        helpmates.join("\n") + "\n",
+    )
+    .unwrap();
+    println!(
+        "done in {:.0}s: {} helpmate-only",
+        started.elapsed().as_secs_f64(),
+        helpmates.len()
+    );
 }

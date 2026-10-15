@@ -36,6 +36,7 @@ const START_RADIUS: i32 = 6;
 const SPREAD: i32 = 3;
 const STARTS: usize = 4;
 
+#[rustfmt::skip]
 const KING: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
 const ORTHO: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const DIAG: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -109,6 +110,7 @@ fn is_prime(n: i32) -> bool {
 
 /// The rose's 16 spirals as cumulative waypoints.
 fn rose_spirals() -> Vec<Vec<(i32, i32)>> {
+    #[rustfmt::skip]
     let hops = [(-2, -1), (-1, -2), (1, -2), (2, -1), (2, 1), (1, 2), (-1, 2), (-2, 1)];
     let mut out = Vec::new();
     for i in 0..8i32 {
@@ -158,7 +160,10 @@ impl Pos {
     fn hash(&self) -> u64 {
         let mut h = if self.d_to_move { 0x5555 } else { 0 };
         for p in &self.pcs[..self.n] {
-            let k = p.kind as u64 | (p.side as u64) << 5 | ((p.x + 4096) as u64) << 6 | ((p.y + 4096) as u64) << 20;
+            let k = p.kind as u64
+                | (p.side as u64) << 5
+                | ((p.x + 4096) as u64) << 6
+                | ((p.y + 4096) as u64) << 20;
             h ^= splitmix(k);
         }
         splitmix(h)
@@ -192,7 +197,11 @@ impl World {
         }
         for &(ax, ay) in &def.slides {
             let k = if ax != 0 { dx / ax } else { dy / ay };
-            if k >= 1 && k * ax == dx && k * ay == dy && (1..k).all(|s| pos.at(p.x + ax * s, p.y + ay * s).is_none()) {
+            if k >= 1
+                && k * ax == dx
+                && k * ay == dy
+                && (1..k).all(|s| pos.at(p.x + ax * s, p.y + ay * s).is_none())
+            {
                 return true;
             }
         }
@@ -200,7 +209,10 @@ impl World {
             let d = (dx + dy).abs();
             if is_prime(d) {
                 let (sx, sy) = (dx.signum(), dy.signum());
-                if (2..d).filter(|&s| is_prime(s)).all(|s| pos.at(p.x + sx * s, p.y + sy * s).is_none()) {
+                if (2..d)
+                    .filter(|&s| is_prime(s))
+                    .all(|s| pos.at(p.x + sx * s, p.y + sy * s).is_none())
+                {
                     return true;
                 }
             }
@@ -208,7 +220,9 @@ impl World {
         if p.kind == RO {
             for spiral in &self.spirals {
                 if let Some(h) = spiral.iter().position(|&w| w == (dx, dy))
-                    && spiral[..h].iter().all(|&(wx, wy)| pos.at(p.x + wx, p.y + wy).is_none())
+                    && spiral[..h]
+                        .iter()
+                        .all(|&(wx, wy)| pos.at(p.x + wx, p.y + wy).is_none())
                 {
                     return true;
                 }
@@ -224,7 +238,9 @@ impl World {
     fn royal_attacked(&self, pos: &Pos, side: u8) -> bool {
         (0..pos.n).any(|i| {
             let p = pos.pcs[i];
-            p.side == side && self.defs[p.kind as usize].royal && self.attacked_by(pos, 1 - side, p.x, p.y)
+            p.side == side
+                && self.defs[p.kind as usize].royal
+                && self.attacked_by(pos, 1 - side, p.x, p.y)
         })
     }
 
@@ -309,9 +325,7 @@ impl World {
                     next.pcs[j] = next.pcs[next.n - 1];
                     next.n -= 1;
                 }
-                let me = (0..next.n)
-                    .find(|&k| next.pcs[k] == pos.pcs[i])
-                    .unwrap();
+                let me = (0..next.n).find(|&k| next.pcs[k] == pos.pcs[i]).unwrap();
                 next.pcs[me].x = x;
                 next.pcs[me].y = y;
                 next.d_to_move = !pos.d_to_move;
@@ -373,7 +387,11 @@ impl Prover<'_> {
                 return (INF, 0);
             }
             if kids.is_empty() {
-                return if self.world.royal_attacked(pos, D) { (0, INF) } else { (INF, 0) };
+                return if self.world.royal_attacked(pos, D) {
+                    (0, INF)
+                } else {
+                    (INF, 0)
+                };
             }
             if depth == 0 {
                 return (INF, 0);
@@ -422,7 +440,9 @@ impl Prover<'_> {
                 if nums.iter().any(|n| f(n) == INF) {
                     INF
                 } else {
-                    nums.iter().fold(0u32, |a, n| a.saturating_add(f(n))).min(BIG)
+                    nums.iter()
+                        .fold(0u32, |a, n| a.saturating_add(f(n)))
+                        .min(BIG)
                 }
             };
             let (pn, dn) = if or_node {
@@ -449,9 +469,15 @@ impl Prover<'_> {
             // 1+epsilon: let the child run past its sibling a little before switching.
             let widen = |x: u32| x.saturating_add(x / 4).saturating_add(1).min(BIG);
             let (t_pn, t_dn) = if or_node {
-                (th_pn.min(widen(second)), (th_dn - dn).saturating_add(c_dn).min(BIG))
+                (
+                    th_pn.min(widen(second)),
+                    (th_dn - dn).saturating_add(c_dn).min(BIG),
+                )
             } else {
-                ((th_pn - pn).saturating_add(c_pn).min(BIG), th_dn.min(widen(second)))
+                (
+                    (th_pn - pn).saturating_add(c_pn).min(BIG),
+                    th_dn.min(widen(second)),
+                )
             };
             let kid = kids[best];
             self.mid(&kid, depth - 1, t_pn, t_dn);
@@ -472,7 +498,11 @@ impl Prover<'_> {
                 let (pn, dn) = self.mid(pos, depth, INF, INF);
                 if pn == 0 || dn == 0 || self.nodes >= self.budget {
                     if std::env::var("FORCED_DEBUG").is_ok() {
-                        eprintln!("  depth {depth}: pn {pn} dn {dn} nodes {} {:?}", self.nodes, &pos.pcs[..pos.n]);
+                        eprintln!(
+                            "  depth {depth}: pn {pn} dn {dn} nodes {} {:?}",
+                            self.nodes,
+                            &pos.pcs[..pos.n]
+                        );
                     }
                     break pn == 0;
                 }
@@ -579,7 +609,9 @@ fn side_of(v: i32) -> u8 {
 
 /// Classes a coordinate value belongs to (the classes overlap at +-FR).
 fn classes_of(v: i32) -> u8 {
-    (if v <= -FR { 1 } else { 0 }) | (if v.abs() <= FR { 2 } else { 0 }) | (if v >= FR { 4 } else { 0 })
+    (if v <= -FR { 1 } else { 0 })
+        | (if v.abs() <= FR { 2 } else { 0 })
+        | (if v >= FR { 4 } else { 0 })
 }
 
 /// Whether `p`, at Chebyshev distance >= FR, fits the side sets.
@@ -617,7 +649,11 @@ impl<'a> Frame<'a> {
                     }
                 }
             }
-            let steps = if kind == P { vec![(0, 1), (0, 2)] } else { KING.to_vec() };
+            let steps = if kind == P {
+                vec![(0, 1), (0, 2)]
+            } else {
+                KING.to_vec()
+            };
             let mut slow_entry = Vec::new();
             if class == Class::Slow {
                 for sx in 1..8u8 {
@@ -625,7 +661,10 @@ impl<'a> Frame<'a> {
                         let mut cells = Vec::new();
                         for x in -FR..=FR {
                             for y in -FR..=FR {
-                                if steps.iter().any(|&(ox, oy)| in_region(sx, sy, (x - ox, y - oy))) {
+                                if steps
+                                    .iter()
+                                    .any(|&(ox, oy)| in_region(sx, sy, (x - ox, y - oy)))
+                                {
                                     cells.push((x, y));
                                 }
                             }
@@ -634,7 +673,14 @@ impl<'a> Frame<'a> {
                     }
                 }
             }
-            pieces.push(FKind { kind, class, royal: def.royal, leap_entry, steps, slow_entry });
+            pieces.push(FKind {
+                kind,
+                class,
+                royal: def.royal,
+                leap_entry,
+                steps,
+                slow_entry,
+            });
         }
         let sizes = pieces
             .iter()
@@ -647,7 +693,14 @@ impl<'a> Frame<'a> {
             _ => {}
         }
         let any_royal = pieces.iter().any(|p| p.royal);
-        Frame { world, pieces, royal, any_royal, sizes, targets }
+        Frame {
+            world,
+            pieces,
+            royal,
+            any_royal,
+            sizes,
+            targets,
+        }
     }
 
     fn encode_cell(&self, i: usize, c: Cell) -> usize {
@@ -693,7 +746,13 @@ impl<'a> Frame<'a> {
 
     /// Whether an attacker at `from` attacks `to`; squares outside the frame count
     /// as empty, which only helps the attacker.
-    fn piece_attacks(&self, kind: u8, from: (i32, i32), to: (i32, i32), occ: &dyn Fn(i32, i32) -> bool) -> bool {
+    fn piece_attacks(
+        &self,
+        kind: u8,
+        from: (i32, i32),
+        to: (i32, i32),
+        occ: &dyn Fn(i32, i32) -> bool,
+    ) -> bool {
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         if dx == 0 && dy == 0 {
             return false;
@@ -707,7 +766,10 @@ impl<'a> Frame<'a> {
         }
         def.slides.iter().any(|&(ax, ay)| {
             let k = if ax != 0 { dx / ax } else { dy / ay };
-            k >= 1 && k * ax == dx && k * ay == dy && (1..k).all(|s| !occ(from.0 + ax * s, from.1 + ay * s))
+            k >= 1
+                && k * ax == dx
+                && k * ay == dy
+                && (1..k).all(|s| !occ(from.0 + ax * s, from.1 + ay * s))
         })
     }
 
@@ -728,7 +790,10 @@ impl<'a> Frame<'a> {
         }
         def.slides.iter().any(|&(ax, ay)| {
             let k = if ax != 0 { dx / ax } else { dy / ay };
-            k >= 1 && k * ax == dx && k * ay == dy && (1..k).all(|s| !occ(r.0 + ax * s, r.1 + ay * s))
+            k >= 1
+                && k * ax == dx
+                && k * ay == dy
+                && (1..k).all(|s| !occ(r.0 + ax * s, r.1 + ay * s))
         })
     }
 
@@ -970,7 +1035,11 @@ fn set_bit(v: &mut [u64], i: usize) {
 /// Whether the defender escapes from every start in the frame game.
 fn frame_escapes(world: &World, set: &[u8], starts: &[Pos]) -> bool {
     let royal = set.iter().find(|&&s| s / KINDS == 1).unwrap() % KINDS;
-    let attackers: Vec<u8> = set.iter().filter(|&&s| s / KINDS == 0).map(|&s| s % KINDS).collect();
+    let attackers: Vec<u8> = set
+        .iter()
+        .filter(|&&s| s / KINDS == 0)
+        .map(|&s| s % KINDS)
+        .collect();
     let frame = Frame::new(world, &attackers, royal);
     let start_ids: Vec<usize> = starts
         .iter()
@@ -978,7 +1047,9 @@ fn frame_escapes(world: &World, set: &[u8], starts: &[Pos]) -> bool {
             let mut cells = Vec::new();
             let mut used = vec![false; s.n];
             for &k in &attackers {
-                let j = (0..s.n).find(|&j| !used[j] && s.pcs[j].side == A && s.pcs[j].kind == k).unwrap();
+                let j = (0..s.n)
+                    .find(|&j| !used[j] && s.pcs[j].side == A && s.pcs[j].kind == k)
+                    .unwrap();
                 used[j] = true;
                 assert!(in_frame(s.pcs[j].x, s.pcs[j].y), "start outside the frame");
                 cells.push(Cell::In(s.pcs[j].x, s.pcs[j].y));
@@ -1030,7 +1101,9 @@ fn every_spread_start_escapes(frame: &Frame, win_d: &[u64]) -> bool {
         let quiet = (0..n).all(|i| {
             !frame.piece_attacks(frame.pieces[i].kind, sq[i + 1], (0, 0), &occ)
                 && !frame.royal_attacks((0, 0), sq[i + 1], &occ)
-                && (0..n).all(|j| i == j || !frame.piece_attacks(frame.pieces[i].kind, sq[i + 1], sq[j + 1], &occ))
+                && (0..n).all(|j| {
+                    i == j || !frame.piece_attacks(frame.pieces[i].kind, sq[i + 1], sq[j + 1], &occ)
+                })
         });
         if quiet {
             return false;
@@ -1096,12 +1169,20 @@ fn walk_back(frame: &Frame, start_ids: &[usize]) -> Option<Vec<u64>> {
 
 fn label(set: &[u8]) -> String {
     let side = |c: u8| -> String {
-        let mut v: Vec<u8> = set.iter().filter(|&&s| s / KINDS == c).map(|&s| s % KINDS).collect();
+        let mut v: Vec<u8> = set
+            .iter()
+            .filter(|&&s| s / KINDS == c)
+            .map(|&s| s % KINDS)
+            .collect();
         v.sort();
         v.iter()
             .map(|&k| {
                 let code = KIND_CODES[k as usize];
-                if c == 0 { code.to_string() } else { code.to_lowercase() }
+                if c == 0 {
+                    code.to_string()
+                } else {
+                    code.to_lowercase()
+                }
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -1118,12 +1199,20 @@ fn spread_start(world: &World, set: &[u8], seed: u64) -> Option<Pos> {
         (rng % (2 * n as u64 + 1)) as i32 - n
     };
     'attempt: for _ in 0..20_000 {
-        let mut pos = Pos { pcs: [Pc::default(); 5], n: 0, d_to_move: true };
+        let mut pos = Pos {
+            pcs: [Pc::default(); 5],
+            n: 0,
+            d_to_move: true,
+        };
         let mut order: Vec<u8> = set.iter().copied().filter(|&s| s / KINDS == 1).collect();
         order.extend(set.iter().copied().filter(|&s| s / KINDS == 0));
         for (i, &s) in order.iter().enumerate() {
             let (kind, side) = (s % KINDS, s / KINDS);
-            let (x, y) = if i == 0 { (0, 0) } else { (next(START_RADIUS), next(START_RADIUS)) };
+            let (x, y) = if i == 0 {
+                (0, 0)
+            } else {
+                (next(START_RADIUS), next(START_RADIUS))
+            };
             let parity_ok = match kind {
                 5 | 14 => (x + y).rem_euclid(2) == 0,
                 6 | 15 => (x + y).rem_euclid(2) == 1,
@@ -1190,7 +1279,13 @@ fn classify(
     proven: &std::collections::HashSet<Vec<u8>>,
 ) -> Verdict {
     let starts: Vec<Pos> = (0..STARTS as u64)
-        .filter_map(|i| spread_start(world, set, splitmix(i * 7919 + set.iter().map(|&s| s as u64).sum::<u64>())))
+        .filter_map(|i| {
+            spread_start(
+                world,
+                set,
+                splitmix(i * 7919 + set.iter().map(|&s| s as u64).sum::<u64>()),
+            )
+        })
         .collect();
     if starts.len() < STARTS {
         return Verdict::Unknown("no spread start");
@@ -1226,22 +1321,36 @@ fn classify(
         let t = std::time::Instant::now();
         let escaped = frame_escapes(world, set, &starts);
         if check {
-            eprintln!("  walk-back {}: escape {escaped}, forced {forced}, {:.1}s", label(set), t.elapsed().as_secs_f64());
+            eprintln!(
+                "  walk-back {}: escape {escaped}, forced {forced}, {:.1}s",
+                label(set),
+                t.elapsed().as_secs_f64()
+            );
         }
         if escaped && forced {
-            panic!("{}: proved forced yet the walk-back finds an escape", label(set));
+            panic!(
+                "{}: proved forced yet the walk-back finds an escape",
+                label(set)
+            );
         }
         if escaped {
             return Verdict::Escape;
         }
     }
-    if forced { Verdict::Forced(total) } else { Verdict::Unknown("not proven") }
+    if forced {
+        Verdict::Forced(total)
+    } else {
+        Verdict::Unknown("not proven")
+    }
 }
 
 /// Runs the forced prover with `budget` on every core of a helpmate-only list; a
 /// proof there contradicts the walk-back and fails loudly.
 fn verify_escapes(path: &str, threads: usize, budget: u64) {
-    let world = World { defs: defs(), spirals: rose_spirals() };
+    let world = World {
+        defs: defs(),
+        spirals: rose_spirals(),
+    };
     let cores: Vec<Vec<u8>> = std::fs::read_to_string(path)
         .unwrap()
         .lines()
@@ -1251,7 +1360,13 @@ fn verify_escapes(path: &str, threads: usize, budget: u64) {
             let side = |t: &str, c: u8| -> Vec<u8> {
                 t.split(',')
                     .filter(|x| !x.is_empty())
-                    .map(|x| c * KINDS + KIND_CODES.iter().position(|k| k.eq_ignore_ascii_case(x)).unwrap() as u8)
+                    .map(|x| {
+                        c * KINDS
+                            + KIND_CODES
+                                .iter()
+                                .position(|k| k.eq_ignore_ascii_case(x))
+                                .unwrap() as u8
+                    })
                     .collect()
             };
             let mut v = side(w, 0);
@@ -1264,19 +1379,30 @@ fn verify_escapes(path: &str, threads: usize, budget: u64) {
     let bad = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                if i >= cores.len() {
-                    break;
-                }
-                let set = &cores[i];
-                let seed = set.iter().map(|&s| s as u64).sum::<u64>();
-                let starts: Vec<Pos> = (0..STARTS as u64)
-                    .filter_map(|k| spread_start(&world, set, splitmix(k * 7919 + seed)))
-                    .collect();
-                let mut prover = Prover { world: &world, tt: vec![Entry::default(); 1 << 22], nodes: 0, budget };
-                if let Some(s) = starts.iter().find(|s| prover.proves(s)) {
-                    bad.lock().unwrap().push(format!("{}: forced from {:?}", label(set), &s.pcs[..s.n]));
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= cores.len() {
+                        break;
+                    }
+                    let set = &cores[i];
+                    let seed = set.iter().map(|&s| s as u64).sum::<u64>();
+                    let starts: Vec<Pos> = (0..STARTS as u64)
+                        .filter_map(|k| spread_start(&world, set, splitmix(k * 7919 + seed)))
+                        .collect();
+                    let mut prover = Prover {
+                        world: &world,
+                        tt: vec![Entry::default(); 1 << 22],
+                        nodes: 0,
+                        budget,
+                    };
+                    if let Some(s) = starts.iter().find(|s| prover.proves(s)) {
+                        bad.lock().unwrap().push(format!(
+                            "{}: forced from {:?}",
+                            label(set),
+                            &s.pcs[..s.n]
+                        ));
+                    }
                 }
             });
         }
@@ -1285,13 +1411,19 @@ fn verify_escapes(path: &str, threads: usize, budget: u64) {
     for b in &bad {
         eprintln!("CONTRADICTION {b}");
     }
-    eprintln!("{} helpmate-only cores checked with {budget} nodes per start: {} contradictions", cores.len(), bad.len());
+    eprintln!(
+        "{} helpmate-only cores checked with {budget} nodes per start: {} contradictions",
+        cores.len(),
+        bad.len()
+    );
     assert!(bad.is_empty());
 }
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let out_dir = args.next().expect("usage: forced_gen <out dir> [threads] [budget] [filter]");
+    let out_dir = args
+        .next()
+        .expect("usage: forced_gen <out dir> [threads] [budget] [filter]");
     let threads: usize = args.next().map_or(12, |s| s.parse().unwrap());
     let budget: u64 = args.next().map_or(300_000, |s| s.parse().unwrap());
     let filter = args.next();
@@ -1305,7 +1437,10 @@ fn main() {
     // White attacks; Black keeps only royals. One of each bishop-color mirror pair.
     let mut cores: Vec<Vec<u8>> = Vec::new();
     mating_sets::for_each_set(mating_sets::CAP, |set| {
-        let black_royals_only = set.iter().filter(|&&s| s / KINDS == 1).all(|&s| mating_sets::is_royal_symbol(s));
+        let black_royals_only = set
+            .iter()
+            .filter(|&&s| s / KINDS == 1)
+            .all(|&s| mating_sets::is_royal_symbol(s));
         let has_black = set.iter().any(|&s| s / KINDS == 1);
         let has_white = set.iter().any(|&s| s / KINDS == 0);
         if !(black_royals_only && has_black && has_white) || mating_sets::is_dead(set) {
@@ -1334,9 +1469,15 @@ fn main() {
     // escape proofs, which are complete by then.
     let attackers = |c: &Vec<u8>| c.iter().filter(|&&s| s / KINDS == 0).count();
     cores.sort_by_key(|c| (attackers(c), c.iter().filter(|&&s| s / KINDS == 1).count()));
-    eprintln!("{} cores, {threads} threads, budget {budget} nodes per start", cores.len());
+    eprintln!(
+        "{} cores, {threads} threads, budget {budget} nodes per start",
+        cores.len()
+    );
 
-    let world = World { defs: defs(), spirals: rose_spirals() };
+    let world = World {
+        defs: defs(),
+        spirals: rose_spirals(),
+    };
     // Each result is appended as it lands, so a stopped run resumes where it left off.
     let progress_path = format!("{out_dir}/progress.tsv");
     let mut done: HashMap<String, Verdict> = HashMap::new();
@@ -1356,7 +1497,11 @@ fn main() {
         }
     }
     let progress = Mutex::new(
-        std::fs::OpenOptions::new().create(true).append(true).open(&progress_path).unwrap(),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress_path)
+            .unwrap(),
     );
     let results = Mutex::new(Vec::new());
     let mut escapes = std::collections::HashSet::new();
@@ -1368,7 +1513,8 @@ fn main() {
             results.lock().unwrap().push((i, v));
         }
     }
-    let resumed: std::collections::HashSet<usize> = results.lock().unwrap().iter().map(|r| r.0).collect();
+    let resumed: std::collections::HashSet<usize> =
+        results.lock().unwrap().iter().map(|r| r.0).collect();
     eprintln!("{} cores already classified", resumed.len());
     let started = std::time::Instant::now();
     for size in 1..=4 {
@@ -1379,33 +1525,44 @@ fn main() {
         let found = Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             for _ in 0..threads {
-                scope.spawn(|| loop {
-                    let k = next.fetch_add(1, Ordering::Relaxed);
-                    if k >= phase.len() {
-                        break;
-                    }
-                    let i = phase[k];
-                    let v = classify(&world, &cores[i], budget, 22, &escapes);
-                    if matches!(v, Verdict::Escape) {
-                        found.lock().unwrap().push(cores[i].clone());
-                    }
-                    let l = label(&cores[i]);
-                    let line = match &v {
-                        Verdict::Forced(n) => format!("{l}\tF\t{n}\n"),
-                        Verdict::Escape => format!("{l}\tE\t-\n"),
-                        Verdict::Unknown(why) => format!("{l}\tU\t{why}\n"),
-                    };
-                    progress.lock().unwrap().write_all(line.as_bytes()).unwrap();
-                    let mut r = results.lock().unwrap();
-                    r.push((i, v));
-                    if r.len() % 200 == 0 {
-                        eprintln!("{}/{} cores, {:.0}s", r.len(), cores.len(), started.elapsed().as_secs_f64());
+                scope.spawn(|| {
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        if k >= phase.len() {
+                            break;
+                        }
+                        let i = phase[k];
+                        let v = classify(&world, &cores[i], budget, 22, &escapes);
+                        if matches!(v, Verdict::Escape) {
+                            found.lock().unwrap().push(cores[i].clone());
+                        }
+                        let l = label(&cores[i]);
+                        let line = match &v {
+                            Verdict::Forced(n) => format!("{l}\tF\t{n}\n"),
+                            Verdict::Escape => format!("{l}\tE\t-\n"),
+                            Verdict::Unknown(why) => format!("{l}\tU\t{why}\n"),
+                        };
+                        progress.lock().unwrap().write_all(line.as_bytes()).unwrap();
+                        let mut r = results.lock().unwrap();
+                        r.push((i, v));
+                        if r.len() % 200 == 0 {
+                            eprintln!(
+                                "{}/{} cores, {:.0}s",
+                                r.len(),
+                                cores.len(),
+                                started.elapsed().as_secs_f64()
+                            );
+                        }
                     }
                 });
             }
         });
         escapes.extend(found.into_inner().unwrap());
-        eprintln!("{size}-piece armies done: {} helpmate-only so far, {:.0}s", escapes.len(), started.elapsed().as_secs_f64());
+        eprintln!(
+            "{size}-piece armies done: {} helpmate-only so far, {:.0}s",
+            escapes.len(),
+            started.elapsed().as_secs_f64()
+        );
     }
 
     let mut results = results.into_inner().unwrap();

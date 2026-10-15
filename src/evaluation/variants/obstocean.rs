@@ -1,6 +1,6 @@
 use crate::board::{Coordinate, PieceType, PlayerColor};
-use crate::evaluation::base;
 use crate::eval_net::variant_features::{NoSink, VariantLayout, VariantSink, cp, ct};
+use crate::evaluation::base;
 use crate::game::GameState;
 
 const OUTSIDE_PASSED_PAWN_BONUS: [i32; 7] = [240, 140, 75, 40, 20, 10, 0];
@@ -599,7 +599,13 @@ fn race_eval_optimized(
 
     // Each side's nearest runner scores on its own, so taking the opponent's last
     // runner can only help (a race difference term dropped when one side ran out).
-    let runner = |d: i64| if d < 100 { (10 - d).max(0) as i32 * 40 } else { 0 };
+    let runner = |d: i64| {
+        if d < 100 {
+            (10 - d).max(0) as i32 * 40
+        } else {
+            0
+        }
+    };
     runner(w_min) - runner(b_min)
 }
 
@@ -743,7 +749,9 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                         | PieceType::Centaur
                                         | PieceType::RoyalCentaur => 1,
                                         PieceType::Bishop => 2,
-                                        PieceType::Rook | PieceType::Chancellor | PieceType::Amazon => 3,
+                                        PieceType::Rook
+                                        | PieceType::Chancellor
+                                        | PieceType::Amazon => 3,
                                         PieceType::Queen | PieceType::RoyalQueen => 4,
                                         _ => 5,
                                     };
@@ -939,7 +947,9 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                             let mut sliders = [0i32; 2];
                             for &(_, _, p) in heavy_pieces.iter() {
                                 let pt = p.piece_type();
-                                if crate::attacks::is_ortho_slider(pt) || crate::attacks::is_diag_slider(pt) {
+                                if crate::attacks::is_ortho_slider(pt)
+                                    || crate::attacks::is_diag_slider(pt)
+                                {
                                     sliders[usize::from(p.color() != PlayerColor::White)] += 1;
                                 }
                             }
@@ -966,25 +976,31 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                                 };
                             }
                             // Nearest passed pawn's distance to promotion, 255 without one.
-                            let passer = |own: &[(i64, i64)], foe: &[(i64, i64)], dir: i64, promo: i64| {
-                                own.iter()
-                                    .filter(|&&(x, y)| {
-                                        !foe.iter().any(|&(fx, fy)| (fx - x).abs() <= 1 && (fy - y) * dir > 0)
-                                    })
-                                    .map(|&(_, y)| (promo - y).abs())
-                                    .min()
-                                    .unwrap_or(255) as i32
-                            };
+                            let passer =
+                                |own: &[(i64, i64)], foe: &[(i64, i64)], dir: i64, promo: i64| {
+                                    own.iter()
+                                        .filter(|&&(x, y)| {
+                                            !foe.iter().any(|&(fx, fy)| {
+                                                (fx - x).abs() <= 1 && (fy - y) * dir > 0
+                                            })
+                                        })
+                                        .map(|&(_, y)| (promo - y).abs())
+                                        .min()
+                                        .unwrap_or(255) as i32
+                                };
                             pair(cp(att[0]), cp(att[1]));
                             pair(cp(def[0]), cp(def[1]));
                             pair(ct(threat[0]), ct(threat[1]));
                             // Cover within two squares of the first royal, weighted as the
                             // generic defender histogram does: obstacles count too.
                             for (side, own) in [(0, PlayerColor::White), (1, PlayerColor::Black)] {
-                                let Some(k) = royals[side].first() else { continue };
+                                let Some(k) = royals[side].first() else {
+                                    continue;
+                                };
                                 for dy in -2i64..=2 {
                                     for dx in -2i64..=2 {
-                                        let Some(p) = game.board.get_piece(k.x + dx, k.y + dy) else {
+                                        let Some(p) = game.board.get_piece(k.x + dx, k.y + dy)
+                                        else {
                                             continue;
                                         };
                                         let far = usize::from(dx.abs().max(dy.abs()) == 2);
@@ -1019,10 +1035,17 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
                             // The same line walk also yields the king-line pins and
                             // discovered-check setups, fed as their own pairs.
                             let mut tac = [[0i32; 3]; 2];
-                            for (side, color) in [(0, PlayerColor::White), (1, PlayerColor::Black)] {
-                                let Some(k) = royals[side].first() else { continue };
-                                let (rays, ring, t) =
-                                    base::king_rays_with_tactics(&game.spatial_indices, k.x, k.y, color);
+                            for (side, color) in [(0, PlayerColor::White), (1, PlayerColor::Black)]
+                            {
+                                let Some(k) = royals[side].first() else {
+                                    continue;
+                                };
+                                let (rays, ring, t) = base::king_rays_with_tactics(
+                                    &game.spatial_indices,
+                                    k.x,
+                                    k.y,
+                                    color,
+                                );
                                 tac[side] = t;
                                 shelter[side] = base::evaluate_king_shelter(
                                     game,

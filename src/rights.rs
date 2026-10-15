@@ -139,7 +139,10 @@ impl SpecialRights {
                 self.far.range((y, HALF)..=(y, i64::MAX)),
             )
         } else {
-            (self.far.range((y, i64::MIN)..=(y, i64::MAX)), self.far.range((y, 0)..(y, 0)))
+            (
+                self.far.range((y, i64::MIN)..=(y, i64::MAX)),
+                self.far.range((y, 0)..(y, 0)),
+            )
         };
         let far = |&(y, x): &(i64, i64)| Coordinate::new(x, y);
         left.map(far).chain(dense).chain(right.map(far))
@@ -199,7 +202,9 @@ mod tests {
         let mut reference = std::collections::HashSet::new();
         let mut seed = 0x9E3779B97F4A7C15u64;
         for i in 0..20_000 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let span = if i % 7 == 0 { 1_000_000_000_000 } else { 80 };
             let x = (seed >> 20) as i64 % span - span / 2;
             let y = (seed >> 40) as i64 % span - span / 2;
@@ -216,11 +221,22 @@ mod tests {
         }
         let listed: Vec<_> = rights.iter().collect();
         assert_eq!(listed.len(), reference.len());
-        assert!(listed.windows(2).all(|w| (w[0].y, w[0].x) < (w[1].y, w[1].x)));
+        assert!(
+            listed
+                .windows(2)
+                .all(|w| (w[0].y, w[0].x) < (w[1].y, w[1].x))
+        );
         let ranks: std::collections::BTreeSet<i64> = reference.iter().map(|c| c.y).collect();
-        for y in ranks.into_iter().take(200).chain([-70, -64, -1, 0, 63, 64, 79]) {
+        for y in ranks
+            .into_iter()
+            .take(200)
+            .chain([-70, -64, -1, 0, 63, 64, 79])
+        {
             let row: Vec<_> = rights.iter_rank(y).collect();
-            assert!(row.windows(2).all(|w| w[0].x < w[1].x), "rank {y} out of order");
+            assert!(
+                row.windows(2).all(|w| w[0].x < w[1].x),
+                "rank {y} out of order"
+            );
             assert_eq!(row.len(), reference.iter().filter(|c| c.y == y).count());
         }
     }

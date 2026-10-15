@@ -110,7 +110,10 @@ unsafe fn dense_layer_avx2(
                 _mm256_permute2x128_si256(t0, t1, 0x20),
                 _mm256_permute2x128_si256(t0, t1, 0x31),
             );
-            let v = _mm256_add_epi32(sums, _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i));
+            let v = _mm256_add_epi32(
+                sums,
+                _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i),
+            );
             let v = _mm256_min_epi32(_mm256_max_epi32(_mm256_sra_epi32(v, count), zero), max);
             let mut lanes = [0i32; 8];
             _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v);
@@ -173,7 +176,10 @@ unsafe fn dense_layer_u8_avx2(
                 _mm256_permute2x128_si256(t0, t1, 0x20),
                 _mm256_permute2x128_si256(t0, t1, 0x31),
             );
-            let v = _mm256_add_epi32(sums, _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i));
+            let v = _mm256_add_epi32(
+                sums,
+                _mm256_loadu_si256(b.as_ptr().add(g) as *const __m256i),
+            );
             let v = _mm256_min_epi32(_mm256_max_epi32(_mm256_sra_epi32(v, count), zero), max);
             let mut lanes = [0i32; 8];
             _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v);
@@ -187,6 +193,7 @@ unsafe fn dense_layer_u8_avx2(
 /// Four accumulators to one vector of their horizontal sums, by a 4x4 transpose.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[inline(always)]
+#[rustfmt::skip]
 fn reduce4_simd128(
     a: std::arch::wasm32::v128,
     b: std::arch::wasm32::v128,
@@ -233,7 +240,10 @@ fn dense_layer_simd128(
             };
             let (lo, hi) = (act(lo, v128_load(bias)), act(hi, v128_load(bias.add(1))));
             // Activations are 0..=127, so the saturating narrow is exact.
-            v128_store(out.as_mut_ptr().add(g) as *mut v128, i16x8_narrow_i32x4(lo, hi));
+            v128_store(
+                out.as_mut_ptr().add(g) as *mut v128,
+                i16x8_narrow_i32x4(lo, hi),
+            );
         }
     }
 }
@@ -283,7 +293,9 @@ pub fn kernel_selftest() -> bool {
     let (n_out, stride, shift) = (64usize, 128usize, 6u32);
     let mut seed = 0x9E3779B97F4A7C15u64;
     let mut next = |m: i64| {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((seed >> 33) as i64 % (2 * m + 1) - m) as i32
     };
     for _ in 0..50 {
@@ -294,7 +306,9 @@ pub fn kernel_selftest() -> bool {
             let mut got = vec![0i16; n_out];
             dense_layer(&w, &b, stride, &x, shift, &mut got, avx2);
             for r in 0..n_out {
-                let d: i32 = (0..stride).map(|i| w[r * stride + i] as i32 * x[i] as i32).sum();
+                let d: i32 = (0..stride)
+                    .map(|i| w[r * stride + i] as i32 * x[i] as i32)
+                    .sum();
                 if got[r] != ((b[r] + d) >> shift).clamp(0, 127) as i16 {
                     return false;
                 }
@@ -307,7 +321,9 @@ pub fn kernel_selftest() -> bool {
             let mut got = vec![0i16; n_out];
             unsafe { dense_layer_u8_avx2(&w8, &b, stride, &xu, shift, &mut got) };
             for r in 0..n_out {
-                let d: i32 = (0..stride).map(|i| w8[r * stride + i] as i32 * xu[i] as i32).sum();
+                let d: i32 = (0..stride)
+                    .map(|i| w8[r * stride + i] as i32 * xu[i] as i32)
+                    .sum();
                 if got[r] != ((b[r] + d) >> shift).clamp(0, 127) as i16 {
                     return false;
                 }
@@ -318,11 +334,12 @@ pub fn kernel_selftest() -> bool {
 }
 
 /// Input buffer wide enough for every layout, padded to the layer-1 stride.
-pub const NUM_FEATURES_PAD: usize = super::weights::pad32(if super::features::TAC_NET_INPUTS > MAX_VARIANT_FEATURES {
-    super::features::TAC_NET_INPUTS
-} else {
-    MAX_VARIANT_FEATURES
-});
+pub const NUM_FEATURES_PAD: usize =
+    super::weights::pad32(if super::features::TAC_NET_INPUTS > MAX_VARIANT_FEATURES {
+        super::features::TAC_NET_INPUTS
+    } else {
+        MAX_VARIANT_FEATURES
+    });
 
 /// Raw net output in centipawns (White-ahead), before the residual cap. `x` holds at
 /// least the net's `n_in` inputs.
@@ -337,17 +354,50 @@ pub fn forward(net: &EvalNetWeights, x: &[i16]) -> i32 {
     xp[..net.n_in].copy_from_slice(&x[..net.n_in]);
 
     let mut h1 = [0i16; MAX_H];
-    dense_layer(net.l1_w.as_slice(), &net.l1_b, net.stride1, &xp, net.s1, &mut h1[..net.h1], avx2);
+    dense_layer(
+        net.l1_w.as_slice(),
+        &net.l1_b,
+        net.stride1,
+        &xp,
+        net.s1,
+        &mut h1[..net.h1],
+        avx2,
+    );
 
     let mut h2 = [0i16; MAX_H];
     #[cfg(target_arch = "x86_64")]
     if avx2 && net.h2.is_multiple_of(8) && net.stride2.is_multiple_of(32) {
-        unsafe { dense_layer_u8_avx2(&net.l2_w8, &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2]) };
+        unsafe {
+            dense_layer_u8_avx2(
+                &net.l2_w8,
+                &net.l2_b,
+                net.stride2,
+                &h1,
+                net.s2,
+                &mut h2[..net.h2],
+            )
+        };
     } else {
-        dense_layer(net.l2_w.as_slice(), &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2], avx2);
+        dense_layer(
+            net.l2_w.as_slice(),
+            &net.l2_b,
+            net.stride2,
+            &h1,
+            net.s2,
+            &mut h2[..net.h2],
+            avx2,
+        );
     }
     #[cfg(not(target_arch = "x86_64"))]
-    dense_layer(net.l2_w.as_slice(), &net.l2_b, net.stride2, &h1, net.s2, &mut h2[..net.h2], avx2);
+    dense_layer(
+        net.l2_w.as_slice(),
+        &net.l2_b,
+        net.stride2,
+        &h1,
+        net.s2,
+        &mut h2[..net.h2],
+        avx2,
+    );
 
     let raw = net.l3_b + dot_i16(net.l3_w.as_slice(), &h2, super::weights::pad32(net.h2));
     (raw as f32 * net.out_scale) as i32
@@ -411,7 +461,11 @@ mod tests {
         let w: Vec<i16> = (0..n).map(|i| (i * 37 % 255 - 127) as i16).collect();
         let x: Vec<i16> = (0..n).map(|i| (i * 911 % 4001 - 2000) as i16).collect();
         for len in [32usize, 64, 96, 160, 256] {
-            let s: i32 = w[..len].iter().zip(&x[..len]).map(|(a, b)| *a as i32 * *b as i32).sum();
+            let s: i32 = w[..len]
+                .iter()
+                .zip(&x[..len])
+                .map(|(a, b)| *a as i32 * *b as i32)
+                .sum();
             assert_eq!(dot_i16(&w, &x, len), s, "len {len}");
         }
     }

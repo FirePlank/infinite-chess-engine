@@ -190,7 +190,6 @@ pub fn material_key_at(piece_type: PieceType, color: PlayerColor, x: i64, y: i64
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

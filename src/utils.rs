@@ -145,6 +145,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[rustfmt::skip]
     fn lookup_table_agrees_with_miller_rabin_over_its_whole_range() {
         // The sieve is only a valid substitute if it matches everywhere it is
         // consulted; a single disagreement would silently change movegen.

@@ -522,7 +522,8 @@ fn scan_game(
     for part in blob.split('|') {
         // The SPRT harness's shared-opening plies carry `[%book]` and no eval; read them
         // as level instead of stopping, or every game with a book is scanned as empty.
-        let Some(score) = parse_annotation(part).or_else(|| part.contains("[%book]").then_some(0)) else {
+        let Some(score) = parse_annotation(part).or_else(|| part.contains("[%book]").then_some(0))
+        else {
             break;
         };
         let txt = part.split('{').next()?.trim();
@@ -770,7 +771,10 @@ fn corpus_dirs(cfg: &Cfg) -> Vec<PathBuf> {
         match &cfg.auto_corpus_root {
             Some(root) => {
                 let discovered = discover_session_scratchpads(root);
-                println!("  auto-corpus: found {} session scratchpad(s) under {root}", discovered.len());
+                println!(
+                    "  auto-corpus: found {} session scratchpad(s) under {root}",
+                    discovered.len()
+                );
                 dirs.extend(discovered);
             }
             None => eprintln!(
@@ -822,7 +826,10 @@ fn seed_manifest_before(cfg: &Cfg, cutoff_str: &str) {
         to_seed.len(),
         cfg.seen_manifest.display()
     );
-    println!("{} file(s) remain unmarked (newer than cutoff, or unreadable):", still_new.len());
+    println!(
+        "{} file(s) remain unmarked (newer than cutoff, or unreadable):",
+        still_new.len()
+    );
     for p in &still_new {
         println!("  {}", p.display());
     }
@@ -1685,7 +1692,11 @@ fn board_features(icn: &str, solution: &[String]) -> Option<BoardFeats> {
         if solver {
             // Measured after the move lands, so it reads the threat the move
             // actually creates rather than the one it left behind.
-            let winner_side = if k.is_multiple_of(2) { st.turn.opponent() } else { st.turn };
+            let winner_side = if k.is_multiple_of(2) {
+                st.turn.opponent()
+            } else {
+                st.turn
+            };
             fork_by_move.push(fork_strength(
                 &st,
                 to,
@@ -1825,7 +1836,11 @@ fn explain(path: &Path, needle: &str) {
         println!("\n=== {} | stored rating {} ===", p.variant, p.rating);
         println!("solution: {}", p.solution_moves);
 
-        let sol: Vec<String> = p.solution_moves.split_whitespace().map(str::to_string).collect();
+        let sol: Vec<String> = p
+            .solution_moves
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
         let mut st = GameState::new();
         st.setup_position_from_icn(&p.position_icn);
         forget_history(&mut st);
@@ -1851,7 +1866,10 @@ fn explain(path: &Path, needle: &str) {
                     legal_here.len(),
                 );
             }
-            let cap_sq = st.board.is_occupied(chosen.to.x, chosen.to.y).then_some(chosen.to);
+            let cap_sq = st
+                .board
+                .is_occupied(chosen.to.x, chosen.to.y)
+                .then_some(chosen.to);
             apply_icn_move(&mut st, mv);
             prev_capture = cap_sq;
         }
@@ -1864,9 +1882,18 @@ fn explain(path: &Path, needle: &str) {
         }
         println!(
             "  calc_load {:.2} | plies {} | mate_in {} | forcing {}% | fairy_used {} | relevant {} | root {}/{} | srank {} | dtf {} | margin {:.3} | replies {:.1}",
-            p.calc_load, p.solution_plies, p.mate_in, p.forcing_pct, p.fairy_count,
-            p.relevant_pieces, p.root_forcing, p.root_moves, p.shallow_rank,
-            p.depth_to_find, p.only_move_margin, p.mean_defender_replies,
+            p.calc_load,
+            p.solution_plies,
+            p.mate_in,
+            p.forcing_pct,
+            p.fairy_count,
+            p.relevant_pieces,
+            p.root_forcing,
+            p.root_moves,
+            p.shallow_rank,
+            p.depth_to_find,
+            p.only_move_margin,
+            p.mean_defender_replies,
         );
     }
 }
@@ -2590,7 +2617,9 @@ fn deep_verify(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
+            Variant::parse(name)
+                .filter(|v| v.to_str() == *name)
+                .map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -2717,7 +2746,9 @@ fn recook_all(puzzles: &mut [PuzzleRecord], cfg: &Cfg) -> (usize, usize) {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
+            Variant::parse(name)
+                .filter(|v| v.to_str() == *name)
+                .map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -2834,7 +2865,9 @@ fn refresh_features(puzzles: &mut [PuzzleRecord]) -> usize {
     let groups: Vec<(Variant, Vec<usize>)> = by_variant
         .iter()
         .filter_map(|(name, idx)| {
-            Variant::parse(name).filter(|v| v.to_str() == *name).map(|v| (v, idx.clone()))
+            Variant::parse(name)
+                .filter(|v| v.to_str() == *name)
+                .map(|v| (v, idx.clone()))
         })
         .collect();
 
@@ -3041,7 +3074,8 @@ fn move_to_icn(m: &Move) -> String {
 /// either side makes the "only one move works" claim unreliable, so the whole
 /// line is rejected rather than just that move.
 fn line_uses_huygen(line: &[Move]) -> bool {
-    line.iter().any(|m| m.piece.piece_type() == PieceType::Huygen)
+    line.iter()
+        .any(|m| m.piece.piece_type() == PieceType::Huygen)
 }
 
 /// Last line of defence before a puzzle is written: position legal (a side that
@@ -3476,7 +3510,12 @@ fn solve_draw(cand: &Candidate, variant: Variant, cfg: &Cfg) -> Option<PuzzleRec
         } else {
             "Black".into()
         },
-        solution_moves: cooked.line.iter().map(move_to_icn).collect::<Vec<_>>().join(" "),
+        solution_moves: cooked
+            .line
+            .iter()
+            .map(move_to_icn)
+            .collect::<Vec<_>>()
+            .join(" "),
         rating: puzzle_rating(&feats),
         rating_deviation: 500,
         themes: themes.into_iter().collect::<Vec<_>>().join(","),

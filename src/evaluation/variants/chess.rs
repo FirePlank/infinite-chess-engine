@@ -664,11 +664,14 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         let enemy_bb = if is_white { b_pawn_bb } else { w_pawn_bb };
         let rk = (y - 1) as u32;
         let file_mask = 0x0101_0101_0101_0101u64 << f;
+        #[rustfmt::skip]
         let adj_mask = (if f > 0 { 0x0101_0101_0101_0101u64 << (f - 1) } else { 0 })
             | (if f < 7 { 0x0101_0101_0101_0101u64 << (f + 1) } else { 0 });
         // A pawn on rank 8 has nothing above it: a shift by 64 must give 0, not wrap.
         let above = (!0u64).checked_shl(8 * (rk + 1)).unwrap_or(0);
+        #[rustfmt::skip]
         let behind = if is_white { (1u64 << (8 * rk)) - 1 } else { above };
+        #[rustfmt::skip]
         let ahead = if is_white { above } else { (1u64 << (8 * rk)) - 1 };
 
         let is_doubled = if pawns_in_window {
@@ -855,7 +858,10 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         let tac = |k: Coordinate, own| {
             crate::evaluation::base::king_rays_with_tactics(&game.spatial_indices, k.x, k.y, own).2
         };
-        let (wt, bt) = (tac(white_king, PlayerColor::White), tac(black_king, PlayerColor::Black));
+        let (wt, bt) = (
+            tac(white_king, PlayerColor::White),
+            tac(black_king, PlayerColor::Black),
+        );
         for j in 0..3 {
             sink.set(base + 12 + 2 * j, ct(wt[j] * 16));
             sink.set(base + 13 + 2 * j, ct(bt[j] * 16));
@@ -895,12 +901,7 @@ impl BoardWindow {
     }
 }
 
-fn count_knight_mobility(
-    win: &BoardWindow,
-    x: i64,
-    y: i64,
-    piece: crate::board::Piece,
-) -> i32 {
+fn count_knight_mobility(win: &BoardWindow, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
     let our_color = piece.color();
     let mut count = 0i32;
     for (dx, dy) in [
@@ -927,12 +928,7 @@ fn count_knight_mobility(
     count
 }
 
-fn count_sliding_mobility(
-    win: &BoardWindow,
-    x: i64,
-    y: i64,
-    piece: crate::board::Piece,
-) -> i32 {
+fn count_sliding_mobility(win: &BoardWindow, x: i64, y: i64, piece: crate::board::Piece) -> i32 {
     let pt = piece.piece_type();
     let our_color = piece.color();
     let dirs: &[(i64, i64)] = match pt {

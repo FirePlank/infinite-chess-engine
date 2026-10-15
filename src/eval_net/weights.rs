@@ -176,7 +176,9 @@ pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
         ray_net_schema_hash, schema_hash, tac_net_schema_hash, type_net_schema_hash,
     };
     // The base vector, plus the king-exposure inputs, plus the slider-ray ones, by header width.
-    let n_in = EVAL_NET_BYTES.get(12..16).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let n_in = EVAL_NET_BYTES
+        .get(12..16)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
     if n_in == Some(TAC_NET_INPUTS) {
         parse(EVAL_NET_BYTES, TAC_NET_INPUTS, tac_net_schema_hash())
     } else if n_in == Some(TYPE_NET_INPUTS) {
@@ -184,7 +186,11 @@ pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
     } else if n_in == Some(NET_INPUTS) {
         parse(EVAL_NET_BYTES, NET_INPUTS, ray_net_schema_hash())
     } else if n_in == Some(NUM_FEATURES + KEXP_INPUTS) {
-        parse(EVAL_NET_BYTES, NUM_FEATURES + KEXP_INPUTS, net_schema_hash())
+        parse(
+            EVAL_NET_BYTES,
+            NUM_FEATURES + KEXP_INPUTS,
+            net_schema_hash(),
+        )
     } else {
         parse(EVAL_NET_BYTES, NUM_FEATURES, schema_hash())
     }
@@ -192,18 +198,31 @@ pub static EVAL_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
 
 /// Nets for the specialized evaluators, each over its own evaluator's layout, residual
 /// added to that evaluator's score. Empty files mean no net.
-pub static CHESS_NET: Lazy<Option<EvalNetWeights>> =
-    Lazy::new(|| parse_layout(include_bytes!("chess_net.bin"), &variants::chess::NET_LAYOUT));
+pub static CHESS_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
+    parse_layout(
+        include_bytes!("chess_net.bin"),
+        &variants::chess::NET_LAYOUT,
+    )
+});
 pub static OBSTOCEAN_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
-    parse_layout(include_bytes!("obstocean_net.bin"), &variants::obstocean::NET_LAYOUT)
+    parse_layout(
+        include_bytes!("obstocean_net.bin"),
+        &variants::obstocean::NET_LAYOUT,
+    )
 });
 pub static PAWN_HORDE_NET: Lazy<Option<EvalNetWeights>> = Lazy::new(|| {
-    parse_layout(include_bytes!("pawn_horde_net.bin"), &variants::pawn_horde::NET_LAYOUT)
+    parse_layout(
+        include_bytes!("pawn_horde_net.bin"),
+        &variants::pawn_horde::NET_LAYOUT,
+    )
 });
 
 use crate::evaluation::variants;
 
-fn parse_layout(bytes: &[u8], layout: &super::variant_features::VariantLayout) -> Option<EvalNetWeights> {
+fn parse_layout(
+    bytes: &[u8],
+    layout: &super::variant_features::VariantLayout,
+) -> Option<EvalNetWeights> {
     parse(bytes, layout.len(), layout.schema_hash())
 }
 
