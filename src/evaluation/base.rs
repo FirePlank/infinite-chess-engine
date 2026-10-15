@@ -16,11 +16,11 @@ use crate::evaluation::params::{
     eg_doubled_pawn_penalty, eg_far_slider_penalty_mult,
     eg_outpost_bonus, far_queen_penalty, far_rook_penalty, far_slider_cheb_max_excess,
     far_slider_cheb_radius, giraffe, guard, hawk, huygen, king_defender_ref_value, tied_defender_ref_value,
-    king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, max_far_piece_pawn_penalty, max_piece_pawn_tropism,
-    mg_bishop_pair_bonus, mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
+    king_shield_ahead_max_dist, knight, knightrider, leaper_tropism_divisor, mg_bishop_pair_bonus,
+    mg_doubled_pawn_penalty, mg_far_slider_penalty_mult, mg_king_pawn_ahead_penalty,
     mg_outpost_bonus, passed_enemy_king_dist, passed_friendly_king_dist,
-    passed_pawn_adv_bonus, pawn, pawn_far_from_promo_max_penalty,
-    pawn_full_value_threshold, pawn_past_promo_penalty,
+    passed_pawn_adv_bonus, pawn, pawn_enemy_king_dist, pawn_far_from_promo_max_penalty,
+    pawn_friendly_king_dist, pawn_full_value_threshold, pawn_past_promo_penalty,
     piece_cloud_cheb_max_excess, piece_cloud_cheb_radius, leaper_cloud_radius, rider_cloud_radius,
     queen, queen_open_file_bonus, queen_semi_open_file_bonus, rook, rook_open_file_bonus,
     rook_semi_open_file_bonus, rose, slider_axis_wiggle, slider_net_bonus, slider_threat_cap,
@@ -792,6 +792,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         .white_royals
         .iter()
         .map(|r| RoyalTropismMetrics {
+            piece_type: game
+                .board
+                .get_piece(r.x, r.y)
+                .map(|p| p.piece_type())
+                .unwrap_or(PieceType::Void),
             x: r.x,
             y: r.y,
 
@@ -807,6 +812,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
         .black_royals
         .iter()
         .map(|r| RoyalTropismMetrics {
+            piece_type: game
+                .board
+                .get_piece(r.x, r.y)
+                .map(|p| p.piece_type())
+                .unwrap_or(PieceType::Void),
             x: r.x,
             y: r.y,
 
@@ -1661,11 +1671,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         );
 
                         if phase < MAX_KING_PHASE {
-                            score += evaluate_piece_pawn_tropism_traced(
+                            score += evaluate_king_positioning_traced(
                                 game,
                                 MAX_KING_PHASE - phase,
+                                white_royal_tropisms.as_ref(),
+                                black_royal_tropisms.as_ref(),
                                 tracer,
-                                piece_list,
                                 white_pawns,
                                 black_pawns,
                             );
@@ -2371,6 +2382,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
 }
 
 pub struct RoyalTropismMetrics {
+    piece_type: PieceType,
     tropism_addend: i32,
     attacking_units: i32,
     defender_units: i32,
@@ -4683,60 +4695,34 @@ pub fn is_clear_line_between_fast(
     true
 }
 
-/// Evaluates how close the pieces are to the pawns in terms of leaper moves which is
-/// very important in endgames.
-pub fn evaluate_piece_pawn_tropism_traced<T: EvaluationTracer>(
+/// Evaluates how close the king is to the pawns which is very important in endgames.
+pub fn evaluate_king_positioning_traced<T: EvaluationTracer>(
     game: &GameState,
     king_phase: i32,
+    white_royals: &[RoyalTropismMetrics],
+    black_royals: &[RoyalTropismMetrics],
     tracer: &mut T,
-    piece_list: &[(i64, i64, crate::board::Piece)],
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
 ) -> i32 {
     let mut w_activity = 0;
     let mut b_activity = 0;
-    let mut nearest_pawn_distance = 65536; // arbitrary number
+    let mut nearest_pawn_distance = 255; // arbitrary number
 
-    let mut white_pieces = SmallVec::<[(i64, i64, PieceType); 64]>::new();
-    let mut black_pieces = SmallVec::<[(i64, i64, PieceType); 64]>::new();
-    for &(x, y, piece) in piece_list {
-        if piece.color() == PlayerColor::White {
-            white_pieces.push((x, y, piece.piece_type()));
-        } else {
-            black_pieces.push((x, y, piece.piece_type()));
-        }
-    }
+    // King distances for each pawn (friendly_dist, enemy_dist))
+    let mut w_king_pawn_distances = SmallVec::<[(i32, i32); 64]>::new();
+    let mut b_king_pawn_distances = SmallVec::<[(i32, i32); 64]>::new();
 
-    // Move distances for each pawn (friendly_dist, enemy_dist).
-    let mut w_pawn_distances = SmallVec::<[(i32, i32, i32, i32); 64]>::new();
-    let mut b_pawn_distances = SmallVec::<[(i32, i32, i32, i32); 64]>::new();
-
-    #[inline]
-    fn estimate_moves_to_reach(pt: PieceType, x1: i64, y1: i64, x2: i64, y2: i64) -> i64 {
-        if let Some(reach) = chase_reach(pt) {
-            let dx = (x2 - x1).abs();
-            let dy = (y2 - y1).abs();
-            let cheb = dx.max(dy);
-            let md = dx + dy;
-
-            if reach.0 == 0 {
-                i64::MAX
-            } else {
-                // Use ceiling division to get the number of moves to a square
-                ((cheb + reach.0 - 1) / reach.0).max((md + reach.1 - 1) / reach.1)
-            }
-        } else {
-            2 // Assume 2 moves to reach the square
-        }
-    }
-
-    // Find the closest move distance for each pawn to the pieces.
+    // Find the closes distance from each pawn to the kings.
     for &(wx, wy) in white_pawns {
         let w_promo = game.white_promo_rank_for(wy);
         let dist_to_promo = w_promo.saturating_sub(wy).max(1);
-        let rel_rank = (7 - dist_to_promo).clamp(0, 6) as i32;
-        let mut min_friendly_dist = 65536;
-        let mut min_enemy_dist = 65536;
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+        let mut min_d = 255; // Chebyshev distance
+
+        // Manhattan distance
+        let mut min_friendly_md = 255;
+        let mut min_enemy_md = 255;
 
         // First, check if it is a passed pawn
         let mut is_passed = true;
@@ -4767,28 +4753,41 @@ pub fn evaluate_piece_pawn_tropism_traced<T: EvaluationTracer>(
             3
         };
 
-        // Find the nearest piece to the pawn in terms of moves.
-        for &(px, py, pt) in &white_pieces {
-            let d = estimate_moves_to_reach(pt, wx, wy, px, py);
-            min_friendly_dist = min_friendly_dist.min(d);
+        // Find the nearest king to the pawn.
+        for wk in white_royals {
+            if matches!(wk.piece_type, PieceType::King) {
+                let d = saturating_dist_i32((wx - wk.x).abs().max((wy - wk.y).abs()));
+                min_d = min_d.min(d);
+                let md = saturating_dist_i32((wx - wk.x).abs() + (wy - wk.y).abs());
+                min_friendly_md = min_friendly_md.min(md);
+            }
         }
+        let near_friendly_king_bonus = pawn_friendly_king_dist()[rel_rank] * (7 - min_d.min(7));
 
-        for &(px, py, pt) in &black_pieces {
-            let d = estimate_moves_to_reach(pt, wx, wy, px, py);
-            min_enemy_dist = min_enemy_dist.min(d);
+        min_d = 255; // reset it back
+        for bk in black_royals {
+            if matches!(bk.piece_type, PieceType::King) {
+                let d = saturating_dist_i32((wx - bk.x).abs().max((wy - bk.y).abs()));
+                min_d = min_d.min(d);
+                let md = saturating_dist_i32((wx - bk.x).abs() + (wy - bk.y).abs());
+                min_enemy_md = min_enemy_md.min(md);
+            }
         }
+        let near_enemy_king_penalty = pawn_enemy_king_dist()[rel_rank] * (7 - min_d.min(7));
 
-        w_pawn_distances.push((min_friendly_dist as i32, min_enemy_dist as i32, rel_rank, weight));
-        nearest_pawn_distance = nearest_pawn_distance
-            .min(min_friendly_dist)
-            .min(min_enemy_dist);
+        w_king_pawn_distances.push((min_friendly_md, min_enemy_md));
+        nearest_pawn_distance = nearest_pawn_distance.min(min_friendly_md).min(min_enemy_md);
+        w_activity += (near_friendly_king_bonus - near_enemy_king_penalty) * weight / 3;
     }
     for &(bx, by) in black_pawns {
         let b_promo = game.black_promo_rank_for(by);
         let dist_to_promo = by.saturating_sub(b_promo).max(1);
-        let rel_rank = (7 - dist_to_promo).clamp(0, 6) as i32;
-        let mut min_friendly_dist = 65536;
-        let mut min_enemy_dist = 65536;
+        let rel_rank = (6 - dist_to_promo).clamp(0, 5) as usize;
+        let mut min_d = 255; // Chebyshev distance
+
+        // Manhattan distance
+        let mut min_friendly_md = 255;
+        let mut min_enemy_md = 255;
 
         // First, check if it is a passed pawn
         let mut is_passed = true;
@@ -4817,52 +4816,50 @@ pub fn evaluate_piece_pawn_tropism_traced<T: EvaluationTracer>(
             3
         };
 
-        // Find the nearest piece to the pawn in terms of moves.
-        for &(px, py, pt) in &black_pieces {
-            let d = estimate_moves_to_reach(pt, bx, by, px, py);
-            min_friendly_dist = min_friendly_dist.min(d);
+        // Find the nearest king to the pawn.
+        for bk in black_royals {
+            if matches!(bk.piece_type, PieceType::King) {
+                let d = saturating_dist_i32((bx - bk.x).abs().max((by - bk.y).abs()));
+                min_d = min_d.min(d);
+                let md = saturating_dist_i32((bx - bk.x).abs() + (by - bk.y).abs());
+                min_friendly_md = min_friendly_md.min(md);
+            }
         }
+        let near_friendly_king_bonus = pawn_friendly_king_dist()[rel_rank] * (7 - min_d.min(7));
 
-        for &(px, py, pt) in &white_pieces {
-            let d = estimate_moves_to_reach(pt, bx, by, px, py);
-            min_enemy_dist = min_enemy_dist.min(d);
+        min_d = 255; // reset it back
+        for wk in white_royals {
+            if matches!(wk.piece_type, PieceType::King) {
+                let d = saturating_dist_i32((bx - wk.x).abs().max((by - wk.y).abs()));
+                min_d = min_d.min(d);
+                let md = saturating_dist_i32((bx - wk.x).abs() + (by - wk.y).abs());
+                min_enemy_md = min_enemy_md.min(md);
+            }
         }
+        let near_enemy_king_penalty = pawn_enemy_king_dist()[rel_rank] * (7 - min_d.min(7));
 
-        b_pawn_distances.push((min_friendly_dist as i32, min_enemy_dist as i32, rel_rank, weight));
-        nearest_pawn_distance = nearest_pawn_distance
-            .min(min_friendly_dist)
-            .min(min_enemy_dist);
+        b_king_pawn_distances.push((min_friendly_md, min_enemy_md));
+        nearest_pawn_distance = nearest_pawn_distance.min(min_friendly_md).min(min_enemy_md);
+        b_activity += (near_friendly_king_bonus - near_enemy_king_penalty) * weight / 3;
     }
 
-    // Apply adjustments to nullify the effect if both friendly and enemy pieces are far.
-    let max_effective_dist = nearest_pawn_distance.saturating_add(5) as i32;
-    for (friendly_dist, enemy_dist, rel_rank, weight) in w_pawn_distances {
-        w_activity += ((enemy_dist.min(max_effective_dist) - friendly_dist.min(max_effective_dist))
-            * (2 + rel_rank) * weight / 3)
-            .clamp(-max_far_piece_pawn_penalty(), max_far_piece_pawn_penalty());
+    // Apply adjustments to nullify the effect if both friendly and enemy kings are far.
+    let max_effective_dist = nearest_pawn_distance.saturating_add(5);
+    for (friendly_dist, enemy_dist) in w_king_pawn_distances {
+        w_activity += (enemy_dist.min(max_effective_dist) - friendly_dist.min(max_effective_dist))
+            .clamp(-30, 30);
     }
-    for (friendly_dist, enemy_dist, rel_rank, weight) in b_pawn_distances {
-        b_activity += ((enemy_dist.min(max_effective_dist) - friendly_dist.min(max_effective_dist))
-            * (2 + rel_rank) * weight / 3)
-            .clamp(-max_far_piece_pawn_penalty(), max_far_piece_pawn_penalty());
+    for (friendly_dist, enemy_dist) in b_king_pawn_distances {
+        b_activity += (enemy_dist.min(max_effective_dist) - friendly_dist.min(max_effective_dist))
+            .clamp(-30, 30);
     }
 
     // Apply a scale factor before outputting the value.
-    w_activity = w_activity * king_phase / MAX_KING_PHASE / 2;
-    b_activity = b_activity * king_phase / MAX_KING_PHASE / 2;
+    w_activity = w_activity * king_phase / MAX_KING_PHASE;
+    b_activity = b_activity * king_phase / MAX_KING_PHASE;
 
-    // Change to "Pawn: Piece-Pawn Tropism" later. Name is remained as is for now to avoid changing the pawn horde and obstocean nets
     tracer.record("Pawn: King Pawn Tropism", w_activity, b_activity);
-
-    let bonus = w_activity - b_activity;
-    let capped = bonus.clamp(-max_piece_pawn_tropism(), max_piece_pawn_tropism());
-    if capped != bonus {
-        tracer.record("Pawn: Piece-Pawn Tropism Capped",
-            capped - bonus,
-            0
-        );
-    }
-    capped
+    w_activity - b_activity
 }
 
 pub fn calculate_initial_material(board: &Board) -> i32 {

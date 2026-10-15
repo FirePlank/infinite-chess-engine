@@ -1,11 +1,11 @@
 {
-  "name": "652_pr56_tropism_net",
-  "old": "8b4fd9a7507ccf32ded90a7142cca79bbad1b523",
-  "games": 4000,
+  "name": "engine_compression_nonreg2_resume",
+  "old": "ccf94806f4fb13f9ce9fcb69cda8b37f12d9ebaa",
+  "games": 2000,
   "shards": 40,
-  "variants": "base_only",
+  "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
-  "adjudication": 0
+  "elo0": -10,
+  "elo1": 0,
+  "adjudication": 1000
 }

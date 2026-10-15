@@ -30,7 +30,6 @@ pub const ROW_NAMES: [&str; NUM_ROWS] = [
     "Piece: Bishop Pair",
     "King: Shelter",
     "King: Attack",
-    // Change to "Pawn: Piece-Pawn Tropism" later. Name is remained as is for now to avoid changing the pawn horde and obstocean nets
     "Pawn: King Pawn Tropism",
 ];
 
