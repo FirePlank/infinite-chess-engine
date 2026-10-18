@@ -1242,8 +1242,8 @@ impl GameState {
             self.minor_hash ^= piece_key(pt, partner.color(), from_x, from_y);
             self.minor_hash ^= piece_key(pt, partner.color(), to_x, to_y);
         }
-        // A bishop partner's material key is square-colour dependent.
-        if pt == PieceType::Bishop {
+        // A bishop or camel partner's material key is square-colour dependent.
+        if matches!(pt, PieceType::Bishop | PieceType::Camel) {
             self.material_hash = self.material_hash.wrapping_sub(material_key_at(
                 pt,
                 partner.color(),
@@ -1278,7 +1278,7 @@ impl GameState {
                 self.minor_hash ^= key;
             }
         }
-        // Parity-aware: a promoted bishop's material key depends on square colour.
+        // Parity-aware: a promoted bishop's or camel's material key depends on square colour.
         let mk = material_key_at(victim.piece_type(), victim.color(), sx, sy);
         self.material_hash = if capturing {
             self.material_hash.wrapping_sub(mk)
