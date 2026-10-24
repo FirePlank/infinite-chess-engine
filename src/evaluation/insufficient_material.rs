@@ -1483,6 +1483,28 @@ mod tests {
         assert!(evaluate_insufficient_material(&game));
     }
 
+    /// The material cache is keyed by material hash, so it must tell camel square
+    /// colors apart: on a bounded board two camels mate only on opposite colors.
+    #[test]
+    fn camel_square_colors_do_not_share_a_cache_entry() {
+        // The border is process-global: put the unbounded one back even on failure.
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                let cap = crate::moves::PLAY_BORDER_CAP;
+                crate::moves::set_world_bounds(-cap, cap, -cap, cap);
+            }
+        }
+        let _reset = Reset;
+        let draw = |icn: &str| {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+            evaluate_insufficient_material_game_handler(&game)
+        };
+        assert!(!draw("w -50,50,-50,50 K0,0|CA1,2|CA2,4|k20,20"));
+        assert!(draw("w -50,50,-50,50 K0,0|CA1,2|CA3,4|k20,20"));
+    }
+
     /// Mostly infinitechess.org's own insuffmat cases: which table a border selects,
     /// the bounded cap, and the proven draw above the unbounded cap.
     #[test]
