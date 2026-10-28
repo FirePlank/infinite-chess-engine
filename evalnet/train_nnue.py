@@ -63,11 +63,17 @@ def load_sets(specs, device, max_records=0, sample=1.0, seed=1):
             sel = np.nonzero(keep_game[gid])[0]
         else:
             sel = np.arange(len(rec_all))
-        rec = np.empty(len(sel), dtype=rec_all.dtype)
+        small = [(n, rec_all.dtype.fields[n][0]) for n in rec_all.dtype.names if n != "x"]
+        rec = np.empty(len(sel), dtype=small)
+        x = np.empty((len(sel), m["dense"]), dtype=np.int16)
         sp_parts = []
         for i in range(0, len(sel), 1_000_000):
             s_ = sel[i : i + 1_000_000]
-            rec[i : i + len(s_)] = rec_all[s_]
+            chunk = rec_all[s_]
+            x[i : i + len(s_)] = chunk["x"]
+            for n, _ in small:
+                rec[n][i : i + len(s_)] = chunk[n]
+            del chunk
             ln, st = lens_all[s_], off_all[s_]
             idx = np.repeat(st - (np.cumsum(ln) - ln), ln) + np.arange(int(ln.sum()))
             sp_parts.append(np.asarray(sp_all[idx]))
@@ -75,18 +81,18 @@ def load_sets(specs, device, max_records=0, sample=1.0, seed=1):
         lens = rec["n0"].astype(np.int64) + rec["n1"].astype(np.int64)
         off = np.concatenate([[0], np.cumsum(lens)[:-1]])
         del rec_all, sp_all
-        parts.append((rec, sp, off, int(w or 1), si))
+        parts.append((rec, x, sp, off, int(w or 1), si))
         print(f"{prefix}: {len(rec):,} records x{int(w or 1)}, {len(sp) / max(len(rec), 1):.1f} features each")
     return meta, parts
 
 
-def to_device(parts, device):
+def to_device(parts, device, x_on_cpu=False):
     """One flat set on the device; repeated sets are indexed more than once instead of copied."""
     xs, eng, tea, wdl, src, n0, n1, off, sps, gid, nn_rs, vid = [], [], [], [], [], [], [], [], [], [], [], []
     base, index = 0, []
     first = 0
-    for rec, sp, o, w, si in parts:
-        xs.append(torch.from_numpy(rec["x"].copy()))
+    for rec, x, sp, o, w, si in parts:
+        xs.append(torch.from_numpy(x))
         eng.append(torch.from_numpy(rec["engine"].astype(np.float32)))
         tea.append(torch.from_numpy(rec["teacher"].astype(np.float32)))
         wdl.append(torch.from_numpy(rec["wdl"].astype(np.float32) / 2.0))
@@ -102,7 +108,7 @@ def to_device(parts, device):
         first += len(rec)
         base += len(sp)
     cat = lambda t: torch.cat(t).to(device)
-    d = dict(x=cat(xs), engine=cat(eng), teacher=cat(tea), wdl=cat(wdl), source=cat(src),
+    d = dict(x=(xs[0] if len(xs) == 1 else torch.cat(xs)) if x_on_cpu else cat(xs), engine=cat(eng), teacher=cat(tea), wdl=cat(wdl), source=cat(src),
              n0=cat(n0), n1=cat(n1), off=cat(off), sp=cat(sps), gid=cat(gid), nn=cat(nn_rs), vid=cat(vid))
     return d, index
 
@@ -143,7 +149,8 @@ def gather(d, ids):
     flat = d["sp"][seg + torch.arange(total, device=ids.device)].long()
     sizes = torch.stack([n0, n1], 1).reshape(-1)
     bag_off = torch.cumsum(sizes, 0) - sizes
-    return d["x"][ids].float() / IN_SCALE, flat, bag_off
+    x = d["x"][ids.to(d["x"].device)].to(ids.device, non_blocking=True)
+    return x.float() / IN_SCALE, flat, bag_off
 
 
 def targets(d, ids, lam, k):
@@ -228,7 +235,7 @@ def read_blob(path):
 
 def int_forward(net, d, ids, acc):
     """The engine's integer forward pass, on the device."""
-    x = d["x"][ids].long()
+    x = d["x"][ids.to(d["x"].device)].to(ids.device).long()
     _, flat, bag = gather(d, ids)
     ft = torch.from_numpy(net["ft_w"].astype(np.int64)).to(x.device)
     fb = torch.from_numpy(net["ft_b"].astype(np.int64)).to(x.device)
@@ -247,6 +254,7 @@ def main():
     ap.add_argument("sets", nargs="+", help="export prefixes, optionally prefix@weight")
     ap.add_argument("--out", required=True, help="checkpoint (.pt); the blob goes next to it as .bin")
     ap.add_argument("--h1", type=int, default=32)
+    ap.add_argument("--acc", type=int, default=0, help="accumulator width (default: the export's; the engine's ACC must match)")
     ap.add_argument("--h2", type=int, default=32)
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--qat-epochs", type=int, default=3, help="last epochs trained quantization-aware")
@@ -261,6 +269,7 @@ def main():
     ap.add_argument("--val-mod", type=int, default=20, help="games with id %% val-mod == 0 validate")
     ap.add_argument("--max-records", type=int, default=0)
     ap.add_argument("--sample", type=float, default=1.0, help="fraction of games kept from each set")
+    ap.add_argument("--x-on-cpu", action="store_true", help="keep the dense inputs in host memory (bigger sets)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--check-blob", help="only compare this blob's integer pass with the records' embedded output")
@@ -270,8 +279,11 @@ def main():
     np.random.seed(args.seed)
     dev = torch.device(args.device)
     meta, parts = load_sets(args.sets, dev, args.max_records, args.sample, args.seed)
-    d, index = to_device(parts, dev)
+    d, index = to_device(parts, dev, args.x_on_cpu)
     del parts
+    if args.acc and args.acc != meta["acc"]:
+        # The schema seals ACC in (src/eval_net/nnue.rs::schema_hash).
+        meta = dict(meta, schema=meta["schema"] ^ (meta["acc"] << 8) ^ (args.acc << 8), acc=args.acc)
     lam = torch.tensor([args.lambda_texel, args.lambda_sprt, 1.0], device=dev)
     tl_sprt = args.lambda_sprt if args.train_lambda_sprt is None else args.train_lambda_sprt
     lam_train = torch.tensor([args.lambda_texel, tl_sprt, 1.0], device=dev)
