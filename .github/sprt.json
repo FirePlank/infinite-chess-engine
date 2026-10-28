@@ -1,11 +1,11 @@
 {
-  "name": "engine_compression_nonreg2_resume",
-  "old": "ccf94806f4fb13f9ce9fcb69cda8b37f12d9ebaa",
-  "games": 2000,
-  "shards": 40,
-  "variants": "site",
+  "name": "nnue_blend50",
+  "old": "d177c3f8",
+  "games": 3000,
+  "shards": 39,
+  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 1000
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
 }

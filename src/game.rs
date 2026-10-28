@@ -149,6 +149,35 @@ pub struct MoveHistoryEntry {
     pub piece_type: PieceType,
 }
 
+/// The board changes of one move (or none, for a null move) and the hashes around it, so
+/// the NNUE can update its accumulators instead of rebuilding them.
+#[derive(Clone, Copy, Debug)]
+pub struct NnueDelta {
+    pub before: u64,
+    pub after: u64,
+    pub n: u8,
+    /// (x, y, packed piece, added)
+    pub ops: [(i64, i64, u8, bool); 6],
+}
+
+impl NnueDelta {
+    #[inline]
+    fn new(before: u64) -> Self {
+        NnueDelta {
+            before,
+            after: 0,
+            n: 0,
+            ops: [(0, 0, 0, false); 6],
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, x: i64, y: i64, p: Piece, added: bool) {
+        self.ops[self.n as usize] = (x, y, p.packed(), added);
+        self.n += 1;
+    }
+}
+
 #[derive(Clone)]
 pub struct UndoMove {
     pub captured_piece: Option<Piece>,
@@ -299,6 +328,9 @@ pub struct GameState {
     /// Stores (from, to, piece_type) for each move.
     #[serde(skip)]
     pub move_history: Vec<MoveHistoryEntry>,
+    /// One entry per move or null move made since the position was set up.
+    #[serde(skip)]
+    pub nnue_log: Vec<NnueDelta>,
     /// Search ply distance from last null move.
     #[serde(skip)]
     pub plies_from_null: u32,
@@ -539,6 +571,7 @@ impl GameState {
             pinned_white: rustc_hash::FxHashMap::default(),
             pinned_black: rustc_hash::FxHashMap::default(),
             move_history: Vec::with_capacity(128),
+            nnue_log: Vec::with_capacity(128),
             plies_from_null: 0,
             plies_since_rights_loss: 0,
             clock_reset_had_ep: false,
@@ -594,6 +627,7 @@ impl GameState {
             pinned_white: rustc_hash::FxHashMap::default(),
             pinned_black: rustc_hash::FxHashMap::default(),
             move_history: Vec::with_capacity(128),
+            nnue_log: Vec::with_capacity(128),
             plies_from_null: 0,
             plies_since_rights_loss: 0,
             clock_reset_had_ep: false,
@@ -1552,6 +1586,7 @@ impl GameState {
 
         // Push hashes and update for null move
         self.hash_stack.push(self.hash);
+        let mut delta = NnueDelta::new(self.hash);
 
         if let Some(ep) = &self.en_passant
             && ep.hashed
@@ -1570,6 +1605,8 @@ impl GameState {
         // Reset plies from last null move; the caller restores both.
         self.plies_from_null = 0;
         self.repetition = 0;
+        delta.after = self.hash;
+        self.nnue_log.push(delta);
     }
 
     /// Unmake a null move
@@ -1583,6 +1620,7 @@ impl GameState {
         self.turn = self.turn.opponent();
 
         self.null_moves -= 1;
+        self.nnue_log.pop();
     }
 
     /// Return the incrementally maintained hash (fast)
@@ -3266,6 +3304,8 @@ impl GameState {
         let old_castle_hash = self.castling_hash();
 
         let piece = self.board.remove_piece(&m.from.x, &m.from.y).unwrap();
+        let mut delta = NnueDelta::new(self.hash);
+        delta.push(m.from.x, m.from.y, piece, false);
         // Update spatial indices: remove moving piece from source square
         self.spatial_indices.remove(m.from.x, m.from.y);
 
@@ -3410,6 +3450,7 @@ impl GameState {
             })
         {
             is_ep_capture = true;
+            delta.push(ep.pawn_square.x, ep.pawn_square.y, captured_pawn, false);
             // Store the actual captured piece for proper undo restoration
             undo_info.ep_captured_piece = Some(captured_pawn);
             // Remove EP captured pawn
@@ -3548,6 +3589,8 @@ impl GameState {
                 m.from.y,
             );
             self.board.set_piece(rook_to_x, m.from.y, rook);
+            delta.push(partner_coord.x, partner_coord.y, rook, false);
+            delta.push(rook_to_x, m.from.y, rook, true);
             self.spatial_indices
                 .remove(partner_coord.x, partner_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
@@ -3599,7 +3642,11 @@ impl GameState {
                 );
             }
         }
+        if let Some(c) = undo_info.captured_piece {
+            delta.push(m.to.x, m.to.y, c, false);
+        }
         self.board.set_piece(m.to.x, m.to.y, final_piece);
+        delta.push(m.to.x, m.to.y, final_piece, true);
         // Update spatial indices for moved piece on destination square
         self.spatial_indices
             .add(m.to.x, m.to.y, final_piece.packed());
@@ -3698,6 +3745,8 @@ impl GameState {
             }
         }
 
+        delta.after = self.hash;
+        self.nnue_log.push(delta);
         undo_info
     }
 
@@ -3934,6 +3983,7 @@ impl GameState {
 
         // Pop move history (reverse of make_move push)
         self.move_history.pop();
+        self.nnue_log.pop();
         self.plies_from_null = self.plies_from_null.saturating_sub(1);
     }
 
@@ -3971,6 +4021,7 @@ impl GameState {
         // state must come out identical to a freshly constructed one.
         self.hash_stack.clear();
         self.move_history.clear();
+        self.nnue_log.clear();
         self.game_rules.move_rule_limit = None;
         self.special_rights.clear();
         self.en_passant = None;
