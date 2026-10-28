@@ -27,7 +27,7 @@ pub const QA: i16 = 64;
 pub const DENSE: usize = TAC_NET_INPUTS;
 pub const HEAD_IN: usize = DENSE + 2 * ACC;
 /// Share of the NNUE in the blended score, in percent.
-pub const BLEND: i32 = 65;
+pub const BLEND: i32 = 50;
 
 const MAGIC: &[u8; 8] = b"AINNUE01";
 
