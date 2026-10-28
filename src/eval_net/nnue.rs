@@ -30,7 +30,6 @@ pub const HEAD_IN: usize = DENSE + 2 * ACC;
 pub const BLEND: i32 = 50;
 
 const MAGIC: &[u8; 8] = b"AINNUE01";
-// Data run: both sides are this engine.
 
 /// Exact offsets within 3 squares, then sign x (4-7, 8-15, 16-63, 64+).
 #[inline]
