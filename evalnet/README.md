@@ -105,3 +105,23 @@ input groups by permutation importance.
   `features.rs` seals the feature layout into the blob.
 
 Data files (`*.bin`) and `checkpoints/` are ignored by git.
+
+## Board NNUE
+
+`src/eval_net/nnue.rs` blends a board net 50/50 with the generic evaluator (HCE + residual).
+Each coloured piece is a feature (own/enemy x type x offset from each side's first royal,
+log-bucketed per axis) in one 64-wide accumulator per view, updated incrementally from the
+moves `make_move` logs; a 286 -> 32 -> 32 -> 1 head reads both views after the 158 Stage-A
+inputs. A few positions per game keep it from memorizing game results (with ~57 per game the
+holdout got worse every epoch), and broken or lopsided SPRT candidates are left out:
+
+```
+X=./target/release/export_eval_features.exe
+$X --sprt-dir games/sprt --sprt-max-abs-elo 15 --sprt-sample 0.06 --out evalnet/nn/f15.bin --nnue-out evalnet/nn/f15
+python evalnet/train_nnue.py evalnet/nn/f15 --sample 0.82 --train-lambda-sprt 0.7 --epochs 20 --out evalnet/nn/net.pt
+cp evalnet/nn/net.bin src/eval_net/nnue.bin
+```
+
+The trainer scores the blend on held-out games against the Stage-A target, next to the engine
+eval scaled down (blending shrinks the eval, which alone can help), and `--check-blob` checks
+a blob's integer pass against the engine's own output stored in each record.

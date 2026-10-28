@@ -60,6 +60,72 @@ static KEEP_KEYS: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new()
 static KEEP_HASHES: std::sync::OnceLock<HashSet<u64>> = std::sync::OnceLock::new();
 static HASH_OUT: std::sync::OnceLock<Mutex<BufWriter<File>>> = std::sync::OnceLock::new();
 static REL: std::sync::OnceLock<RelSink> = std::sync::OnceLock::new();
+/// `--nnue-out`: fixed records (`.rec`) and their sparse features (`.sp`), written together.
+type NnueSink = Mutex<(BufWriter<File>, BufWriter<File>, u64)>;
+static NN: std::sync::OnceLock<NnueSink> = std::sync::OnceLock::new();
+
+/// One `--nnue-out` record: the Stage-A inputs (side to move first), the engine's pre-blend
+/// static eval, teacher and result for the side to move, then both views' sparse features.
+#[allow(clippy::too_many_arguments)]
+fn write_nnue(
+    pos: &GameState,
+    fc: &FeatureCollector,
+    stm_score: i32,
+    teacher_white: i32,
+    wdl_white: f32,
+    vid: u8,
+    source: u8,
+    game_id: u32,
+    ply: usize,
+) {
+    use apeiron::eval_net::nnue;
+    let Some(sink) = NN.get() else {
+        return;
+    };
+    let black = pos.turn == PlayerColor::Black;
+    let sign = if black { -1 } else { 1 };
+    let mut sp: Vec<u16> = Vec::with_capacity(64);
+    let mut n = [0u16; 2];
+    for (v, view) in [pos.turn, pos.turn.opponent()].into_iter().enumerate() {
+        if !nnue::for_each_feature(pos, view, |f| {
+            sp.push(f as u16);
+            n[v] += 1;
+        }) {
+            return;
+        }
+    }
+    let x = apeiron::eval_net::net_inputs(pos, fc, nnue::DENSE, true);
+    let engine = stm_score + sign * apeiron::eval_net::residual_white(pos, fc);
+    let wdl = if black { 1.0 - wdl_white } else { wdl_white };
+    let mut rec = Vec::with_capacity(nnue::DENSE * 2 + 20);
+    for f in x {
+        rec.extend_from_slice(&f.to_le_bytes());
+    }
+    rec.extend_from_slice(&(engine.clamp(-20000, 20000) as i16).to_le_bytes());
+    rec.extend_from_slice(&((sign * teacher_white).clamp(-20000, 20000) as i16).to_le_bytes());
+    rec.push(if wdl > 0.75 {
+        2
+    } else if wdl > 0.25 {
+        1
+    } else {
+        0
+    });
+    rec.push(vid);
+    rec.push(source);
+    rec.push(0);
+    rec.extend_from_slice(&n[0].to_le_bytes());
+    rec.extend_from_slice(&n[1].to_le_bytes());
+    rec.extend_from_slice(&game_id.to_le_bytes());
+    rec.extend_from_slice(&(ply.min(65535) as u16).to_le_bytes());
+    // The embedded NNUE's own output, so the trainer can check its integer parity.
+    let nn = nnue::NNUE.as_ref().and_then(|n| n.evaluate(pos, fc)).unwrap_or(0);
+    rec.extend_from_slice(&(nn.clamp(-32767, 32767) as i16).to_le_bytes());
+    let spb: Vec<u8> = sp.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let mut g = sink.lock().unwrap();
+    g.0.write_all(&rec).unwrap();
+    g.1.write_all(&spb).unwrap();
+    g.2 += 1;
+}
 
 /// The `--rel-out` output, filled from the same replay as the main one.
 struct RelSink {
@@ -160,6 +226,16 @@ struct Cli {
     /// Only SPRT files whose name contains this substring.
     #[arg(long)]
     sprt_filter: Option<String>,
+    /// Only SPRT files `games_<n>_*` with test number n at least this (0 = all).
+    #[arg(long, default_value_t = 0)]
+    sprt_min_test: u32,
+    /// Only SPRT test files whose `summary_*` twin reports |Elo| below this: drops broken or
+    /// lopsided candidates, and files with no summary (0 = no filter).
+    #[arg(long, default_value_t = 0.0)]
+    sprt_max_abs_elo: f64,
+    /// Also write NNUE training records (`<path>.rec` + `<path>.sp`) for generic positions.
+    #[arg(long)]
+    nnue_out: Option<PathBuf>,
     /// Stop after this many SPRT files (0 = all).
     #[arg(long, default_value_t = 0)]
     sprt_max_files: usize,
@@ -693,6 +769,9 @@ fn consider(
             }) && c.keep_hashes.is_none_or(|k| k.contains(&pos.hash));
             let fresh = keep && shard.lock().unwrap().insert(pos.hash);
             if fresh {
+                if pos.eval_kind == EvalKind::Generic {
+                    write_nnue(&pos, &fc, stm_score, teacher, game.wdl, vid, source, game_id, ply);
+                }
                 for f in &x {
                     out.extend_from_slice(&f.to_le_bytes());
                 }
@@ -1340,6 +1419,24 @@ fn group_by_variant(games: Vec<Game>) -> Vec<Vec<Game>> {
 
 fn main() {
     let cli = Cli::parse();
+    if let Some(p) = &cli.nnue_out {
+        let open = |ext: &str| BufWriter::new(File::create(p.with_extension(ext)).unwrap());
+        let _ = NN.set(Mutex::new((open("rec"), open("sp"), 0)));
+        use apeiron::eval_net::nnue;
+        std::fs::write(
+            p.with_extension("meta"),
+            format!(
+                "{{\"num_sparse\": {}, \"acc\": {}, \"dense\": {}, \"qa\": {}, \"schema\": {}}}
+",
+                nnue::NUM_SPARSE,
+                nnue::ACC,
+                nnue::DENSE,
+                nnue::QA,
+                nnue::schema_hash()
+            ),
+        )
+        .unwrap();
+    }
     HASH_COUNTS.store(cli.hash_counts, Ordering::Relaxed);
     let layout = variant_layout(target_kind(&cli.eval_kind))
         .filter(|_| !cli.generic_features)
@@ -1533,6 +1630,32 @@ fn main() {
                     .as_ref()
                     .is_none_or(|f| p.to_string_lossy().contains(f.as_str()))
             })
+            .filter(|p| {
+                cli.sprt_max_abs_elo <= 0.0 || {
+                    let name = p.file_name().unwrap().to_string_lossy();
+                    let summary = name
+                        .strip_prefix("games_")
+                        .and_then(|r| r.strip_suffix(".json"))
+                        .map(|r| p.with_file_name(format!("summary_{r}.txt")));
+                    summary
+                        .and_then(|s| std::fs::read_to_string(s).ok())
+                        .and_then(|t| {
+                            t.lines()
+                                .find_map(|l| l.trim().strip_prefix("Elo:"))
+                                .and_then(|v| v.split_whitespace().next()?.parse::<f64>().ok())
+                        })
+                        .is_some_and(|e| e.abs() < cli.sprt_max_abs_elo)
+                }
+            })
+            .filter(|p| {
+                cli.sprt_min_test == 0 || {
+                    let name = p.file_name().unwrap().to_string_lossy();
+                    name.strip_prefix("games_")
+                        .and_then(|r| r.split('_').next())
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .is_some_and(|n| n >= cli.sprt_min_test)
+                }
+            })
             .collect();
         files.sort();
         if cli.sprt_max_files > 0 {
@@ -1610,6 +1733,12 @@ fn main() {
         });
     }
 
+    if let Some(nn) = NN.get() {
+        let mut g = nn.lock().unwrap();
+        g.0.flush().unwrap();
+        g.1.flush().unwrap();
+        eprintln!("nnue: {} records", g.2);
+    }
     // Patch the record count into the header.
     let kept = stats.kept.load(Ordering::Relaxed);
     let mut w = writer.into_inner().unwrap();

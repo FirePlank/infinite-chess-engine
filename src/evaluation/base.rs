@@ -640,20 +640,15 @@ fn tile_local_probe(
 }
 
 // Main Evaluation
-/// HCE plus the Stage-A net residual. Added after the complexity damping so the
-/// net sees that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
+/// HCE plus the Stage-A net residual, blended with the NNUE. Added after the complexity
+/// damping so the nets see that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 pub fn evaluate(game: &GameState) -> i32 {
     if !crate::eval_net::enabled() || net_off(game) {
         return evaluate_inner(game);
     }
     let mut fc = crate::eval_net::FeatureCollector::default();
     let score = evaluate_inner_traced(game, &mut fc);
-    let residual = crate::eval_net::residual_white(game, &fc);
-    if game.turn == PlayerColor::Black {
-        score - residual
-    } else {
-        score + residual
-    }
+    crate::eval_net::generic_score(game, &fc, score)
 }
 
 /// Against a bare king the net cannot see the mating geometry, so its residual is

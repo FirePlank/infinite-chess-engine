@@ -283,7 +283,7 @@ fn dense_layer(
 }
 
 #[inline(always)]
-fn has_avx2() -> bool {
+pub(super) fn has_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         use once_cell::sync::Lazy;
@@ -341,13 +341,16 @@ pub fn kernel_selftest() -> bool {
     true
 }
 
-/// Input buffer wide enough for every layout, padded to the layer-1 stride.
-pub const NUM_FEATURES_PAD: usize =
-    super::weights::pad32(if super::features::TAC_NET_INPUTS > MAX_VARIANT_FEATURES {
+/// Input buffer wide enough for every layout (the NNUE head's is widest), padded to the
+/// layer-1 stride.
+pub const NUM_FEATURES_PAD: usize = super::weights::pad32({
+    let w = if super::features::TAC_NET_INPUTS > MAX_VARIANT_FEATURES {
         super::features::TAC_NET_INPUTS
     } else {
         MAX_VARIANT_FEATURES
-    });
+    };
+    if super::nnue::HEAD_IN > w { super::nnue::HEAD_IN } else { w }
+});
 
 /// Raw net output in centipawns (White-ahead), before the residual cap. `x` holds at
 /// least the net's `n_in` inputs.
