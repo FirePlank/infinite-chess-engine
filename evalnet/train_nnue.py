@@ -48,8 +48,10 @@ def load_sets(specs, device, max_records=0, sample=1.0, seed=1):
     for si, spec in enumerate(specs):
         prefix, _, w = spec.partition("@")
         m = json.load(open(prefix + ".meta"))
-        assert meta is None or m == meta, f"{prefix}: layout differs from the first set"
-        meta = m
+        # The accumulator width (and the schema bits it sets) is a training choice, not a layout.
+        same = lambda a, b: all(a[k] == b[k] for k in ("num_sparse", "dense", "qa"))
+        assert meta is None or same(m, meta), f"{prefix}: layout differs from the first set"
+        meta = meta or m
         rec_all = np.memmap(prefix + ".rec", dtype=rec_dtype(m["dense"]), mode="r")
         sp_all = np.memmap(prefix + ".sp", dtype="<u2", mode="r")
         if max_records:
@@ -159,10 +161,11 @@ def targets(d, ids, lam, k):
 
 
 def evaluate(model, d, ids, lam, k, batch=32768):
-    """Mean losses of the engine's current eval, the NNUE alone, blends at 25/50/75%, and
-    the engine scaled by 0.75/0.5: blending also shrinks the eval, which alone can help."""
+    """Mean losses of the engine's current eval, the NNUE alone, blends at 25/50/75%, the
+    engine scaled by 0.75/0.5 (blending also shrinks the eval, which alone can help), and
+    the 50% blend with the net the records were exported with (the net to beat)."""
     model.eval()
-    sums = np.zeros(7)
+    sums = np.zeros(8)
     with torch.no_grad():
         for i in range(0, len(ids), batch):
             b = ids[i : i + batch]
@@ -171,6 +174,7 @@ def evaluate(model, d, ids, lam, k, batch=32768):
             t = targets(d, b, lam, k)
             e = d["engine"][b]
             outs = [e, nn_cp] + [(e * (100 - s) + nn_cp * s) / 100 for s in (25, 50, 75)] + [e * 0.75, e * 0.5]
+            outs.append((e + d["nn"][b].to(e.device, torch.float32)) / 2)
             for j, o in enumerate(outs):
                 sums[j] += float(((torch.sigmoid(o / k) - t) ** 2).sum())
     model.train()
@@ -309,7 +313,7 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps = args.epochs * math.ceil(len(train_ids) / args.batch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps, pct_start=0.05)
-    names = ("engine", "nnue", "blend25", "blend50", "blend75", "engine*0.75", "engine*0.5")
+    names = ("engine", "nnue", "blend25", "blend50", "blend75", "engine*0.75", "engine*0.5", "exported50")
     best = None
     for ep in range(1, args.epochs + 1):
         model.set_qat(ep > args.epochs - args.qat_epochs)
@@ -330,6 +334,10 @@ def main():
         v = evaluate(model, d, val_ids, lam, args.k)
         gains = " ".join(f"{n} {100 * (v[0] - v[j]) / v[0]:+.2f}%" for j, n in enumerate(names) if j)
         print(f"epoch {ep} train {tl / nb:.6f} val engine {v[0]:.6f} | {gains} | qat {model.qat} | {time.time() - t0:.0f}s", flush=True)
+        if len(val_parts) > 1:
+            # The last set alone: fresh games, labelled by the engine with the exported net.
+            w = evaluate(model, d, val_parts[-1], lam, args.k)
+            print("  last set " + " ".join(f"{n} {100 * (w[0] - w[j]) / w[0]:+.2f}%" for j, n in enumerate(names) if j), flush=True)
         if model.qat and (best is None or v[3] < best):
             best = v[3]
             torch.save({"state_dict": model.state_dict(), "meta": meta, "h1": args.h1, "h2": args.h2,
