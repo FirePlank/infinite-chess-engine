@@ -20,7 +20,7 @@ pub const NT: usize = 20;
 pub const AXIS: usize = 15;
 pub const BUCKETS: usize = AXIS * AXIS;
 pub const NUM_SPARSE: usize = 2 * NT * BUCKETS;
-pub const ACC: usize = 128;
+pub const ACC: usize = 64;
 /// Accumulator units per 1.0 of activation: the head reads them as its integer inputs,
 /// whose float value is x / 64 like every Stage-A input.
 pub const QA: i16 = 64;
@@ -132,18 +132,19 @@ pub fn for_each_feature(game: &GameState, view: PlayerColor, mut f: impl FnMut(u
     true
 }
 
-/// The ACC i16 lanes stay in registers (ACC / 16 of them) across every row added or
-/// subtracted.
+/// The 64 i16 lanes stay in four registers across every row added (or subtracted).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn rows_avx2<const ADD: bool>(w: &[i16], acc: &mut [i16; ACC], feats: &[u16]) {
     use std::arch::x86_64::*;
     unsafe {
         let p = acc.as_mut_ptr() as *mut __m256i;
-        let mut a = [_mm256_setzero_si256(); ACC / 16];
-        for (j, aj) in a.iter_mut().enumerate() {
-            *aj = _mm256_loadu_si256(p.add(j));
-        }
+        let mut a = [
+            _mm256_loadu_si256(p),
+            _mm256_loadu_si256(p.add(1)),
+            _mm256_loadu_si256(p.add(2)),
+            _mm256_loadu_si256(p.add(3)),
+        ];
         for &f in feats {
             debug_assert!((f as usize + 1) * ACC <= w.len());
             let r = w.as_ptr().add(f as usize * ACC) as *const __m256i;
