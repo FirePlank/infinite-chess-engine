@@ -1,7 +1,7 @@
 {
-  "name": "nnue_a128_b",
-  "old": "48b42e6d",
-  "games": 3000,
+  "name": "nnue_fresh1",
+  "old": "96cb9624",
+  "games": 6000,
   "shards": 39,
   "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
   "tc": "10+0.1",
