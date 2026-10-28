@@ -29,7 +29,10 @@ pub struct VariantFeatures {
 
 impl Default for VariantFeatures {
     fn default() -> Self {
-        VariantFeatures { x: [0; MAX_VARIANT_FEATURES], phase: 0 }
+        VariantFeatures {
+            x: [0; MAX_VARIANT_FEATURES],
+            phase: 0,
+        }
     }
 }
 

@@ -49,11 +49,29 @@ fn get_pawn_advance_bonus(dist_to_promo: i32) -> i32 {
 /// not colour-mirrored and reads the side to move directly.
 pub const NET_LAYOUT: VariantLayout = VariantLayout {
     names: &[
-        "stm", "material", "horde pawns", "advancement", "phalanx support", "king tropism",
-        "breach loose", "breach supported", "breakthrough queens", "pieces on pawns",
-        "idle pieces", "king near front", "black phase", "black pieces", "rear pawn dist",
-        "lead pawn dist", "king front gap", "pawns near promo", "black material", "promoted",
-        "white doubled", "black doubled", "king cover",
+        "stm",
+        "material",
+        "horde pawns",
+        "advancement",
+        "phalanx support",
+        "king tropism",
+        "breach loose",
+        "breach supported",
+        "breakthrough queens",
+        "pieces on pawns",
+        "idle pieces",
+        "king near front",
+        "black phase",
+        "black pieces",
+        "rear pawn dist",
+        "lead pawn dist",
+        "king front gap",
+        "pawns near promo",
+        "black material",
+        "promoted",
+        "white doubled",
+        "black doubled",
+        "king cover",
     ],
     fixed: 23,
     neg: 0,
@@ -322,7 +340,11 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
         };
         let near_promo = white_pawns.iter().filter(|p| dist(p.y) <= 2).count() as i32;
         let cols = [
-            if game.turn == PlayerColor::White { 1 } else { -1 },
+            if game.turn == PlayerColor::White {
+                1
+            } else {
+                -1
+            },
             cp(pawns * PAWN_VALUE + promoted - black_material),
             ct(pawns),
             cp(advancement),
@@ -343,7 +365,13 @@ pub fn evaluate_traced<S: VariantSink>(game: &GameState, sink: &mut S) -> i32 {
             cp(black_material),
             cp(promoted),
             cp(doubled(white_pawns.iter().map(|p| p.x), phase)),
-            cp(doubled(black_pieces.iter().filter(|p| p.1 == PieceType::Pawn).map(|p| p.0.x), phase)),
+            cp(doubled(
+                black_pieces
+                    .iter()
+                    .filter(|p| p.1 == PieceType::Pawn)
+                    .map(|p| p.0.x),
+                phase,
+            )),
             ct(king_cover(game, black_king_pos) / 10),
         ];
         for (c, v) in cols.into_iter().enumerate() {
@@ -369,7 +397,8 @@ fn doubled(files: impl Iterator<Item = i64>, phase: i32) -> i32 {
     let mut xs: ArrayVec<i64, 64> = files.take(64).collect();
     xs.sort_unstable();
     let extra = xs.windows(2).filter(|w| w[0] == w[1]).count() as i32;
-    -extra * (mg_doubled_pawn_penalty() * phase + eg_doubled_pawn_penalty() * (MAX_PHASE - phase)) / MAX_PHASE
+    -extra * (mg_doubled_pawn_penalty() * phase + eg_doubled_pawn_penalty() * (MAX_PHASE - phase))
+        / MAX_PHASE
 }
 
 /// Black's cover within two squares of its king, weighted as the generic defender

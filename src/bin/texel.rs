@@ -172,7 +172,14 @@ fn run() -> Result<(), String> {
             k_scale,
             quiet_only,
             output,
-        } => run_sweep(&corpus, &params, points, k_scale, quiet_only, output.as_deref()),
+        } => run_sweep(
+            &corpus,
+            &params,
+            points,
+            k_scale,
+            quiet_only,
+            output.as_deref(),
+        ),
         Commands::List => {
             for spec in TUNABLE_EVAL_PARAM_SPECS {
                 println!(
@@ -1056,7 +1063,10 @@ fn run_sweep(
         let names: Vec<String> = params.split(',').map(|s| s.trim().to_lowercase()).collect();
         let mut v = Vec::new();
         for n in &names {
-            match TUNABLE_EVAL_PARAM_SPECS.iter().find(|s| s.name.to_lowercase() == *n) {
+            match TUNABLE_EVAL_PARAM_SPECS
+                .iter()
+                .find(|s| s.name.to_lowercase() == *n)
+            {
                 Some(s) => v.push(s),
                 None => return Err(format!("unknown parameter '{}'", n)),
             }
@@ -1089,9 +1099,7 @@ fn run_sweep(
         // Candidate values spread across the parameter's declared range, with its
         // current value forced in so the baseline is always on the curve.
         let mut values: Vec<i64> = (0..points.max(2))
-            .map(|i| {
-                spec.min + (spec.max - spec.min) * i as i64 / (points.max(2) - 1) as i64
-            })
+            .map(|i| spec.min + (spec.max - spec.min) * i as i64 / (points.max(2) - 1) as i64)
             .collect();
         let current = get_field(&base, spec.name);
         if !values.contains(&current) {
@@ -1105,11 +1113,15 @@ fn run_sweep(
         let started = Instant::now();
 
         for (variant_name, games) in &by_variant {
-            let Some(variant) = resolve_variant(variant_name) else { continue };
+            let Some(variant) = resolve_variant(variant_name) else {
+                continue;
+            };
             let b = variant.get_default_bounds();
             apeiron::moves::set_world_bounds(b.0, b.1, b.2, b.3);
 
-            let acc = sums.entry(variant_name.clone()).or_insert_with(|| vec![0.0; values.len()]);
+            let acc = sums
+                .entry(variant_name.clone())
+                .or_insert_with(|| vec![0.0; values.len()]);
             let cnt = counts.entry(variant_name.clone()).or_insert(0);
 
             for chunk in games.chunks(24) {
@@ -1152,9 +1164,14 @@ fn run_sweep(
         // Report: each variant's own optimum, and how far it sits from the current
         // global value. A parameter whose optima cluster wants one global value; one
         // whose optima split across variants is a gating candidate.
-        println!("\n=== {} (current {}, range [{}, {}]) ===",
-                 spec.name, current, spec.min, spec.max);
-        println!("{:<22} {:>8} {:>10} {:>12} {:>12}", "variant", "best", "positions", "loss@best", "loss@current");
+        println!(
+            "\n=== {} (current {}, range [{}, {}]) ===",
+            spec.name, current, spec.min, spec.max
+        );
+        println!(
+            "{:<22} {:>8} {:>10} {:>12} {:>12}",
+            "variant", "best", "positions", "loss@best", "loss@current"
+        );
         let cur_idx = values.iter().position(|&v| v == current).unwrap_or(0);
         let mut best_vals = Vec::new();
         let mut rows: Vec<(String, i64, usize, f64, f64)> = Vec::new();
@@ -1164,7 +1181,13 @@ fn run_sweep(
                 .enumerate()
                 .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .unwrap();
-            rows.push((v.clone(), values[bi], counts[v], losses[bi], losses[cur_idx]));
+            rows.push((
+                v.clone(),
+                values[bi],
+                counts[v],
+                losses[bi],
+                losses[cur_idx],
+            ));
             best_vals.push(values[bi]);
         }
         rows.sort_by_key(|r| r.1);
@@ -1172,8 +1195,16 @@ fn run_sweep(
             let gain = lc - lb;
             println!(
                 "{:<22} {:>8} {:>10} {:>12.6} {:>12.6}  {}",
-                v, best, n, lb, lc,
-                if gain > 0.0005 { format!("(-{:.4} available)", gain) } else { String::new() }
+                v,
+                best,
+                n,
+                lb,
+                lc,
+                if gain > 0.0005 {
+                    format!("(-{:.4} available)", gain)
+                } else {
+                    String::new()
+                }
             );
         }
         best_vals.sort_unstable();
@@ -1206,8 +1237,11 @@ fn run_sweep(
         {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        fs::write(path, serde_json::to_string_pretty(&curves).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&curves).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         println!("\n[texel] wrote curves to {}", path);
     }
     Ok(())

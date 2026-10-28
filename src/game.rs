@@ -3,8 +3,8 @@ use crate::Variant;
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
 use crate::evaluation::get_piece_phase;
 use crate::moves::{
-    Move, MoveList, SpatialIndices, get_pseudo_legal_moves, get_pseudo_legal_moves_into,
-    get_pseudo_legal_moves_for_piece_into, is_square_attacked,
+    Move, MoveList, SpatialIndices, get_pseudo_legal_moves, get_pseudo_legal_moves_for_piece_into,
+    get_pseudo_legal_moves_into, is_square_attacked,
 };
 use crate::utils::is_prime_i64;
 use arrayvec::ArrayVec;
@@ -154,7 +154,7 @@ pub struct UndoMove {
     pub captured_piece: Option<Piece>,
     pub old_en_passant: Option<EnPassantState>,
     pub old_halfmove_clock: u32,
-    pub old_hash: u64,     // Hash before the move was made
+    pub old_hash: u64, // Hash before the move was made
     pub special_rights_removed: ArrayVec<Coordinate, 4>, // Track which special rights were removed (re-insert on undo)
     /// Royal positions before move
     pub old_white_royals: SmallVec<[Coordinate; 1]>,
@@ -388,13 +388,21 @@ impl GameState {
     /// (every preset) is a single flag test; several pick the next one ahead.
     #[inline(always)]
     pub fn white_promo_rank_for(&self, y: i64) -> i64 {
-        if self.multi_promo_ranks { self.next_promo_rank(true, y) } else { self.white_promo_rank }
+        if self.multi_promo_ranks {
+            self.next_promo_rank(true, y)
+        } else {
+            self.white_promo_rank
+        }
     }
 
     /// As `white_promo_rank_for`, for a Black pawn on rank `y`.
     #[inline(always)]
     pub fn black_promo_rank_for(&self, y: i64) -> i64 {
-        if self.multi_promo_ranks { self.next_promo_rank(false, y) } else { self.black_promo_rank }
+        if self.multi_promo_ranks {
+            self.next_promo_rank(false, y)
+        } else {
+            self.black_promo_rank
+        }
     }
 
     /// Nearest promotion rank ahead of a pawn on rank `y`; with none ahead, the side's
@@ -404,9 +412,21 @@ impl GameState {
     fn next_promo_rank(&self, white: bool, y: i64) -> i64 {
         let ranks = &self.game_rules.promotion_ranks;
         if white {
-            ranks.white.iter().copied().filter(|&r| r > y).min().unwrap_or(self.white_promo_rank)
+            ranks
+                .white
+                .iter()
+                .copied()
+                .filter(|&r| r > y)
+                .min()
+                .unwrap_or(self.white_promo_rank)
         } else {
-            ranks.black.iter().copied().filter(|&r| r < y).max().unwrap_or(self.black_promo_rank)
+            ranks
+                .black
+                .iter()
+                .copied()
+                .filter(|&r| r < y)
+                .max()
+                .unwrap_or(self.black_promo_rank)
         }
     }
 
@@ -416,7 +436,9 @@ impl GameState {
 
     #[inline]
     fn castling_hash(&self) -> u64 {
-        use crate::search::zobrist::{castling_rights_key_from_bitfield, castling_special_right_key};
+        use crate::search::zobrist::{
+            castling_rights_key_from_bitfield, castling_special_right_key,
+        };
 
         let mut h = castling_rights_key_from_bitfield(self.effective_castling_rights);
 
@@ -616,8 +638,9 @@ impl GameState {
                 let idx = neutral.trailing_zeros() as usize;
                 neutral &= neutral - 1;
                 let packed = tile.piece[idx];
-                non_obstacle_neutrals +=
-                    (packed == 0 || crate::board::Piece::from_packed(packed).piece_type() != PieceType::Obstacle) as u16;
+                non_obstacle_neutrals += (packed == 0
+                    || crate::board::Piece::from_packed(packed).piece_type() != PieceType::Obstacle)
+                    as u16;
             }
             let mut bits = tile.occ_all;
             while bits != 0 {
@@ -1008,7 +1031,11 @@ impl GameState {
             let reach = match self.find_first_blocker_on_ray(from.x, from.y, dir.0, dir.1) {
                 Some((bx, by)) => {
                     let b = cheb(from, Coordinate::new(bx, by));
-                    if self.board.is_occupied_by_color(bx, by, piece.color()) { b - 1 } else { b }
+                    if self.board.is_occupied_by_color(bx, by, piece.color()) {
+                        b - 1
+                    } else {
+                        b
+                    }
                 }
                 None => MAX_WALK,
             };
@@ -1215,14 +1242,17 @@ impl GameState {
             self.minor_hash ^= piece_key(pt, partner.color(), from_x, from_y);
             self.minor_hash ^= piece_key(pt, partner.color(), to_x, to_y);
         }
-        // A bishop partner's material key is square-colour dependent.
-        if pt == PieceType::Bishop {
-            self.material_hash = self
-                .material_hash
-                .wrapping_sub(material_key_at(pt, partner.color(), from_x, from_y));
-            self.material_hash = self
-                .material_hash
-                .wrapping_add(material_key_at(pt, partner.color(), to_x, to_y));
+        // A bishop or camel partner's material key is square-colour dependent.
+        if matches!(pt, PieceType::Bishop | PieceType::Camel) {
+            self.material_hash = self.material_hash.wrapping_sub(material_key_at(
+                pt,
+                partner.color(),
+                from_x,
+                from_y,
+            ));
+            self.material_hash =
+                self.material_hash
+                    .wrapping_add(material_key_at(pt, partner.color(), to_x, to_y));
         }
     }
 
@@ -1248,7 +1278,7 @@ impl GameState {
                 self.minor_hash ^= key;
             }
         }
-        // Parity-aware: a promoted bishop's material key depends on square colour.
+        // Parity-aware: a promoted bishop's or camel's material key depends on square colour.
         let mk = material_key_at(victim.piece_type(), victim.color(), sx, sy);
         self.material_hash = if capturing {
             self.material_hash.wrapping_sub(mk)
@@ -1259,9 +1289,17 @@ impl GameState {
 
         let value = self.get_piece_value(victim.piece_type(), victim.color());
         let (count, pawns, score_delta) = if victim.color() == PlayerColor::White {
-            (&mut self.white_piece_count, &mut self.white_pawn_count, -value)
+            (
+                &mut self.white_piece_count,
+                &mut self.white_pawn_count,
+                -value,
+            )
         } else {
-            (&mut self.black_piece_count, &mut self.black_pawn_count, value)
+            (
+                &mut self.black_piece_count,
+                &mut self.black_pawn_count,
+                value,
+            )
         };
         if capturing {
             self.material_score += score_delta;
@@ -1322,7 +1360,6 @@ impl GameState {
     /// stored negative, so it always compares below the ply and always counts.
     #[inline]
     pub fn is_repetition(&self, ply: usize) -> bool {
-
         // Result is true if a repetition occurred within the current search tree.
         self.repetition != 0 && self.repetition < (ply as i32)
     }
@@ -1348,7 +1385,6 @@ impl GameState {
     /// the reverses of our own recent moves, checked against the exact hash difference.
     pub fn upcoming_repetition(&self, ply: usize) -> bool {
         use crate::search::zobrist::{SIDE_KEY, piece_key};
-
 
         let stack_len = self.hash_stack.len();
         let history_len = self.move_history.len();
@@ -1463,10 +1499,9 @@ impl GameState {
     }
 
     /// Returns true if the position is a draw by the 50-move rule or by repetition.
-/// Insufficient material is NOT tested here; the evaluator handles it separately.
+    /// Insufficient material is NOT tested here; the evaluator handles it separately.
     #[inline]
     pub fn is_draw(&mut self, ply: usize, in_check: bool) -> bool {
-
         // Draw by fifty-move rule: only if we aren't in checkmate
         if let Some(limit) = self.game_rules.move_rule_limit {
             // If not in check, rule50 draw is immediate.
@@ -2024,7 +2059,10 @@ impl GameState {
         let far_check = checker_sq.x.checked_sub(king_sq.x).is_none()
             || checker_sq.y.checked_sub(king_sq.y).is_none();
         if far_check {
-            for (x, y, p) in self.board.iter_pieces_by_color(our_color == PlayerColor::White) {
+            for (x, y, p) in self
+                .board
+                .iter_pieces_by_color(our_color == PlayerColor::White)
+            {
                 if (x, y) != (king_sq.x, king_sq.y) && p.color() == our_color {
                     let from = Coordinate::new(x, y);
                     get_pseudo_legal_moves_for_piece_into(&self.board, &p, &from, &ctx, out);
@@ -2057,23 +2095,24 @@ impl GameState {
         // A knightrider checks along repeated knight hops, so recover the hop
         // direction (ndx, ndy) and count n from king to checker; the blocking squares
         // are king + i*(ndx, ndy) for i in 1..n, tested arithmetically at any range.
-        let (knightrider_check_ndx, knightrider_check_ndy, knightrider_n) = if is_knightrider_checker {
-            use crate::attacks::KNIGHTRIDER_DIRS;
-            let mut found = (0i64, 0i64, 0i64);
-            for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
-                if ndx != 0 && ndy != 0 {
-                    let n_x = dx_check / ndx;
-                    let n_y = dy_check / ndy;
-                    if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
-                        found = (ndx, ndy, n_x);
-                        break;
+        let (knightrider_check_ndx, knightrider_check_ndy, knightrider_n) =
+            if is_knightrider_checker {
+                use crate::attacks::KNIGHTRIDER_DIRS;
+                let mut found = (0i64, 0i64, 0i64);
+                for &(ndx, ndy) in &KNIGHTRIDER_DIRS {
+                    if ndx != 0 && ndy != 0 {
+                        let n_x = dx_check / ndx;
+                        let n_y = dy_check / ndy;
+                        if n_x == n_y && n_x > 0 && dx_check == ndx * n_x && dy_check == ndy * n_y {
+                            found = (ndx, ndy, n_x);
+                            break;
+                        }
                     }
                 }
-            }
-            found
-        } else {
-            (0, 0, 0)
-        };
+                found
+            } else {
+                (0, 0, 0)
+            };
         // Called only for a knightrider checker, whose hop components are never 0.
         let on_knightrider_path = |tx: i64, ty: i64| -> bool {
             let (Some(ox), Some(oy)) = (tx.checked_sub(king_sq.x), ty.checked_sub(king_sq.y))
@@ -2509,8 +2548,7 @@ impl GameState {
                         if !(tx == from.x && ty == from.y)
                             && s.is_path_clear_for_bishop(&from, &Coordinate::new(tx, ty))
                             && (!is_huygen_checker
-                                || s
-                                    .spatial_indices
+                                || s.spatial_indices
                                     .is_prime_apart(Coordinate::new(tx, ty), checker_sq))
                         {
                             out.push(Move::new(from, Coordinate::new(tx, ty), *piece));
@@ -3222,7 +3260,6 @@ impl GameState {
         // Push hashes before move (for repetition detection)
         self.hash_stack.push(self.hash);
 
-
         // Snapshot the castling hash before the mover leaves the board: precise mode
         // skips empty rights-squares, so computing it after removal would never XOR
         // out the mover's own key.
@@ -3414,7 +3451,11 @@ impl GameState {
 
             self.total_phase += get_piece_phase(promo_type);
             // A promotion can create the side's first rider; these flags gate its attack detection.
-            let c = if piece.color() == PlayerColor::White { 0 } else { 1 };
+            let c = if piece.color() == PlayerColor::White {
+                0
+            } else {
+                1
+            };
             match promo_type {
                 PieceType::Knightrider => self.spatial_indices.has_knightrider[c] = true,
                 PieceType::Huygen => self.spatial_indices.has_huygen[c] = true,
@@ -3469,26 +3510,46 @@ impl GameState {
             let direction = if dx > 0 { 1 } else { -1 };
             let rook_to_x = m.to.x - direction;
             // Move rook in castling
-            self.hash ^= piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
+            self.hash ^= piece_key(
+                rook.piece_type(),
+                rook.color(),
+                partner_coord.x,
+                partner_coord.y,
+            );
             self.hash ^= piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
 
             if rook.color() == PlayerColor::White {
-                self.white_nonpawn_hash ^=
-                    piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
+                self.white_nonpawn_hash ^= piece_key(
+                    rook.piece_type(),
+                    rook.color(),
+                    partner_coord.x,
+                    partner_coord.y,
+                );
                 self.white_nonpawn_hash ^=
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             } else {
-                self.black_nonpawn_hash ^=
-                    piece_key(rook.piece_type(), rook.color(), partner_coord.x, partner_coord.y);
+                self.black_nonpawn_hash ^= piece_key(
+                    rook.piece_type(),
+                    rook.color(),
+                    partner_coord.x,
+                    partner_coord.y,
+                );
                 self.black_nonpawn_hash ^=
                     piece_key(rook.piece_type(), rook.color(), rook_to_x, m.from.y);
             }
 
             // Castling moves the PARTNER too, and CoaIP castles with a Guard --
             // a minor -- so minor_hash must follow it like the other hashes do.
-            self.castling_partner_aux_hashes(rook, partner_coord.x, partner_coord.y, rook_to_x, m.from.y);
+            self.castling_partner_aux_hashes(
+                rook,
+                partner_coord.x,
+                partner_coord.y,
+                rook_to_x,
+                m.from.y,
+            );
             self.board.set_piece(rook_to_x, m.from.y, rook);
-            self.spatial_indices.remove(partner_coord.x, partner_coord.y);
+            self.spatial_indices
+                .remove(partner_coord.x, partner_coord.y);
             self.spatial_indices.add(rook_to_x, m.from.y, rook.packed());
 
             if self.special_rights.remove(&partner_coord) {
@@ -3558,9 +3619,9 @@ impl GameState {
                 let ep_y = m.from.y + (dy / 2);
                 let enemy = piece.color().opponent();
                 let hashed = [-1, 1].iter().any(|dx| {
-                    self.board.get_piece(m.to.x + dx, m.to.y).is_some_and(|p| {
-                        p.piece_type() == PieceType::Pawn && p.color() == enemy
-                    })
+                    self.board
+                        .get_piece(m.to.x + dx, m.to.y)
+                        .is_some_and(|p| p.piece_type() == PieceType::Pawn && p.color() == enemy)
                 });
                 self.en_passant = Some(EnPassantState {
                     square: Coordinate::new(m.from.x, ep_y),
@@ -4075,11 +4136,14 @@ impl GameState {
                     if s == "_" {
                         return Some(if low { -cap } else { cap });
                     }
-                    s.parse::<i64>().map(|v| v.clamp(-cap, cap)).ok().or_else(|| {
-                        let digits = s.strip_prefix('-').unwrap_or(s);
-                        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-                            .then(|| if s.starts_with('-') { -cap } else { cap })
-                    })
+                    s.parse::<i64>()
+                        .map(|v| v.clamp(-cap, cap))
+                        .ok()
+                        .or_else(|| {
+                            let digits = s.strip_prefix('-').unwrap_or(s);
+                            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                                .then(|| if s.starts_with('-') { -cap } else { cap })
+                        })
                 };
                 if let (Some(l), Some(r), Some(b), Some(t)) = (
                     edge(bounds[0], true),
@@ -4384,8 +4448,16 @@ impl GameState {
         if xs.is_empty() {
             return;
         }
-        let mut diffs: Vec<i64> = xs.iter().zip(&ys).map(|(x, y)| x.wrapping_sub(*y)).collect();
-        let mut sums: Vec<i64> = xs.iter().zip(&ys).map(|(x, y)| x.wrapping_add(*y)).collect();
+        let mut diffs: Vec<i64> = xs
+            .iter()
+            .zip(&ys)
+            .map(|(x, y)| x.wrapping_sub(*y))
+            .collect();
+        let mut sums: Vec<i64> = xs
+            .iter()
+            .zip(&ys)
+            .map(|(x, y)| x.wrapping_add(*y))
+            .collect();
         let (cols, rows) = (densest_center(&mut xs, 128), densest_center(&mut ys, 128));
         self.spatial_indices.recenter(
             rows,
@@ -4424,7 +4496,10 @@ mod tests {
         fresh.setup_position_from_icn(bare);
         assert_eq!(reused.hash_stack.len(), fresh.hash_stack.len());
         assert_eq!(reused.move_history.len(), fresh.move_history.len());
-        assert_eq!(reused.game_rules.move_rule_limit, fresh.game_rules.move_rule_limit);
+        assert_eq!(
+            reused.game_rules.move_rule_limit,
+            fresh.game_rules.move_rule_limit
+        );
     }
 
     use super::*;
@@ -4454,7 +4529,10 @@ mod tests {
     fn per_player_win_conditions_parse() {
         let mut game = GameState::new();
         game.setup_position_from_icn("w 0/100 1 (8|1) (royalcapture|checkmate) K5,1+|k5,8+|Q4,1");
-        assert_eq!(game.game_rules.white_win_condition, WinCondition::RoyalCapture);
+        assert_eq!(
+            game.game_rules.white_win_condition,
+            WinCondition::RoyalCapture
+        );
         assert_eq!(game.game_rules.black_win_condition, WinCondition::Checkmate);
         assert_eq!(game.game_rules.promotion_ranks.white, vec![8]);
     }
@@ -4507,7 +4585,10 @@ mod tests {
             .into_iter()
             .find(|m| m.to.x == 7 && m.to.y == 2)
             .expect("royal centaur can leap to 7,2");
-        assert!(m.partner_x == crate::moves::NO_PARTNER, "a knight leap is not a castle");
+        assert!(
+            m.partner_x == crate::moves::NO_PARTNER,
+            "a knight leap is not a castle"
+        );
 
         let undo = game.make_move(&m);
         assert_eq!(
@@ -4530,20 +4611,28 @@ mod tests {
         assert_eq!(game.effective_castling_rights, 0);
 
         let moves = game.get_pseudo_legal_moves();
-        assert!(moves.iter().all(|m| m.partner_x == crate::moves::NO_PARTNER));
+        assert!(
+            moves
+                .iter()
+                .all(|m| m.partner_x == crate::moves::NO_PARTNER)
+        );
         let slide = *moves
             .iter()
             .find(|m| m.from == Coordinate::new(5, 1) && m.to == Coordinate::new(7, 1))
             .expect("royal queen slides two squares along its row");
 
         let undo = game.make_move(&slide);
-        assert!(game.board.get_piece(8, 1).is_some(), "the rook must not move");
+        assert!(
+            game.board.get_piece(8, 1).is_some(),
+            "the rook must not move"
+        );
         assert!(game.board.get_piece(6, 1).is_none());
         game.undo_move(&slide, undo);
     }
 
     /// Asserts after make AND undo: an asymmetric pair poisons every later TT key,
     /// which a plain round-trip check would miss.
+    #[rustfmt::skip]
     fn assert_incremental_state_matches_scratch(game: &mut GameState, label: &str) {
         let (ph, mh, wpc, bpc) = (
             game.pawn_hash,
@@ -4763,7 +4852,10 @@ mod tests {
                         || crate::attacks::attacks_like_king(m.piece.piece_type())
                         || matches!(
                             m.piece.piece_type(),
-                            PieceType::Camel | PieceType::Giraffe | PieceType::Zebra | PieceType::Hawk
+                            PieceType::Camel
+                                | PieceType::Giraffe
+                                | PieceType::Zebra
+                                | PieceType::Hawk
                         )
                 })
                 .filter(|m| g.board.get_piece(m.to.x, m.to.y).is_some())
@@ -4803,8 +4895,10 @@ mod tests {
                     r ^= r << 13;
                     r ^= r >> 7;
                     r ^= r << 17;
-                    let caps: Vec<_> =
-                        moves.iter().filter(|m| g.board.get_piece(m.to.x, m.to.y).is_some()).collect();
+                    let caps: Vec<_> = moves
+                        .iter()
+                        .filter(|m| g.board.get_piece(m.to.x, m.to.y).is_some())
+                        .collect();
                     let m = if !caps.is_empty() && r % 3 == 0 {
                         *caps[(r >> 8) as usize % caps.len()]
                     } else {
@@ -4815,7 +4909,10 @@ mod tests {
             }
         }
         assert!(checked >= 200, "only {checked} positions in check");
-        assert!(leaper_captures >= 50, "only {leaper_captures} leaper captures exercised");
+        assert!(
+            leaper_captures >= 50,
+            "only {leaper_captures} leaper captures exercised"
+        );
     }
 
     /// Evasion lists hold each move once; the capture of a checker used to be
@@ -4832,7 +4929,10 @@ mod tests {
             assert!(!out[..i].contains(m), "duplicate evasion {m:?}");
         }
         let to_checker = out.iter().filter(|m| m.to == Coordinate::new(0, 5)).count();
-        assert!(to_checker >= 5, "expected several checker captures, got {to_checker}");
+        assert!(
+            to_checker >= 5,
+            "expected several checker captures, got {to_checker}"
+        );
     }
 
     /// In double check one block answers both when a checker is a Huygen or a Rose.
@@ -4887,7 +4987,11 @@ mod tests {
             .filter(|m| m.partner_x != crate::moves::NO_PARTNER)
             .collect();
         let partners: Vec<i64> = castles.iter().map(|m| m.partner_x).collect();
-        assert_eq!(partners, vec![x - 4, x + 3], "only the nearest partner a side castles");
+        assert_eq!(
+            partners,
+            vec![x - 4, x + 3],
+            "only the nearest partner a side castles"
+        );
 
         let before = (game.hash, game.special_rights.clone());
         for m in &castles {
@@ -4895,7 +4999,10 @@ mod tests {
             assert!(!game.special_rights.contains(&Coordinate::new(x, y)));
             let incremental = game.hash;
             game.recompute_hash();
-            assert_eq!(game.hash, incremental, "incremental hash drifted after {m:?}");
+            assert_eq!(
+                game.hash, incremental,
+                "incremental hash drifted after {m:?}"
+            );
             game.undo_move(m, undo);
             assert_eq!((game.hash, game.special_rights.clone()), before);
         }
@@ -4913,7 +5020,10 @@ mod tests {
         let (rows, cols) = (idx.rows.window_center(), idx.cols.window_center());
         // Every home square (files and ranks 1..=8) must sit inside the 128-wide windows.
         assert!((1..=8).all(|k| (k - rows).abs() < 64 && (k - cols).abs() < 64));
-        assert!(cols.abs() < 1000, "the far sliders pulled the file window to {cols}");
+        assert!(
+            cols.abs() < 1000,
+            "the far sliders pulled the file window to {cols}"
+        );
     }
 
     fn create_test_game_from_icn(icn: &str) -> GameState {
@@ -5010,7 +5120,10 @@ mod tests {
         game.game_rules.move_rule_limit = Some(100);
         game.halfmove_clock = 100;
         game.null_moves = 1;
-        assert!(game.is_fifty(), "the move clock still runs below a null move");
+        assert!(
+            game.is_fifty(),
+            "the move clock still runs below a null move"
+        );
     }
 
     #[test]
@@ -5113,7 +5226,10 @@ mod tests {
             game.make_move_coords(5, 2, 5, 1, None);
             game.make_move_coords(5, 7, 5, 8, None);
         }
-        assert_eq!(game.repetition, 4, "only the return after the lost right repeats");
+        assert_eq!(
+            game.repetition, 4,
+            "only the return after the lost right repeats"
+        );
     }
 
     /// The position right after a double push carries its en passant square, which the
@@ -5141,7 +5257,10 @@ mod tests {
         assert!(game.is_in_check());
         let mut out = crate::moves::MoveList::new();
         game.get_evasion_moves_into(&mut out);
-        assert!(out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 1, 0, 2)));
+        assert!(
+            out.iter()
+                .any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 1, 0, 2))
+        );
     }
 
     /// Several promotion ranks per side all promote, and each pawn heads for the next
@@ -5176,8 +5295,11 @@ mod tests {
         game.setup_position_from_icn("w 0/100 1 K0,0|NR0,1000000000|r1000000000000,0|k5,5");
         let mut out = crate::moves::MoveList::new();
         game.get_evasion_moves_into(&mut out);
-        assert!(out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y)
-            == (0, 1_000_000_000, 2_000_000_000, 0)));
+        assert!(
+            out.iter()
+                .any(|m| (m.from.x, m.from.y, m.to.x, m.to.y)
+                    == (0, 1_000_000_000, 2_000_000_000, 0))
+        );
     }
 
     /// A knightrider checking from 40 hops away is still blocked exactly: the rook's
@@ -5189,7 +5311,8 @@ mod tests {
         let mut out = crate::moves::MoveList::new();
         game.get_evasion_moves_into(&mut out);
         assert!(
-            out.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (10, -5, 10, 20)),
+            out.iter()
+                .any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (10, -5, 10, 20)),
             "rook block on the knightrider's 10th hop is missing"
         );
     }
@@ -5201,7 +5324,11 @@ mod tests {
         let mut game = GameState::new();
         game.setup_position_from_icn("w 0/100 1 NR0,0|K-20,-20|k14,25");
         let moves = game.get_pseudo_legal_moves();
-        assert!(moves.iter().any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 0, 12, 24)));
+        assert!(
+            moves
+                .iter()
+                .any(|m| (m.from.x, m.from.y, m.to.x, m.to.y) == (0, 0, 12, 24))
+        );
     }
 
     #[test]
@@ -5281,7 +5408,10 @@ mod tests {
         let mut game = create_test_game();
         game.repetition = -3;
         game.make_null_move();
-        assert!(!game.is_repetition(5), "a null move starts a new repetition window");
+        assert!(
+            !game.is_repetition(5),
+            "a null move starts a new repetition window"
+        );
     }
 
     #[test]

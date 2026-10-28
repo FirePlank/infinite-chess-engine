@@ -1,8 +1,8 @@
 //! Per-piece reach metrics that mirror each fairy piece's movegen exactly:
 //! what its distinctive movement actually attacks, covers, or is blocked by.
 use crate::board::{Board, Coordinate, Piece, PieceType, PlayerColor};
-use crate::game::GameState;
 use crate::evaluation::params::{huygen, knightrider, rose, slider_threat_cap, slider_threat_div};
+use crate::game::GameState;
 
 use super::base::{MAX_PHASE, get_piece_value_base};
 use crate::moves::knightrider_tile_mask;
@@ -50,7 +50,11 @@ pub(crate) fn evaluate_huygen_reach(
             let idx = if forward { i } else { n - 1 - i };
             i += 1;
             let c = l.coords[idx];
-            let d = if forward { c - self_coord } else { self_coord - c };
+            let d = if forward {
+                c - self_coord
+            } else {
+                self_coord - c
+            };
             if d <= 0 {
                 continue;
             }
@@ -63,7 +67,6 @@ pub(crate) fn evaluate_huygen_reach(
         }
         None
     };
-
 
     let mut score_hit = |hit: Option<Piece>| {
         let Some(victim) = hit else { return };
@@ -154,8 +157,9 @@ pub(crate) fn evaluate_rose_reach(
     let mut seen = 0u32;
     let mut occ: [Option<crate::board::Piece>; 32] = [None; 32];
 
-    for (spirals_for_dir, ids_for_dir) in
-        crate::moves::ROSE_SPIRALS.iter().zip(crate::moves::ROSE_SQUARE_ID.iter())
+    for (spirals_for_dir, ids_for_dir) in crate::moves::ROSE_SPIRALS
+        .iter()
+        .zip(crate::moves::ROSE_SQUARE_ID.iter())
     {
         for (spiral_path, ids) in spirals_for_dir.iter().zip(ids_for_dir.iter()) {
             for (&(cum_dx, cum_dy), &id) in spiral_path.iter().zip(ids.iter()) {
@@ -317,7 +321,11 @@ mod tests {
                         expect |= 1 << idx;
                     }
                 }
-                assert_eq!(knightrider_tile_mask(wx, wy), Some(expect), "offset ({wx}, {wy})");
+                assert_eq!(
+                    knightrider_tile_mask(wx, wy),
+                    Some(expect),
+                    "offset ({wx}, {wy})"
+                );
             }
         }
         assert_eq!(knightrider_tile_mask(1 << 60, 0), None);

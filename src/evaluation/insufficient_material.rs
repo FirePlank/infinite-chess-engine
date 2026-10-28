@@ -46,7 +46,8 @@ fn border() -> Border {
     let (left, right, bottom, top) = crate::moves::get_coord_bounds();
     Border {
         bounded,
-        narrow: bounded && (right - left + 1 < MIN_BOUNDED_WIDTH || top - bottom + 1 < MIN_BOUNDED_WIDTH),
+        narrow: bounded
+            && (right - left + 1 < MIN_BOUNDED_WIDTH || top - bottom + 1 < MIN_BOUNDED_WIDTH),
     }
 }
 
@@ -101,7 +102,11 @@ impl Table {
 pub fn side_cannot_mate(game: &GameState, white: bool) -> bool {
     let border = border();
     // Pawn verdicts depend on the pawns' ranks, which the material hash omits.
-    let pawns = if white { game.white_pawn_count } else { game.black_pawn_count };
+    let pawns = if white {
+        game.white_pawn_count
+    } else {
+        game.black_pawn_count
+    };
     let key = (game.material_hash, white, border);
     if pawns == 0
         && let Some(v) = NO_MATE_CACHE.with(|c| c.borrow().get(&key).copied())
@@ -196,7 +201,11 @@ impl Army {
     fn push_side(&mut self, game: &GameState, white: bool, royals_only: bool) -> bool {
         let rules = &game.game_rules;
         if royals_only {
-            let royals = if white { &game.white_royals } else { &game.black_royals };
+            let royals = if white {
+                &game.white_royals
+            } else {
+                &game.black_royals
+            };
             return royals.iter().all(|c| match game.board.get_piece(c.x, c.y) {
                 Some(p) => self.push(c.x, c.y, p, rules),
                 None => true,
@@ -296,7 +305,11 @@ fn all_promotions(
         _ => 0,
     };
     let dead = (start..=kinds.len()).all(|o| {
-        syms[i] = if o == 0 { pawn } else { color_base + kinds[o - 1] };
+        syms[i] = if o == 0 {
+            pawn
+        } else {
+            color_base + kinds[o - 1]
+        };
         all_promotions(syms, len, promotes, i + 1, kinds, Some((pawn, o)), holds)
     });
     syms[i] = pawn;
@@ -334,7 +347,11 @@ pub(crate) fn cheapest_mating_force(
     white: bool,
     cost: impl Fn(u8, u8) -> i64,
 ) -> Option<i64> {
-    let own_royals = if white { &game.white_royals } else { &game.black_royals };
+    let own_royals = if white {
+        &game.white_royals
+    } else {
+        &game.black_royals
+    };
     let mut base = Army::default();
     if own_royals.len() > 1
         || !base.push_side(game, white, true)
@@ -343,7 +360,11 @@ pub(crate) fn cheapest_mating_force(
     {
         return None;
     }
-    let color = if white { PlayerColor::White } else { PlayerColor::Black };
+    let color = if white {
+        PlayerColor::White
+    } else {
+        PlayerColor::Black
+    };
     let mut have = [0u8; MATERIAL_KINDS];
     for (x, y, p) in game.board.iter_pieces_by_color(white) {
         if let Some(kind) = material_kind(p.piece_type(), x, y, color, &game.game_rules) {
@@ -384,7 +405,16 @@ pub(crate) fn cheapest_mating_force(
                 sub.len += 1;
             }
             let extra = if n == 0 { 0 } else { cost(kind as u8, n) };
-            walk(kind + 1, sub, have, first, used + n, spent + extra, cost, best);
+            walk(
+                kind + 1,
+                sub,
+                have,
+                first,
+                used + n,
+                spent + extra,
+                cost,
+                best,
+            );
         }
         sub.len = start;
     }
@@ -413,14 +443,26 @@ fn compute(game: &GameState) -> u64 {
     let kinds = all.promotion_kinds(&game.game_rules);
     if all.dead(&kinds, table) {
         let syms = &all.syms[..all.len];
-        let royal_queen = syms.iter().any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
+        let royal_queen = syms
+            .iter()
+            .any(|&s| s % KINDS == mating_sets::ROYAL_QUEEN_KIND);
         // Kings, queens, rooks, bishops, knights and pawns only, with a king each.
-        let classical = syms.iter().all(|&s| s % KINDS == 0 || (3..=8).contains(&(s % KINDS)));
+        let classical = syms
+            .iter()
+            .all(|&s| s % KINDS == 0 || (3..=8).contains(&(s % KINDS)));
         let kings = syms.contains(&0) && syms.contains(&KINDS);
-        return dead_bits(game, classical && kings, table == Table::Unbounded && royal_queen);
+        return dead_bits(
+            game,
+            classical && kings,
+            table == Table::Unbounded && royal_queen,
+        );
     }
     let helpless = |white| all.alone(white).helpless(&kinds, white, table);
-    if helpless(true) && helpless(false) { SCORED_ZERO } else { 0 }
+    if helpless(true) && helpless(false) {
+        SCORED_ZERO
+    } else {
+        0
+    }
 }
 
 /// The verdict of a position where no mate is possible. A neutral piece can wall a
@@ -434,11 +476,30 @@ fn dead_bits(game: &GameState, classical_with_kings: bool, unbounded_royal_queen
     if game.board.len() == (game.white_piece_count + game.black_piece_count) as usize {
         return SCORED_ZERO | DEAD;
     }
-    let classical_promotions = game.game_rules.promotion_types.as_deref().unwrap_or_default().iter().all(|pt| {
-        matches!(pt, PieceType::King | PieceType::Queen | PieceType::Rook | PieceType::Bishop | PieceType::Knight | PieceType::Pawn)
-    });
-    let harmless_walls = classical_with_kings && classical_promotions && game.non_obstacle_neutrals == 0;
-    if harmless_walls { SCORED_ZERO | DEAD } else { SCORED_ZERO }
+    let classical_promotions = game
+        .game_rules
+        .promotion_types
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .all(|pt| {
+            matches!(
+                pt,
+                PieceType::King
+                    | PieceType::Queen
+                    | PieceType::Rook
+                    | PieceType::Bishop
+                    | PieceType::Knight
+                    | PieceType::Pawn
+            )
+        });
+    let harmless_walls =
+        classical_with_kings && classical_promotions && game.non_obstacle_neutrals == 0;
+    if harmless_walls {
+        SCORED_ZERO | DEAD
+    } else {
+        SCORED_ZERO
+    }
 }
 
 /// Above [`CAP`], the one proven draw: a king, a knight and any bishops of one
@@ -451,7 +512,10 @@ fn compute_above_cap(game: &GameState) -> u64 {
     let white_attacks = game.white_piece_count > game.black_piece_count;
     let (mut kings, mut knights, mut bishop_color) = (0, 0, None);
     let fits = game.board.iter_colored().all(|(x, y, p)| {
-        match ((p.color() == PlayerColor::White) == white_attacks, p.piece_type()) {
+        match (
+            (p.color() == PlayerColor::White) == white_attacks,
+            p.piece_type(),
+        ) {
             (false, PieceType::King) => true,
             (true, PieceType::King) => {
                 kings += 1;
@@ -466,8 +530,16 @@ fn compute_above_cap(game: &GameState) -> u64 {
         }
     });
     // Only kings, knights and bishops fit, so it is classical when each side has a king.
-    let defender = if white_attacks { game.black_piece_count } else { game.white_piece_count };
-    if fits { dead_bits(game, kings == 1 && defender == 1, false) } else { 0 }
+    let defender = if white_attacks {
+        game.black_piece_count
+    } else {
+        game.white_piece_count
+    };
+    if fits {
+        dead_bits(game, kings == 1 && defender == 1, false)
+    } else {
+        0
+    }
 }
 
 /// Both insufficient-material verdicts as [`SCORED_ZERO`] and [`DEAD`] bits, cached.
@@ -485,7 +557,8 @@ fn verdict(game: &GameState) -> u64 {
     }
     // The pawn hash pins each pawn's square, which decides whether it can promote.
     let border = border();
-    let salt = (border.bounded as u64 * 0x9E37_79B9_7F4A_7C15) ^ (border.narrow as u64 * 0x6A09_E667_F3BC_C909);
+    let salt = (border.bounded as u64 * 0x9E37_79B9_7F4A_7C15)
+        ^ (border.narrow as u64 * 0x6A09_E667_F3BC_C909);
     let key = game.material_hash ^ game.pawn_hash.wrapping_mul(0xD6E8_FEB8_6659_FD93);
     let tag = (key ^ salt) & !7;
     let set = 2 * (tag >> (64 - CACHE_SET_BITS)) as usize;
@@ -499,7 +572,11 @@ fn verdict(game: &GameState) -> u64 {
             cache[set + 1].set(first);
             return second;
         }
-        let bits = if above_cap { compute_above_cap(game) } else { compute(game) };
+        let bits = if above_cap {
+            compute_above_cap(game)
+        } else {
+            compute(game)
+        };
         cache[set + 1].set(first);
         cache[set].set(tag | 1 | bits);
         tag | 1 | bits
@@ -999,7 +1076,10 @@ mod tests {
             white: vec![8],
             black: vec![1],
         };
-        assert!(compute(&game) & SCORED_ZERO != 0, "K + dead Pawn vs K should be insufficient");
+        assert!(
+            compute(&game) & SCORED_ZERO != 0,
+            "K + dead Pawn vs K should be insufficient"
+        );
     }
 
     #[test]
@@ -1179,7 +1259,10 @@ mod tests {
                 pieces.extend(defender);
                 let game = create_test_game_with_pieces(&pieces);
                 assert!(evaluate_insufficient_material(&game), "{pieces:?}");
-                assert!(!evaluate_insufficient_material_game_handler(&game), "{pieces:?}");
+                assert!(
+                    !evaluate_insufficient_material_game_handler(&game),
+                    "{pieces:?}"
+                );
                 assert!(side_cannot_mate(&game, true), "{pieces:?}");
             }
         }
@@ -1376,7 +1459,10 @@ mod tests {
         assert!(!evaluate_insufficient_material_game_handler(&game));
         assert!(!evaluate_insufficient_material(&game));
         assert!(side_cannot_mate(&game, true));
-        assert_eq!(game.game_rules.black_win_condition, WinCondition::AllPiecesCaptured);
+        assert_eq!(
+            game.game_rules.black_win_condition,
+            WinCondition::AllPiecesCaptured
+        );
     }
 
     #[test]
@@ -1395,6 +1481,28 @@ mod tests {
         game.setup_position_from_icn("b 0/100 1 K4,-1|Q3,1|k3,4|b3,3|b1,1");
         assert!(!evaluate_insufficient_material_game_handler(&game));
         assert!(evaluate_insufficient_material(&game));
+    }
+
+    /// The material cache is keyed by material hash, so it must tell camel square
+    /// colors apart: on a bounded board two camels mate only on opposite colors.
+    #[test]
+    fn camel_square_colors_do_not_share_a_cache_entry() {
+        // The border is process-global: put the unbounded one back even on failure.
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                let cap = crate::moves::PLAY_BORDER_CAP;
+                crate::moves::set_world_bounds(-cap, cap, -cap, cap);
+            }
+        }
+        let _reset = Reset;
+        let draw = |icn: &str| {
+            let mut game = GameState::new();
+            game.setup_position_from_icn(icn);
+            evaluate_insufficient_material_game_handler(&game)
+        };
+        assert!(!draw("w -50,50,-50,50 K0,0|CA1,2|CA2,4|k20,20"));
+        assert!(draw("w -50,50,-50,50 K0,0|CA1,2|CA3,4|k20,20"));
     }
 
     /// Mostly infinitechess.org's own insuffmat cases: which table a border selects,
@@ -1421,8 +1529,14 @@ mod tests {
         assert!(!draw(&format!("w {border} K0,0|R5,0|k20,20")));
         assert!(!draw(&format!("w {border} K0,0|k20,20|rc25,20")));
         assert!(!draw(&format!("w {border} AM0,0|AM3,0|rq20,20")));
-        assert!(!draw(&format!("w {border} K0,0|N5,0|N7,0|B9,0|k20,20")), "past the bounded cap");
-        assert!(draw(&format!("w {wide} K0,0|R5,0|k20,20")), "wider than 200 is unbounded");
+        assert!(
+            !draw(&format!("w {border} K0,0|N5,0|N7,0|B9,0|k20,20")),
+            "past the bounded cap"
+        );
+        assert!(
+            draw(&format!("w {wide} K0,0|R5,0|k20,20")),
+            "wider than 200 is unbounded"
+        );
         assert!(!draw("w 1,7,1,8 K1,1|N3,1|k6,8"), "narrower than 8");
         assert!(draw("w K0,0|N1,0|B2,0|B4,0|B6,0|B8,0|B10,0|B12,0|k20,20"));
         assert!(!draw("w K0,0|N1,0|B2,0|B5,0|B6,0|B8,0|B10,0|B12,0|k20,20"));
@@ -1432,7 +1546,10 @@ mod tests {
         let scored = |icn: &str| {
             let mut game = GameState::new();
             game.setup_position_from_icn(icn);
-            (evaluate_insufficient_material(&game), side_cannot_mate(&game, true))
+            (
+                evaluate_insufficient_material(&game),
+                side_cannot_mate(&game, true),
+            )
         };
         assert!(!draw("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"));
         assert_eq!(scored("w 1,8,1,8 K1,1|N2,1|N3,1|k8,8"), (true, true));

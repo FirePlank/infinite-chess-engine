@@ -150,7 +150,12 @@ mod tests {
         // consulted; a single disagreement would silently change movegen.
         for n in 0..IS_PRIME_LOOKUP.len() as i64 {
             assert_eq!(is_prime_fast(n), is_prime_i64(n), "disagreement at {}", n);
-            assert_eq!(is_prime_fast(-n), is_prime_i64(-n), "disagreement at {}", -n);
+            assert_eq!(
+                is_prime_fast(-n),
+                is_prime_i64(-n),
+                "disagreement at {}",
+                -n
+            );
         }
     }
 

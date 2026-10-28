@@ -3,10 +3,7 @@
 //! cutoff before later stages generate anything.
 
 use super::params::{DEFAULT_SORT_QUIET, sort_countermove, sort_killer1, sort_killer2};
-use super::{
-    LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_16,
-    hash_move_dest,
-};
+use super::{LOW_PLY_HISTORY_SIZE, PAWN_HISTORY_MASK, Searcher, hash_coord_16, hash_move_dest};
 use crate::board::{PieceType, PlayerColor};
 use crate::game::GameState;
 use crate::moves::{Move, MoveGenContext, MoveList, get_quiescence_captures, get_quiet_moves_into};
@@ -235,7 +232,14 @@ impl StagedMoveGen {
 
         // An unusable TT move must not be filtered out of the capture stage either: a
         // quiet promotion is generated there, and it is ProbCut's best candidate.
-        Self::init(tt_move.filter(|_| tt_valid), 0, 0, threshold, searcher, start_stage)
+        Self::init(
+            tt_move.filter(|_| tt_valid),
+            0,
+            0,
+            threshold,
+            searcher,
+            start_stage,
+        )
     }
 
     fn init(
@@ -1007,7 +1011,10 @@ impl StagedMoveGen {
 
         // Riders whose geometry the masks below don't cover: ask the attack test. The
         // board still has the mover on its origin, which only matters if it blocks.
-        if matches!(pt, PieceType::Knightrider | PieceType::Rose | PieceType::Huygen) {
+        if matches!(
+            pt,
+            PieceType::Knightrider | PieceType::Rose | PieceType::Huygen
+        ) {
             use crate::moves::{ROSE_REACH, ROSE_SPAN};
             let mover = crate::board::Piece::new(pt, color);
             return royals.iter().any(|k| {
@@ -1016,7 +1023,9 @@ impl StagedMoveGen {
                 let (dx, dy) = (k.x - tx, k.y - ty);
                 let (adx, ady) = (dx.abs(), dy.abs());
                 let reachable = match pt {
-                    PieceType::Knightrider => adx > 0 && ady > 0 && (ady == 2 * adx || adx == 2 * ady),
+                    PieceType::Knightrider => {
+                        adx > 0 && ady > 0 && (ady == 2 * adx || adx == 2 * ady)
+                    }
                     PieceType::Rose => {
                         adx <= ROSE_SPAN
                             && ady <= ROSE_SPAN
@@ -1042,8 +1051,7 @@ impl StagedMoveGen {
         };
         let pt_bit = 1u32 << (pt as u8);
         // One test keeps non-fairy variants off the per-royal offset checks below.
-        const FAIRY_LEAP_MASK: u32 =
-            KING_MASK | CAMEL_MASK | GIRAFFE_MASK | ZEBRA_MASK | HAWK_MASK;
+        const FAIRY_LEAP_MASK: u32 = KING_MASK | CAMEL_MASK | GIRAFFE_MASK | ZEBRA_MASK | HAWK_MASK;
         let is_fairy_leaper = (pt_bit & FAIRY_LEAP_MASK) != 0;
 
         for king_pos in royals {
@@ -1130,10 +1138,12 @@ impl StagedMoveGen {
                 game.black_royals.first().copied()
             };
             // A king that may be captured pins nothing: moving off the line is legal.
-            self.pins_cache = Some(match king_pos.filter(|_| !game.king_capturable(game.turn)) {
-                Some(kp) => game.compute_pins(&kp, game.turn),
-                None => rustc_hash::FxHashMap::default(),
-            });
+            self.pins_cache = Some(
+                match king_pos.filter(|_| !game.king_capturable(game.turn)) {
+                    Some(kp) => game.compute_pins(&kp, game.turn),
+                    None => rustc_hash::FxHashMap::default(),
+                },
+            );
         }
     }
 
@@ -1647,6 +1657,7 @@ mod tests {
         // Each lands on its own leap offset from k5,8; a miss here means the check
         // is scored as a quiet and can be futility/history-pruned or cut in qsearch.
         type Case = (&'static str, PieceType, (i64, i64), (i64, i64));
+        #[rustfmt::skip]
         let cases: [Case; 5] = [
             ("w 0/100 1 (8;q|1;q) K5,1|k5,8|CA1,1", PieceType::Camel, (1, 1), (6, 5)),
             ("w 0/100 1 (8;q|1;q) K5,1|k5,8|GI1,1", PieceType::Giraffe, (1, 1), (6, 4)),
@@ -1799,7 +1810,10 @@ mod tests {
 
         searcher.killers[0][0] = Some(quiet);
         let picker = StagedMoveGen::new(None, 0, 2, &searcher, &game);
-        assert_eq!(picker.score_quiet(&game, &searcher, &quiet).0, sort_killer1());
+        assert_eq!(
+            picker.score_quiet(&game, &searcher, &quiet).0,
+            sort_killer1()
+        );
 
         let mut searcher = Searcher::new(1000);
         searcher.prev_move_stack[0] = (3, 9);

@@ -86,9 +86,8 @@ pub fn score_move(
             if ply > 0 {
                 let (prev_from_hash, prev_to_hash) = searcher.prev_move_stack[ply - 1];
                 if prev_from_hash < 256 && prev_to_hash < 256 {
-                    let (cm_piece, cm_to_x, cm_to_y) =
-                        searcher.countermoves[crate::search::hist_color(m.piece.color())]
-                            [prev_from_hash][prev_to_hash];
+                    let (cm_piece, cm_to_x, cm_to_y) = searcher.countermoves
+                        [crate::search::hist_color(m.piece.color())][prev_from_hash][prev_to_hash];
                     if cm_piece != 0
                         && cm_piece == m.piece.piece_type() as u8
                         && cm_to_x == m.to.x as i32
@@ -214,7 +213,10 @@ fn capture_sort_key(searcher: &Searcher, game: &GameState, m: &Move) -> i32 {
     let attacker_color = m.piece.color();
     let attacker_val = game.get_piece_value(m.piece.piece_type(), attacker_color);
     let (victim_val, victim_type) = match game.board.get_piece(m.to.x, m.to.y) {
-        Some(t) => (game.get_piece_value(t.piece_type(), t.color()), t.piece_type()),
+        Some(t) => (
+            game.get_piece_value(t.piece_type(), t.color()),
+            t.piece_type(),
+        ),
         // En passant's victim sits beside the target square, not on it, so the
         // lookup above scored a real pawn capture as a victimless move.
         None if game.is_en_passant(m) => (
@@ -226,8 +228,7 @@ fn capture_sort_key(searcher: &Searcher, game: &GameState, m: &Move) -> i32 {
     let promo_gain = m.promotion.map_or(0, |pt| {
         game.get_piece_value(pt, attacker_color) - attacker_val
     });
-    let cap_hist =
-        searcher.capture_history[m.piece.piece_type() as usize][victim_type as usize];
+    let cap_hist = searcher.capture_history[m.piece.piece_type() as usize][victim_type as usize];
     (victim_val + promo_gain) * 10 - attacker_val + (cap_hist / 8)
 }
 
@@ -335,8 +336,12 @@ mod tests {
     fn test_sort_captures_prices_en_passant_as_a_pawn_capture() {
         // PxP en passant (victim 100, attacker 100) must outrank NxP (victim 100,
         // attacker 300); with the victim read from the empty target it sorted last.
-        let game = create_test_game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P5,5|p6,5|N0,0|p1,2 6,6");
-        assert!(game.en_passant.is_some(), "position must carry an en passant square");
+        let game =
+            create_test_game_from_icn("w 0/100 1 (8;q|1;q) K5,1|k5,8|P5,5|p6,5|N0,0|p1,2 6,6");
+        assert!(
+            game.en_passant.is_some(),
+            "position must carry an en passant square"
+        );
         let ep = Move::new(
             Coordinate::new(5, 5),
             Coordinate::new(6, 6),
@@ -350,7 +355,11 @@ mod tests {
         );
         let mut moves: MoveList = vec![nxp, ep].into_iter().collect();
         sort_captures(&Searcher::new(u128::MAX), &game, &mut moves);
-        assert_eq!((moves[0].from.x, moves[0].to.x), (5, 6), "en passant should sort first");
+        assert_eq!(
+            (moves[0].from.x, moves[0].to.x),
+            (5, 6),
+            "en passant should sort first"
+        );
     }
 
     #[test]

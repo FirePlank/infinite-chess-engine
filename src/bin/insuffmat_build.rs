@@ -73,7 +73,12 @@ fn site_rank(set: &[u8], order: &[u64; SYMBOLS as usize]) -> u64 {
             let mut values: Vec<u64> = o.iter().map(|&s| order[s as usize]).collect();
             values.sort_unstable();
             let fewer = binomial(codes - 1 + values.len() as u64, values.len() as u64 - 1);
-            fewer + values.iter().enumerate().map(|(i, &v)| binomial(v + i as u64, i as u64 + 1)).sum::<u64>()
+            fewer
+                + values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| binomial(v + i as u64, i as u64 + 1))
+                    .sum::<u64>()
         })
         .min()
         .unwrap()
@@ -85,19 +90,30 @@ fn ranked_order() -> [u64; SYMBOLS as usize] {
     let mut order = [0; SYMBOLS as usize];
     for s in 0..SYMBOLS {
         let code = KIND_CODES[(s % KINDS) as usize];
-        let code = if s < KINDS { code.to_string() } else { code.to_lowercase() };
-        order[s as usize] = codes.iter().position(|&c| c == code).unwrap_or_else(|| panic!("{code} unranked")) as u64;
+        let code = if s < KINDS {
+            code.to_string()
+        } else {
+            code.to_lowercase()
+        };
+        order[s as usize] = codes
+            .iter()
+            .position(|&c| c == code)
+            .unwrap_or_else(|| panic!("{code} unranked")) as u64;
     }
     order
 }
 
 /// The ranks of the list quoted after `kind:` in matingsets.ts.
 fn listed(ts: &str, kind: &str) -> HashSet<u64> {
-    let body = &ts[ts.find(&format!("\t{kind}:")).unwrap_or_else(|| panic!("no {kind} list"))..];
+    let body = &ts[ts
+        .find(&format!("\t{kind}:"))
+        .unwrap_or_else(|| panic!("no {kind} list"))..];
     let body = &body[body.find('\'').unwrap() + 1..];
     let (mut ranks, mut rank, mut gap) = (HashSet::new(), 0u64, 0u64);
     for c in body[..body.find('\'').unwrap()].chars() {
-        let digit = RANK_DIGITS.find(c).unwrap_or_else(|| panic!("bad digit {c:?}")) as u64;
+        let digit = RANK_DIGITS
+            .find(c)
+            .unwrap_or_else(|| panic!("bad digit {c:?}")) as u64;
         gap = gap * 32 + digit % 32;
         if digit < 32 {
             rank += gap;
@@ -113,12 +129,22 @@ fn listed_cap(ts: &str, kind: &str) -> usize {
     let caps = &ts[ts.find("cap:").expect("no cap")..];
     let caps = &caps[..caps.find('}').unwrap()];
     let n = &caps[caps.find(&format!(" {kind}:")).unwrap() + kind.len() + 2..];
-    n.trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap()
+    n.trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 /// Per set up to `cap` (by `index`), whether it can mate, from the ranks of the
 /// smallest mating sets, which must each be one of these sets and smallest.
-fn closure(listed: &HashSet<u64>, cap: usize, count: usize, index: fn(&[u8]) -> usize) -> Vec<bool> {
+fn closure(
+    listed: &HashSet<u64>,
+    cap: usize,
+    count: usize,
+    index: fn(&[u8]) -> usize,
+) -> Vec<bool> {
     let order = ranked_order();
     let mut found = HashSet::new();
     let mut mate = vec![false; count];
@@ -149,7 +175,11 @@ fn closure(listed: &HashSet<u64>, cap: usize, count: usize, index: fn(&[u8]) -> 
         mate[i] |= is_listed || contains_mate;
     });
     assert_eq!(errors, 0, "{errors} listed mates are not smallest");
-    assert_eq!(found.len(), listed.len(), "listed ranks that are no set of at most {cap} pieces with a royal");
+    assert_eq!(
+        found.len(),
+        listed.len(),
+        "listed ranks that are no set of at most {cap} pieces with a royal"
+    );
     mate
 }
 
@@ -168,7 +198,9 @@ fn helpmate_section(keys: &BTreeSet<u32>, bucket_bits: u32) -> Vec<u8> {
     use mating_sets::HELPMATE_SLOTS;
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mul = loop {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let mul = (state >> 32) as u32 | 1;
         let mut fill = vec![0usize; 1 << bucket_bits];
         for &k in keys {
@@ -195,13 +227,24 @@ fn helpmate_section(keys: &BTreeSet<u32>, bucket_bits: u32) -> Vec<u8> {
 
 /// The attack keys of a helpmate-only list, skipping cores the table calls dead: a
 /// newer table can prove more draws.
-fn helpmate_keys(path: &str, mate: &[bool], index: fn(&[u8]) -> usize, key: fn(&[u8], bool) -> u32) -> (BTreeSet<u32>, usize) {
+fn helpmate_keys(
+    path: &str,
+    mate: &[bool],
+    index: fn(&[u8]) -> usize,
+    key: fn(&[u8], bool) -> u32,
+) -> (BTreeSet<u32>, usize) {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let (mut keys, mut dead) = (BTreeSet::new(), 0);
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let set = parse(line.split('\t').next().unwrap());
-        let black_royals_only = set.iter().filter(|&&s| s / KINDS == 1).all(|&s| mating_sets::is_royal_symbol(s));
-        assert!(black_royals_only && set.iter().any(|&s| s / KINDS == 0), "not a core: {line}");
+        let black_royals_only = set
+            .iter()
+            .filter(|&&s| s / KINDS == 1)
+            .all(|&s| mating_sets::is_royal_symbol(s));
+        assert!(
+            black_royals_only && set.iter().any(|&s| s / KINDS == 0),
+            "not a core: {line}"
+        );
         if !mate[index(&set)] {
             dead += 1;
             continue;
@@ -220,7 +263,9 @@ fn main() {
     );
     let helpmate_list = args.next();
     let bounded_helpmate_list = args.next();
-    let out = args.next().unwrap_or_else(|| "src/evaluation/insuffmat.bin".to_string());
+    let out = args
+        .next()
+        .unwrap_or_else(|| "src/evaluation/insuffmat.bin".to_string());
     let ts = std::fs::read_to_string(&ts_path).unwrap_or_else(|e| panic!("{ts_path}: {e}"));
     assert_eq!(listed_cap(&ts, "unbounded"), CAP);
     assert_eq!(listed_cap(&ts, "bounded"), BOUNDED_CAP);
@@ -228,18 +273,26 @@ fn main() {
     let (unbounded, bounded) = (listed(&ts, "unbounded"), listed(&ts, "bounded"));
     let mate = closure(&unbounded, CAP, SET_COUNT, set_index);
     let bounded_mate = closure(&bounded, BOUNDED_CAP, BOUNDED_SET_COUNT, bounded_set_index);
-    let (helpmate, dead_helpmate) = helpmate_list
-        .as_deref()
-        .map_or_else(Default::default, |p| helpmate_keys(p, &mate, set_index, attack_key));
+    let (helpmate, dead_helpmate) = helpmate_list.as_deref().map_or_else(Default::default, |p| {
+        helpmate_keys(p, &mate, set_index, attack_key)
+    });
     let (bounded_helpmate, dead_bounded_helpmate) = bounded_helpmate_list
         .as_deref()
-        .map_or_else(Default::default, |p| helpmate_keys(p, &bounded_mate, bounded_set_index, bounded_attack_key));
+        .map_or_else(Default::default, |p| {
+            helpmate_keys(p, &bounded_mate, bounded_set_index, bounded_attack_key)
+        });
 
     let mut bytes = dead_bits(&mate);
     bytes.extend(dead_bits(&bounded_mate));
     assert_eq!(bytes.len(), mating_sets::HELPMATES_START);
-    bytes.extend(helpmate_section(&helpmate, mating_sets::HELPMATE_BUCKET_BITS));
-    bytes.extend(helpmate_section(&bounded_helpmate, mating_sets::BOUNDED_HELPMATE_BUCKET_BITS));
+    bytes.extend(helpmate_section(
+        &helpmate,
+        mating_sets::HELPMATE_BUCKET_BITS,
+    ));
+    bytes.extend(helpmate_section(
+        &bounded_helpmate,
+        mating_sets::BOUNDED_HELPMATE_BUCKET_BITS,
+    ));
     std::fs::write(&out, &bytes).unwrap_or_else(|e| panic!("{out}: {e}"));
     let count = |m: &[bool]| m.iter().filter(|&&m| !m).count();
     println!(

@@ -585,8 +585,14 @@ fn bounded_lone_king_mop_up(
     // push_to_edge: the closer the bare king is to an edge/corner, the better.
     // Saturating: at the real play border these differences exceed i64, and a
     // wrapped negative clamps to 0, reading a king in open space as cornered.
-    let ed_x_raw = ex.saturating_sub(min_x).min(max_x.saturating_sub(ex)).max(0);
-    let ed_y_raw = ey.saturating_sub(min_y).min(max_y.saturating_sub(ey)).max(0);
+    let ed_x_raw = ex
+        .saturating_sub(min_x)
+        .min(max_x.saturating_sub(ex))
+        .max(0);
+    let ed_y_raw = ey
+        .saturating_sub(min_y)
+        .min(max_y.saturating_sub(ey))
+        .max(0);
     let ed_x = ed_x_raw.min(EDGE_DIST_CAP);
     let ed_y = ed_y_raw.min(EDGE_DIST_CAP);
     let mut bonus = EDGE_CORNER_BONUS - ((ed_x * ed_x + ed_y * ed_y) as i32) * EDGE_FALLOFF;
@@ -2240,7 +2246,10 @@ mod tests {
         // Q+N+N: either knight will do, so the nearer one is priced.
         assert_eq!(lag("w 0/100 1 K0,0|Q3,3|N5,5|N17,17|k20,20"), 0);
         // Kingless 2R+N cannot mate even with help: the far pawn must join too.
-        assert_eq!(lag("w 0/100 1 R0,0|R3,3|N5,5|P1,1|k20,20"), ESSENTIAL_LAG_CAP as i32);
+        assert_eq!(
+            lag("w 0/100 1 R0,0|R3,3|N5,5|P1,1|k20,20"),
+            ESSENTIAL_LAG_CAP as i32
+        );
         // With a king the two rooks mate alone, so nothing slow is needed.
         assert_eq!(lag("w 0/100 1 K9,0|R0,0|R3,3|N5,5|P1,1|k20,20"), 0);
         // Two kings: the force is not priced, so nothing is needed.

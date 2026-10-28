@@ -248,7 +248,10 @@ mod tests {
             assert!(
                 spec.min <= spec.default && spec.default <= spec.max,
                 "{}: default {} outside [{}, {}]",
-                spec.name, spec.default, spec.min, spec.max
+                spec.name,
+                spec.default,
+                spec.min,
+                spec.max
             );
             assert_eq!(spec.clamp_value(spec.min - 1000), spec.min);
             assert_eq!(spec.clamp_value(spec.max + 1000), spec.max);
