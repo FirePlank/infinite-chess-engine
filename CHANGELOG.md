@@ -14,8 +14,170 @@ Releases up to and including `v1.3.0` were numbered manually, matching the histo
 
 The accumulator sums each commit's own SPRT-reported Elo, scaled across the 17 site variants. Those figures are *nominal*: per-commit SPRT results are measured against different baselines and don't add up to an A/B measurement, so they consistently overstate the real gain. The bold Elo line under each release is instead the accumulator rescaled against a directly measured head-to-head match between the two releases, so consecutive entries add up to what an actual game would show.
 
+## v8.0.0 (2026-10-28)
+Commit: `4ef714c1ed76498e450b995da88ad64ea55f7f60` • [compare to v7.10.0](https://github.com/FirePlank/infinite-chess-engine/compare/4e1aba5eccbb720f901de5a38c35c8717ea20a95...4ef714c1ed76498e450b995da88ad64ea55f7f60)
+
+**It is about 44 Elo better than v7.10.0, and about 203 Elo better than v7.0.0.**
+
+Against v7.0.0 it wins between five and six games for every one it loses (197 wins, 35 losses and 76 draws over 308 games), and gains in 16 of the 17 site variants; Pawn Horde is even.
+
+### Added
+- A board NNUE for the generic evaluator, blended 50/50 with it. Each piece's offset from each side's first royal (own/enemy x 20 types x bucketed file and rank offsets, 9,000 features) feeds two incrementally updated 128-wide accumulators, which a 32x32 head reads together with the evaluator's 158 net inputs. It was trained on 24.5M positions from the SPRT games whose test landed within 15 Elo, plus 1.69M from 58,500 self-play games of the current engine, at 70% search score and 30% game result
+- Positions beyond the i64 board are compressed at the API boundary, so the engine sees exactly what it would on the original, and every move it reports is mapped back. Finite border edges are kept, and Huygens read their prime distances on the original board
+
+### Changed
+- A forced root move reports a searched score instead of the static eval: an exact TT score of depth 5 or more for the root or its only child, otherwise a short search
+- Camels count by square colour in the mating-set tables, from infinitechess.org's new rank format, and the helpmate lists ship delta-coded (wasm 1,363,026 -> 1,357,920 bytes)
+- The repo is formatted with rustfmt, keeping table layouts
+
+### Fixed
+- The material hash ignored the camels' square colours, so a cached mating-set verdict could read a drawn camel ending as winnable
+- A double check through a Huygen or a Rose had no blocking answers, since one block can answer both checks there
+- `cargo test` failed on aarch64, and `--no-default-features` builds failed to compile
+
+## v7.10.0 (2026-10-11)
+Commit: `4e1aba5eccbb720f901de5a38c35c8717ea20a95` • [compare to v7.9.0](https://github.com/FirePlank/infinite-chess-engine/compare/6fc386324a1c18ca97ded1d4a6d8412a2f73a857...4e1aba5eccbb720f901de5a38c35c8717ea20a95)
+
+**It is about 16 Elo better than v7.9.0.**
+
+### Changed
+- Under tight generation a capped slider ray keeps only quiet candidates within 1,024 squares, so the nearest-three cap no longer ranks far crossings against each other
+- The generic net's residual scale follows the non-pawn piece count: 5/4 at 12 or fewer non-pawn pieces, easing to 1 at 24 or more, where the residual mostly cancels the evaluator's positional swings
+
+### Fixed
+- King-ray distances saturated at the empty-ray marker, so a piece 2^31 or more squares down a king line read as no piece at all
+
+## v7.9.0 (2026-10-10)
+Commit: `6fc386324a1c18ca97ded1d4a6d8412a2f73a857` • [compare to v7.8.0](https://github.com/FirePlank/infinite-chess-engine/compare/69acca69fe0ec4554337ce001ab693e621d872f4...6fc386324a1c18ca97ded1d4a6d8412a2f73a857)
+
+**It is about 16 Elo better than v7.8.0.**
+
+### Changed
+- The generic net may move the evaluator by up to 1,000 cp (was 500), retrained at that cap on both recent SPRT-game windows, and its residual is scaled by 9/8: squared-error training shrinks it toward zero
+- Each specialized net has its own residual cap: Obstocean and Chess 1,000, Pawn Horde 500. The Obstocean net is retrained on 10.8M positions from every SPRT game so far, and the Chess net ships a new seed
+- Bounded boards, whose slider move lists are now complete, prune late quiets at a quarter of the open-plane count (was 2/3); open boards search a third more late quiets before pruning
+- Obstocean, whose breakouts are quiet moves, takes the open-plane late-move count, searches late quiets two plies deeper, and prunes quiets by futility a quarter later
+- Mating sets regenerated from infinitechess.org: 2 unbounded and 56 bounded mates more, and 31 new bounded helpmate-only armies. A neutral piece, or a royal queen off a bounded board, now only zeroes a dead set's eval instead of ending the game
+- A dead-set verdict skips the board scan: an Obstocean cache miss drops from about 1,017 to 73 ns
+
+## v7.8.0 (2026-10-09)
+Commit: `69acca69fe0ec4554337ce001ab693e621d872f4` • [compare to v7.7.0](https://github.com/FirePlank/infinite-chess-engine/compare/bf4bb0cb03b3df20f6de157fb98aff98c9fb1d35...69acca69fe0ec4554337ce001ab693e621d872f4)
+
+**It is about 17 Elo better than v7.7.0.**
+
+### Added
+- The generic, Chess and Obstocean nets read pins and discovered-check setups on each king's lines: own pieces pinned to the first royal (count and value) and enemy discovered-check setups, six inputs per net
+
+### Changed
+- Sliders generate every square on a ray blocked within eight squares, and on every bounded board up to 32x32: the candidate selection only pays on long open rays
+- The generic and Chess nets ship without their fine-tune on generated positions, which had come to cost strength in games; the Chess and Obstocean nets are retrained on every SPRT game so far, the Chess one from the best of twelve seeds
+
+## v7.7.0 (2026-10-09)
+Commit: `bf4bb0cb03b3df20f6de157fb98aff98c9fb1d35` • [compare to v7.6.0](https://github.com/FirePlank/infinite-chess-engine/compare/d8cb0eb3bbbc29197e209718a2b84b09b7030859...bf4bb0cb03b3df20f6de157fb98aff98c9fb1d35)
+
+**It is about 17 Elo better than v7.6.0.**
+
+### Added
+- Insufficient material reads infinitechess.org's generated mating-set tables, unbounded and bounded. Dead positions return an exact draw in search, like a tablebase hit, and armies proven unable to force mate (629 unbounded and 950 bounded helpmate-only sets) score 0 while the game goes on. A set and its colour swap share one entry (insuffmat.bin 65,826 bytes)
+
+### Changed
+- The one-ply-short TT cutoffs use a margin of 100 + 15 x depth instead of a flat 175
+- LMR reduces a move a ply less when history favours it over the move it answers, and a ply more the other way round (Stockfish Classic's statScore comparison)
+- A quiet TT move behind a fail-low TT cutoff takes a main-history malus
+- The generic net is retrained with recent self-play games in its base set
+- King safety counts safe check squares lazily and the shelter scans one pawn run (eval -2.5%, identical output)
+
+### Fixed
+- A royal queen could castle
+
+## v7.6.0 (2026-10-07)
+Commit: `d8cb0eb3bbbc29197e209718a2b84b09b7030859` • [compare to v7.5.0](https://github.com/FirePlank/infinite-chess-engine/compare/ef40b7ff32cbd97ce94812910e7714becb788ff5...d8cb0eb3bbbc29197e209718a2b84b09b7030859)
+
+**It is about 16 Elo better than v7.5.0.**
+
+### Added
+- A TT bound from one ply short cuts when it sits 175 past the window: an upper bound far under alpha fails low, a lower bound far above beta fails high (Ethereal)
+- A futility node where even two plies of history credit cannot lift a quiet past alpha stops generating quiets (Ethereal)
+
+### Changed
+- A qsearch stand-pat cutoff stores only the eval, not the window-dependent blend, as in Stockfish
+- A deep TT cutoff is not taken when the TT move's own child entry disagrees about which side of beta the line lands on
+- A PV node's TT move from a real search keeps at least one ply instead of dropping into qsearch
+- Mop-up prices the distance to the cheapest sub-force that can mate, so a lone king flees the essential pieces and the attacker herds it toward them; a side that can never mate is capped at zero
+- A short slider ray finds its cross-ray targets from the line indices instead of scanning every piece once per direction (identical node counts)
+
+## v7.5.0 (2026-10-06)
+Commit: `ef40b7ff32cbd97ce94812910e7714becb788ff5` • [compare to v7.4.0](https://github.com/FirePlank/infinite-chess-engine/compare/3d66ffb5ec5c6b6e486aa147560d3d2750375c61...ef40b7ff32cbd97ce94812910e7714becb788ff5)
+
+**It is about 17 Elo better than v7.4.0.**
+
+### Changed
+- An iteration runs until the hard move maximum, as in Stockfish; the dynamic total only decides between iterations
+- An improving side gets the null move 47 cp more easily
+- Low-ply history is keyed by piece and destination (destination alone used 256 of its 4,096 entries)
+- A capture that fails to cut takes a malus 5/4 of the cutoff bonus, mirroring the quiet malus
+- An LMR re-search's history credit is capped like a cutoff's; past depth 15 it had outweighed a real cutoff
+
+### Fixed
+- An evasion was stored as a killer and replayed first at sibling nodes that are not in check
+
+## v7.4.0 (2026-10-06)
+Commit: `3d66ffb5ec5c6b6e486aa147560d3d2750375c61` • [compare to v7.3.0](https://github.com/FirePlank/infinite-chess-engine/compare/87bb1045b8559f02d091b68380a1f9452061425f...3d66ffb5ec5c6b6e486aa147560d3d2750375c61)
+
+**It is about 15 Elo better than v7.3.0.**
+
+### Added
+- A fail-low right after a capture credits that capture's history (Stockfish)
+- A mate an earlier depth proved survives a later depth that comes back longer, not mating or interrupted, and that move is searched first next (Stockfish's forgottenMate)
+
+### Changed
+- A PV node's best-quiet credit also penalizes the quiets tried before it
+- seekMate reads the live root score at every node, with a bar of 3000 + 105770/d^2 cp, as Stockfish does
+- History leaf pruning reads continuation history too
+
+### Fixed
+- A single-PV result reported depth 1 after a time stop; it now reports its completed depth
+- Streamed analysis depths showed the main thread's lines while slice summaries showed the vote winner's, so a mate a helper had proven flickered in and out
+
+## v7.3.0 (2026-10-05)
+Commit: `87bb1045b8559f02d091b68380a1f9452061425f` • [compare to v7.2.0](https://github.com/FirePlank/infinite-chess-engine/compare/547b85862dc04aff94cdd403ceabbe161e9f1202...87bb1045b8559f02d091b68380a1f9452061425f)
+
+**It is about 15 Elo better than v7.2.0.**
+
+### Changed
+- A PV node's best quiet earns the history, killer and countermove credit a cutoff would
+- The quiets searched before a cutoff move take a malus 5/4 of its bonus, in main, pawn, low-ply and continuation history
+- LMR may search a strongly favoured move a ply deeper at PV and cut nodes (Stockfish)
+
+### Fixed
+- LMR's correction term read the eval after smoothing and the eval-noise draw had been added; it now reads the correction alone
+
+## v7.2.0 (2026-10-05)
+Commit: `547b85862dc04aff94cdd403ceabbe161e9f1202` • [compare to v7.1.0](https://github.com/FirePlank/infinite-chess-engine/compare/be5a76f093b5688f7035397f90cf8ff508c9e02b...547b85862dc04aff94cdd403ceabbe161e9f1202)
+
+**It is about 15 Elo better than v7.1.0.**
+
+### Changed
+- A TT entry that keeps its bound still takes the new best move, as Stockfish always refreshes it
+- Correction history learns only from bounds that land past the corrected eval
+- A better unstoppable-pawn model: a chasing leaper must reach the promotion square by both its Chebyshev and its Manhattan reach, and hawks and roses count as leapers; the generic net is retrained on the new evaluator
+- ICN promotion rules may list several ranks per side, and each pawn is scored toward the next rank ahead of it
+- Lazy SMP helpers keep no clock and see the stop flag every 1,024 nodes; analysis helpers search without a depth limit
+- A knightrider's blocks and attacks test the line's pieces, not its hops (-4.8% time in CoaIP_NO)
+
+### Fixed
+- An obstacle take outside Obstocean was ordered as a winning capture although it wins nothing
+- Quiet promotions were stored as killers and countermoves, evicting useful quiets
+- An exclusion search pushed the TT-move reliability down on every singular check, and the root left the reduction and stat-score slots its replies read at zero
+- A Huygen quiet never scored the pieces it would attack from its landing square
+- A slider on a Huygen's check line found blocks only at primes under 128, so the root could see a false mate
+- A passed pawn's safe path skipped an occupied promotion square
+- The at-root repetition check looked past the repetition window, and a new game left the pool helpers' history and correction tables in place
+
 ## v7.1.0 (2026-10-04)
 Commit: `be5a76f093b5688f7035397f90cf8ff508c9e02b` • [compare to v7.0.0](https://github.com/FirePlank/infinite-chess-engine/compare/70bcc41317206ee8bbe71a651af287a047aea97e...be5a76f093b5688f7035397f90cf8ff508c9e02b)
+
+**It is about 15 Elo better than v7.0.0.**
 
 ### Changed
 - The generic evaluator's net reads each piece type's count imbalance (own minus opponent, 17 types), not just total material, and is retrained from a fresh base
