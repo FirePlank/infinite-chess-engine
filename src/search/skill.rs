@@ -203,9 +203,14 @@ fn familiar_area(game: &GameState) -> Option<[i64; 4]> {
     area.map(|[x0, x1, y0, y1]| [x0 - 1, x1 + 1, y0 - 1, y1 + 1])
 }
 
-/// Maps an engine score to winning probability in permille, on the deliberately
-/// shallow curve the site's review model uses. Mate scores return the endpoints
-/// directly, so their sentinels never reach exp().
+/// Slope of the logistic from an internal score to expected score (draws counting
+/// half), fitted on the current net's evals in its 3699 full-strength self-play games
+/// that ended on the board (310k plies, 10+0.1; games stopped at the move cap have no
+/// result): +1.20 is about 59%, +3.55 about 75%.
+pub const WIN_CHANCE_K: f64 = 0.003_1;
+
+/// Maps an internal score to expected score in permille, draws counting half. Mate
+/// scores return the endpoints directly, so their sentinels never reach exp().
 #[inline]
 pub fn score_to_win_chance_permille(score: i32) -> i32 {
     if score > MATE_SCORE {
@@ -216,7 +221,7 @@ pub fn score_to_win_chance_permille(score: i32) -> i32 {
     }
 
     let cp = score.clamp(-1800, 1800) as f64;
-    (1000.0 / (1.0 + (-0.003 * cp).exp())).round() as i32
+    (1000.0 / (1.0 + (-WIN_CHANCE_K * cp).exp())).round() as i32
 }
 
 fn is_reduced_material_position(game: &GameState) -> bool {

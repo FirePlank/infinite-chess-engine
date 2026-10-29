@@ -400,10 +400,12 @@ pub use zobrist::{
     pawn_key, pawn_special_right_key, piece_key,
 };
 
+mod report;
 mod skill;
-use skill::{deep_tactic_reference_depth, is_far_move, is_unfamiliar_move};
+pub use report::{report_cp, win_half_eval};
 pub(crate) use skill::get_best_move_limited;
-pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, score_to_win_chance_permille};
+pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, WIN_CHANCE_K, score_to_win_chance_permille};
+use skill::{deep_tactic_reference_depth, is_far_move, is_unfamiliar_move};
 
 // TT Probe/Store (Dispatch wrapper)
 

@@ -55,10 +55,9 @@ fn ann_mate_dist(s: i32) -> i32 {
     ANN_MATE - s.abs()
 }
 
-/// Fitted on this corpus (62k self-play games, known results, 2.4M sampled plies)
-/// rather than borrowed from Stockfish, whose 0.003682 is roughly twice as steep:
-/// on this engine's scale +400cp is a 0.36 edge, not 0.63.
-const WC_K: f64 = 0.001_880;
+/// The engine's own fitted curve rather than Stockfish's 0.003682: on this engine's
+/// scale +400cp is a 0.55 edge, not 0.63.
+const WC_K: f64 = search::WIN_CHANCE_K;
 
 fn win_chances(score: i32) -> f64 {
     if search::is_win(score) {

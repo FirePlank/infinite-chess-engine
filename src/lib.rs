@@ -282,7 +282,7 @@ pub struct JsMoveWithEval {
     pub from: String, // "x,y"
     pub to: String,   // "x,y"
     pub promotion: Option<String>,
-    pub eval: i32,    // centipawn score from side-to-move's perspective
+    pub eval: i32, // reported centipawns (`search::report_cp`) from side-to-move's perspective
     pub depth: usize, // depth limit requested
     /// Depth the calling thread completed, and nodes summed over every search thread.
     pub completed_depth: usize,
@@ -302,8 +302,8 @@ pub struct JsPVLine {
     pub from: String, // "x,y"
     pub to: String,   // "x,y"
     pub promotion: Option<String>,
-    pub eval: i32,       // centipawn score from side-to-move's perspective
-    pub depth: usize,    // depth searched
+    pub eval: i32, // reported centipawns (`search::report_cp`) from side-to-move's perspective
+    pub depth: usize, // depth searched
     pub pv: Vec<String>, // full PV as array of "x,y->x,y" strings
 }
 
@@ -340,8 +340,12 @@ pub struct JsAnalyseOptions {
 #[serde(rename_all = "camelCase")]
 pub struct JsAnalysisLine {
     pub moves: Vec<String>,
-    /// Centipawn score from the side-to-move's perspective. Absent when mating.
+    /// Reported centipawns (`search::report_cp`) from the side-to-move's perspective.
+    /// Absent when mating.
     pub cp: Option<i32>,
+    /// The internal score behind `cp`, for consumers calibrated on it (fair-play evidence).
+    /// Absent when mating.
+    pub raw_cp: Option<i32>,
     /// Full moves to mate from the side-to-move's perspective (negative = getting mated).
     pub mate: Option<i32>,
 }
@@ -375,15 +379,16 @@ fn move_to_site_token(m: &crate::moves::Move) -> String {
     token
 }
 
-/// Splits an engine score into (cp, mate) for JS consumption.
-fn split_score(score: i32) -> (Option<i32>, Option<i32>) {
+/// Splits an engine score into reported cp (given [`search::win_half_eval`] of the root) or
+/// mate for JS consumption.
+fn split_score(score: i32, win_half_eval: Option<f64>) -> (Option<i32>, Option<i32>) {
     use crate::search::{MATE_SCORE, MATE_VALUE};
     if score > MATE_SCORE {
         (None, Some((MATE_VALUE - score + 1) / 2))
     } else if score < -MATE_SCORE {
         (None, Some(-((MATE_VALUE + score + 1) / 2)))
     } else {
-        (Some(score), None)
+        (Some(search::report_cp(score, win_half_eval)), None)
     }
 }
 
@@ -403,17 +408,26 @@ fn token_squares(token: &str) -> (String, String) {
 }
 
 /// Converts an engine PV line into the JS-facing struct.
-fn pv_line_to_js(lifter: Option<&compression::Lifter>, line: &search::PVLine) -> JsAnalysisLine {
-    let (cp, mate) = split_score(line.score);
+fn pv_line_to_js(
+    lifter: Option<&compression::Lifter>,
+    line: &search::PVLine,
+    win_half_eval: Option<f64>,
+) -> JsAnalysisLine {
+    let (cp, mate) = split_score(line.score, win_half_eval);
     JsAnalysisLine {
         moves: line_tokens(lifter, &line.pv),
         cp,
+        raw_cp: cp.map(|_| line.score),
         mate,
     }
 }
 
 /// Converts a [`search::DepthInfo`] into the JS-facing struct.
-fn build_js_info(lifter: Option<&compression::Lifter>, info: &search::DepthInfo) -> JsAnalysisInfo {
+fn build_js_info(
+    lifter: Option<&compression::Lifter>,
+    info: &search::DepthInfo,
+    win_half_eval: Option<f64>,
+) -> JsAnalysisInfo {
     JsAnalysisInfo {
         depth: info.depth as u32,
         seldepth: info.seldepth as u32,
@@ -424,7 +438,7 @@ fn build_js_info(lifter: Option<&compression::Lifter>, info: &search::DepthInfo)
         lines: info
             .lines
             .iter()
-            .map(|l| pv_line_to_js(lifter, l))
+            .map(|l| pv_line_to_js(lifter, l, win_half_eval))
             .collect(),
     }
 }
@@ -883,6 +897,7 @@ impl Engine {
         let effective_seed = seed.unwrap_or_else(get_random_seed);
         search::set_global_params(effective_seed, noise_amp);
 
+        let win_half_eval = search::win_half_eval(&self.game);
         // Choose search path based on strength level.
         let (best_move, eval, nodes) =
             if strength.is_some_and(|s| s < crate::search::MAX_SITE_SKILL) {
@@ -923,7 +938,7 @@ impl Engine {
             from,
             to,
             promotion: best_move.promotion.map(|p| p.to_str().to_string()),
-            eval,
+            eval: search::report_cp(eval, win_half_eval),
             depth,
             completed_depth: search::get_completed_depth(),
             nodes,
@@ -943,6 +958,7 @@ impl Engine {
         let silent = silent.unwrap_or(false);
         let multi_pv = multi_pv.unwrap_or(1).max(1);
 
+        let win_half_eval = search::win_half_eval(&self.game);
         let result = search::get_best_moves_multipv(
             &mut self.game,
             50,
@@ -973,7 +989,7 @@ impl Engine {
                     from,
                     to,
                     promotion: line.mv.promotion.map(|p| p.to_str().to_string()),
-                    eval: line.score,
+                    eval: search::report_cp(line.score, win_half_eval),
                     depth: line.depth,
                     pv: pv_strings,
                 })
@@ -1017,9 +1033,11 @@ impl Engine {
         };
 
         let lifter = self.lifter.clone();
+        let win_half_eval = search::win_half_eval(&self.game);
         let mut callback = |info: &search::DepthInfo| {
-            let js_info = serde_wasm_bindgen::to_value(&build_js_info(lifter.as_ref(), info))
-                .unwrap_or(JsValue::NULL);
+            let js_info =
+                serde_wasm_bindgen::to_value(&build_js_info(lifter.as_ref(), info, win_half_eval))
+                    .unwrap_or(JsValue::NULL);
             let _ = on_info.call1(&JsValue::NULL, &js_info);
         };
 
@@ -1146,7 +1164,7 @@ impl Engine {
             lines: result
                 .lines
                 .iter()
-                .map(|l| pv_line_to_js(self.lifter.as_ref(), l))
+                .map(|l| pv_line_to_js(self.lifter.as_ref(), l, search::win_half_eval(&self.game)))
                 .collect(),
         };
         serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL)
@@ -1163,6 +1181,18 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::board::PlayerColor;
+
+    #[test]
+    fn reported_scores_are_normalized_and_mates_kept() {
+        assert_eq!(split_score(250, Some(250.0)), (Some(100), None));
+        assert_eq!(split_score(-750, Some(250.0)), (Some(-300), None));
+        assert_eq!(split_score(-750, None), (Some(-750), None));
+        assert_eq!(split_score(search::MATE_VALUE - 1, Some(250.0)), (None, Some(1)));
+        assert_eq!(
+            split_score(-(search::MATE_VALUE - 2), Some(250.0)),
+            (None, Some(-1))
+        );
+    }
 
     fn all_variants() -> Vec<Variant> {
         vec![
