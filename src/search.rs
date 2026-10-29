@@ -3769,6 +3769,20 @@ pub(crate) fn get_best_moves_multipv_impl(
         }
     }
 
+    // A forced move's capped budget can run out before depth 1 commits a line; a
+    // position with a legal move must still answer with one.
+    if best_lines.is_empty()
+        && let Some(m) = fallback_move
+    {
+        let score = forced_move_score(searcher, game, &m, false).unwrap_or(0);
+        best_lines.push(PVLine {
+            mv: m,
+            score,
+            depth: 0,
+            pv: vec![m],
+        });
+    }
+
     // Update PV table with best move for stats
     if !best_lines.is_empty() {
         searcher.pv_table[0] = Some(best_lines[0].mv);
