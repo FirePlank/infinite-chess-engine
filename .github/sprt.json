@@ -1,11 +1,11 @@
 {
-  "name": "nnue_fresh2",
-  "old": "f7f28b23",
-  "games": 6000,
+  "name": "nnue_data4b",
+  "old": "2e2a6fd4",
+  "games": 43875,
   "shards": 39,
   "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Scattered_Leapers",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
-  "adjudication": 0
+  "elo0": -100,
+  "elo1": 100,
+  "adjudication": 1000
 }
