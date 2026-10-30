@@ -393,7 +393,6 @@ use movegen::StagedMoveGen;
 
 mod see;
 pub(crate) use see::see_ge;
-pub(crate) use see::static_exchange_eval_impl as static_exchange_eval;
 
 pub mod zobrist;
 pub use zobrist::{
@@ -401,10 +400,12 @@ pub use zobrist::{
     pawn_key, pawn_special_right_key, piece_key,
 };
 
+mod report;
 mod skill;
-use skill::deep_tactic_reference_depth;
+pub use report::{report_cp, win_half_eval};
 pub(crate) use skill::get_best_move_limited;
-pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, score_to_win_chance_permille};
+pub use skill::{MAX_PV_COUNT, MAX_SITE_SKILL, WIN_CHANCE_K, score_to_win_chance_permille};
+use skill::{deep_tactic_reference_depth, is_far_move, is_unfamiliar_move};
 
 // TT Probe/Store (Dispatch wrapper)
 
@@ -1109,9 +1110,29 @@ pub struct Searcher {
     pub completed_depth: usize,
     /// Evaluator family the cached scores and histories were produced under.
     pub last_eval_kind: Option<crate::evaluation::eval_kind::EvalKind>,
-    /// Skill levels scale the eval, so their cached scores must not reach a search
-    /// at another style (and vice versa).
-    pub last_eval_style: Option<crate::evaluation::EvalStyle>,
+    /// Skill levels scale the eval and reduce far moves, so their cached scores must
+    /// not reach a search at another style or reduction (and vice versa).
+    pub last_eval_style: Option<(
+        crate::evaluation::EvalStyle,
+        i32,
+        Option<usize>,
+        i32,
+        Option<[i64; 4]>,
+    )>,
+    /// Extra plies a strength level loses calculating a move longer than any on an
+    /// 8x8 board, capture or not. Zero at full strength.
+    pub skill_far_reduction: i32,
+    /// Captures a strength level reads into an exchange before it stops and takes
+    /// the position as it stands; `Some(0)` does not look at the reply at all.
+    /// `None` at full strength.
+    pub skill_qs_limit: Option<usize>,
+    /// Percent of what a capture from across the board wins that a strength level
+    /// registers inside its search. 100 at full strength.
+    pub skill_far_sight: i32,
+    /// The board an 8x8 player knows for this search (min x, max x, min y, max y): a
+    /// move into or out of it counts as unfamiliar like a long one. `None` at full
+    /// strength.
+    pub skill_area: Option<[i64; 4]>,
 
     // Silent mode - no info output
     pub silent: bool,
@@ -1282,6 +1303,10 @@ impl Searcher {
             root_front: None,
             last_eval_kind: None,
             last_eval_style: None,
+            skill_far_reduction: 0,
+            skill_qs_limit: None,
+            skill_far_sight: 100,
+            skill_area: None,
             silent: false,
             thread_id: 0,
             helper_epoch: 0,
@@ -1457,7 +1482,13 @@ impl Searcher {
     /// so a kind change between searches (a custom position, or a mid-game
     /// re-detection) resets the table and histories instead of reusing them.
     pub fn adopt_eval_kind(&mut self, kind: crate::evaluation::eval_kind::EvalKind) {
-        let style = crate::evaluation::base::eval_style();
+        let style = (
+            crate::evaluation::base::eval_style(),
+            self.skill_far_reduction,
+            self.skill_qs_limit,
+            self.skill_far_sight,
+            self.skill_area,
+        );
         if (self.last_eval_kind.is_some() && self.last_eval_kind != Some(kind))
             || (self.last_eval_style.is_some() && self.last_eval_style != Some(style))
         {
@@ -3482,6 +3513,9 @@ pub(crate) fn get_best_moves_multipv_impl(
                     .board
                     .get_piece(m.to.x, m.to.y)
                     .is_some_and(|p| !p.piece_type().is_neutral_type());
+            // A level's own candidates keep full depth, so the reply that refutes a long
+            // move is still seen; the reduction applies to long moves deeper in the tree.
+            let child_depth = depth - 1;
             let undo = game.make_move(m);
             let slots = enter_root_move(searcher, m, root_in_check, is_capture, move_idx + 1);
 
@@ -3497,7 +3531,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                 score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
-                    depth: depth - 1,
+                    depth: child_depth,
                     ply: 1,
                     alpha: -beta,
                     beta: -alpha,
@@ -3512,7 +3546,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                     score = -negamax(&mut NegamaxContext {
                         searcher,
                         game,
-                        depth: depth - 1,
+                        depth: child_depth,
                         ply: 1,
                         alpha: -INFINITY,
                         beta: INFINITY,
@@ -3528,7 +3562,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                 score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
-                    depth: depth - 1,
+                    depth: child_depth,
                     ply: 1,
                     alpha: -INFINITY,
                     beta: INFINITY,
@@ -3545,7 +3579,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                 score = -negamax(&mut NegamaxContext {
                     searcher,
                     game,
-                    depth: depth - 1,
+                    depth: child_depth,
                     ply: 1,
                     alpha: -target_alpha - 1,
                     beta: -target_alpha,
@@ -3561,7 +3595,7 @@ pub(crate) fn get_best_moves_multipv_impl(
                     score = -negamax(&mut NegamaxContext {
                         searcher,
                         game,
-                        depth: depth - 1,
+                        depth: child_depth,
                         ply: 1,
                         alpha: -INFINITY,
                         beta: INFINITY,
@@ -3767,6 +3801,20 @@ pub(crate) fn get_best_moves_multipv_impl(
                 break;
             }
         }
+    }
+
+    // A forced move's capped budget can run out before depth 1 commits a line; a
+    // position with a legal move must still answer with one.
+    if best_lines.is_empty()
+        && let Some(m) = fallback_move
+    {
+        let score = forced_move_score(searcher, game, &m, false).unwrap_or(0);
+        best_lines.push(PVLine {
+            mv: m,
+            score,
+            depth: 0,
+            pv: vec![m],
+        });
     }
 
     // Update PV table with best move for stats
@@ -5440,6 +5488,13 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             extension = 0;
         }
 
+        if searcher.skill_far_reduction > 0
+            && !is_promotion
+            && is_unfamiliar_move(&m, searcher.skill_area)
+        {
+            extension -= searcher.skill_far_reduction;
+        }
+
         // The child reads this for evaluation smoothing. Set for every move, not only
         // on a beta cutoff, or it reflects a prior sibling's subtree instead.
         searcher.stat_score_stack[ply] =
@@ -5747,6 +5802,14 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         }
 
         game.undo_move(&m, undo);
+        let score = if searcher.skill_far_sight < 100 {
+            let captured_value = captured_piece
+                .filter(|p| !p.piece_type().is_neutral_type())
+                .map_or(0, |p| game.get_piece_value(p.piece_type(), p.color()));
+            skill_far_capture_score(searcher, ply, &m, captured_value, score)
+        } else {
+            score
+        };
 
         // Restore previous-move stack entry for this ply after child returns.
         searcher.prev_move_stack[ply] = prev_entry_backup;
@@ -6047,6 +6110,33 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
 }
 
 /// Quiescence search - only search captures to avoid horizon effect
+/// A strength level registers only part of what a capture from across the board wins,
+/// so long-range tactics are hard for it to find; moves it plays itself at the root
+/// never pass through here and keep their full value. Taking a piece just put in the
+/// way of a check counts in full: any player looks at the checking piece.
+#[inline]
+fn skill_far_capture_score(
+    searcher: &Searcher,
+    ply: usize,
+    m: &Move,
+    captured_value: i32,
+    score: i32,
+) -> i32 {
+    let takes_blocker = ply > 0
+        && searcher.in_check_history[ply - 1]
+        && searcher.move_history[ply - 1].is_some_and(|prev| prev.to == m.to);
+    if searcher.skill_far_sight >= 100
+        || captured_value <= 0
+        || score.abs() > MATE_SCORE
+        || !is_far_move(m)
+        || takes_blocker
+    {
+        score
+    } else {
+        score - captured_value * (100 - searcher.skill_far_sight) / 100
+    }
+}
+
 fn quiescence(
     searcher: &mut Searcher,
     game: &mut GameState,
@@ -6257,6 +6347,13 @@ fn quiescence(
     }
 
     if ply >= MAX_PLY - 1 {
+        return best_value;
+    }
+
+    if let Some(limit) = searcher.skill_qs_limit
+        && qs_ply >= limit
+        && !tactical_check
+    {
         return best_value;
     }
 
@@ -6498,6 +6595,14 @@ fn quiescence(
         );
 
         game.undo_move(m, undo);
+        let score = if searcher.skill_far_sight < 100 {
+            let captured_value = captured
+                .filter(|p| !p.piece_type().is_neutral_type())
+                .map_or(0, |p| game.get_piece_value(p.piece_type(), p.color()));
+            skill_far_capture_score(searcher, ply, m, captured_value, score)
+        } else {
+            score
+        };
 
         searcher.pop_move_context(ply, qs_ctx);
 

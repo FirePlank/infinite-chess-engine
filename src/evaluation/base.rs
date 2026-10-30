@@ -70,40 +70,41 @@ thread_local! {
     pub(crate) static EVAL_BLACK_PAWNS: UnsafeCell<SmallVec<[(i64, i64); 64]>> = UnsafeCell::new(SmallVec::new());
 }
 
-/// Per-level play-style weighting, in percent of the full-strength term: damps
-/// attack / amplifies defense so a weak level misjudges the position rather than
-/// the ranking. `NEUTRAL` is full strength; only generic eval honours this.
+/// Per-level evaluation knowledge, in percent of each tier of the full evaluation.
+/// Basic chess (material, pawn and minor-piece threats) always counts in full; the
+/// other tiers are what a player learns later, so a weak level does not know what
+/// a good position is rather than knowing it and being told to miss it. `NEUTRAL`
+/// is full strength; only generic eval honours this.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EvalStyle {
-    pub attack_scale: i32,
-    pub defense_scale: i32,
+    /// Development and piece placement, king shelter, pawn advancement.
+    pub intermediate: i32,
+    /// Pawn structure, bishop pair, endgame king activity, pawn storms.
+    pub advanced: i32,
+    /// Long-range slider threats and king attack, global tropism, complexity
+    /// damping, and the nets.
+    pub infinite: i32,
+    /// Percent of the way from the engine's piece values to textbook 8x8 ones
+    /// (N = B = 300, R = 500, Q = 900), which misprice pieces on an open board.
+    pub textbook: i32,
 }
 
 impl EvalStyle {
     pub const NEUTRAL: Self = Self {
-        attack_scale: 100,
-        defense_scale: 100,
+        intermediate: 100,
+        advanced: 100,
+        infinite: 100,
+        textbook: 0,
     };
+}
 
-    /// Scale a term that rewards generating pressure on the enemy king.
-    #[inline]
-    pub fn attack(&self, term: i32) -> i32 {
-        if self.attack_scale == 100 {
-            term
-        } else {
-            term * self.attack_scale / 100
-        }
-    }
-
-    /// Scale a term that rewards keeping material home and the king sheltered.
-    #[inline]
-    pub fn defense(&self, term: i32) -> i32 {
-        if self.defense_scale == 100 {
-            term
-        } else {
-            term * self.defense_scale / 100
-        }
-    }
+/// The evaluation's terms by knowledge tier, White-ahead until the final flip;
+/// basic chess is whatever the tiers leave of the total.
+#[derive(Clone, Copy, Default)]
+struct EvalTiers {
+    intermediate: i32,
+    advanced: i32,
+    infinite: i32,
 }
 
 thread_local! {
@@ -643,12 +644,67 @@ fn tile_local_probe(
 /// HCE plus the Stage-A net residual, blended with the NNUE. Added after the complexity
 /// damping so the nets see that row, and before the mop-up/drawish/rule50 chain in `mod.rs`.
 pub fn evaluate(game: &GameState) -> i32 {
+    let style = eval_style();
+    if style != EvalStyle::NEUTRAL {
+        return evaluate_limited(game, style);
+    }
     if !crate::eval_net::enabled() || net_off(game) {
         return evaluate_inner(game);
     }
     let mut fc = crate::eval_net::FeatureCollector::default();
     let score = evaluate_inner_traced(game, &mut fc);
     crate::eval_net::generic_score(game, &fc, score)
+}
+
+/// A strength level's view: basic chess in full, each later tier at the level's
+/// percentage, the nets counted with the infinite-board tier, and pieces priced
+/// partway toward their textbook values.
+fn evaluate_limited(game: &GameState, style: EvalStyle) -> i32 {
+    let (full, tiers) = if !crate::eval_net::enabled() || net_off(game) {
+        evaluate_inner_split(game, &mut NoTrace)
+    } else {
+        let mut fc = crate::eval_net::FeatureCollector::default();
+        let (score, tiers) = evaluate_inner_split(game, &mut fc);
+        let net = crate::eval_net::generic_score(game, &fc, score);
+        (
+            net,
+            EvalTiers {
+                infinite: tiers.infinite + (net - score),
+                ..tiers
+            },
+        )
+    };
+    let missing = |term: i32, percent: i32| term * (100 - percent) / 100;
+    full - missing(tiers.intermediate, style.intermediate)
+        - missing(tiers.advanced, style.advanced)
+        - missing(tiers.infinite, style.infinite)
+        + eight_by_eight_shift(game) * style.textbook / 100
+}
+
+/// Textbook minus engine material for the orthodox pieces, from the side to move's
+/// perspective.
+fn eight_by_eight_shift(game: &GameState) -> i32 {
+    let mut shift = 0;
+    for (_, _, piece) in game.board.iter() {
+        let pt = piece.piece_type();
+        let textbook = match pt {
+            PieceType::Knight | PieceType::Bishop => 300,
+            PieceType::Rook => 500,
+            PieceType::Queen => 900,
+            _ => continue,
+        };
+        let delta = textbook - get_piece_value_base(pt);
+        match piece.color() {
+            PlayerColor::White => shift += delta,
+            PlayerColor::Black => shift -= delta,
+            _ => {}
+        }
+    }
+    if game.turn == PlayerColor::Black {
+        -shift
+    } else {
+        shift
+    }
 }
 
 /// Against a bare king the net cannot see the mating geometry, so its residual is
@@ -682,9 +738,18 @@ pub fn evaluate_inner(game: &GameState) -> i32 {
 
 /// Core evaluation logic with tracing support
 pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut T) -> i32 {
-    // Read once per evaluation, then threaded to each term it weights.
-    let style = eval_style();
+    evaluate_inner_split(game, tracer).0
+}
+
+/// The evaluation and its terms by knowledge tier, from the side to move's
+/// perspective.
+#[inline]
+fn evaluate_inner_split<T: EvaluationTracer>(
+    game: &GameState,
+    tracer: &mut T,
+) -> (i32, EvalTiers) {
     let mut score = game.material_score;
+    let mut tiers = EvalTiers::default();
     // Seeds the score, so it has to appear as a row or TOTAL is not the eval.
     tracer.record("Material (net)", game.material_score, 0);
 
@@ -1573,6 +1638,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         let b_adv = (b_pawn_bonus * multiplier_q / 100) + b_pawn_penalty;
                         tracer.record("Pawn Advancement", w_adv, b_adv);
                         score += w_adv - b_adv;
+                        tiers.intermediate += w_adv - b_adv;
 
                         // Defense urgency
                         let calc_urgency = |tp: i32| (10 + tp + (tp / 4)).min(100);
@@ -1628,7 +1694,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         })(
                         );
 
-                        score += evaluate_pieces_processed(
+                        let (pieces, bishop_pair) = evaluate_pieces_processed(
                             game,
                             white_royals,
                             black_royals,
@@ -1651,6 +1717,9 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             black_pawns,
                             &slider_cong,
                         );
+                        score += pieces;
+                        tiers.intermediate += pieces - bishop_pair;
+                        tiers.advanced += bishop_pair;
 
                         let ks_metrics = KingSafetyMetrics {
                             white_slider_counts: (w_diag_count, w_ortho_count),
@@ -1658,7 +1727,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             urgency: (w_urgency, b_urgency),
                             has_enemy_queen: (b_has_queen_threat, w_has_queen_threat),
                         };
-                        score += evaluate_king_safety_traced(
+                        let (king_safety, king_attack) = evaluate_king_safety_traced(
                             game,
                             white_royals,
                             black_royals,
@@ -1674,10 +1743,12 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             w_king_ring_covered,
                             b_king_ring_covered,
                             piece_list,
-                            style,
                         );
+                        score += king_safety;
+                        tiers.intermediate += king_safety - king_attack;
+                        tiers.infinite += king_attack;
 
-                        score += evaluate_pawn_structure_traced(
+                        let pawn_structure = evaluate_pawn_structure_traced(
                             game,
                             final_phase,
                             white_royals,
@@ -1686,9 +1757,11 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                             white_pawns,
                             black_pawns,
                         );
+                        score += pawn_structure;
+                        tiers.advanced += pawn_structure;
 
                         if phase < MAX_KING_PHASE {
-                            score += evaluate_king_positioning_traced(
+                            let king_positioning = evaluate_king_positioning_traced(
                                 game,
                                 MAX_KING_PHASE - phase,
                                 white_royal_tropisms.as_ref(),
@@ -1697,39 +1770,35 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                                 white_pawns,
                                 black_pawns,
                             );
+                            score += king_positioning;
+                            tiers.advanced += king_positioning;
                         }
 
-                        // Interaction Threats (Result from merged loop). Seeing a
-                        // threat is the first thing a weak level gives up, so these
-                        // are scaled per-component and the trace rows follow.
-                        let w_pawn_threats = style.attack(w_pawn_threats);
-                        let b_pawn_threats = style.attack(b_pawn_threats);
-                        let w_minor_threats = style.attack(w_minor_threats);
-                        let b_minor_threats = style.attack(b_minor_threats);
-                        let w_slider_threats = style.attack(w_slider_threats);
-                        let b_slider_threats = style.attack(b_slider_threats);
+                        // Interaction Threats (Result from merged loop). Pawn and
+                        // minor threats are board-local; long-range slider threats
+                        // are infinite-board knowledge.
+                        tiers.infinite += w_slider_threats - b_slider_threats;
                         tracer.record("Threats: Pawn", w_pawn_threats, b_pawn_threats);
                         tracer.record("Threats: Minor", w_minor_threats, b_minor_threats);
                         tracer.record("Threats: Slider", w_slider_threats, b_slider_threats);
                         score += (w_pawn_threats + w_minor_threats + w_slider_threats)
                             - (b_pawn_threats + b_minor_threats + b_slider_threats);
 
-                        // Global Tropism. The attack/defense split already has a
-                        // per-side percentage, so the style composes into it: weak
-                        // levels crowd their own king instead of the enemy's.
+                        // Global Tropism: whole-army pull toward the kings, which
+                        // on an open board is infinite-board knowledge.
                         let gt_att_mult = taper(180, 360);
                         let gt_def_mult = taper(120, 60);
-                        let w_att_scale = style.attack(match game.game_rules.white_win_condition {
+                        let w_att_scale = match game.game_rules.white_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
-                        });
-                        let b_att_scale = style.attack(match game.game_rules.black_win_condition {
+                        };
+                        let b_att_scale = match game.game_rules.black_win_condition {
                             WinCondition::AllRoyalsCaptured => 80,
                             _ => 100,
-                        });
+                        };
                         // Off on a compact board, where every piece already sits near
                         // its king and the term was a wash that cost 7 Elo to carry.
-                        let def_scale = style.defense(100) * spread / 100;
+                        let def_scale = spread;
 
                         // Normalize by 1000 since piece values are high and we want roughly 10-100 pts
                         let w_gt = w_attacking_tropism * gt_att_mult * w_att_scale / 10000
@@ -1739,6 +1808,7 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
 
                         tracer.record("Global Tropism", w_gt, b_gt);
                         score += w_gt - b_gt;
+                        tiers.infinite += w_gt - b_gt;
 
                         // Finalize unified pawn storm metrics (collected during main loop)
                         // Apply synergy multiplier when 2+ pawns threaten, then taper by phase.
@@ -1750,21 +1820,20 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
                         if b_storm_count >= 2 {
                             b_storm = b_storm * (100 + (b_storm_count - 1) * 12) / 100;
                         }
-                        let w_storm_scale =
-                            style.attack(match game.game_rules.white_win_condition {
-                                WinCondition::AllRoyalsCaptured => 55,
-                                _ => 100,
-                            });
-                        let b_storm_scale =
-                            style.attack(match game.game_rules.black_win_condition {
-                                WinCondition::AllRoyalsCaptured => 55,
-                                _ => 100,
-                            });
+                        let w_storm_scale = match game.game_rules.white_win_condition {
+                            WinCondition::AllRoyalsCaptured => 55,
+                            _ => 100,
+                        };
+                        let b_storm_scale = match game.game_rules.black_win_condition {
+                            WinCondition::AllRoyalsCaptured => 55,
+                            _ => 100,
+                        };
                         let w_storm = taper(w_storm, w_storm * 40 / 100) * w_storm_scale / 100;
                         let b_storm = taper(b_storm, b_storm * 40 / 100) * b_storm_scale / 100;
 
                         tracer.record("King: Pawn Storm", w_storm, b_storm);
                         score += w_storm - b_storm;
+                        tiers.advanced += w_storm - b_storm;
 
                         if T::WANTS_INPUTS {
                             use crate::eval_net::summarize_rays;
@@ -1908,14 +1977,22 @@ pub fn evaluate_inner_traced<T: EvaluationTracer>(game: &GameState, tracer: &mut
     if excess > 0 {
         let scaled = score * (1024 - complexity_damp() * excess) / 1024;
         tracer.record("Complexity scale", scaled - score, 0);
+        tiers.infinite += scaled - score;
         score = scaled;
     }
 
     // Return from current player's perspective
     if game.turn == PlayerColor::Black {
-        -score
+        (
+            -score,
+            EvalTiers {
+                intermediate: -tiers.intermediate,
+                advanced: -tiers.advanced,
+                infinite: -tiers.infinite,
+            },
+        )
     } else {
-        score
+        (score, tiers)
     }
 }
 
@@ -1972,7 +2049,7 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     white_pawns: &[(i64, i64)],
     black_pawns: &[(i64, i64)],
     slider_cong: &[(i32, i32)],
-) -> i32 {
+) -> (i32, i32) {
     let taper =
         |mg: i32, eg: i32| -> i32 { ((mg * phase) + (eg * (MAX_PHASE - phase))) / MAX_PHASE };
     let mut w_activity: i32 = 0;
@@ -2402,7 +2479,10 @@ fn evaluate_pieces_processed<T: EvaluationTracer>(
     tracer.record("Piece: Activity", w_activity, b_activity);
     tracer.record("Piece: Bishop Pair", w_pair_bonus, b_pair_bonus);
 
-    (w_activity + w_pair_bonus) - (b_activity + b_pair_bonus)
+    (
+        (w_activity + w_pair_bonus) - (b_activity + b_pair_bonus),
+        w_pair_bonus - b_pair_bonus,
+    )
 }
 
 pub struct RoyalTropismMetrics {
@@ -2549,8 +2629,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     w_ring_covered: bool,
     b_ring_covered: bool,
     pieces: &[(i64, i64, Piece)],
-    style: EvalStyle,
-) -> i32 {
+) -> (i32, i32) {
     let mut w_safety: i32 = 0;
     let mut b_safety: i32 = 0;
     let mut w_attack: i32 = 0;
@@ -2634,13 +2713,12 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
         _ => 100,
     };
 
-    // Shelter is the defensive half and the attack bonus the offensive half, so the
-    // style weights them apart: a weak level over-values sitting behind its own
-    // pawns and barely notices a king it could be attacking — or one being attacked.
-    let w_shelter = style.defense(w_safety * black_rc_mult / 100);
-    let b_shelter = style.defense(b_safety * white_rc_mult / 100);
-    let w_pressure = style.attack(w_attack * white_rc_mult / 100) * 3 / 2;
-    let b_pressure = style.attack(b_attack * black_rc_mult / 100) * 3 / 2;
+    // Shelter is board-local chess. The attack bonus reads open rays toward the king
+    // from any distance, which is infinite-board knowledge, so it is returned apart.
+    let w_shelter = w_safety * black_rc_mult / 100;
+    let b_shelter = b_safety * white_rc_mult / 100;
+    let w_pressure = w_attack * white_rc_mult / 100 * 3 / 2;
+    let b_pressure = b_attack * black_rc_mult / 100 * 3 / 2;
 
     let w_total = w_shelter + w_pressure;
     let b_total = b_shelter + b_pressure;
@@ -2648,7 +2726,7 @@ pub fn evaluate_king_safety_traced<T: EvaluationTracer>(
     tracer.record("King: Shelter", w_shelter, b_shelter);
     tracer.record("King: Attack", w_pressure, b_pressure);
 
-    w_total - b_total
+    (w_total - b_total, w_pressure - b_pressure)
 }
 
 /// Ray-based attack bonus: open rays toward enemy king with slider presence.

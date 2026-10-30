@@ -22,7 +22,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const EVAL_PARAMS_RS_PATH: &str = "src/evaluation/params.rs";
 /// Any |score| beyond this is a confirmed forced mate, not a real evaluation.
 const MATE_FLOOR: i32 = apeiron::search::MATE_SCORE;
-/// Fitted on this engine's own score scale (`puzzle_gen`'s WC_K=0.00188 → 1/K),
+/// Fitted on this engine's own score scale before the nets (WC_K=0.00188 → 1/K),
 /// roughly half of Stockfish's 400: this engine's scores are steeper per centipawn.
 const DEFAULT_K_SCALE: f64 = 531.9;
 /// Positions materialized at once during extraction. Bounds peak memory to
