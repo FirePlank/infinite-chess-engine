@@ -113,7 +113,7 @@ enum Commands {
         results: Option<String>,
 
         /// Maximum moves per game (game is drawn if reached)
-        #[arg(long, default_value_t = 300)]
+        #[arg(long, default_value_t = 2000)]
         max_moves: usize,
 
         /// Eval noise amplitude used to vary the opening book
@@ -1445,6 +1445,11 @@ fn play_game(
     // White winning), for the max-ply adjudication when both engines agree.
     let mut last_wscore_new: Option<f64> = None;
     let mut last_wscore_old: Option<f64> = None;
+    // Data run: plies in a row whose mover scored at least RESIGN_SCORE for the same side
+    // (true = White), adjudicated after RESIGN_PLIES.
+    const RESIGN_SCORE: f64 = 2000.0;
+    const RESIGN_PLIES: u32 = 6;
+    let mut resign_run: (u32, bool) = (0, true);
     // One persistent engine per side for the whole game; dropped (and killed) when
     // this function returns by any path.
     let mut new_engine: Option<ServeEngine> = None;
@@ -1533,6 +1538,20 @@ fn play_game(
                 return interrupted();
             }
             break;
+        }
+
+        if resign_run.0 >= RESIGN_PLIES {
+            let white_won = resign_run.1;
+            let result = if white_won == new_plays_white {
+                GameResult::Win
+            } else {
+                GameResult::Loss
+            };
+            return game_outcome!(
+                result,
+                "resign adjudication",
+                if white_won { "1-0" } else { "0-1" }
+            );
         }
 
         // Check for threefold repetition using manual position key tracking
@@ -1974,6 +1993,13 @@ fn play_game(
                 } else {
                     last_wscore_old = Some(-s);
                 }
+                resign_run = if s.abs() < RESIGN_SCORE {
+                    (0, true)
+                } else if resign_run.0 > 0 && resign_run.1 == (s < 0.0) {
+                    (resign_run.0 + 1, s < 0.0)
+                } else {
+                    (1, s < 0.0)
+                };
                 // Convert mate scores (>= 800000 cp) to [%mate N] format
                 if s.abs() >= 800000.0 {
                     let mate_in = if s > 0.0 {
