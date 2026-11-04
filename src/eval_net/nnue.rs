@@ -30,6 +30,10 @@ pub const HEAD_IN: usize = DENSE + 2 * ACC;
 pub const BLEND: i32 = 50;
 
 const MAGIC: &[u8; 8] = b"AINNUE01";
+/// As AINNUE01 with a bucket count after the layout and one head per bucket.
+const MAGIC_BUCKETS: &[u8; 8] = b"AINNUE02";
+/// The last non-pawn piece count each head but the last covers (evalnet/train_nnue.py).
+pub const BUCKET_EDGES: [u16; 7] = [6, 8, 11, 14, 17, 21, 26];
 
 /// Exact offsets within 3 squares, then sign x (4-7, 8-15, 16-63, 64+).
 #[inline]
@@ -193,7 +197,8 @@ pub struct Nnue {
     /// `NUM_SPARSE` rows of `ACC` weights, then the zero row.
     ft_w: Box<[i16]>,
     ft_b: [i16; ACC],
-    head: EvalNetWeights,
+    /// One head, or one per `BUCKET_EDGES` bucket.
+    heads: Vec<EvalNetWeights>,
 }
 
 /// Schema of the head's inputs: the Stage-A layout, then the two accumulators.
@@ -208,13 +213,18 @@ impl Nnue {
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .ok_or("short read")
         };
-        if data.get(..8) != Some(&MAGIC[..]) {
-            return Err("bad magic");
+        let n_heads = match data.get(..8) {
+            Some(m) if m == &MAGIC[..] => 1,
+            Some(m) if m == &MAGIC_BUCKETS[..] => rd(20)? as usize,
+            _ => return Err("bad magic"),
+        };
+        if n_heads != 1 && n_heads != BUCKET_EDGES.len() + 1 {
+            return Err("bucket count mismatch");
         }
         if rd(8)? as usize != NUM_SPARSE || rd(12)? as usize != ACC || rd(16)? as usize != DENSE {
             return Err("layout mismatch");
         }
-        let ft = 20;
+        let ft = if n_heads == 1 { 20 } else { 24 };
         let n = NUM_SPARSE * ACC;
         let i16s = |at: usize, len: usize| -> Result<Vec<i16>, &'static str> {
             let b = data.get(at..at + 2 * len).ok_or("short read (i16[])")?;
@@ -224,14 +234,22 @@ impl Nnue {
         ft_w.resize(n + ACC, 0);
         let mut ft_b = [0i16; ACC];
         ft_b.copy_from_slice(&i16s(ft + 2 * n, ACC)?);
-        let head = EvalNetWeights::from_bytes(&data[ft + 2 * (n + ACC)..], HEAD_IN, schema_hash())?;
-        if !head.perspective {
-            return Err("head must be a perspective net");
+        let mut at = ft + 2 * (n + ACC);
+        let mut heads = Vec::with_capacity(n_heads);
+        for _ in 0..n_heads {
+            let head = EvalNetWeights::from_bytes(data.get(at..).ok_or("short read (head)")?, HEAD_IN, schema_hash())?;
+            if !head.perspective {
+                return Err("head must be a perspective net");
+            }
+            // Header, then the i8 weights and i32 biases of each layer.
+            let (h1, h2) = (head.h1, head.h2);
+            at += 44 + h1 * HEAD_IN + 4 * h1 + h2 * h1 + 4 * h2 + h2 + 4;
+            heads.push(head);
         }
         Ok(Nnue {
             ft_w: ft_w.into_boxed_slice(),
             ft_b,
-            head,
+            heads,
         })
     }
 
@@ -369,7 +387,18 @@ impl Nnue {
         for (o, &a) in x[DENSE + ACC..HEAD_IN].iter_mut().zip(&acc[1 - us]) {
             *o = a.clamp(0, QA);
         }
-        Some(super::inference::forward(&self.head, &x[..HEAD_IN]))
+        Some(super::inference::forward(&self.heads[self.bucket(game)], &x[..HEAD_IN]))
+    }
+
+    /// The head for `game`: by non-pawn pieces on the board, kings included.
+    #[inline]
+    fn bucket(&self, game: &GameState) -> usize {
+        if self.heads.len() == 1 {
+            return 0;
+        }
+        let all = game.white_piece_count + game.black_piece_count;
+        let nonpawn = all.saturating_sub(game.white_pawn_count + game.black_pawn_count);
+        BUCKET_EDGES.iter().filter(|&&e| nonpawn > e).count()
     }
 
     /// The side-to-move score `hce` blended with this net's, or `hce` when it has none.
@@ -434,7 +463,7 @@ mod tests {
         Nnue {
             ft_w: ft_w.into_boxed_slice(),
             ft_b: [3; ACC],
-            head: EvalNetWeights::from_bytes(&blob, HEAD_IN, schema_hash()).unwrap(),
+            heads: vec![EvalNetWeights::from_bytes(&blob, HEAD_IN, schema_hash()).unwrap()],
         }
     }
 
@@ -517,7 +546,7 @@ mod timing {
         x[..DENSE].copy_from_slice(&dense);
         let t = std::time::Instant::now();
         for _ in 0..it {
-            std::hint::black_box(super::super::inference::forward(&n.head, std::hint::black_box(&x[..HEAD_IN])));
+            std::hint::black_box(super::super::inference::forward(&n.heads[0], std::hint::black_box(&x[..HEAD_IN])));
         }
         println!("head {:?}/eval", t.elapsed() / it);
         let t = std::time::Instant::now();
