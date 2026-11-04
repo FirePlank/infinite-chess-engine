@@ -6388,7 +6388,6 @@ fn quiescence(
         if !must_escape && royal_capture_decides(game, game.turn.opponent()) {
             let pinned = rustc_hash::FxHashMap::default();
             let ctx = MoveGenContext {
-                last_moved: None,
                 pinned: &pinned,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
@@ -6418,7 +6417,6 @@ fn quiescence(
         let pinned = rustc_hash::FxHashMap::default();
 
         let ctx = MoveGenContext {
-            last_moved: None,
             pinned: &pinned,
             special_rights: &game.special_rights,
             en_passant: &game.en_passant,

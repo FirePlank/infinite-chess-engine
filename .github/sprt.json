@@ -1,11 +1,11 @@
 {
-  "name": "655_last_moved_attack_squares",
-  "old": "377a99dc",
-  "games": 4000,
+  "name": "653_bugfix_bundle",
+  "old": "8b72258b",
+  "games": 2000,
   "shards": 40,
-  "variants": "Classical,Confined_Classical,Classical_Plus,Core,CoaIP,CoaIP_HO,CoaIP_RO,CoaIP_NO,Palace,Pawndard,Standarch,Space_Classic,Space,Knightline,Pawn_Horde",
+  "variants": "site",
   "tc": "10+0.1",
-  "elo0": 0,
-  "elo1": 5,
+  "elo0": -10,
+  "elo1": 0,
   "adjudication": 1000
 }

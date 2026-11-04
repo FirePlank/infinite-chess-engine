@@ -370,7 +370,6 @@ fn material_risk(game: &mut GameState, mv: &Move, far_sight: i32) -> i32 {
     let undo = game.make_move(mv);
     let pinned = rustc_hash::FxHashMap::default();
     let ctx = MoveGenContext {
-        last_moved: None,
         pinned: &pinned,
         special_rights: &game.special_rights,
         en_passant: &game.en_passant,

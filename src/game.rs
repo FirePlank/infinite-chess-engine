@@ -1748,7 +1748,6 @@ impl GameState {
         };
 
         let ctx = crate::moves::MoveGenContext {
-            last_moved: None,
             pinned: &pinned,
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
@@ -1804,7 +1803,6 @@ impl GameState {
         // This ensures all royals are protected and pins for all royals are respected.
         if royals.len() > 1 {
             let ctx = crate::moves::MoveGenContext {
-                last_moved: None,
                 pinned: &rustc_hash::FxHashMap::default(),
                 special_rights: &self.special_rights,
                 en_passant: &self.en_passant,
@@ -1840,7 +1838,6 @@ impl GameState {
         };
 
         let ctx = crate::moves::MoveGenContext {
-            last_moved: None,
             pinned: &pinned,
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
@@ -2015,7 +2012,6 @@ impl GameState {
             // and let `is_move_illegal` filter them out naturally.
             let empty_pinned = rustc_hash::FxHashMap::default();
             let ctx = crate::moves::MoveGenContext {
-                last_moved: None,
                 special_rights: &self.special_rights,
                 en_passant: &self.en_passant,
                 game_rules: &self.game_rules,
@@ -2068,7 +2064,6 @@ impl GameState {
         // 1. King escapes (Legal regardless of checker count, as long as target not attacked)
         let empty_pins = rustc_hash::FxHashMap::default();
         let ctx = crate::moves::MoveGenContext {
-            last_moved: None,
             special_rights: &self.special_rights,
             en_passant: &self.en_passant,
             game_rules: &self.game_rules,
@@ -2959,7 +2954,6 @@ impl GameState {
             // Uses pseudo-legal move generation for captures
             let mut pseudo = MoveList::new();
             let ctx = crate::moves::MoveGenContext {
-                last_moved: None,
                 special_rights: &s.special_rights,
                 en_passant: &s.en_passant,
                 game_rules: &s.game_rules,

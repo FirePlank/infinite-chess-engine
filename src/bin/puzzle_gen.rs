@@ -2140,7 +2140,6 @@ fn fork_strength(st: &GameState, at: Coordinate, winner: PlayerColor, move_dist:
     };
     let empty_pinned = FxHashMap::default();
     let ctx = MoveGenContext {
-        last_moved: None,
         special_rights: &st.special_rights,
         en_passant: &st.en_passant,
         game_rules: &st.game_rules,
@@ -2205,7 +2204,6 @@ fn fork_targets(st: &GameState, at: Coordinate, winner: PlayerColor) -> usize {
     };
     let empty_pinned = FxHashMap::default();
     let ctx = MoveGenContext {
-        last_moved: None,
         special_rights: &st.special_rights,
         en_passant: &st.en_passant,
         game_rules: &st.game_rules,
