@@ -67,6 +67,8 @@ pub struct MoveGenContext<'a> {
     pub indices: &'a SpatialIndices,
     pub enemy_king_pos: Option<&'a Coordinate>,
     pub pinned: &'a FxHashMap<Coordinate, (i64, i64)>,
+    /// Where the opponent's last move landed, when the search knows it.
+    pub last_moved: Option<&'a Coordinate>,
 }
 
 // World border for infinite chess.
@@ -102,6 +104,7 @@ pub struct SlidingMoveContext<'a> {
     pub enemy_king_pos: Option<&'a Coordinate>,
     pub visited_targets: Option<&'a std::cell::RefCell<Vec<(Coordinate, u8)>>>,
     pub pinned: &'a FxHashMap<Coordinate, (i64, i64)>,
+    pub last_moved: Option<&'a Coordinate>,
 }
 
 /// Update world borders from JS playableRegion (left, right, bottom, top).
@@ -638,6 +641,7 @@ pub fn is_piece_attacking_square(
     }
     let mut moves = MoveList::new();
     let ctx = MoveGenContext {
+        last_moved: None,
         special_rights: &SpecialRights::new(),
         en_passant: &None,
         game_rules,
@@ -1694,6 +1698,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         PieceType::Rook => {
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1709,6 +1714,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
         PieceType::Bishop => {
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1725,6 +1731,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1738,6 +1745,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1754,6 +1762,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1770,6 +1779,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::All, out);
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1787,6 +1797,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -1800,6 +1811,7 @@ pub fn get_pseudo_legal_moves_for_piece_into(
             );
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2505,6 +2517,7 @@ fn generate_quiets_for_piece(
         PieceType::Rook => {
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2520,6 +2533,7 @@ fn generate_quiets_for_piece(
         PieceType::Bishop => {
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2536,6 +2550,7 @@ fn generate_quiets_for_piece(
             let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2549,6 +2564,7 @@ fn generate_quiets_for_piece(
             );
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2565,6 +2581,7 @@ fn generate_quiets_for_piece(
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2581,6 +2598,7 @@ fn generate_quiets_for_piece(
             generate_leaper_moves_into(board, from, piece, 1, 2, MoveGenType::Quiets, out);
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2598,6 +2616,7 @@ fn generate_quiets_for_piece(
             let visited = std::cell::RefCell::new(Vec::new());
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -2611,6 +2630,7 @@ fn generate_quiets_for_piece(
             );
             generate_sliding_quiets_into(
                 &SlidingMoveContext {
+                    last_moved: ctx.last_moved,
                     board,
                     from,
                     piece,
@@ -3493,6 +3513,7 @@ fn generate_sliding_moves_impl(
                 })
                 .ok()
             };
+            let from_cache = hit.is_some();
 
             let computed: Arc<[i64]>;
             let target_dists: &[i64] = if let Some(d) = hit.as_deref() {
@@ -3954,6 +3975,34 @@ fn generate_sliding_moves_impl(
                     }
                 }
             }
+
+            // A cached list has the cross-ray squares of the pieces near this ray when it
+            // was built; add the ones that attack the piece the opponent just moved.
+            if from_cache
+                && gen_type != MoveGenType::Captures
+                && let Some(t) = ctx.last_moved
+                && ek_ref != Some(t)
+            {
+                let pt = piece.piece_type();
+                for d in fresh_attack_dists(pt, from, dir_x, dir_y, t, indices) {
+                    let checks = |ek: &Coordinate| {
+                        fresh_check_dists(pt, from, dir_x, dir_y, ek).any(|c| c == d)
+                    };
+                    if d <= max_dist
+                        && d != closest_dist
+                        && (ray_cap == 0 || d <= QUIET_RAY_CAP_RADIUS)
+                        && target_dists
+                            .binary_search_by_key(&d, |&v| v & !CAP_EXEMPT)
+                            .is_err()
+                        && !ek_ref.is_some_and(checks)
+                    {
+                        let (sq_x, sq_y) = (from.x + dir_x * d, from.y + dir_y * d);
+                        if (min_x..=max_x).contains(&sq_x) && (min_y..=max_y).contains(&sq_y) {
+                            out.push(Move::new(*from, Coordinate::new(sq_x, sq_y), *piece));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -3998,6 +4047,53 @@ fn fresh_check_dists(
         let d = ray_steps(c - a * fx - b * fy, a * dir_x + b * dir_y)?;
         (d > 0 && (fx + d * dir_x, fy + d * dir_y) != (kx, ky)).then_some(d)
     })
+}
+
+/// Distances along (dir_x, dir_y) to squares from which this piece attacks the piece on
+/// `t` along a line it moves on, with `t` the nearest piece that way.
+#[inline]
+fn fresh_attack_dists(
+    pt: PieceType,
+    from: &Coordinate,
+    dir_x: i64,
+    dir_y: i64,
+    t: &Coordinate,
+    indices: &SpatialIndices,
+) -> smallvec::SmallVec<[i64; 4]> {
+    use crate::attacks::{is_diag_slider, is_ortho_slider};
+    let (ortho, diag) = (is_ortho_slider(pt), is_diag_slider(pt));
+    let mut out = smallvec::SmallVec::new();
+    // t's file, rank, diagonal and anti-diagonal, each as a*x + b*y = c.
+    let lines = [
+        (ortho, 1i64, 0i64, t.x),
+        (ortho, 0, 1, t.y),
+        (diag, 1, -1, t.x - t.y),
+        (diag, 1, 1, t.x + t.y),
+    ];
+    for (i, (on, a, b, c)) in lines.into_iter().enumerate() {
+        if !on {
+            continue;
+        }
+        let Some(d) = ray_steps(c - a * from.x - b * from.y, a * dir_x + b * dir_y) else {
+            continue;
+        };
+        let (sx, sy) = (from.x + d * dir_x, from.y + d * dir_y);
+        // Each line's index, the square's coordinate along it, and t's.
+        let (line, s, at) = match i {
+            0 => (indices.cols.get(&c), sy, t.y),
+            1 => (indices.rows.get(&c), sx, t.x),
+            2 => (indices.diag1.get(&c), sx, t.x),
+            _ => (indices.diag2.get(&c), sx, t.x),
+        };
+        if s != at
+            && line
+                .and_then(|l| l.find_nearest(s, (at - s).signum()))
+                .is_some_and(|(n, _)| n == at)
+        {
+            out.push(d);
+        }
+    }
+    out
 }
 
 /// Closest blocker on a ray, found in O(log n) via the spatial indices, as its line
@@ -5067,6 +5163,41 @@ mod tests {
     }
 
     #[test]
+    fn last_moved_piece_gets_fresh_attack_squares_off_a_cached_ray() {
+        with_bounds_lock(|| {
+            reset_world_bounds();
+            set_slider_cache_bypass(false);
+            let mut game = GameState::new();
+            game.setup_position_from_icn("w 0/100 1 K-40,-40|R0,0|k-50,50|q20,7");
+            let attacks_from_12_0 = |game: &GameState, last: Option<&Coordinate>| {
+                let pins = FxHashMap::default();
+                let ctx = MoveGenContext {
+                    last_moved: last,
+                    special_rights: &game.special_rights,
+                    en_passant: &game.en_passant,
+                    game_rules: &game.game_rules,
+                    indices: &game.spatial_indices,
+                    enemy_king_pos: game.enemy_king_pos(),
+                    pinned: &pins,
+                };
+                let mut out = MoveList::new();
+                get_quiet_moves_into(&game.board, game.turn, &ctx, &mut out);
+                out.iter()
+                    .any(|m| m.from == Coordinate::new(0, 0) && m.to == Coordinate::new(12, 0))
+            };
+            // Builds the rook's cached east ray while the queen stands on file 20.
+            assert!(!attacks_from_12_0(&game, None));
+            let w = Piece::new(PieceType::King, PlayerColor::White);
+            game.make_move(&Move::new(Coordinate::new(-40, -40), Coordinate::new(-41, -40), w));
+            let q = Piece::new(PieceType::Queen, PlayerColor::Black);
+            game.make_move(&Move::new(Coordinate::new(20, 7), Coordinate::new(12, 7), q));
+            // On file 12 now, which (12, 0) attacks: the cached ray alone misses it.
+            assert!(!attacks_from_12_0(&game, None));
+            assert!(attacks_from_12_0(&game, Some(&Coordinate::new(12, 7))));
+        });
+    }
+
+    #[test]
     fn test_knight_moves_generation() {
         with_bounds_lock(|| {
             reset_world_bounds();
@@ -5374,6 +5505,7 @@ mod tests {
             let mut moves = MoveList::new();
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: None,
                     board: &game.board,
                     from: &from,
                     piece: &piece,
@@ -5405,6 +5537,7 @@ mod tests {
             let mut moves = MoveList::new();
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: None,
                     board: &game.board,
                     from: &from,
                     piece: &piece,
@@ -5439,6 +5572,7 @@ mod tests {
             let mut moves = MoveList::new();
             generate_sliding_moves_into(
                 &SlidingMoveContext {
+                    last_moved: None,
                     board: &game.board,
                     from: &from,
                     piece: &piece,
@@ -5758,6 +5892,7 @@ mod tests {
             game.setup_position_from_icn("w K5,1|k5,8|P4,2");
 
             let ctx = MoveGenContext {
+                last_moved: None,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
                 game_rules: &game.game_rules,
@@ -5781,6 +5916,7 @@ mod tests {
             game.setup_position_from_icn("w K5,1|k5,8|N4,4|p5,6");
 
             let ctx = MoveGenContext {
+                last_moved: None,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
                 game_rules: &game.game_rules,
@@ -5861,6 +5997,7 @@ mod tests {
             game.setup_position_from_icn("w Q10,-30|k77,-41");
 
             let ctx = MoveGenContext {
+                last_moved: None,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
                 game_rules: &game.game_rules,
@@ -5894,6 +6031,7 @@ mod tests {
             game.setup_position_from_icn("w (8;q|1;q) P0,7");
 
             let ctx = MoveGenContext {
+                last_moved: None,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
                 game_rules: &game.game_rules,
@@ -6098,6 +6236,7 @@ mod tests {
             "cached list misses {from:?}x{to:?} in {icn}"
         );
         let ctx = MoveGenContext {
+            last_moved: None,
             pinned: &FxHashMap::default(),
             special_rights: &game.special_rights,
             en_passant: &game.en_passant,

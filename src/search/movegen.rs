@@ -797,6 +797,7 @@ impl StagedMoveGen {
                     // Knightrider, rose and huygen rays still need the generator.
                     let empty_pins = rustc_hash::FxHashMap::default();
                     let ctx = crate::moves::MoveGenContext {
+                        last_moved: None,
                         special_rights: &game.special_rights,
                         en_passant: &game.en_passant,
                         game_rules: &game.game_rules,
@@ -1155,6 +1156,7 @@ impl StagedMoveGen {
         let no_pins = rustc_hash::FxHashMap::default();
         {
             let ctx = MoveGenContext {
+                last_moved: None,
                 pinned: &no_pins,
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,
@@ -1201,8 +1203,14 @@ impl StagedMoveGen {
     ) {
         quiets.clear();
         self.ensure_pins(game);
+        let last_moved = self
+            .ply
+            .checked_sub(1)
+            .and_then(|p| searcher.move_history[p])
+            .map(|m| m.to);
         {
             let ctx = MoveGenContext {
+                last_moved: last_moved.as_ref(),
                 pinned: self.pins_cache.as_ref().unwrap(),
                 special_rights: &game.special_rights,
                 en_passant: &game.en_passant,

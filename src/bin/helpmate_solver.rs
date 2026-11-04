@@ -632,6 +632,7 @@ impl HelpmateSolver {
         };
 
         let ctx = apeiron::moves::MoveGenContext {
+            last_moved: None,
             special_rights: &state.special_rights,
             en_passant: &state.en_passant,
             game_rules: &state.game_rules,
@@ -777,6 +778,7 @@ impl HelpmateSolver {
 
             {
                 let ctx = apeiron::moves::MoveGenContext {
+                    last_moved: None,
                     special_rights: &state.special_rights,
                     en_passant: &state.en_passant,
                     game_rules: &state.game_rules,
