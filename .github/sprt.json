@@ -1,11 +1,11 @@
 {
-  "name": "653_bugfix_bundle",
-  "old": "8b72258b",
-  "games": 2000,
+  "name": "656_nnue_blend_mix30",
+  "old": "377a99dc",
+  "games": 4000,
   "shards": 40,
-  "variants": "site",
+  "variants": "base_only",
   "tc": "10+0.1",
-  "elo0": -10,
-  "elo1": 0,
-  "adjudication": 1000
+  "elo0": 0,
+  "elo1": 5,
+  "adjudication": 0
 }
