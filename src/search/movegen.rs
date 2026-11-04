@@ -1506,6 +1506,86 @@ impl StagedMoveGen {
     }
 }
 
+/// Our pieces standing alone between an enemy royal and our own slider on one of its
+/// lines, as (blocker, royal, slider) squares: moving one off that line checks, which
+/// `move_gives_check_fast` misses since it tests only the moved piece.
+pub struct Discoverers {
+    n: usize,
+    lines: [(Square, Square, Square); 8],
+}
+
+type Square = (i64, i64);
+
+impl Discoverers {
+    pub fn new(game: &GameState) -> Self {
+        use crate::attacks::{is_diag_slider, is_ortho_slider};
+        use crate::board::Piece;
+        let us = game.turn;
+        let royals = if us == PlayerColor::White {
+            &game.black_royals
+        } else {
+            &game.white_royals
+        };
+        let idx = &game.spatial_indices;
+        let mut d = Discoverers {
+            n: 0,
+            lines: [((0, 0), (0, 0), (0, 0)); 8],
+        };
+        for k in royals {
+            let (kx, ky) = (k.x, k.y);
+            // Row, column, diagonal, anti-diagonal: each indexed by x except the column.
+            for i in 0..4 {
+                let (line, at) = match i {
+                    0 => (idx.rows.get(&ky), kx),
+                    1 => (idx.cols.get(&kx), ky),
+                    2 => (idx.diag1.get(&(kx - ky)), kx),
+                    _ => (idx.diag2.get(&(kx + ky)), kx),
+                };
+                let Some(line) = line else { continue };
+                let sq = |c: i64| match i {
+                    0 => (c, ky),
+                    1 => (kx, c),
+                    2 => (c, c - (kx - ky)),
+                    _ => (c, kx + ky - c),
+                };
+                let (fwd, fwd2, back, back2) = line.neighbors2(at);
+                for (first, second) in [(fwd, fwd2), (back, back2)] {
+                    let (Some((c1, p1)), Some((c2, p2))) = (first, second) else {
+                        continue;
+                    };
+                    let (p1, p2) = (Piece::from_packed(p1), Piece::from_packed(p2));
+                    let slides = if i < 2 {
+                        is_ortho_slider(p2.piece_type())
+                    } else {
+                        is_diag_slider(p2.piece_type())
+                    };
+                    if p1.color() == us && p2.color() == us && slides && d.n < d.lines.len() {
+                        d.lines[d.n] = (sq(c1), (kx, ky), sq(c2));
+                        d.n += 1;
+                    }
+                }
+            }
+        }
+        d
+    }
+
+    /// Whether `m` uncovers a check: a blocker leaving the segment between royal and slider.
+    #[inline]
+    pub fn gives_check(&self, m: &crate::moves::Move) -> bool {
+        self.lines[..self.n].iter().any(|&(b, (kx, ky), (sx, sy))| {
+            if (m.from.x, m.from.y) != b {
+                return false;
+            }
+            let (dx, dy) = ((sx - kx).signum(), (sy - ky).signum());
+            let (tx, ty) = (m.to.x - kx, m.to.y - ky);
+            let on_line = tx * dy == ty * dx;
+            let steps = if dx != 0 { tx * dx } else { ty * dy };
+            let span = if dx != 0 { (sx - kx) * dx } else { (sy - ky) * dy };
+            !(on_line && 0 < steps && steps < span)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1650,6 +1730,32 @@ mod tests {
             &no_enemy_royal,
             &queen
         ));
+    }
+
+    #[test]
+    fn discoverers_find_checks_the_mover_does_not_give() {
+        // The knight screens the rook's file and the bishop the queen's diagonal.
+        let game = game_from_icn("w 0/100 1 (8;q|1;q) K1,1|R5,1|N5,4|k5,8|Q1,4|B3,6|P6,7");
+        let d = Discoverers::new(&game);
+        let mv = |from: (i64, i64), to: (i64, i64), pt| {
+            Move::new(
+                Coordinate::new(from.0, from.1),
+                Coordinate::new(to.0, to.1),
+                Piece::new(pt, PlayerColor::White),
+            )
+        };
+        let off_file = mv((5, 4), (3, 5), PieceType::Knight);
+        assert!(!StagedMoveGen::move_gives_check_fast(&game, &off_file));
+        assert!(d.gives_check(&off_file));
+        assert!(d.gives_check(&mv((3, 6), (4, 5), PieceType::Bishop)));
+        // Still on the diagonal between queen and king: the line stays shut.
+        assert!(!d.gives_check(&mv((3, 6), (2, 5), PieceType::Bishop)));
+        assert!(!d.gives_check(&mv((3, 6), (4, 7), PieceType::Bishop)));
+        // The pawn screens nothing: no slider of ours stands behind it.
+        assert!(!d.gives_check(&mv((6, 7), (6, 8), PieceType::Pawn)));
+        // Black to move has no blockers of its own in front of the white king.
+        let black = game_from_icn("b 0/100 1 (8;q|1;q) K1,1|R5,1|N5,4|k5,8|Q1,4|B3,6");
+        assert!(!Discoverers::new(&black).gives_check(&mv((5, 4), (3, 5), PieceType::Knight)));
     }
 
     #[test]

@@ -389,7 +389,7 @@ mod ordering;
 use ordering::{hash_coord_16, hash_move_dest, hash_move_from, sort_captures, sort_moves_root};
 
 pub mod movegen;
-use movegen::StagedMoveGen;
+use movegen::{Discoverers, StagedMoveGen};
 
 mod see;
 pub(crate) use see::see_ge;
@@ -2553,13 +2553,12 @@ fn search_with_searcher(
         // Only take the score when the iteration finished: an interrupted search can
         // return -INFINITY or a raw aspiration bound, so a stop keeps the previous
         // completed depth's score instead.
-        // Stockfish's forgottenMate and abortedLossSearch: a mate an earlier depth proved
-        // survives a depth that is interrupted or comes back longer or not mating, and an
-        // interrupted depth's loss is not trusted; the kept move is searched first next.
+        // A mate we proved survives a depth that is interrupted or comes back longer or not
+        // mating, and an interrupted depth's loss is not trusted; the kept move goes first
+        // next. -INFINITY is no loss: it means no root move finished, as after a fail high.
         let rollback = searcher.completed_depth > 0
-            && ((is_decisive(best_score)
-                && (searcher.hot.stopped || score.abs() < best_score.abs()))
-                || (searcher.hot.stopped && is_loss(score)));
+            && ((is_win(best_score) && (searcher.hot.stopped || score.abs() < best_score.abs()))
+                || (searcher.hot.stopped && score != -INFINITY && is_loss(score)));
         searcher.root_front = if rollback { best_move } else { None };
         if let Some(pv_move) = searcher.pv_table[0].filter(|_| !rollback) {
             // Always update the best_move to the latest PV move (even if stopped,
@@ -3516,8 +3515,10 @@ pub(crate) fn get_best_moves_multipv_impl(
             // A level's own candidates keep full depth, so the reply that refutes a long
             // move is still seen; the reduction applies to long moves deeper in the tree.
             let child_depth = depth - 1;
+            let victim = captured_type_at(game, m);
             let undo = game.make_move(m);
-            let slots = enter_root_move(searcher, m, root_in_check, is_capture, move_idx + 1);
+            let slots =
+                enter_root_move(searcher, m, root_in_check, is_capture, victim, move_idx + 1);
 
             // For MultiPV, we need to search all moves to get their scores.
             // First move gets aspiration window (or full), others use PVS logic.
@@ -3669,10 +3670,10 @@ pub(crate) fn get_best_moves_multipv_impl(
                 deep_ref_scores.extend(root_scores.iter().map(|entry| (entry.0, entry.1)));
             }
 
-            // Stockfish's forgottenMate: a mate an earlier depth proved is kept over this
-            // depth's longer or non-mating result, and its move is searched first next.
+            // A mate we proved at an earlier depth is kept over this depth's longer or
+            // non-mating result, and its move is searched first next.
             let forgotten_mate = best_lines.first().is_some_and(|b| {
-                is_decisive(b.score)
+                is_win(b.score)
                     && root_scores
                         .first()
                         .is_none_or(|r| r.1.abs() < b.score.abs())
@@ -3888,6 +3889,7 @@ fn enter_root_move(
     m: &Move,
     in_check: bool,
     is_capture: bool,
+    victim: u8,
     count: usize,
 ) -> RootMoveSlots {
     let slots = RootMoveSlots {
@@ -3903,7 +3905,7 @@ fn enter_root_move(
     searcher.moved_piece_history[0] = m.piece.piece_type() as u8;
     searcher.in_check_history[0] = in_check;
     searcher.capture_history_stack[0] = is_capture;
-    searcher.captured_type_stack[0] = u8::MAX;
+    searcher.captured_type_stack[0] = victim;
     searcher.move_count_stack[0] = count.min(u16::MAX as usize) as u16;
     // Read by the reply for evaluation smoothing and its hindsight depth adjustment.
     let (side, pt) = (hist_color(m.piece.color()), m.piece.piece_type() as usize);
@@ -4023,9 +4025,10 @@ fn negamax_root(
                 + searcher.pawn_hist(ph, root_piece as usize, idx)
         };
 
+        let victim = captured_type_at(game, m);
         let undo = game.make_move(m);
         legal_moves += 1;
-        let slots = enter_root_move(searcher, m, in_check, root_is_capture, legal_moves);
+        let slots = enter_root_move(searcher, m, in_check, root_is_capture, victim, legal_moves);
 
         let score;
         if legal_moves == 1 {
@@ -5071,6 +5074,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
     // Staged Move Generation - generate moves in stages for better efficiency
     let mut movegen =
         StagedMoveGen::new_with_check(tt_move, ply, depth as i32, searcher, game, in_check);
+    let mut discoverers: Option<Discoverers> = None;
 
     let mut best_score = -INFINITY;
     let mut best_move: Option<Move> = None;
@@ -5160,7 +5164,10 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
         // Check if this move gives check to enemy king (O(1) for knights/pawns)
         let gives_check = movegen
             .cached_gives_check()
-            .unwrap_or_else(|| StagedMoveGen::move_gives_check_fast(game, &m));
+            .unwrap_or_else(|| StagedMoveGen::move_gives_check_fast(game, &m))
+            || discoverers
+                .get_or_insert_with(|| Discoverers::new(game))
+                .gives_check(&m);
 
         // In-move pruning at shallow depths. A PV node is prunable once it has left
         // the previous iteration's PV; only the believed line is protected.
@@ -5425,6 +5432,7 @@ fn negamax(ctx: &mut NegamaxContext) -> i32 {
             searcher.moved_piece_history[ply] = p_type as u8;
             searcher.in_check_history[ply] = in_check;
             searcher.capture_history_stack[ply] = is_capture;
+            searcher.captured_type_stack[ply] = captured_type.map_or(u8::MAX, |pt| pt as u8);
             searcher.move_count_stack[ply] = legal_moves.min(u16::MAX as usize) as u16;
 
             if searcher.hot.stopped {
