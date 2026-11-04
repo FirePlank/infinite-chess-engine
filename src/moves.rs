@@ -207,6 +207,19 @@ pub fn generate_knightrider_moves_into(
     generate_knightrider_moves_impl(board, from, piece, gen_type, None, out);
 }
 
+/// `n / det` when `det` divides it. Two knightrider directions have |det| 3, 4 or 5, and
+/// matching on it turns each runtime `idiv` into a constant division.
+#[inline(always)]
+fn kr_div_exact(n: i64, det: i64) -> Option<i64> {
+    let q = match det.abs() {
+        3 => (n % 3 == 0).then_some(n / 3),
+        4 => (n % 4 == 0).then_some(n / 4),
+        5 => (n % 5 == 0).then_some(n / 5),
+        d => (n % d == 0).then_some(n / d),
+    }?;
+    Some(if det < 0 { -q } else { q })
+}
+
 /// As `generate_knightrider_moves_into`, plus, given the enemy king, the quiet checks
 /// past the hop window: squares on this ray that also sit on one of the king's rays.
 fn generate_knightrider_moves_impl(
@@ -348,10 +361,9 @@ fn generate_knightrider_moves_impl(
                     continue;
                 }
                 let (kn, jn) = (ex * ry - ey * rx, dx * ry - dy * rx);
-                if kn % det != 0 || jn % det != 0 {
+                let (Some(kk), Some(j)) = (kr_div_exact(kn, det), kr_div_exact(jn, det)) else {
                     continue;
-                }
-                let (kk, j) = (kn / det, jn / det);
+                };
                 if kk > max_steps && kk < closest_k && j > 0 {
                     let (x, y) = (from.x + dx * kk, from.y + dy * kk);
                     if in_bounds(x, y) {
@@ -3980,12 +3992,10 @@ fn fresh_check_dists(
     ];
     let (fx, fy, kx, ky) = (from.x, from.y, ek.x, ek.y);
     lines.into_iter().filter_map(move |(on, a, b, c)| {
-        let den = a * dir_x + b * dir_y;
-        let num = c - a * fx - b * fy;
-        if !on || den == 0 || num % den != 0 {
+        if !on {
             return None;
         }
-        let d = num / den;
+        let d = ray_steps(c - a * fx - b * fy, a * dir_x + b * dir_y)?;
         (d > 0 && (fx + d * dir_x, fy + d * dir_y) != (kx, ky)).then_some(d)
     })
 }
